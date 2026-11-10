@@ -82,6 +82,18 @@
      deze commit, `deploy/upgradebewijs/Dockerfile.kandidaat`; een volledige AIO-build duurt uren); en in `release.yml`
      op het **echte** kandidaat-image vóór `publish` (publish hangt ervan af). De core-kandidaat is geen releasebewijs:
      het encode-, web- en fork-deel is dan dat van de vorige release.
+   - *Nooit leeg groen (QA-review contract 1.3):* een lege of halve meting vóór de upgrade is een **rode** poort, nooit
+     "niets verloren". `dekking()` eist dat `core/mediaguard.db` en `encode/app.db` gemeten zijn, dat elke tabel van de
+     fixture minstens zoveel rijen heeft als `rows_per_table` (behalve de runtime-tabellen `sessions`,
+     `login_challenges` en `locks`, die de fixture na het tellen leegmaakt) en dat de AV1-database echt gevuld is;
+     `vergelijk` zonder enige database vóór is een fout.
+   - *De vorige release is echt de vorige (QA-review contract 1.3):* `upgradebewijs.py volgorde` leest anoniem de tags
+     en de digest uit GHCR (de pakketten zijn publiek, §2.1). Fout als de tag `<versie>-aio` niet gepubliceerd is, als
+     de gepinde digest niet die van de tag is, of als er een nieuwere release is. Kandidaat-tags (`…-aio-kandidaat-…`)
+     tellen niet. Op elke push: vorige = de laatst gepubliceerde release (na een release is de CI rood tot
+     `vorige-release.json` en de fixture zijn bijgewerkt). In `release.yml`: vorige < versie en vorige = de hoogste
+     gepubliceerde release onder de versie (ook bij een patch op een oudere lijn). Is de registry niet leesbaar, dan is
+     het rood: niet vast te stellen = niet bewezen.
    - *Grenzen (eerlijk)*: de fork-databases (Sonarr/Radarr) worden gemeten maar niet gevuld (series en films toevoegen
      vraagt externe metadata); hun eigen upgrade volgt de upstream-migraties. Kijkgeschiedenis van Emby/Jelly Leon zit
      niet in MediaGuard (alleen recent-bekeken paden, die zitten in de fixture); de HARDE EIS voor de mediaserver zelf
@@ -102,6 +114,6 @@
   tests opnieuw.
 - Na elke MediaGuard-release: `deploy/upgradebewijs/vorige-release.json` naar de nieuwe versie en digest, en een fixture
   `core-<versie>` op de releasecommit (`scripts/make-aio-fixture.py`). Zonder fixture van precies die versie faalt de
-  poort.
+  poort; zonder bijgewerkte `vorige-release.json` faalt de stap `volgorde` op de eerstvolgende push.
 - Een migratie die bewust iets wijzigt, moet dat in het uitzonderingenbestand benoemen (met reden); het rapport toont
   het. Anders blokkeert de poort de release.

@@ -10,12 +10,14 @@
 #   5. aio-smoke    het AIO-image starten op een gevulde database van een eerdere versie:
 #                   health, versie, inloggen, migraties en nette stop (scripts/aio-smoke.py)
 #   5b. upgradebewijs  HARDE EIS (contract 1.3 §2.3 regel 7b, C1.3-MGU-03): de vorige release
-#                   (deploy/upgradebewijs/vorige-release.json, op digest) op de gevulde fixture,
+#                   (deploy/upgradebewijs/vorige-release.json, op digest; gecontroleerd dat dit de
+#                   direct vorige gepubliceerde release in GHCR is) op de gevulde fixture,
 #                   dan het kandidaat-image: per tabel niets verloren, readback via de API en
 #                   terugzetten (vorige image + snapshot). Zonder groen bewijs geen release.
 #   6. publish      de kandidaten onder de echte tags zetten, zonder opnieuw te bouwen;
 #                   de AIO-tag als laatste
-# TrueNAS "Install via YAML" bouwt niets zelf; deploy/truenas/compose.yaml verwijst naar:
+# Installeren = standaard TrueNAS Custom App met <versie>-aio (README §3.2). Alleen voor
+# ontwikkeling/CI (geen installatiemethode) verwijst deploy/truenas/compose.yaml naar:
 #   ghcr.io/lvos04/mediaguard-{core,web,encode}:<versie>
 #   ghcr.io/lvos04/mediaguard-sonarr-fork:<UPSTREAM_VERSION>-<MG_PATCH_REV>  (+ :<sha7>-<rev>)
 #   ghcr.io/lvos04/mediaguard-radarr-fork:<UPSTREAM_VERSION>-<MG_PATCH_REV>  (+ :<sha7>-<rev>)
@@ -360,6 +362,8 @@ jobs:
           VORIGE="$(python3 -c "import json;d=json.load(open('$B'));print(d['image']+'@'+d['digest'])")"
           VV="$(python3 -c "import json;print(json.load(open('$B'))['versie'])")"
           IMG="${REGISTRY}/${OWNER}/mediaguard-core:${VERSION}-aio-${CANDIDATE}"
+          # de direct vorige gepubliceerde release vóór deze versie (tag en digest in GHCR)
+          python3 scripts/upgradebewijs.py volgorde --vorige-release "$B" --versie "$VERSION"
           docker pull -q "$VORIGE"
           docker pull -q "$IMG"
           python3 scripts/upgradebewijs.py poort --vorige "$VORIGE" --vorige-versie "$VV" \

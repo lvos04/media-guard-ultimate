@@ -103,6 +103,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      # vorige-release.json = de laatst gepubliceerde release (tag en digest in GHCR); na een release
+      # is dit rood tot vorige-release.json en de fixture van die release zijn bijgewerkt
+      - name: vorige release is de laatst gepubliceerde (GHCR-tag en digest)
+        run: python3 scripts/upgradebewijs.py volgorde
       - name: vorige release (op digest) ophalen en core-kandidaat bouwen
         run: |
           VORIGE="$(python3 -c 'import json;d=json.load(open("deploy/upgradebewijs/vorige-release.json"));print(d["image"]+"@"+d["digest"])')"

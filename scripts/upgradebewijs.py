@@ -305,6 +305,41 @@ def meet(map_: Path) -> dict[str, Any]:
     return {"databases": {p.relative_to(map_).as_posix(): meet_db(p) for p in live_databases(map_)}}
 
 
+#: databases die de poort vóór de upgrade altijd moet meten (core: de fixture; encode: de vorige
+#: release maakt hem zelf en de poort vult hem)
+VERPLICHT_VOOR = ("core/mediaguard.db", "encode/app.db")
+#: core-tabellen die scripts/make-aio-fixture.py na het tellen leegmaakt (aanmeldtokens) of die
+#: alleen runtime zijn: hun aantal in ``rows_per_table`` zegt niets over de dump
+RUNTIME_CORE = frozenset({"sessions", "login_challenges", "locks"})
+
+
+def dekking(voor: dict[str, Any], fixture: dict[str, Any],
+            verplicht: tuple[str, ...] = VERPLICHT_VOOR) -> list[str]:
+    """Fouten als de meting vóór de upgrade niet bevat wat de fixture gevuld heeft. Zonder deze
+    controle vergelijkt de poort een lege of halve meting en meldt hij 'niets verloren' (nooit
+    groen bij een fout: een verkeerd pad of een niet-gevulde database is een rode poort)."""
+    fouten: list[str] = []
+    dbs = voor.get("databases", {})
+    for db in verplicht:
+        if db not in dbs:
+            fouten.append(f"meting vóór: {db} ontbreekt (verkeerde map of de vorige release maakte "
+                          "hem niet); zonder meting is er niets te bewijzen")
+    core = dbs.get("core/mediaguard.db", {}).get("tabellen", {})
+    if "core/mediaguard.db" in dbs:
+        for tabel, n in sorted(fixture.get("rows_per_table", {}).items()):
+            if not n or tabel in RUNTIME_CORE:
+                continue
+            gemeten = core.get(tabel, {}).get("rijen", 0)
+            if gemeten < n:
+                fouten.append(f"meting vóór: core/mediaguard.db {tabel} heeft {gemeten} rij(en), "
+                              f"de fixture {n}: de vorige release verloor al gegevens of de "
+                              "meting is onvolledig")
+    if "encode/app.db" in dbs and not any(
+            t.get("rijen", 0) for t in dbs["encode/app.db"].get("tabellen", {}).values()):
+        fouten.append("meting vóór: encode/app.db is leeg (niet gevuld)")
+    return fouten
+
+
 # ------------------------------------------------------------------------------------- vergelijken
 def _uitzondering(uitz: dict[str, Any], db: str) -> dict[str, Any]:
     for patroon, regel in uitz.get("databases", {}).items():
@@ -320,7 +355,10 @@ def vergelijk(voor: dict[str, Any], na: dict[str, Any],
     fouten: list[str] = []
     toegepast: list[str] = []
     overzicht: list[str] = []
-    for db, m_voor in sorted(voor["databases"].items()):
+    if not voor.get("databases"):
+        # niets gemeten = niets bewezen; nooit 'niets verloren'
+        fouten.append("geen enkele database gemeten vóór de upgrade: er is niets bewezen")
+    for db, m_voor in sorted(voor.get("databases", {}).items()):
         regel_db = _uitzondering(uitz, db)
         if regel_db.get("hele_database"):
             toegepast.append(f"{db}: hele database vluchtig — {regel_db.get('reden', '?')}")
@@ -538,7 +576,8 @@ class Poort:
 
     def meet(self, config: str, uit: str) -> dict[str, Any]:
         self.hulp("/s/upgradebewijs.py", "meet", "--map", f"/mnt/{config}", "--uit", f"/mnt/{uit}")
-        return json.loads((self.werk / uit).read_text("utf-8"))
+        meting: dict[str, Any] = json.loads((self.werk / uit).read_text("utf-8"))
+        return meting
 
     def run(self) -> tuple[list[str], str]:
         fixture_sql, fixture = kies_fixture(Path(self.a.fixtures), self.a.vorige_versie)
@@ -559,11 +598,20 @@ class Poort:
         uit = self.hulp("/s/upgradebewijs.py", "vul", "--db", "/mnt/config/encode/app.db",
                         "--profiel", "encode", als=str(APP_UID))
         self.stap(f"AV1-database gevuld: {uit}")
+        try:
+            gevuld = json.loads(uit.splitlines()[-1]).get("toegevoegd", {}) if uit else {}
+        except ValueError:
+            gevuld = {}
+        if not gevuld:
+            raise RuntimeError(f"AV1-database niet gevuld (uitkomst: {uit[:300]!r}): zonder "
+                               "gevulde database is er niets te bewijzen")
         # 2. vorige release opnieuw: accepteert de gevulde databases en vindt alles terug
         self.start(self.a.vorige)
         fouten += [f"vorige release: {p}" for p in self.readback(fixture, None)]
         self.stop()
         voor = self.meet("config", "meting-voor.json")
+        # zonder volledige meting vóór is 'niets verloren' leeg: dan is de poort rood
+        fouten += dekking(voor, fixture)
         # zoals een ZFS-snapshot vóór de update (terugzetten = vorige image + deze snapshot)
         self.shell("cp -a /mnt/config /mnt/config-snapshot")
         # 3. nieuwe release op dezelfde mappen
@@ -598,6 +646,120 @@ class Poort:
                 self.shell("rm -rf /mnt/config /mnt/config-snapshot /mnt/work /mnt/data "
                            "/mnt/meting-*.json")
             shutil.rmtree(self.werk, ignore_errors=True)
+
+
+# ------------------------------------------------------------------------------- vorige release
+_VERSIE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+_RELEASE_TAG = re.compile(r"(\d+\.\d+\.\d+)-aio")  # kandidaat-tags (…-aio-kandidaat-…) tellen niet
+
+
+def _versie(tekst: str) -> tuple[int, int, int]:
+    m = _VERSIE.fullmatch(tekst)
+    if not m:
+        raise ValueError(f"geen versie x.y.z: {tekst!r}")
+    return int(m[1]), int(m[2]), int(m[3])
+
+
+def _tekst(v: tuple[int, int, int]) -> str:
+    return ".".join(map(str, v))
+
+
+def controleer_volgorde(vorige: dict[str, Any], tags: list[str], digest_gemeten: str | None,
+                        versie: str | None = None) -> list[str]:
+    """Is ``vorige-release.json`` echt de direct vorige gepubliceerde release (HARDE EIS: 'een
+    gevulde database van de vorige versie', niet 'een eerdere')?
+
+    - de image-tag is ``<versie>-aio`` en die release-tag staat in de registry;
+    - de gepinde digest is de digest van die tag (niet een ander image);
+    - met ``versie`` (release): vorige < versie, en er is geen gepubliceerde release tussen vorige
+      en versie (vorige = de hoogste gepubliceerde onder versie; ook bij een patch op een oudere
+      lijn);
+    - zonder ``versie`` (elke push): vorige = de hoogste gepubliceerde release, zodat een
+      vergeten bijwerking na een release direct rood is.
+    """
+    fouten: list[str] = []
+    try:
+        v_vorige = _versie(str(vorige.get("versie", "")))
+    except ValueError as exc:
+        return [f"vorige-release.json: {exc}"]
+    image = str(vorige.get("image", ""))
+    if not image.endswith(f":{vorige['versie']}-aio"):
+        fouten.append(f"vorige-release.json: image {image!r} is niet de tag {vorige['versie']}-aio")
+    gepubliceerd = sorted({_versie(m[1]) for t in tags if (m := _RELEASE_TAG.fullmatch(t))})
+    if v_vorige not in gepubliceerd:
+        fouten.append(f"vorige release {vorige['versie']}-aio staat niet in de registry "
+                      "(niet gepubliceerd of niet leesbaar)")
+    if digest_gemeten is None:
+        fouten.append(f"digest van {vorige['versie']}-aio niet te lezen: niet vast te stellen of "
+                      "het gepinde image de vorige release is")
+    elif digest_gemeten != vorige.get("digest"):
+        fouten.append(f"gepinde digest {vorige.get('digest')} is niet de digest van "
+                      f"{vorige['versie']}-aio in de registry ({digest_gemeten})")
+    if versie is not None:
+        try:
+            v_nieuw = _versie(versie)
+        except ValueError as exc:
+            return [*fouten, f"--versie: {exc}"]
+        if v_vorige >= v_nieuw:
+            fouten.append(f"vorige release {vorige['versie']} is niet ouder dan {versie}")
+        lager = [v for v in gepubliceerd if v < v_nieuw]
+        if lager and lager[-1] != v_vorige:
+            fouten.append(f"vorige-release.json noemt {vorige['versie']}, maar de direct vorige "
+                          f"gepubliceerde release vóór {versie} is "
+                          f"{_tekst(lager[-1])}: zet die versie, digest en fixture")
+    elif gepubliceerd and gepubliceerd[-1] != v_vorige:
+        fouten.append(f"vorige-release.json noemt {vorige['versie']}, maar de laatst "
+                      f"gepubliceerde release is {_tekst(gepubliceerd[-1])}: zet die "
+                      "versie, digest en fixture (scripts/make-aio-fixture.py op de releasecommit)")
+    return fouten
+
+
+def _registry_get(url: str, headers: dict[str, str]) -> tuple[bytes, Any]:
+    """GET met herhaling (2/4/8 s); een blijvende fout wordt doorgegeven (dan rood, nooit groen)."""
+    laatste: Exception | None = None
+    for wacht in (0, 2, 4, 8):
+        time.sleep(wacht)
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 - vaste registry
+                return resp.read(), resp.headers
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500 and exc.code != 429:
+                raise
+            laatste = exc
+        except OSError as exc:
+            laatste = exc
+    assert laatste is not None
+    raise laatste
+
+
+def registry_meting(image: str) -> tuple[list[str], str | None]:
+    """Tags van de image-repository en de digest van de tag uit ``image`` (anoniem lezen; de
+    pakketten zijn publiek, contract §2.1). Alleen ghcr.io."""
+    m = re.fullmatch(r"ghcr\.io/([a-z0-9._/-]+):([A-Za-z0-9._-]+)", image)
+    if not m:
+        raise ValueError(f"alleen ghcr.io/<eigenaar>/<naam>:<tag>: {image!r}")
+    repo, tag = m[1], m[2]
+    body, _h = _registry_get(f"https://ghcr.io/token?scope=repository:{repo}:pull", {})
+    token = json.loads(body)["token"]
+    kop = {"Authorization": f"Bearer {token}"}
+    tags: list[str] = []
+    url: str | None = f"https://ghcr.io/v2/{repo}/tags/list?n=1000"
+    while url:
+        body, h = _registry_get(url, kop)
+        tags += json.loads(body).get("tags") or []
+        volgende = re.search(r'<([^>]+)>;\s*rel="next"', h.get("Link") or "")
+        url = f"https://ghcr.io{volgende[1]}" if volgende else None
+    accept = ", ".join(("application/vnd.oci.image.index.v1+json",
+                        "application/vnd.docker.distribution.manifest.list.v2+json",
+                        "application/vnd.oci.image.manifest.v1+json",
+                        "application/vnd.docker.distribution.manifest.v2+json"))
+    digest: str | None = None
+    if tag in tags:
+        body, h = _registry_get(f"https://ghcr.io/v2/{repo}/manifests/{tag}",
+                                {**kop, "Accept": accept})
+        digest = h.get("Docker-Content-Digest") or f"sha256:{hashlib.sha256(body).hexdigest()}"
+    return tags, digest
 
 
 def kies_fixture(map_: Path, versie: str) -> tuple[Path, dict[str, Any]]:
@@ -636,6 +798,11 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--na", required=True, type=Path)
     c.add_argument("--uitzonderingen", type=Path, default=UITZONDERINGEN)
     c.add_argument("--rapport", type=Path)
+    o = sub.add_parser("volgorde", help="is vorige-release.json de direct vorige gepubliceerde "
+                       "release (registry: tag en digest)?")
+    o.add_argument("--vorige-release", type=Path,
+                   default=ROOT / "deploy" / "upgradebewijs" / "vorige-release.json")
+    o.add_argument("--versie", help="versie van de kandidaat (release); zonder: elke push")
     g = sub.add_parser("poort")
     g.add_argument("--vorige", required=True, help="image van de vorige release (met @sha256)")
     g.add_argument("--vorige-versie", required=True)
@@ -655,6 +822,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.opdracht == "meet":
         a.uit.write_text(json.dumps(meet(a.map), ensure_ascii=False), encoding="utf-8")
+        return 0
+    if a.opdracht == "volgorde":
+        vorige = json.loads(a.vorige_release.read_text("utf-8"))
+        try:
+            tags, digest = registry_meting(str(vorige.get("image", "")))
+        except (OSError, ValueError, KeyError) as exc:
+            fouten = [f"registry niet te lezen ({exc}): niet vast te stellen of dit de vorige "
+                      "release is; er wordt niets als bewezen gemeld"]
+        else:
+            fouten = controleer_volgorde(vorige, tags, digest, a.versie)
+        if fouten:
+            print("\n".join(f"❌ {f}" for f in fouten), flush=True)
+            return 1
+        print(f"vorige release {vorige['versie']}-aio ({vorige['digest'][:19]}…) is de direct "
+              f"vorige gepubliceerde release" + (f" vóór {a.versie}" if a.versie else ""))
         return 0
     if a.opdracht == "vergelijk":
         uitz = json.loads(a.uitzonderingen.read_text("utf-8")) if a.uitzonderingen else {}

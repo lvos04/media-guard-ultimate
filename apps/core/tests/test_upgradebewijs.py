@@ -309,3 +309,97 @@ def test_kandidaat_dockerfile_bouwt_op_de_gepinde_vorige_release() -> None:
     tekst = (ROOT / "deploy" / "upgradebewijs" / "Dockerfile.kandidaat").read_text("utf-8")
     assert f"ARG VORIGE={VORIGE['image']}@{VORIGE['digest']}" in tekst
     assert "latest" not in tekst
+
+
+# -- nooit 'niets verloren' bij een lege of halve meting (fail-closed) ---------------------------
+def test_lege_meting_voor_is_nooit_groen() -> None:
+    fouten = ub.vergelijk({"databases": {}}, {"databases": {}}, UITZ)[0]
+    assert fouten and "niets bewezen" in fouten[0]
+    assert ub.vergelijk({}, {"databases": {}}, UITZ)[0]
+
+
+def _encode_gevuld() -> dict[str, Any]:
+    return {"integriteit": "ok", "tabellen": {"job": {"rijen": 2}}}
+
+
+def test_dekking_eist_de_gevulde_fixture_en_de_av1_database(meting: dict[str, Any]) -> None:
+    _sql, meta = _fixture()
+    volledig = copy.deepcopy(meting)
+    volledig["databases"]["encode/app.db"] = _encode_gevuld()
+    assert ub.dekking(volledig, meta) == []
+    # verkeerde map: niets gemeten
+    fouten = ub.dekking({"databases": {}}, meta)
+    assert any("core/mediaguard.db ontbreekt" in f for f in fouten)
+    assert any("encode/app.db ontbreekt" in f for f in fouten)
+    # AV1-database er wel, maar leeg (niet gevuld)
+    leeg = copy.deepcopy(volledig)
+    leeg["databases"]["encode/app.db"] = {"integriteit": "ok", "tabellen": {"job": {"rijen": 0}}}
+    assert any("encode/app.db is leeg" in f for f in ub.dekking(leeg, meta))
+    # de vorige release (of de meting) mist rijen van de fixture
+    half = copy.deepcopy(volledig)
+    t = half["databases"]["core/mediaguard.db"]["tabellen"]["quarantine_items"]
+    t["rijen"] = 0
+    assert any("quarantine_items heeft 0 rij(en)" in f for f in ub.dekking(half, meta))
+    weg = copy.deepcopy(volledig)
+    del weg["databases"]["core/mediaguard.db"]["tabellen"]["wanted_items"]
+    assert any("wanted_items heeft 0 rij(en)" in f for f in ub.dekking(weg, meta))
+
+
+def test_poort_controleert_de_dekking_en_de_vulling() -> None:
+    bron = (ROOT / "scripts" / "upgradebewijs.py").read_text("utf-8")
+    assert "fouten += dekking(voor, fixture)" in bron
+    assert "AV1-database niet gevuld" in bron
+
+
+# -- vorige-release.json is de direct vorige gepubliceerde release --------------------------------
+DIGEST = "sha256:" + "a" * 64
+TAGS = ["1.2.0-aio", "1.2.1-aio", "1.2.2-aio", "1.2.2", "1.3.0-aio-kandidaat-1-1", "0.9.0-aio"]
+
+
+def _vorige(versie: str = "1.2.2", digest: str = DIGEST) -> dict[str, Any]:
+    return {"versie": versie, "image": f"ghcr.io/lvos04/mediaguard-core:{versie}-aio",
+            "digest": digest}
+
+
+def test_volgorde_klopt_voor_push_en_release() -> None:
+    assert ub.controleer_volgorde(_vorige(), TAGS, DIGEST) == []
+    assert ub.controleer_volgorde(_vorige(), TAGS, DIGEST, "1.3.0") == []
+    # patch op een oudere lijn: vorige = hoogste gepubliceerde onder de versie
+    tags = [*TAGS, "1.3.0-aio"]
+    assert ub.controleer_volgorde(_vorige(), tags, DIGEST, "1.2.3") == []
+
+
+def test_volgorde_negatief() -> None:
+    def fout(*args: Any) -> str:
+        fouten = ub.controleer_volgorde(*args)
+        assert fouten, args
+        return "\n".join(fouten)
+
+    # na een release vergeten bij te werken (push en release)
+    assert "laatst gepubliceerde release is 1.3.0" in fout(_vorige(), [*TAGS, "1.3.0-aio"], DIGEST)
+    assert "direct vorige gepubliceerde release vóór 1.4.0 is 1.3.0" in fout(
+        _vorige(), [*TAGS, "1.3.0-aio"], DIGEST, "1.4.0")
+    # vorige niet ouder dan de kandidaat
+    assert "niet ouder dan 1.2.2" in fout(_vorige(), TAGS, DIGEST, "1.2.2")
+    assert "niet ouder dan 1.1.0" in fout(_vorige(), TAGS, DIGEST, "1.1.0")
+    # een kandidaat-tag is geen gepubliceerde release
+    assert "staat niet in de registry" in fout(_vorige("1.3.0"), TAGS, DIGEST)
+    # ander image onder de gepinde digest, of digest niet leesbaar
+    assert "is niet de digest van 1.2.2-aio" in fout(_vorige(), TAGS, "sha256:" + "b" * 64)
+    assert "digest van 1.2.2-aio niet te lezen" in fout(_vorige(), TAGS, None)
+    # image-tag past niet bij de versie
+    v = _vorige()
+    v["image"] = "ghcr.io/lvos04/mediaguard-core:1.2.1-aio"
+    assert "is niet de tag 1.2.2-aio" in fout(v, TAGS, DIGEST)
+    assert "geen versie" in fout(_vorige("1.2"), TAGS, DIGEST)
+    # lege registry (niet leesbaar of verkeerd pakket)
+    assert "staat niet in de registry" in fout(_vorige(), [], DIGEST)
+
+
+def test_workflows_controleren_de_vorige_release() -> None:
+    ci = json.dumps(_workflow("ci.yml")["jobs"]["upgradebewijs"]["steps"])
+    assert "scripts/upgradebewijs.py volgorde" in ci
+    rel = _workflow("release.yml")["jobs"]["upgradebewijs"]["steps"]
+    stap = next(s["run"] for s in rel if "poort" in s.get("run", ""))
+    assert stap.index("upgradebewijs.py volgorde") < stap.index("upgradebewijs.py poort")
+    assert '--versie "$VERSION"' in stap.split("upgradebewijs.py volgorde", 1)[1].split("\n")[0]
