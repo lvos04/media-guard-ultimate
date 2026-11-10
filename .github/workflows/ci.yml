@@ -1,6 +1,8 @@
 # MediaGuard Ultimate — CI
 #
-# push/PR: core, encoder unit tests (zonder toolchain), web (Peil-driftcontrole, lint/typecheck/unit/build/e2e).
+# push/PR: core, encoder unit tests (zonder toolchain), web (Peil-driftcontrole, lint/typecheck/unit/build/e2e),
+# kopieën van contract en Peil tegen hun gepinde bron (C1.3-MGU-01) en het upgradebewijs van de HARDE EIS
+# (vorige release → core van deze commit op een gevulde database, C1.3-MGU-03).
 # Nightly (03:17 UTC) + handmatig: encoder-suite in het toolchain-image (--target test),
 # beide fork-images bouwen en de upstream-sync van de forks in rapportmodus.
 # release.yml roept deze workflow aan (workflow_call): zonder groene tests geen release.
@@ -26,6 +28,10 @@ on:
       heavy:
         type: boolean
         default: false
+      # release.yml draait het upgradebewijs zelf op het echte kandidaat-image (job upgradebewijs)
+      upgradebewijs:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -67,6 +73,56 @@ jobs:
       - name: pytest
         working-directory: apps/core
         run: python -m pytest -q -rfEs -p no:cacheprovider
+
+  # Contract 1.3 (kop, §10; C1.3-MGU-01) en Peil 1.1.1 (ONTWERPTAAL §14, E08): byte-gelijke kopieën met gepinde
+  # bron-commit. Fout bij een afwijking van de bron op de gepinde commit (en bij Peil: zelfde versie, andere inhoud);
+  # een nieuwere bron is een waarschuwing (bewust bijwerken). De offline controle draait ook in de core-tests.
+  kopieen:
+    name: kopieën contract en Peil (gepinde bron-commit)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: offline (koppen, sha256, HERKOMST.json)
+        run: python3 scripts/kopie-herkomst.py controleer
+      - name: tegen lvos04/ai-server-manager op GitHub (gepinde commit + werkbranch)
+        run: python3 scripts/kopie-herkomst.py vergelijk --online
+
+  # HARDE EIS (contract 1.3 §2.3 regel 7b, §12; C1.3-MGU-03): kijkgeschiedenis en MediaGuard-voortgang blijven altijd
+  # beschikbaar. Op elke push: de echte vorige release (op digest) start op de gevulde fixture, daarna de runtime van die
+  # release met de core van deze commit (deploy/upgradebewijs/Dockerfile.kandidaat); per tabel vóór/na vergelijken,
+  # readback via de API en terugzetten (vorige image + snapshot). Het releasebewijs met het echte kandidaat-image draait
+  # in release.yml vóór publish.
+  upgradebewijs:
+    name: upgradebewijs (vorige release → core van deze commit)
+    if: github.event_name != 'schedule' && inputs.upgradebewijs != false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: vorige release (op digest) ophalen en core-kandidaat bouwen
+        run: |
+          VORIGE="$(python3 -c 'import json;d=json.load(open("deploy/upgradebewijs/vorige-release.json"));print(d["image"]+"@"+d["digest"])')"
+          VORIGE_VERSIE="$(python3 -c 'import json;print(json.load(open("deploy/upgradebewijs/vorige-release.json"))["versie"])')"
+          VERSIE="$(python3 -c 'import json;print(json.load(open("deploy/release-manifest.json"))["version"])')"
+          { echo "VORIGE=$VORIGE"; echo "VORIGE_VERSIE=$VORIGE_VERSIE"; echo "VERSIE=$VERSIE"; } >> "$GITHUB_ENV"
+          for i in 1 2 3 4 5; do docker pull -q "$VORIGE" && break; sleep $((2 ** i)); done
+          docker buildx build --load -f deploy/upgradebewijs/Dockerfile.kandidaat \
+            --build-context core=apps/core --build-context release=deploy \
+            --build-arg "VORIGE=$VORIGE" -t mediaguard/upgrade-kandidaat:ci deploy/upgradebewijs
+      - name: upgradebewijs (start, meten, upgraden, vergelijken, terugzetten)
+        run: >-
+          python3 scripts/upgradebewijs.py poort --vorige "$VORIGE" --vorige-versie "$VORIGE_VERSIE"
+          --nieuw mediaguard/upgrade-kandidaat:ci --versie "$VERSIE"
+          --werkmap "$RUNNER_TEMP/upgradebewijs" --rapport "$RUNNER_TEMP/upgradebewijs.md"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upgradebewijs-rapport
+          path: ${{ runner.temp }}/upgradebewijs.md
+          retention-days: 30
 
   encoder-unit:
     name: encoder unit (zonder toolchain)

@@ -1,0 +1,8 @@
+{
+  "toelichting": "De direct vorige uitgebrachte MediaGuard-release voor het upgradebewijs (HARDE EIS, contract 1.3 §2.3 regel 7b, C1.3-MGU-03). scripts/upgradebewijs.py start precies deze image (op digest) op de fixture tests/fixtures/aio/core-<versie>.{sql,json}. Bij elke nieuwe release: na publicatie hier de nieuwe versie en digest zetten en de fixture op de releasecommit maken (scripts/make-aio-fixture.py).",
+  "versie": "1.2.2",
+  "image": "ghcr.io/lvos04/mediaguard-core:1.2.2-aio",
+  "digest": "sha256:14e540ba9cad0bb7fbda8295bca89496f58462a201361544916f3b16b3a52dc6",
+  "fixture": "tests/fixtures/aio/core-1.2.2",
+  "herkomst": "tag v1.2.2 = 30f7415 in de oude repo (nu lvos04/media-guard-ultimate-archief, privé); digest opnieuw gelezen met docker buildx imagetools inspect op 2026-11-10; labels org.opencontainers.image.version 1.2.2 en revision 30f7415a99e4…"
+}

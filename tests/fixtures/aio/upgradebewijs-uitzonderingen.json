@@ -1,0 +1,155 @@
+{
+  "toelichting": "Uitzonderingen voor het upgradebewijs (scripts/upgradebewijs.py, HARDE EIS, C1.3-MGU-03). Alleen wat ook ZONDER upgrade bij elke start verandert (hartslagen, tijdstempels van de laatste controle, de aanmelding van de readback) of wat een migratie bewust wijzigt, elk met een reden; elke toegepaste regel staat in het rapport. Gemeten: dezelfde verschillen verschijnen bij het terugzetten (vorige release opnieuw op de snapshot, zonder upgrade). Inhoud van de voortgang (bibliotheek, wanted, encodes en AV1-jobs, quarantaine, herstel, ledger, mediaserver, migratie, meldingen, audit, AI-advies) staat hier nooit in: daarvan wordt elke kolom vergeleken.",
+  "databases": {
+    "*/logs.db": {
+      "hele_database": true,
+      "reden": "logregels van de Sonarr/Radarr-forks: worden bij elke start geschreven en door upstream opgeruimd; geen voortgang"
+    },
+    "*/sonarr.db": {
+      "tabellen": {
+        "ScheduledTasks": {
+          "kolommen": [
+            "LastExecution",
+            "LastStartTime"
+          ],
+          "reden": "upstream-planner van de fork: tijdstip van de laatste uitvoering (sommige taken elke minuut); interval en taaknaam worden vergeleken"
+        },
+        "Commands": {
+          "rijen_vluchtig": true,
+          "kolommen": [
+            "Status",
+            "StartedAt",
+            "EndedAt",
+            "Duration",
+            "Result",
+            "Exception",
+            "Message",
+            "Body",
+            "QueuedAt",
+            "LastExecutionTime",
+            "Trigger",
+            "Priority"
+          ],
+          "reden": "upstream-opdrachtgeschiedenis van de fork: wordt door upstream opgeruimd; geen voortgang (series, films en geschiedenis staan in hun eigen tabellen en worden volledig vergeleken)"
+        }
+      }
+    },
+    "*/radarr.db": {
+      "tabellen": {
+        "ScheduledTasks": {
+          "kolommen": [
+            "LastExecution",
+            "LastStartTime"
+          ],
+          "reden": "upstream-planner van de fork: tijdstip van de laatste uitvoering (sommige taken elke minuut); interval en taaknaam worden vergeleken"
+        },
+        "Commands": {
+          "rijen_vluchtig": true,
+          "kolommen": [
+            "Status",
+            "StartedAt",
+            "EndedAt",
+            "Duration",
+            "Result",
+            "Exception",
+            "Message",
+            "Body",
+            "QueuedAt",
+            "LastExecutionTime",
+            "Trigger",
+            "Priority"
+          ],
+          "reden": "upstream-opdrachtgeschiedenis van de fork: wordt door upstream opgeruimd; geen voortgang (series, films en geschiedenis staan in hun eigen tabellen en worden volledig vergeleken)"
+        }
+      }
+    },
+    "core/mediaguard.db": {
+      "tabellen": {
+        "system_state": {
+          "kolommen": [
+            "updated_at"
+          ],
+          "rijen": [
+            {
+              "sleutel": "taskwatch:*",
+              "kolommen": [
+                "value_json"
+              ]
+            },
+            {
+              "sleutel": "mediaserver_started_at",
+              "kolommen": [
+                "value_json"
+              ]
+            },
+            {
+              "sleutel": "encoder_emergency_pushed",
+              "kolommen": [
+                "value_json"
+              ]
+            },
+            {
+              "sleutel": "quarantine_orphans",
+              "kolommen": [
+                "value_json"
+              ]
+            },
+            {
+              "sleutel": "recovery_heartbeat",
+              "kolommen": [
+                "value_json"
+              ]
+            },
+            {
+              "sleutel": "storage_probe",
+              "kolommen": [
+                "value_json"
+              ]
+            }
+          ],
+          "reden": "runtimestatus van de achtergrondtaken (taakwacht, hartslag, laatste controle): bij elke start opnieuw geschreven; de waarde van alle andere sleutels (o.a. hook_key:*) wordt wel vergeleken"
+        },
+        "users": {
+          "kolommen": [
+            "last_login_at"
+          ],
+          "reden": "de readback logt in met de oude beheerder"
+        }
+      }
+    },
+    "encode/app.db": {
+      "tabellen": {
+        "functie": {
+          "kolommen": [
+            "gewijzigd_op"
+          ],
+          "reden": "tijdstip van de laatste controle per functie, bij de start bijgewerkt; ingeschakeld/uitgeschakeld wordt vergeleken"
+        },
+        "noodstop": {
+          "kolommen": [
+            "bijgewerkt"
+          ],
+          "reden": "tijdstip van de laatste noodstop-synchronisatie met core bij de start; de noodstop zelf wordt vergeleken"
+        },
+        "onderhoud_status": {
+          "kolommen": [
+            "laatst_op"
+          ],
+          "reden": "tijdstip van het laatste onderhoud, bij de start bijgewerkt"
+        },
+        "vervang_transactie": {
+          "kolommen": [
+            "gewijzigd_op"
+          ],
+          "reden": "tijdstip van de herstelcontrole bij de start; status, paden en job worden vergeleken"
+        },
+        "worker_config": {
+          "kolommen": [
+            "pauze_reden"
+          ],
+          "reden": "actuele pauzereden van een baan (runtime, bv. geen GPU in de test); de instellingen van de baan worden vergeleken"
+        }
+      }
+    }
+  }
+}

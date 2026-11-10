@@ -9,6 +9,10 @@
 #   4. aio-image    alles-in-één uit die kandidaten, ook als kandidaat
 #   5. aio-smoke    het AIO-image starten op een gevulde database van een eerdere versie:
 #                   health, versie, inloggen, migraties en nette stop (scripts/aio-smoke.py)
+#   5b. upgradebewijs  HARDE EIS (contract 1.3 §2.3 regel 7b, C1.3-MGU-03): de vorige release
+#                   (deploy/upgradebewijs/vorige-release.json, op digest) op de gevulde fixture,
+#                   dan het kandidaat-image: per tabel niets verloren, readback via de API en
+#                   terugzetten (vorige image + snapshot). Zonder groen bewijs geen release.
 #   6. publish      de kandidaten onder de echte tags zetten, zonder opnieuw te bouwen;
 #                   de AIO-tag als laatste
 # TrueNAS "Install via YAML" bouwt niets zelf; deploy/truenas/compose.yaml verwijst naar:
@@ -102,6 +106,9 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+    with:
+      # het upgradebewijs draait hieronder op het echte kandidaat-image (job upgradebewijs)
+      upgradebewijs: false
 
   app-images:
     name: ${{ matrix.name }}
@@ -327,13 +334,51 @@ jobs:
           sudo --preserve-env=GITHUB_STEP_SUMMARY python3 scripts/aio-smoke.py \
             --image "$IMG" --version "$VERSION"
 
-  # Pas hier komen de echte tags: tests, bouw en rooktest zijn geslaagd. Kopiëren in de
+  # HARDE EIS van de gebruiker (contract 1.3 §2.3 regel 7b en §12, C1.3-MGU-03): kijkgeschiedenis
+  # en MediaGuard-voortgang blijven altijd beschikbaar. De vorige release start op de gevulde
+  # fixture (elke tabel), daarna het kandidaat-image op dezelfde mappen; per tabel vóór/na
+  # vergelijken, readback via de API, en terugzetten (vorige image + snapshot) bewijzen.
+  # Zonder groen bewijs geen publicatie (publish hangt hiervan af).
+  upgradebewijs:
+    name: upgradebewijs (HARDE EIS)
+    needs: [meta, aio-image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: vorige release → kandidaat
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          CANDIDATE: ${{ needs.meta.outputs.candidate }}
+        run: |
+          B=deploy/upgradebewijs/vorige-release.json
+          VORIGE="$(python3 -c "import json;d=json.load(open('$B'));print(d['image']+'@'+d['digest'])")"
+          VV="$(python3 -c "import json;print(json.load(open('$B'))['versie'])")"
+          IMG="${REGISTRY}/${OWNER}/mediaguard-core:${VERSION}-aio-${CANDIDATE}"
+          docker pull -q "$VORIGE"
+          docker pull -q "$IMG"
+          python3 scripts/upgradebewijs.py poort --vorige "$VORIGE" --vorige-versie "$VV" \
+            --nieuw "$IMG" --versie "$VERSION" \
+            --werkmap "$RUNNER_TEMP/upgradebewijs" --rapport "$RUNNER_TEMP/upgradebewijs.md"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upgradebewijs-${{ needs.meta.outputs.version }}
+          path: ${{ runner.temp }}/upgradebewijs.md
+          retention-days: 90
+
+  # Pas hier komen de echte tags: tests, bouw, rooktest en upgradebewijs zijn geslaagd. Kopiëren in de
   # registry (geen nieuwe build), dus precies het geteste image. Bestaat een tag inmiddels
   # toch met een ander image, dan stopt de job zonder iets te overschrijven. Mislukt deze job
   # halverwege: 'Re-run failed jobs' maakt hem af (tags die al goed staan worden overgeslagen).
   publish:
     name: publiceren
-    needs: [meta, tests, app-images, fork-images, aio-image, aio-smoke]
+    needs: [meta, tests, app-images, fork-images, aio-image, aio-smoke, upgradebewijs]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

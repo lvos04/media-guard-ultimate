@@ -1,0 +1,26 @@
+# Upgradebewijs op elke push (ci.yml, job upgradebewijs) — GEEN release-image en geen installatiemethode.
+#
+# Een volledige release bouwt het encode-image uit bron (uren). Op elke push maakt deze Dockerfile daarom een
+# "core-kandidaat": de runtime van de vorige release (AV1-engine, web, Sonarr/Radarr-forks) met de core van deze commit
+# en het release-manifest van deze commit. Core is eigenaar van de database met de MediaGuard-voortgang; zo bewijst elke
+# push dat de migraties en de start van deze core niets van de vorige versie verliezen. Het echte releasebewijs draait
+# in release.yml op het echte kandidaat-image (job upgradebewijs, vóór publish).
+#
+#   docker buildx build --load -f deploy/upgradebewijs/Dockerfile.kandidaat \
+#     --build-context core=apps/core --build-context release=deploy \
+#     --build-arg VORIGE=ghcr.io/lvos04/mediaguard-core:1.2.2-aio@sha256:… -t mediaguard/upgrade-kandidaat:ci deploy/upgradebewijs
+ARG VORIGE=ghcr.io/lvos04/mediaguard-core:1.2.2-aio@sha256:14e540ba9cad0bb7fbda8295bca89496f58462a201361544916f3b16b3a52dc6
+FROM scratch AS core
+FROM scratch AS release
+FROM ${VORIGE}
+USER root
+# Het alles-in-één-image heeft geen pip meer: het pakket mediaguard (puur Python, zelfde afhankelijkheden) wordt
+# vervangen door de bron van deze commit; daarna moet het importeren.
+RUN --mount=type=bind,from=core,target=/src \
+    set -eu; \
+    d="$(/opt/venv/bin/python -c 'import mediaguard, os; print(os.path.dirname(mediaguard.__file__))')"; \
+    rm -rf "$d"; \
+    cp -a /src/mediaguard "$d"; \
+    find "$d" -name __pycache__ -prune -exec rm -rf {} +; \
+    /opt/venv/bin/python -c "import mediaguard.aio, mediaguard.app; print(mediaguard.__version__)"
+COPY --from=release release-manifest.json /usr/share/mediaguard/release-manifest.json
