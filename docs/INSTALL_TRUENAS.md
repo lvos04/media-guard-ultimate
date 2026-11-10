@@ -1,9 +1,13 @@
 # Installatie op TrueNAS SCALE — technische referentie
 
-> **Aanbevolen:** installeer als gewone *Custom App* met het alles-in-één-image
-> `ghcr.io/lvos04/mediaguard-core:1.2.2-aio` — zie README §3.2. Dit document beschrijft de
-> alternatieve installatie met losse containers via *Install via YAML*. Upgraden en
-> terugdraaien van het alles-in-één-image: §6.1 en §8.1.
+> **Installeren = gewone *Custom App*** met het alles-in-één-image
+> `ghcr.io/lvos04/mediaguard-core:<versie>-aio` — zie README §3.2. Upgraden en terugdraaien van het
+> alles-in-één-image: §6.1 en §8.1.
+>
+> **De losse containers met *Install via YAML* hieronder zijn GEEN installatiemethode** (contract 1.3 §1 en
+> §2.3 regel 4; vaste keuze van de gebruiker: nooit *Install via YAML*, `custom_compose_config` of docker
+> compose). `deploy/truenas/compose.yaml` blijft alleen voor ontwikkeling, CI en de integratietests, en als
+> naslag voor wie het al zo draaide.
 
 Deze pagina beschrijft precies wat `deploy/truenas/compose.yaml` verwacht en doet. De
 stap-voor-stapgids voor eindgebruikers staat in de README; hier staan datasets, rechten,

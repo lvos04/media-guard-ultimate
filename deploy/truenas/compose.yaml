@@ -1,4 +1,10 @@
-# MediaGuard Ultimate — TrueNAS SCALE app ("Install via YAML")
+# MediaGuard Ultimate — losse containers (ALLEEN ontwikkeling, CI en integratietests)
+#
+# GEEN INSTALLATIEMETHODE (contract 1.3 §1 en §2.3 regel 4; vaste keuze van de gebruiker: nooit
+# "Install via YAML", custom_compose_config of docker compose). Installeren = de standaard
+# TrueNAS Custom App met het alles-in-één-image ghcr.io/lvos04/mediaguard-core:<versie>-aio
+# (README §3.2). Dit bestand blijft voor tests/integration/stack/run.sh en als naslag voor wie
+# het al zo draaide; de stappen hieronder zijn historisch.
 #
 # ┌─ INSTALLEREN ────────────────────────────────────────────────────────────────────────────┐
 # │ 1. Maak in TrueNAS drie datasets aan (bv. tank/apps/mediaguard, tank/mediaguard-work,   │

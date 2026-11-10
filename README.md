@@ -155,7 +155,12 @@ Alles andere laat je leeg of op de standaardwaarde. **Install**. Na 1–2 minute
 **Updaten:** maak eerst een snapshot van je appdata-dataset, dan *Apps → mediaguard → Edit* →
 *Tag* naar de nieuwe versie → **Update**. Terugdraaien: hoofdstuk 10.2.
 
-### 3.3 Alternatief: Install via YAML (losse containers)
+### 3.3 Losse containers (alleen ontwikkeling, CI en integratietests)
+
+> **Geen installatiemethode.** Het platform installeert uitsluitend als standaard TrueNAS Custom App
+> (§3.2, contract 1.3 §1 en §2.3 regel 4; vaste keuze van de gebruiker: nooit *Install via YAML*,
+> `custom_compose_config` of docker compose). Dit compose-bestand blijft alleen voor ontwikkeling, CI en de
+> integratietests (`tests/integration/stack/run.sh`) en voor wie het al zo draaide.
 
 Wil je elk onderdeel als aparte container (strengere scheiding van rechten, maar meer kans op
 installatieproblemen)? Gebruik dan [`deploy/truenas/compose.yaml`](deploy/truenas/compose.yaml)
