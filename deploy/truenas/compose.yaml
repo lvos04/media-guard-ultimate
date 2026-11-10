@@ -7,10 +7,10 @@
 # het al zo draaide; de stappen hieronder zijn historisch.
 #
 # ┌─ INSTALLEREN ────────────────────────────────────────────────────────────────────────────┐
-# │ 1. Maak in TrueNAS drie datasets aan (bv. tank/apps/mediaguard, tank/mediaguard-work,   │
-# │    tank/data) en geef de gebruiker 'apps' (568) daar lees+schrijfrechten (ACL).          │
+# │ 1. Maak in TrueNAS drie datasets aan (bv. <pool>/apps/mediaguard, <pool>/mediaguard-work,│
+# │    <pool>/data) en geef de gebruiker 'apps' (568) daar lees+schrijfrechten (ACL).        │
 # │ 2. Apps → Discover Apps → ⋮ → Install via YAML → naam "mediaguard" → plak dit bestand.   │
-# │ 3. Pas ALLEEN de drie paden onder 'volumes:' helemaal onderaan aan. Klaar.               │
+# │ 3. Vul ALLEEN de drie paden onder 'volumes:' helemaal onderaan in (er is geen standaard).│
 # │ Sleutels, mappen en rechten maakt de container 'mediaguard-init' zelf aan.               │
 # │ Open daarna http://<truenas>:30080                                                       │
 # └──────────────────────────────────────────────────────────────────────────────────────────┘
@@ -294,18 +294,19 @@ volumes:
     driver_opts:
       type: none
       o: bind
-      device: ${MG_APPDATA:-/mnt/tank/apps/mediaguard}
+      # geen standaardpad: de poolnaam is van de gebruiker (nooit een voorbeeldwaarde als echte waarde)
+      device: ${MG_APPDATA:?zet MG_APPDATA op je appdata-dataset, bv. /mnt/<pool>/apps/mediaguard}
   mg_work:             # AV1-cache/staging en quarantaine (bij voorkeur op dezelfde pool als data)
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${MG_WORK:-/mnt/tank/mediaguard-work}
+      device: ${MG_WORK:?zet MG_WORK op je werkmap, bv. /mnt/<pool>/mediaguard-work}
   mg_data:             # je media-dataset (bestaande mappen blijven zoals ze zijn; bij een lege
                        # dataset maakt init media/{tv,anime,movies,animefilms} en downloads/ aan)
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${MG_DATA_ROOT:-/mnt/tank/data}
+      device: ${MG_DATA_ROOT:?zet MG_DATA_ROOT op je media-dataset, bv. /mnt/<pool>/data}
 # └───────────────────────────────────────────────────────────────────────────────────────┘

@@ -19,17 +19,18 @@ hook-sleutel per instantie) en bewaart ze in de appdata-dataset. Je vult alleen 
 dataset-paden in (plus optioneel `MG_HOST` en de GPU-groepen).
 
 Vereist: TrueNAS SCALE **24.10 (Electric Eel) of nieuwer** (Docker-apps; de compose gebruikt
-Docker volume-*subpaden*), een pool (hieronder `tank`), x86-64.
+Docker volume-*subpaden*), een pool (hieronder `<pool>`: de naam uit jouw TrueNAS → *Datasets*), x86-64.
 
 ## 1. Images (eenmalig, door de ontwikkelaar)
 
-"Install via YAML" bouwt niets: alle vijf images moeten in een registry staan.
+TrueNAS bouwt niets zelf: de images moeten in een registry staan (voor de Custom App alleen `<versie>-aio`).
 
 1. Maak op GitHub een release-tag `v1.0.0` (de versie moet gelijk zijn aan
    `deploy/release-manifest.json`).
 2. De workflow `.github/workflows/release.yml` draait eerst de tests (core op Python 3.12 en
    3.14, encoder, web), bouwt dan alles, start het alles-in-één-image één keer op een gevulde
-   database van een eerdere versie (`scripts/aio-smoke.py`) en publiceert pas daarna
+   database van een eerdere versie (`scripts/aio-smoke.py`), draait het upgradebewijs vanaf de
+   direct vorige release (`scripts/upgradebewijs.py`, HARDE EIS) en publiceert pas daarna
    (linux/amd64). Een tag die al bestaat wordt nooit overschreven; een fork-tag die al bestaat
    wordt hergebruikt. Mislukt het publiceren halverwege, kies dan in GitHub *Re-run failed jobs*:
    tags die al op het geteste image staan worden overgeslagen (`scripts/promote-image.sh`).
@@ -50,13 +51,13 @@ Docker volume-*subpaden*), een pool (hieronder `tank`), x86-64.
 
 ## 2. Datasets en rechten
 
-Drie datasets (namen vrij; dit zijn de standaardwaarden in de compose):
+Drie datasets (namen vrij; de compose heeft **geen standaardpad**, de drie variabelen zijn verplicht):
 
-| Compose-volume | Variabele | Standaardpad | Inhoud | Snapshots/back-up |
+| Compose-volume | Variabele | Voorbeeldpad (`<pool>` = jouw pool) | Inhoud | Snapshots/back-up |
 |---|---|---|---|---|
-| `mg_appdata` | `MG_APPDATA` | `/mnt/tank/apps/mediaguard` | configuratie, databases, **gegenereerde sleutels** | **ja, altijd** (klein) |
-| `mg_work` | `MG_WORK` | `/mnt/tank/mediaguard-work` | AV1-cache/staging en quarantaine | optioneel (quarantaine bevat herstelbare originelen) |
-| `mg_data` | `MG_DATA_ROOT` | `/mnt/tank/data` | `media/` en `downloads/` (TRaSH-indeling) | volgens je eigen mediabeleid |
+| `mg_appdata` | `MG_APPDATA` | `/mnt/<pool>/apps/mediaguard` | configuratie, databases, **gegenereerde sleutels** | **ja, altijd** (klein) |
+| `mg_work` | `MG_WORK` | `/mnt/<pool>/mediaguard-work` | AV1-cache/staging en quarantaine | optioneel (quarantaine bevat herstelbare originelen) |
+| `mg_data` | `MG_DATA_ROOT` | `/mnt/<pool>/data` | `media/` en `downloads/` (TRaSH-indeling) | volgens je eigen mediabeleid |
 
 Indeling die de containers gebruiken (ontbrekende mappen maakt `mediaguard-init` aan;
 bestaande mappen en bestanden raakt hij niet aan):
@@ -163,12 +164,15 @@ De encoder krijgt alleen het device `/dev/dri` en de groepen van de rendernodes;
    (group_add render/video ontbreekt?)"). AV1-encode in hardware vraagt Intel Arc of nieuwer;
    UHD 770 kan geen AV1 encoderen.
 
-## 5. Installeren ("Install via YAML")
+## 5. Losse containers starten (alleen ontwikkeling/CI; geen installatiemethode)
+
+> Installeren doe je als standaard **Custom App** (README §3.2). Deze stappen zijn naslag voor ontwikkeling, CI en
+> wie MediaGuard al zo draaide.
 
 1. Datasets + ACL zoals in §2.
 2. Apps → **Discover Apps** → ⋮ (rechtsboven) → **Install via YAML**; naam `mediaguard`.
-3. Plak `deploy/truenas/compose.yaml`. Pas **alleen** het blok `volumes:` onderaan aan: de
-   drie `device:`-paden (`MG_APPDATA`, `MG_WORK`, `MG_DATA_ROOT`). Optioneel:
+3. Plak `deploy/truenas/compose.yaml`. Vul **alleen** het blok `volumes:` onderaan in: de
+   drie `device:`-paden (`MG_APPDATA`, `MG_WORK`, `MG_DATA_ROOT`; er is geen standaardpad). Optioneel:
    - `MG_HOST` (hostnaam/IP zoals Seerr de forks bereikt; zonder waarde vult MediaGuard het
      adres in waarmee je de UI opent),
    - de GPU-regels uit §4.
@@ -184,10 +188,10 @@ De encoder krijgt alleen het device `/dev/dri` en de groepen van de rendernodes;
 
 Optionele variabelen (tijdzone, poorten, GPU-groepen, hook-time-out, fail policy,
 schaduwmodus, resourcelimieten, image-versies) staan — allemaal uitgecommentarieerd, want
-niets is verplicht — met uitleg in `deploy/truenas/env.example`. In "Install via YAML" is er
-geen `.env`: wijzig de standaardwaarde in de YAML zelf (het deel na `:-` in `${VAR:-waarde}`).
-Lokaal valideren kan met
-`docker compose --env-file deploy/truenas/env.example -f deploy/truenas/compose.yaml config -q`.
+niets is verplicht behalve de drie paden — met uitleg in `deploy/truenas/env.example`. Zonder `.env`
+wijzig je de standaardwaarde in de YAML zelf (het deel na `:-` in `${VAR:-waarde}`; bij de drie paden het hele
+`${…}`-deel). Lokaal valideren kan met
+`MG_APPDATA=… MG_WORK=… MG_DATA_ROOT=… docker compose --env-file deploy/truenas/env.example -f deploy/truenas/compose.yaml config -q`.
 
 ## 6. Upgraden
 
@@ -198,7 +202,7 @@ Lokaal valideren kan met
    MediaGuard meldt een nieuwe versie ook zelf (dagelijkse controle op GitHub, instelling
    `updates.check_enabled`); bijwerken doe je altijd zelf.
 2. Maak een **ZFS-snapshot van de appdata-dataset** (de Host Path op `/config`, bv.
-   `tank/apps/mediaguard`): Datasets → dataset kiezen → kaart *Data Protection* →
+   `<pool>/apps/mediaguard`): Datasets → dataset kiezen → kaart *Data Protection* →
    **Create Snapshot**, naam bv. `voor-1.2.2`.
 3. Apps → mediaguard → **Edit** → *Image* → **Tag** naar `<nieuwe versie>-aio` → **Update**.
    Bij de start maakt MediaGuard eerst een back-up *vóór update* en voert dan de additieve
@@ -208,10 +212,13 @@ Lokaal valideren kan met
 
 Elke release is vóór publicatie één keer echt gestart: het AIO-image is in de release-pipeline
 opgestart op een gevulde database van een eerdere versie (health, versie, inloggen, migraties
-en nette stop; `scripts/aio-smoke.py`). Releasetags worden nooit overschreven: `1.2.2-aio` is
+en nette stop; `scripts/aio-smoke.py`), en het **upgradebewijs** (HARDE EIS, contract 1.3 §2.3
+regel 7b) start de direct vorige release op een gevulde database, upgradet naar het kandidaat-image
+en bewijst per tabel dat er niets verloren is, plus terugzetten met vorige image en snapshot
+(`scripts/upgradebewijs.py`). Zonder groen bewijs geen release. Releasetags worden nooit overschreven: `1.2.2-aio` is
 altijd precies het geteste image.
 
-### 6.2 Losse containers (Install via YAML)
+### 6.2 Losse containers (alleen ontwikkeling/CI)
 
 1. Zelfde controle als hierboven (versie, schemaversies).
 2. Maak een **ZFS-snapshot van `mg_appdata`** (Datasets → dataset → *Data Protection* →
@@ -259,7 +266,7 @@ Zonder snapshot: Instellingen › Systeem & back-ups → Back-ups → de back-up
 stopt; de databases van daarvoor blijven in `core/backups/voor-terugzetten/`. Daarna stap 1
 en 3. Fork-configs gaan zo niet mee terug (die zitten alleen in de snapshot).
 
-### 8.2 Losse containers
+### 8.2 Losse containers (alleen ontwikkeling/CI)
 
 1. Apps → mediaguard → **Stop**.
 2. Datasets → `mg_appdata` → *Data Protection* → **Manage Snapshots** → de snapshot van vóór

@@ -94,12 +94,12 @@ openen.
 
 ### 3.1 Datasets aanmaken (eenmalig, TrueNAS-UI → Datasets)
 
-Voorbeeld met pool `tank` (pas aan naar jouw pool):
+Indeling (`<pool>` = de naam van jouw pool in TrueNAS → **Datasets**; de datasetnamen zijn vrij):
 
 ```text
-tank/apps/mediaguard          ← configuratie (MG_APPDATA)
-tank/mediaguard-work          ← encode-cache, staging, quarantaine (MG_WORK)
-tank/data                     ← downloads + media samen (MG_DATA_ROOT)
+<pool>/apps/mediaguard        ← configuratie (/config)
+<pool>/mediaguard-work        ← encode-cache, staging, quarantaine (/work)
+<pool>/data                   ← downloads + media samen (/data)
    ├─ media/tv                  Sonarr Series
    ├─ media/anime               Sonarr Anime
    ├─ media/movies              Radarr Films
@@ -110,9 +110,9 @@ tank/data                     ← downloads + media samen (MG_DATA_ROOT)
 - Geef gebruiker/groep **`apps` (568:568)** rechten via de **dataset-ACL** (Lezen+Schrijven op
   `apps/mediaguard`, `mediaguard-work` en `data`). **Geen** massale `chown -R` over je bestaande
   bibliotheek nodig.
-- Staat je bestaande bibliotheek al ergens anders (bv. `tank/media/series`)? Dan kun je die
-  mappen in `tank/data/media/...` zetten (verplaatsen binnen dezelfde dataset is direct), óf
-  `MG_DATA_ROOT` naar je bestaande dataset laten wijzen en de submappen gelijk noemen. De
+- Staat je bestaande bibliotheek al ergens anders (bv. `<pool>/media/series`)? Dan kun je die
+  mappen in `<pool>/data/media/...` zetten (verplaatsen binnen dezelfde dataset is direct), óf
+  Host Path 3 (`/data`) naar je bestaande dataset laten wijzen en de submappen gelijk noemen. De
   migratiewizard zet oude paden om (stap 5).
 
 Details, ACL-plan en GPU: [`docs/INSTALL_TRUENAS.md`](docs/INSTALL_TRUENAS.md).
@@ -133,9 +133,9 @@ TrueNAS → **Apps → Discover Apps → Custom App** en vul in:
 | **Restart Policy** | *Unless Stopped* |
 | **Stop Grace Period** (indien aanwezig, bij *Container Configuration*) | `60` seconden: ruimte om lopende encodes en databases netjes af te sluiten. MediaGuard gebruikt daarvan 55 s. Kies je een andere waarde, zet dan ook de omgevingsvariabele `MG_STOP_TIMEOUT` op hetzelfde aantal seconden |
 | **Network → Host Network** | **aan** (dan hoef je geen poorten in te vullen) |
-| **Storage → Host Path 1** | Mount Path `/config` → Host Path: je appdata-dataset (bv. `/mnt/tank/apps/mediaguard`) |
-| **Storage → Host Path 2** | Mount Path `/work` → Host Path: je werkmap (bv. `/mnt/tank/mediaguard-work`) |
-| **Storage → Host Path 3** | Mount Path `/data` → Host Path: je media-dataset (bv. `/mnt/tank/data`) |
+| **Storage → Host Path 1** | Mount Path `/config` → Host Path: je appdata-dataset (kies met de mappenkiezer, bv. `/mnt/<pool>/apps/mediaguard`) |
+| **Storage → Host Path 2** | Mount Path `/work` → Host Path: je werkmap (bv. `/mnt/<pool>/mediaguard-work`) |
+| **Storage → Host Path 3** | Mount Path `/data` → Host Path: je media-dataset (bv. `/mnt/<pool>/data`) |
 | **Resources → GPU** (optioneel) | je Intel-GPU aanvinken voor snelle AV1 |
 
 Alles andere laat je leeg of op de standaardwaarde. **Install**. Na 1–2 minuten staat de app op
@@ -162,11 +162,10 @@ Alles andere laat je leeg of op de standaardwaarde. **Install**. Na 1–2 minute
 > `custom_compose_config` of docker compose). Dit compose-bestand blijft alleen voor ontwikkeling, CI en de
 > integratietests (`tests/integration/stack/run.sh`) en voor wie het al zo draaide.
 
-Wil je elk onderdeel als aparte container (strengere scheiding van rechten, maar meer kans op
-installatieproblemen)? Gebruik dan [`deploy/truenas/compose.yaml`](deploy/truenas/compose.yaml)
-via *Discover Apps → ⋮ → Install via YAML* en pas alleen de drie paden onderaan aan (let op
-hoofdletters, ze moeten precies overeenkomen met je datasets). Details:
-[`docs/INSTALL_TRUENAS.md`](docs/INSTALL_TRUENAS.md).
+[`deploy/truenas/compose.yaml`](deploy/truenas/compose.yaml) start elk onderdeel als aparte container
+(ontwikkeling en `tests/integration/stack/`); de drie paden zijn daar verplicht en hebben geen standaardwaarde.
+Technische naslag (ook voor wie MediaGuard al zo draaide): [`docs/INSTALL_TRUENAS.md`](docs/INSTALL_TRUENAS.md).
+Nieuwe installaties en overstappen gaan via de Custom App van §3.2.
 
 ---
 
@@ -398,7 +397,7 @@ nooit automatisch uitrollen) — [`docs/FORK_UPSTREAM_SYNC.md`](docs/FORK_UPSTRE
 ### 10.1 Updaten (alles-in-één)
 
 1. Maak een **snapshot van de appdata-dataset** (die op `/config` staat, bv.
-   `tank/apps/mediaguard`): TrueNAS → **Datasets** → kies de dataset → kaart *Data Protection*
+   `<pool>/apps/mediaguard`): TrueNAS → **Datasets** → kies de dataset → kaart *Data Protection*
    → **Create Snapshot**, naam bv. `voor-1.2.2`.
 2. *Apps → mediaguard → Edit* → **Image → Tag** naar de nieuwe versie (bv. `1.2.2-aio`) →
    **Update**. Migraties lopen automatisch bij de start.
@@ -471,7 +470,7 @@ oude installaties uitzet:
 | "Bibliotheek nog vergrendeld" | Normaal tot de overstap; bij een verse start: *Overzicht → Bibliotheek vrijgeven* |
 | UI toont "MediaGuard kan nog niet starten" | De pagina noemt de map. Geef gebruiker `apps` (568) schrijfrechten (*Datasets → Edit Permissions*); de app gaat binnen 30 s vanzelf verder |
 | Eén Sonarr/Radarr-poort bezet (Host Network) | Zet in de app een omgevingsvariabele, bv. `MG_PORT_SONARR_SERIES=38999` (ook `MG_WEB_PORT` voor de UI) |
-| (YAML-installatie) `mediaguard-init` stopt met exit 1 | Paden zijn hoofdlettergevoelig: controleer `/mnt/<pool>/<Dataset>` exact zoals in *Datasets*. Bekijk `sudo docker logs ix-mediaguard-mediaguard-init-1`; de regel `FOUT:` noemt het pad. Bestaan er al volumes met een verkeerd pad: app verwijderen, `sudo docker volume rm ix-mediaguard_mg_appdata ix-mediaguard_mg_work ix-mediaguard_mg_data`, opnieuw installeren |
+| (alleen losse containers, §3.3 — geen installatiemethode) `mediaguard-init` stopt met exit 1 | Paden zijn hoofdlettergevoelig: controleer `/mnt/<pool>/<Dataset>` exact zoals in *Datasets*. Bekijk `sudo docker logs ix-mediaguard-mediaguard-init-1`; de regel `FOUT:` noemt het pad. Bestaan er al volumes met een verkeerd pad: app verwijderen, `sudo docker volume rm ix-mediaguard_mg_appdata ix-mediaguard_mg_work ix-mediaguard_mg_data`, opnieuw installeren |
 | "Hostactie nodig" bij een map | Geef gebruiker `apps` (568) schrijfrechten op de dataset via de TrueNAS-ACL |
 | Instantie "Offline" | *Instellingen › Sonarr- en Radarr-instanties → Test*; controleer in TrueNAS of de container draait |
 | Pre-grab-meldingen `MEDIAGUARD_UNAVAILABLE` in Sonarr | Core was even niet bereikbaar; met fail policy `open` gaat downloaden gewoon door |
