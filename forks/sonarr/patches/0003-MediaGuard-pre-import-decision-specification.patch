@@ -1,0 +1,199 @@
+From 6b8f14d7b9eaf7b8e8c75f65641f70ad2969e3fd Mon Sep 17 00:00:00 2001
+From: MediaGuard <mediaguard@localhost>
+Date: Mon, 2 Nov 2026 10:00:00 +0000
+Subject: [PATCH 3/3] MediaGuard: pre-import decision specification
+
+New IImportDecisionEngineSpecification that asks MediaGuard to accept,
+reject or defer a downloaded file before import. Files already inside
+the series folder (rescans) are not sent. Rejected/deferred downloads
+stay in the queue and are retried by the normal completed download
+handling cycle.
+---
+ ...MediaGuardPreImportSpecificationFixture.cs | 106 ++++++++++++++++++
+ .../EpisodeImport/ImportRejectionReason.cs    |   5 +-
+ .../MediaGuardPreImportSpecification.cs       |  49 ++++++++
+ 3 files changed, 159 insertions(+), 1 deletion(-)
+ create mode 100644 src/NzbDrone.Core.Test/MediaFiles/EpisodeImport/Specifications/MediaGuardPreImportSpecificationFixture.cs
+ create mode 100644 src/NzbDrone.Core/MediaFiles/EpisodeImport/Specifications/MediaGuardPreImportSpecification.cs
+
+diff --git a/src/NzbDrone.Core.Test/MediaFiles/EpisodeImport/Specifications/MediaGuardPreImportSpecificationFixture.cs b/src/NzbDrone.Core.Test/MediaFiles/EpisodeImport/Specifications/MediaGuardPreImportSpecificationFixture.cs
+new file mode 100644
+index 0000000..06c45ee
+--- /dev/null
++++ b/src/NzbDrone.Core.Test/MediaFiles/EpisodeImport/Specifications/MediaGuardPreImportSpecificationFixture.cs
+@@ -0,0 +1,106 @@
++using System.Collections.Generic;
++using FluentAssertions;
++using Moq;
++using NUnit.Framework;
++using NzbDrone.Core.Download;
++using NzbDrone.Core.MediaFiles.EpisodeImport;
++using NzbDrone.Core.MediaFiles.EpisodeImport.Specifications;
++using NzbDrone.Core.MediaFiles.MediaInfo;
++using NzbDrone.Core.MediaGuard;
++using NzbDrone.Core.Parser.Model;
++using NzbDrone.Core.Test.Framework;
++using NzbDrone.Core.Tv;
++
++namespace NzbDrone.Core.Test.MediaFiles.EpisodeImport.Specifications
++{
++    [TestFixture]
++    public class MediaGuardPreImportSpecificationFixture : CoreTest<MediaGuardPreImportSpecification>
++    {
++        private MediaGuardHookOptions _options;
++        private LocalEpisode _localEpisode;
++        private DownloadClientItem _downloadClientItem;
++        private object _payload;
++
++        [SetUp]
++        public void Setup()
++        {
++            _options = new MediaGuardHookOptions { Url = "http://core:8100", InstanceId = "sonarr-series", HookKey = "k" };
++
++            _localEpisode = new LocalEpisode
++            {
++                Path = "/downloads/complete/tv/Show.S01E03.mkv",
++                Size = 123,
++                Series = new Series { Id = 1, TvdbId = 2, Title = "Show" },
++                Episodes = new List<Episode> { new Episode { Id = 7, SeasonNumber = 1, EpisodeNumber = 3, EpisodeFileId = 0 } },
++                FileEpisodeInfo = new ParsedEpisodeInfo { SeasonNumber = 1, EpisodeNumbers = new[] { 3 } },
++                MediaInfo = new MediaInfoModel { VideoFormat = "h264", AudioLanguages = new List<string> { "eng" }, Subtitles = new List<string> { "dut" }, Width = 1920, Height = 1080, RunTime = System.TimeSpan.FromSeconds(1320) }
++            };
++
++            _downloadClientItem = new DownloadClientItem
++            {
++                DownloadId = "SABnzbd_nzo_1",
++                Title = "Show.S01E03.1080p.WEB-DL",
++                DownloadClientInfo = new DownloadClientItemClientInfo { Name = "SABnzbd" }
++            };
++
++            Mocker.GetMock<IMediaGuardHookClient>().SetupGet(v => v.Options).Returns(() => _options);
++        }
++
++        private void GivenDecision(MediaGuardDecision decision, bool unavailable = false)
++        {
++            Mocker.GetMock<IMediaGuardHookClient>()
++                  .Setup(v => v.Send(MediaGuardPreImportSpecification.Hook, It.IsAny<object>()))
++                  .Callback<string, object>((h, p) => _payload = p)
++                  .Returns(new MediaGuardHookResult { Decision = decision, ReasonCode = "IDENTITY_MISMATCH", Message = "Twijfel", Unavailable = unavailable });
++        }
++
++        [Test]
++        public void should_accept_without_call_when_disabled()
++        {
++            _options.Url = "";
++
++            Subject.IsSatisfiedBy(_localEpisode, _downloadClientItem).Accepted.Should().BeTrue();
++            Mocker.GetMock<IMediaGuardHookClient>().Verify(v => v.Send(It.IsAny<string>(), It.IsAny<object>()), Times.Never());
++        }
++
++        [Test]
++        public void should_skip_existing_files()
++        {
++            _localEpisode.ExistingFile = true;
++
++            Subject.IsSatisfiedBy(_localEpisode, _downloadClientItem).Accepted.Should().BeTrue();
++            Mocker.GetMock<IMediaGuardHookClient>().Verify(v => v.Send(It.IsAny<string>(), It.IsAny<object>()), Times.Never());
++        }
++
++        [Test]
++        public void should_accept()
++        {
++            GivenDecision(MediaGuardDecision.Accept);
++
++            Subject.IsSatisfiedBy(_localEpisode, _downloadClientItem).Accepted.Should().BeTrue();
++
++            var payload = (MediaGuardPreImportRequest)_payload;
++            payload.DownloadClient.Should().Be("SABnzbd");
++            payload.DownloadId.Should().Be("SABnzbd_nzo_1");
++            payload.ReleaseTitle.Should().Be("Show.S01E03.1080p.WEB-DL");
++            payload.IsUpgrade.Should().BeFalse();
++            payload.MediaInfo.Resolution.Should().Be("1920x1080");
++            payload.MediaInfo.RunTimeSeconds.Should().Be(1320);
++            payload.Parsed.EpisodeNumbers.Should().Equal(3);
++        }
++
++        [TestCase(MediaGuardDecision.Reject, false, ImportRejectionReason.MediaGuardRejected)]
++        [TestCase(MediaGuardDecision.Defer, false, ImportRejectionReason.MediaGuardDeferred)]
++        [TestCase(MediaGuardDecision.Reject, true, ImportRejectionReason.MediaGuardUnavailable)]
++        public void should_reject(MediaGuardDecision decision, bool unavailable, ImportRejectionReason reason)
++        {
++            GivenDecision(decision, unavailable);
++
++            var result = Subject.IsSatisfiedBy(_localEpisode, _downloadClientItem);
++
++            result.Accepted.Should().BeFalse();
++            result.Reason.Should().Be(reason);
++            result.Message.Should().Be("MediaGuard: Twijfel [IDENTITY_MISMATCH]");
++        }
++    }
++}
+diff --git a/src/NzbDrone.Core/MediaFiles/EpisodeImport/ImportRejectionReason.cs b/src/NzbDrone.Core/MediaFiles/EpisodeImport/ImportRejectionReason.cs
+index b9a282b..aafd3f0 100644
+--- a/src/NzbDrone.Core/MediaFiles/EpisodeImport/ImportRejectionReason.cs
++++ b/src/NzbDrone.Core/MediaFiles/EpisodeImport/ImportRejectionReason.cs
+@@ -35,5 +35,8 @@ public enum ImportRejectionReason
+     UnverifiedSceneMapping,
+     NotQualityUpgrade,
+     NotRevisionUpgrade,
+-    NotCustomFormatUpgrade
++    NotCustomFormatUpgrade,
++    MediaGuardRejected,
++    MediaGuardDeferred,
++    MediaGuardUnavailable
+ }
+diff --git a/src/NzbDrone.Core/MediaFiles/EpisodeImport/Specifications/MediaGuardPreImportSpecification.cs b/src/NzbDrone.Core/MediaFiles/EpisodeImport/Specifications/MediaGuardPreImportSpecification.cs
+new file mode 100644
+index 0000000..e589173
+--- /dev/null
++++ b/src/NzbDrone.Core/MediaFiles/EpisodeImport/Specifications/MediaGuardPreImportSpecification.cs
+@@ -0,0 +1,49 @@
++using NLog;
++using NzbDrone.Core.Download;
++using NzbDrone.Core.MediaGuard;
++using NzbDrone.Core.Parser.Model;
++
++namespace NzbDrone.Core.MediaFiles.EpisodeImport.Specifications
++{
++    // MediaGuard fork patch: lets the external MediaGuard policy service verify (accept/reject/defer)
++    // a downloaded file before it is imported into the library. Files already inside the series folder
++    // (disk rescans) are never sent.
++    public class MediaGuardPreImportSpecification : IImportDecisionEngineSpecification
++    {
++        public const string Hook = "pre-import";
++
++        private readonly IMediaGuardHookClient _hookClient;
++        private readonly Logger _logger;
++
++        public MediaGuardPreImportSpecification(IMediaGuardHookClient hookClient, Logger logger)
++        {
++            _hookClient = hookClient;
++            _logger = logger;
++        }
++
++        public ImportSpecDecision IsSatisfiedBy(LocalEpisode localEpisode, DownloadClientItem downloadClientItem)
++        {
++            var options = _hookClient.Options;
++
++            if (!options.HooksEnabled || localEpisode.ExistingFile)
++            {
++                return ImportSpecDecision.Accept();
++            }
++
++            var result = _hookClient.Send(Hook, MediaGuardPayloadBuilder.BuildPreImport(options, localEpisode, downloadClientItem));
++
++            switch (result.Decision)
++            {
++                case MediaGuardDecision.Accept:
++                    return ImportSpecDecision.Accept();
++                case MediaGuardDecision.Defer:
++                    _logger.Debug("MediaGuard deferred import of {0}", localEpisode.Path);
++                    return ImportSpecDecision.Reject(ImportRejectionReason.MediaGuardDeferred, result.FormatRejection());
++                default:
++                    // Unavailable + fail policy 'closed' is a temporary condition: treat as deferred
++                    return ImportSpecDecision.Reject(result.Unavailable ? ImportRejectionReason.MediaGuardUnavailable : ImportRejectionReason.MediaGuardRejected,
++                        result.FormatRejection());
++            }
++        }
++    }
++}

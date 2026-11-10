@@ -1,0 +1,657 @@
+From b2ba8f2ebe49188ec71e24d01e274ec616c611c7 Mon Sep 17 00:00:00 2001
+From: MediaGuard <mediaguard@localhost>
+Date: Tue, 3 Nov 2026 16:31:18 +0000
+Subject: [PATCH] MediaGuard: target .NET 8 (LTS)
+
+Sonarr v4 targets .NET 6, which is out of support since November 2024. Retarget all
+projects and build.sh to net8.0 (SDK 8.0.421, the same as the Radarr fork) with the
+minimal changes the .NET 8 SDK requires:
+- Microsoft.Extensions.*, ASP.NET Core and System.* package references to their 8.0
+  versions (NLog.Extensions.Logging pulls Microsoft.Extensions.Logging 8.0 on net8.0)
+- AuthenticationHandler constructors without the obsolete ISystemClock
+- self-contained publish (on .NET 8 a runtime identifier no longer implies it; as in Radarr)
+- queue filters null-safe: on .NET 8 an absent [FromQuery] array with default null stays
+  null (GET /api/v3/queue without filters returned 500); same check as Radarr
+- response headers set via the indexer instead of IDictionary.Add (ASP0019)
+- SYSLIB0051 (formatter-serialization constructors) suppressed
+- NuGet audit: the known SixLabors.ImageSharp 3.1.12 advisories are suppressed; it is the
+  version Sonarr v4 already ships and 3.2.0 requires a commercial license key
+---
+ build.sh                                      |  6 +++---
+ global.json                                   |  2 +-
+ src/Directory.Build.props                     | 21 +++++++++++++++----
+ src/NzbDrone.Api.Test/Sonarr.Api.Test.csproj  |  2 +-
+ .../Sonarr.Automation.Test.csproj             |  2 +-
+ .../Sonarr.Common.Test.csproj                 |  2 +-
+ src/NzbDrone.Common/Sonarr.Common.csproj      | 12 +++++------
+ src/NzbDrone.Console/Sonarr.Console.csproj    |  2 +-
+ .../Sonarr.Core.Test.csproj                   |  2 +-
+ src/NzbDrone.Core/Sonarr.Core.csproj          | 12 +++++------
+ .../Sonarr.Host.Test.csproj                   |  2 +-
+ src/NzbDrone.Host/Sonarr.Host.csproj          |  6 +++---
+ .../Sonarr.Integration.Test.csproj            |  4 ++--
+ .../Sonarr.Libraries.Test.csproj              |  2 +-
+ .../Sonarr.Mono.Test.csproj                   |  2 +-
+ src/NzbDrone.Mono/Sonarr.Mono.csproj          |  2 +-
+ src/NzbDrone.SignalR/Sonarr.SignalR.csproj    |  2 +-
+ src/NzbDrone.Test.Common/NzbDroneRunner.cs    |  2 +-
+ .../Sonarr.Test.Common.csproj                 |  2 +-
+ .../Sonarr.Test.Dummy.csproj                  |  2 +-
+ .../Sonarr.Update.Test.csproj                 |  2 +-
+ src/NzbDrone.Update/Sonarr.Update.csproj      |  2 +-
+ .../Sonarr.Windows.Test.csproj                |  2 +-
+ src/NzbDrone.Windows/Sonarr.Windows.csproj    |  2 +-
+ src/NzbDrone/Sonarr.csproj                    |  4 ++--
+ .../ServiceInstall/ServiceInstall.csproj      |  2 +-
+ .../ServiceUninstall/ServiceUninstall.csproj  |  2 +-
+ src/Sonarr.Api.V3/Queue/QueueController.cs    |  8 +++----
+ src/Sonarr.Api.V3/Sonarr.Api.V3.csproj        |  2 +-
+ .../ApiKeyAuthenticationHandler.cs            |  3 +--
+ .../BasicAuthenticationHandler.cs             |  7 +++----
+ .../Authentication/NoAuthenticationHandler.cs |  5 ++---
+ .../Middleware/VersionMiddleware.cs           |  2 +-
+ src/Sonarr.Http/REST/RestController.cs        |  2 +-
+ src/Sonarr.Http/Sonarr.Http.csproj            |  2 +-
+ .../Sonarr.RuntimePatches.csproj              |  2 +-
+ 36 files changed, 74 insertions(+), 64 deletions(-)
+
+diff --git a/build.sh b/build.sh
+index ee59d2f..29908e8 100755
+--- a/build.sh
++++ b/build.sh
+@@ -4,7 +4,7 @@ set -e
+ outputFolder='_output'
+ testPackageFolder='_tests'
+ artifactsFolder="_artifacts";
+-framework="${FRAMEWORK:=net6.0}"
++framework="${FRAMEWORK:=net8.0}"
+ 
+ ProgressStart()
+ {
+@@ -77,9 +77,9 @@ Build()
+ 
+     if [[ -z "$RID" || -z "$FRAMEWORK" ]];
+     then
+-        dotnet msbuild -restore $slnFile -p:Configuration=Release -p:Platform=$platform -t:PublishAllRids
++        dotnet msbuild -restore $slnFile -p:SelfContained=True -p:Configuration=Release -p:Platform=$platform -t:PublishAllRids
+     else
+-        dotnet msbuild -restore $slnFile -p:Configuration=Release -p:Platform=$platform -p:RuntimeIdentifiers=$RID -t:PublishAllRids
++        dotnet msbuild -restore $slnFile -p:SelfContained=True -p:Configuration=Release -p:Platform=$platform -p:RuntimeIdentifiers=$RID -t:PublishAllRids
+     fi
+ 
+     ProgressEnd 'Build'
+diff --git a/global.json b/global.json
+index 5f5ece1..12e63e7 100644
+--- a/global.json
++++ b/global.json
+@@ -1,5 +1,5 @@
+ {
+   "sdk": {
+-    "version": "6.0.405"
++    "version": "8.0.421"
+   }
+ }
+diff --git a/src/Directory.Build.props b/src/Directory.Build.props
+index 239a98d..b2af0cf 100644
+--- a/src/Directory.Build.props
++++ b/src/Directory.Build.props
+@@ -36,7 +36,7 @@
+     <!--
+         CS1591: Missing XML comment for publicly visible type or member 'Type_or_Member'
+     -->
+-    <NoWarn>$(NoWarn);CS1591</NoWarn>
++    <NoWarn>$(NoWarn);CS1591;SYSLIB0051</NoWarn>
+   </PropertyGroup>
+ 
+   <PropertyGroup>
+@@ -74,8 +74,8 @@
+     <Copyright>Copyright 2014-$([System.DateTime]::Now.ToString('yyyy')) sonarr.tv (GNU General Public v3)</Copyright>
+     
+     <!-- Should be replaced by CI -->
+-    <AssemblyVersion>10.0.0.*</AssemblyVersion>
+-    <AssemblyConfiguration>$(Configuration)-dev</AssemblyConfiguration>
++    <AssemblyVersion>4.0.20.3014</AssemblyVersion>
++    <AssemblyConfiguration>mediaguard</AssemblyConfiguration>
+     <NeutralLanguage>en</NeutralLanguage>
+ 
+     <GenerateAssemblyFileVersionAttribute>false</GenerateAssemblyFileVersionAttribute>
+@@ -135,7 +135,7 @@
+     <PackageReference Include="NunitXml.TestLogger" Version="3.0.131" />
+   </ItemGroup>
+ 
+-  <ItemGroup Condition="'$(TestProject)'=='true' and '$(TargetFramework)'=='net6.0'">
++  <ItemGroup Condition="'$(TestProject)'=='true' and '$(TargetFramework)'=='net8.0'">
+     <PackageReference Include="coverlet.collector" Version="3.0.4-preview.27.ge7cb7c3b40" />
+   </ItemGroup>
+ 
+@@ -223,4 +223,17 @@
+     <RuntimeIdentifier>osx-x64</RuntimeIdentifier>
+   </PropertyGroup>
+ 
++  <!-- MediaGuard (.NET 8): de .NET 8-SDK controleert pakketten op bekende kwetsbaarheden en
++       faalt dan (warnings as errors). SixLabors.ImageSharp 3.1.12 is dezelfde versie die
++       Sonarr v4 onder .NET 6 al gebruikte (alleen voor het verkleinen van posters van
++       TVDB/TMDb). 3.2.0 lost de meldingen op maar vereist een betaalde licentiesleutel.
++       Daarom alleen deze meldingen onderdrukt; zodra upstream een vrije versie heeft: bijwerken. -->
++  <ItemGroup>
++    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-v76p-62qx-wwq2" />
++    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-jjfr-hcj7-qf5w" />
++    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-j9gm-c75j-xc9q" />
++    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-j3p4-wp97-rph4" />
++    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-wmxv-xphr-5c9g" />
++    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-gwg2-r3hj-4w44" />
++  </ItemGroup>
+ </Project>
+diff --git a/src/NzbDrone.Api.Test/Sonarr.Api.Test.csproj b/src/NzbDrone.Api.Test/Sonarr.Api.Test.csproj
+index 053b42c..a376886 100644
+--- a/src/NzbDrone.Api.Test/Sonarr.Api.Test.csproj
++++ b/src/NzbDrone.Api.Test/Sonarr.Api.Test.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="GitHubActionsTestLogger" Version="2.3.3" />
+diff --git a/src/NzbDrone.Automation.Test/Sonarr.Automation.Test.csproj b/src/NzbDrone.Automation.Test/Sonarr.Automation.Test.csproj
+index 9cf8337..23250be 100644
+--- a/src/NzbDrone.Automation.Test/Sonarr.Automation.Test.csproj
++++ b/src/NzbDrone.Automation.Test/Sonarr.Automation.Test.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="GitHubActionsTestLogger" Version="2.3.3" />
+diff --git a/src/NzbDrone.Common.Test/Sonarr.Common.Test.csproj b/src/NzbDrone.Common.Test/Sonarr.Common.Test.csproj
+index 402cae2..1a553cf 100644
+--- a/src/NzbDrone.Common.Test/Sonarr.Common.Test.csproj
++++ b/src/NzbDrone.Common.Test/Sonarr.Common.Test.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="GitHubActionsTestLogger" Version="2.3.3" />
+diff --git a/src/NzbDrone.Common/Sonarr.Common.csproj b/src/NzbDrone.Common/Sonarr.Common.csproj
+index 16fe75f..64dd73e 100644
+--- a/src/NzbDrone.Common/Sonarr.Common.csproj
++++ b/src/NzbDrone.Common/Sonarr.Common.csproj
+@@ -1,13 +1,13 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+     <DefineConstants Condition="'$(RuntimeIdentifier)' == 'linux-musl-x64' or '$(RuntimeIdentifier)' == 'linux-musl-arm64'">ISMUSL</DefineConstants>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="DryIoc.dll" Version="5.4.3" />
+     <PackageReference Include="IPAddressRange" Version="6.1.0" />
+-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="6.0.1" />
+-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="6.0.2" />
++    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
++    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
+     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+     <PackageReference Include="NLog" Version="5.3.4" />
+     <PackageReference Include="NLog.Layouts.ClefJsonLayout" Version="1.0.2" />
+@@ -15,13 +15,13 @@
+     <PackageReference Include="NLog.Extensions.Logging" Version="5.3.15" />
+     <PackageReference Include="Sentry" Version="4.0.2" />
+     <PackageReference Include="SharpZipLib" Version="1.4.2" />
+-    <PackageReference Include="System.Text.Json" Version="6.0.10" />
++    <PackageReference Include="System.Text.Json" Version="8.0.6" />
+     <PackageReference Include="System.ValueTuple" Version="4.5.0" />
+     <PackageReference Include="System.Data.SQLite.Core.Servarr" Version="1.0.115.5-18" />
+-    <PackageReference Include="System.Configuration.ConfigurationManager" Version="6.0.1" />
++    <PackageReference Include="System.Configuration.ConfigurationManager" Version="8.0.1" />
+     <PackageReference Include="System.IO.FileSystem.AccessControl" Version="6.0.0-preview.5.21301.5" />
+     <PackageReference Include="System.Runtime.Loader" Version="4.3.0" />
+-    <PackageReference Include="System.ServiceProcess.ServiceController" Version="6.0.1" />
++    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
+   </ItemGroup>
+   <ItemGroup>
+     <Compile Update="EnsureThat\Resources\ExceptionMessages.Designer.cs">
+diff --git a/src/NzbDrone.Console/Sonarr.Console.csproj b/src/NzbDrone.Console/Sonarr.Console.csproj
+index aef8152..c383c33 100644
+--- a/src/NzbDrone.Console/Sonarr.Console.csproj
++++ b/src/NzbDrone.Console/Sonarr.Console.csproj
+@@ -1,7 +1,7 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+     <OutputType>Exe</OutputType>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+ 
+     <ApplicationIcon>..\NzbDrone.Host\Sonarr.ico</ApplicationIcon>
+   </PropertyGroup>
+diff --git a/src/NzbDrone.Core.Test/Sonarr.Core.Test.csproj b/src/NzbDrone.Core.Test/Sonarr.Core.Test.csproj
+index 6a1477d..98d2dab 100644
+--- a/src/NzbDrone.Core.Test/Sonarr.Core.Test.csproj
++++ b/src/NzbDrone.Core.Test/Sonarr.Core.Test.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="Dapper" Version="2.0.123" />
+diff --git a/src/NzbDrone.Core/Sonarr.Core.csproj b/src/NzbDrone.Core/Sonarr.Core.csproj
+index f4a60e0..5265ed9 100644
+--- a/src/NzbDrone.Core/Sonarr.Core.csproj
++++ b/src/NzbDrone.Core/Sonarr.Core.csproj
+@@ -1,21 +1,21 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="Dapper" Version="2.0.123" />
+     <PackageReference Include="Diacritical.Net" Version="1.0.4" />
+     <PackageReference Include="Equ" Version="2.3.0" />
+     <PackageReference Include="MailKit" Version="4.17.0" />
+-    <PackageReference Include="Microsoft.AspNetCore.Cryptography.KeyDerivation" Version="6.0.21" />
++    <PackageReference Include="Microsoft.AspNetCore.Cryptography.KeyDerivation" Version="8.0.27" />
+     <PackageReference Include="Microsoft.Data.SqlClient" Version="2.1.7" />
+     <PackageReference Include="Openur.FFprobeStatic" Version="5.1.10.23" />
+     <PackageReference Include="Polly" Version="8.5.0" />
+     <PackageReference Include="Servarr.FFMpegCore" Version="4.7.0-26" />
+     <PackageReference Include="System.Memory" Version="4.6.0" />
+-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="6.0.1" />
+-    <PackageReference Include="Microsoft.Extensions.Logging" Version="6.0.0" />
+-    <PackageReference Include="Microsoft.Extensions.Configuration" Version="6.0.1" />
++    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
++    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
++    <PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
+     <PackageReference Include="Servarr.FluentMigrator.Runner" Version="3.3.2.9" />
+     <PackageReference Include="Servarr.FluentMigrator.Runner.SQLite" Version="3.3.2.9" />
+     <PackageReference Include="Servarr.FluentMigrator.Runner.Postgres" Version="3.3.2.9" />
+@@ -25,7 +25,7 @@
+     <PackageReference Include="NLog" Version="5.3.4" />
+     <PackageReference Include="MonoTorrent" Version="2.0.7" />
+     <PackageReference Include="System.Data.SQLite.Core.Servarr" Version="1.0.115.5-18" />
+-    <PackageReference Include="System.Text.Json" Version="6.0.10" />
++    <PackageReference Include="System.Text.Json" Version="8.0.6" />
+     <PackageReference Include="Npgsql" Version="7.0.9" />
+   </ItemGroup>
+   <ItemGroup>
+diff --git a/src/NzbDrone.Host.Test/Sonarr.Host.Test.csproj b/src/NzbDrone.Host.Test/Sonarr.Host.Test.csproj
+index 00783be..e62f81f 100644
+--- a/src/NzbDrone.Host.Test/Sonarr.Host.Test.csproj
++++ b/src/NzbDrone.Host.Test/Sonarr.Host.Test.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="GitHubActionsTestLogger" Version="2.3.3" />
+diff --git a/src/NzbDrone.Host/Sonarr.Host.csproj b/src/NzbDrone.Host/Sonarr.Host.csproj
+index 7611b53..a3c1557 100644
+--- a/src/NzbDrone.Host/Sonarr.Host.csproj
++++ b/src/NzbDrone.Host/Sonarr.Host.csproj
+@@ -1,14 +1,14 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+     <OutputType>Library</OutputType>
+   </PropertyGroup>
+   <ItemGroup>
+-    <PackageReference Include="Microsoft.AspNetCore.Owin" Version="6.0.21" />
++    <PackageReference Include="Microsoft.AspNetCore.Owin" Version="8.0.27" />
+     <PackageReference Include="NLog.Extensions.Logging" Version="5.3.15" />
+     <PackageReference Include="Swashbuckle.AspNetCore.SwaggerGen" Version="6.6.2" />
+     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="6.0.2" />
++    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
+     <PackageReference Include="DryIoc.dll" Version="5.4.3" />
+     <PackageReference Include="DryIoc.Microsoft.DependencyInjection" Version="6.2.0" />
+   </ItemGroup>
+diff --git a/src/NzbDrone.Integration.Test/Sonarr.Integration.Test.csproj b/src/NzbDrone.Integration.Test/Sonarr.Integration.Test.csproj
+index b782538..4e0cca2 100644
+--- a/src/NzbDrone.Integration.Test/Sonarr.Integration.Test.csproj
++++ b/src/NzbDrone.Integration.Test/Sonarr.Integration.Test.csproj
+@@ -1,11 +1,11 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+     <OutputType>Library</OutputType>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="GitHubActionsTestLogger" Version="2.3.3" />
+-    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="6.0.21" />
++    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.27" />
+   </ItemGroup>
+   <ItemGroup>
+     <ProjectReference Include="..\NzbDrone.Test.Common\Sonarr.Test.Common.csproj" />
+diff --git a/src/NzbDrone.Libraries.Test/Sonarr.Libraries.Test.csproj b/src/NzbDrone.Libraries.Test/Sonarr.Libraries.Test.csproj
+index 511c54c..b2f6c30 100644
+--- a/src/NzbDrone.Libraries.Test/Sonarr.Libraries.Test.csproj
++++ b/src/NzbDrone.Libraries.Test/Sonarr.Libraries.Test.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="GitHubActionsTestLogger" Version="2.3.3" />
+diff --git a/src/NzbDrone.Mono.Test/Sonarr.Mono.Test.csproj b/src/NzbDrone.Mono.Test/Sonarr.Mono.Test.csproj
+index 60c6f90..6f067e4 100644
+--- a/src/NzbDrone.Mono.Test/Sonarr.Mono.Test.csproj
++++ b/src/NzbDrone.Mono.Test/Sonarr.Mono.Test.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <!--
+        The netstandard version here doesn't work in net framework
+diff --git a/src/NzbDrone.Mono/Sonarr.Mono.csproj b/src/NzbDrone.Mono/Sonarr.Mono.csproj
+index 7901ccd..ec9e47f 100644
+--- a/src/NzbDrone.Mono/Sonarr.Mono.csproj
++++ b/src/NzbDrone.Mono/Sonarr.Mono.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+   </PropertyGroup>
+   <!-- 
+diff --git a/src/NzbDrone.SignalR/Sonarr.SignalR.csproj b/src/NzbDrone.SignalR/Sonarr.SignalR.csproj
+index 19349ba..0dbe881 100644
+--- a/src/NzbDrone.SignalR/Sonarr.SignalR.csproj
++++ b/src/NzbDrone.SignalR/Sonarr.SignalR.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+     <OutputType>Library</OutputType>
+   </PropertyGroup>
+   <ItemGroup>
+diff --git a/src/NzbDrone.Test.Common/NzbDroneRunner.cs b/src/NzbDrone.Test.Common/NzbDroneRunner.cs
+index dad71b2..29b9ac1 100644
+--- a/src/NzbDrone.Test.Common/NzbDroneRunner.cs
++++ b/src/NzbDrone.Test.Common/NzbDroneRunner.cs
+@@ -55,7 +55,7 @@ public void Start(bool enableAuth = false)
+ 
+             if (BuildInfo.IsDebug)
+             {
+-                Start(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "_output", "net6.0", consoleExe));
++                Start(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "_output", "net8.0", consoleExe));
+             }
+             else
+             {
+diff --git a/src/NzbDrone.Test.Common/Sonarr.Test.Common.csproj b/src/NzbDrone.Test.Common/Sonarr.Test.Common.csproj
+index bc1e7a7..8ea310b 100644
+--- a/src/NzbDrone.Test.Common/Sonarr.Test.Common.csproj
++++ b/src/NzbDrone.Test.Common/Sonarr.Test.Common.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="FluentAssertions" Version="6.10.0" />
+diff --git a/src/NzbDrone.Test.Dummy/Sonarr.Test.Dummy.csproj b/src/NzbDrone.Test.Dummy/Sonarr.Test.Dummy.csproj
+index 9d17bf8..e922371 100644
+--- a/src/NzbDrone.Test.Dummy/Sonarr.Test.Dummy.csproj
++++ b/src/NzbDrone.Test.Dummy/Sonarr.Test.Dummy.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+     <OutputType>Exe</OutputType>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+ </Project>
+\ No newline at end of file
+diff --git a/src/NzbDrone.Update.Test/Sonarr.Update.Test.csproj b/src/NzbDrone.Update.Test/Sonarr.Update.Test.csproj
+index 5b4d7df..9f62e56 100644
+--- a/src/NzbDrone.Update.Test/Sonarr.Update.Test.csproj
++++ b/src/NzbDrone.Update.Test/Sonarr.Update.Test.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="GitHubActionsTestLogger" Version="2.3.3" />
+diff --git a/src/NzbDrone.Update/Sonarr.Update.csproj b/src/NzbDrone.Update/Sonarr.Update.csproj
+index 9d7c5c0..2c3e0ee 100644
+--- a/src/NzbDrone.Update/Sonarr.Update.csproj
++++ b/src/NzbDrone.Update/Sonarr.Update.csproj
+@@ -1,7 +1,7 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+     <OutputType>WinExe</OutputType>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="DryIoc.dll" Version="5.4.3" />
+diff --git a/src/NzbDrone.Windows.Test/Sonarr.Windows.Test.csproj b/src/NzbDrone.Windows.Test/Sonarr.Windows.Test.csproj
+index 15bcf5d..8edec17 100644
+--- a/src/NzbDrone.Windows.Test/Sonarr.Windows.Test.csproj
++++ b/src/NzbDrone.Windows.Test/Sonarr.Windows.Test.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="GitHubActionsTestLogger" Version="2.3.3" />
+diff --git a/src/NzbDrone.Windows/Sonarr.Windows.csproj b/src/NzbDrone.Windows/Sonarr.Windows.csproj
+index 19f5868..01890bf 100644
+--- a/src/NzbDrone.Windows/Sonarr.Windows.csproj
++++ b/src/NzbDrone.Windows/Sonarr.Windows.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+   </PropertyGroup>
+   <ItemGroup>
+diff --git a/src/NzbDrone/Sonarr.csproj b/src/NzbDrone/Sonarr.csproj
+index 77a39e6..097a283 100644
+--- a/src/NzbDrone/Sonarr.csproj
++++ b/src/NzbDrone/Sonarr.csproj
+@@ -1,14 +1,14 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+     <OutputType>WinExe</OutputType>
+-    <TargetFrameworks>net6.0-windows</TargetFrameworks>
++    <TargetFrameworks>net8.0-windows</TargetFrameworks>
+     <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
+     <UseWindowsForms>true</UseWindowsForms>
+     <ApplicationIcon>..\NzbDrone.Host\Sonarr.ico</ApplicationIcon>
+     <GenerateResourceUsePreserializedResources>true</GenerateResourceUsePreserializedResources>
+   </PropertyGroup>
+   <ItemGroup>
+-    <PackageReference Include="System.Resources.Extensions" Version="6.0.0" />
++    <PackageReference Include="System.Resources.Extensions" Version="8.0.0" />
+   </ItemGroup>
+   <ItemGroup>
+     <ProjectReference Include="..\NzbDrone.Host\Sonarr.Host.csproj" />
+diff --git a/src/ServiceHelpers/ServiceInstall/ServiceInstall.csproj b/src/ServiceHelpers/ServiceInstall/ServiceInstall.csproj
+index 967ce00..fa4014f 100644
+--- a/src/ServiceHelpers/ServiceInstall/ServiceInstall.csproj
++++ b/src/ServiceHelpers/ServiceInstall/ServiceInstall.csproj
+@@ -1,7 +1,7 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+     <OutputType>WinExe</OutputType>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="System.Security.Principal.Windows" Version="6.0.0-preview.5.21301.5" />
+diff --git a/src/ServiceHelpers/ServiceUninstall/ServiceUninstall.csproj b/src/ServiceHelpers/ServiceUninstall/ServiceUninstall.csproj
+index 967ce00..fa4014f 100644
+--- a/src/ServiceHelpers/ServiceUninstall/ServiceUninstall.csproj
++++ b/src/ServiceHelpers/ServiceUninstall/ServiceUninstall.csproj
+@@ -1,7 +1,7 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+     <OutputType>WinExe</OutputType>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="System.Security.Principal.Windows" Version="6.0.0-preview.5.21301.5" />
+diff --git a/src/Sonarr.Api.V3/Queue/QueueController.cs b/src/Sonarr.Api.V3/Queue/QueueController.cs
+index dc47408..df440c3 100644
+--- a/src/Sonarr.Api.V3/Queue/QueueController.cs
++++ b/src/Sonarr.Api.V3/Queue/QueueController.cs
+@@ -177,10 +177,10 @@ private PagingSpec<NzbDrone.Core.Queue.Queue> GetQueue(PagingSpec<NzbDrone.Core.
+             var filteredQueue = includeUnknownSeriesItems ? queue : queue.Where(q => q.Series != null);
+             var pending = _pendingReleaseService.GetPendingQueue();
+ 
+-            var hasSeriesIdFilter = seriesIds.Any();
+-            var hasLanguageFilter = languages.Any();
+-            var hasQualityFilter = quality.Any();
+-            var hasStatusFilter = status.Any();
++            var hasSeriesIdFilter = seriesIds is { Count: > 0 };
++            var hasLanguageFilter = languages is { Count: > 0 };
++            var hasQualityFilter = quality is { Count: > 0 };
++            var hasStatusFilter = status is { Count: > 0 };
+ 
+             var fullQueue = filteredQueue.Concat(pending).Where(q =>
+             {
+diff --git a/src/Sonarr.Api.V3/Sonarr.Api.V3.csproj b/src/Sonarr.Api.V3/Sonarr.Api.V3.csproj
+index 62aba2b..f3633fa 100644
+--- a/src/Sonarr.Api.V3/Sonarr.Api.V3.csproj
++++ b/src/Sonarr.Api.V3/Sonarr.Api.V3.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="FluentValidation" Version="9.5.4" />
+diff --git a/src/Sonarr.Http/Authentication/ApiKeyAuthenticationHandler.cs b/src/Sonarr.Http/Authentication/ApiKeyAuthenticationHandler.cs
+index 864dd36..af1caf8 100644
+--- a/src/Sonarr.Http/Authentication/ApiKeyAuthenticationHandler.cs
++++ b/src/Sonarr.Http/Authentication/ApiKeyAuthenticationHandler.cs
+@@ -28,9 +28,8 @@ public class ApiKeyAuthenticationHandler : AuthenticationHandler<ApiKeyAuthentic
+         public ApiKeyAuthenticationHandler(IOptionsMonitor<ApiKeyAuthenticationOptions> options,
+             ILoggerFactory logger,
+             UrlEncoder encoder,
+-            ISystemClock clock,
+             IConfigFileProvider config)
+-            : base(options, logger, encoder, clock)
++            : base(options, logger, encoder)
+         {
+             _apiKey = config.ApiKey;
+         }
+diff --git a/src/Sonarr.Http/Authentication/BasicAuthenticationHandler.cs b/src/Sonarr.Http/Authentication/BasicAuthenticationHandler.cs
+index 41dc5aa..d9766cf 100644
+--- a/src/Sonarr.Http/Authentication/BasicAuthenticationHandler.cs
++++ b/src/Sonarr.Http/Authentication/BasicAuthenticationHandler.cs
+@@ -20,9 +20,8 @@ public class BasicAuthenticationHandler : AuthenticationHandler<AuthenticationSc
+         public BasicAuthenticationHandler(IAuthenticationService authService,
+             IOptionsMonitor<AuthenticationSchemeOptions> options,
+             ILoggerFactory logger,
+-            UrlEncoder encoder,
+-            ISystemClock clock)
+-            : base(options, logger, encoder, clock)
++            UrlEncoder encoder)
++            : base(options, logger, encoder)
+         {
+             _authService = authService;
+         }
+@@ -71,7 +70,7 @@ protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+ 
+         protected override Task HandleChallengeAsync(AuthenticationProperties properties)
+         {
+-            Response.Headers.Add("WWW-Authenticate", $"Basic realm=\"{BuildInfo.AppName}\"");
++            Response.Headers["WWW-Authenticate"] = $"Basic realm=\"{BuildInfo.AppName}\"";
+             Response.StatusCode = 401;
+             return Task.CompletedTask;
+         }
+diff --git a/src/Sonarr.Http/Authentication/NoAuthenticationHandler.cs b/src/Sonarr.Http/Authentication/NoAuthenticationHandler.cs
+index da1c8b0..7c62a1c 100644
+--- a/src/Sonarr.Http/Authentication/NoAuthenticationHandler.cs
++++ b/src/Sonarr.Http/Authentication/NoAuthenticationHandler.cs
+@@ -13,9 +13,8 @@ public class NoAuthenticationHandler : AuthenticationHandler<AuthenticationSchem
+     {
+         public NoAuthenticationHandler(IOptionsMonitor<AuthenticationSchemeOptions> options,
+             ILoggerFactory logger,
+-            UrlEncoder encoder,
+-            ISystemClock clock)
+-            : base(options, logger, encoder, clock)
++            UrlEncoder encoder)
++            : base(options, logger, encoder)
+         {
+         }
+ 
+diff --git a/src/Sonarr.Http/Middleware/VersionMiddleware.cs b/src/Sonarr.Http/Middleware/VersionMiddleware.cs
+index abb4439..bf3e48c 100644
+--- a/src/Sonarr.Http/Middleware/VersionMiddleware.cs
++++ b/src/Sonarr.Http/Middleware/VersionMiddleware.cs
+@@ -22,7 +22,7 @@ public async Task InvokeAsync(HttpContext context)
+         {
+             if (context.Request.IsApiRequest() && !context.Response.Headers.ContainsKey(VERSIONHEADER))
+             {
+-                context.Response.Headers.Add(VERSIONHEADER, _version);
++                context.Response.Headers[VERSIONHEADER] = _version;
+             }
+ 
+             await _next(context);
+diff --git a/src/Sonarr.Http/REST/RestController.cs b/src/Sonarr.Http/REST/RestController.cs
+index e08790a..6a61489 100644
+--- a/src/Sonarr.Http/REST/RestController.cs
++++ b/src/Sonarr.Http/REST/RestController.cs
+@@ -106,7 +106,7 @@ public override void OnActionExecuting(ActionExecutingContext context)
+             if (controllerAttributes.Any(x => x.AttributeType == DEPRECATED_ATTRIBUTE) || attributes.Any(x => x.AttributeType == DEPRECATED_ATTRIBUTE))
+             {
+                 _logger.Warn("API call made to deprecated endpoint from {0}", Request.Headers.UserAgent.ToString());
+-                Response.Headers.Add("Deprecation", "true");
++                Response.Headers["Deprecation"] = "true";
+             }
+ 
+             base.OnActionExecuting(context);
+diff --git a/src/Sonarr.Http/Sonarr.Http.csproj b/src/Sonarr.Http/Sonarr.Http.csproj
+index 9bacc9f..eeba116 100644
+--- a/src/Sonarr.Http/Sonarr.Http.csproj
++++ b/src/Sonarr.Http/Sonarr.Http.csproj
+@@ -1,6 +1,6 @@
+ ﻿<Project Sdk="Microsoft.NET.Sdk">
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>
+   <ItemGroup>
+     <PackageReference Include="FluentValidation" Version="9.5.4" />
+diff --git a/src/Sonarr.RuntimePatches/Sonarr.RuntimePatches.csproj b/src/Sonarr.RuntimePatches/Sonarr.RuntimePatches.csproj
+index 3800542..1332aa3 100644
+--- a/src/Sonarr.RuntimePatches/Sonarr.RuntimePatches.csproj
++++ b/src/Sonarr.RuntimePatches/Sonarr.RuntimePatches.csproj
+@@ -1,6 +1,6 @@
+ <Project Sdk="Microsoft.NET.Sdk">  
+   <PropertyGroup>
+-    <TargetFrameworks>net6.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+   </PropertyGroup>  
+   <ItemGroup>
+     <PackageReference Include="Lib.Harmony" Version="2.3.3" />
+-- 
+2.43.0
+

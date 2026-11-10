@@ -1,0 +1,80 @@
+<!-- title: Migratiewizard -->
+<!-- active: /migratie -->
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Migratie &amp; optimalisatie</h1>
+    <p class="page-sub">Vier bestaande installaties naar vier MediaGuard-instanties. Oude systemen blijven ongewijzigd tot de cutover die jij bevestigt.</p>
+  </div>
+  <div class="page-actions"><span class="chip chip--success"><i data-i="shield-check"></i>Back-ups geverifieerd 09:14</span><button class="btn"><i data-i="rotate-ccw"></i>Rollbackplan</button></div>
+</div>
+
+<div class="grid">
+  <aside class="card span-3" aria-label="Stappen">
+    <div class="card-header"><h2 class="card-title">Stap 7 van 10</h2><span class="card-sub">automatisch bewaard</span></div>
+    <div class="card-body">
+      <ol class="stepper" style="list-style:none; margin:0; padding:0">
+        <li class="step step--done"><span class="step-no"><i data-i="check" class="ico-sm"></i></span><span>Preflight</span><span class="t-3" style="font-size:11px">09:02</span></li>
+        <li class="step step--done"><span class="step-no"><i data-i="check" class="ico-sm"></i></span><span>Verbindingen testen</span><span></span></li>
+        <li class="step step--done"><span class="step-no"><i data-i="check" class="ico-sm"></i></span><span>Bronback-up</span><span></span></li>
+        <li class="step step--done"><span class="step-no"><i data-i="check" class="ico-sm"></i></span><span>Mediapaden</span><span></span></li>
+        <li class="step step--done"><span class="step-no"><i data-i="check" class="ico-sm"></i></span><span>Bron → doel preview</span><span></span></li>
+        <li class="step step--warning"><span class="step-no">6</span><span>Monitoring &amp; toekomst</span><span class="chip chip--warning">2</span></li>
+        <li class="step step--current" aria-current="step"><span class="step-no">7</span><span>Dry-run optimalisatie</span><span></span></li>
+        <li class="step"><span class="step-no">8</span><span>Kwaliteitsprofielen</span><span></span></li>
+        <li class="step"><span class="step-no">9</span><span>Seerr-routetest</span><span></span></li>
+        <li class="step step--blocked"><span class="step-no">10</span><span>Cutover</span><i data-i="lock" class="ico-sm"></i></li>
+      </ol>
+    </div>
+  </aside>
+
+  <div class="span-9 stack">
+    <section class="card">
+      <div class="card-header"><h2 class="card-title"><i data-i="flask-conical"></i>Dry-run: wat zou er met je bibliotheek gebeuren?</h2><span class="chip chip--accent"><i data-i="eye"></i>Alleen simulatie — niets wordt gewijzigd</span></div>
+      <div class="card-body stack">
+        <div>
+          <div class="stackbar" role="img" aria-label="Verdeling: behouden 61%, AV1 22%, vervangen 6%, zoeken 4%, onzeker 2%, overslaan 5%">
+            <span style="width:61%; background:var(--mg-viz-2)"></span><span style="width:22%; background:var(--mg-viz-1)"></span><span style="width:6%; background:var(--mg-viz-4)"></span><span style="width:4%; background:var(--mg-viz-3)"></span><span style="width:2%; background:var(--mg-viz-5)"></span><span style="width:5%; background:var(--mg-border-strong)"></span>
+          </div>
+          <div class="legend" style="margin-top:10px">
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--mg-viz-2)"></span>Behouden <strong class="num">30.618</strong></span>
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--mg-viz-1)"></span>AV1 <strong class="num">11.043</strong></span>
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--mg-viz-4)"></span>Vervangen <strong class="num">3.012</strong></span>
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--mg-viz-3)"></span>Zoeken <strong class="num">2.008</strong></span>
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--mg-viz-5)"></span>Onzeker <strong class="num">1.004</strong></span>
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--mg-border-strong)"></span>Overslaan <strong class="num">2.511</strong></span>
+          </div>
+        </div>
+        <div class="impact" style="grid-template-columns:repeat(4,minmax(0,1fr)); margin:0">
+          <div><span>Geschatte winst</span><strong>−14,2 TB</strong></div>
+          <div><span>Encodetijd</span><strong>~41 dagen</strong></div>
+          <div><span>Piek cache</span><strong>380 GB</strong></div>
+          <div><span>Hardlinks overgeslagen</span><strong>1.882</strong></div>
+        </div>
+        <div class="table-wrap">
+        <table class="table table--compact table--stack">
+          <thead><tr><th>Instantie</th><th class="num">Bron</th><th class="num">Doel (shadow)</th><th>Monitoring</th><th>Toekomstige seizoenen</th><th>Indexers</th><th>Resultaat</th></tr></thead>
+          <tbody>
+            <tr><td class="cell-primary"><span class="tag">sonarr-series</span></td><td data-label="Bron" class="num">1.204</td><td data-label="Doel" class="num">1.204</td><td data-label="Monitoring">gelijk</td><td data-label="Toekomst">gelijk (1.022)</td><td data-label="Indexers">6 / 6</td><td data-label="Resultaat"><span class="chip chip--success"><i data-i="circle-check"></i>Pariteit</span></td></tr>
+            <tr><td class="cell-primary"><span class="tag">sonarr-anime</span></td><td data-label="Bron" class="num">386</td><td data-label="Doel" class="num">386</td><td data-label="Monitoring"><span class="t-warning">2 afwijkingen</span></td><td data-label="Toekomst">gelijk (311)</td><td data-label="Indexers">4 / 4</td><td data-label="Resultaat"><span class="chip chip--warning"><i data-i="triangle-alert"></i>Bevestigen</span></td></tr>
+            <tr><td class="cell-primary"><span class="tag">radarr-films</span></td><td data-label="Bron" class="num">3.912</td><td data-label="Doel" class="num">3.912</td><td data-label="Monitoring">gelijk</td><td data-label="Toekomst">n.v.t.</td><td data-label="Indexers">5 / 5</td><td data-label="Resultaat"><span class="chip chip--success"><i data-i="circle-check"></i>Pariteit</span></td></tr>
+            <tr><td class="cell-primary"><span class="tag">radarr-animefilms</span></td><td data-label="Bron" class="num">241</td><td data-label="Doel" class="num">239</td><td data-label="Monitoring">gelijk</td><td data-label="Toekomst">n.v.t.</td><td data-label="Indexers">3 / 3</td><td data-label="Resultaat"><span class="chip chip--danger"><i data-i="circle-x"></i>2 duplicaten</span></td></tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+      <div class="card-footer"><span class="row"><i data-i="info" class="ico-sm"></i>Voortgang en waarschuwingen blijven zichtbaar na verversen of herstart.</span><span class="row"><button class="btn btn--sm">Vorige</button><button class="btn btn--sm btn--primary">Volgende: kwaliteitsprofielen <i data-i="arrow-right"></i></button></span></div>
+    </section>
+
+    <section class="card card--danger">
+      <div class="card-header"><h2 class="card-title"><i data-i="circle-x" style="color:var(--mg-danger)"></i>Duplicaatwaarschuwing · radarr-animefilms</h2></div>
+      <div class="card-body">
+        <div class="diff">
+          <div class="diff-head">Titel</div><div class="diff-head">Bron: radarr-anime (oud)</div><div class="diff-head">Ook gevonden in: radarr-films</div>
+          <div class="diff-key">Your Name. (2016)</div><div>/media/anime-films/Your Name (2016)</div><div class="diff-removed">/media/films/Your Name (2016)</div>
+          <div class="diff-key">Akira (1988)</div><div>/media/anime-films/Akira (1988)</div><div class="diff-removed">/media/films/Akira (1988) 4K</div>
+        </div>
+        <div class="row wrap" style="margin-top:12px"><button class="btn btn--sm">Beide behouden (andere editie)</button><button class="btn btn--sm">Eigenaar: radarr-animefilms</button></div>
+      </div>
+    </section>
+  </div>
+</div>

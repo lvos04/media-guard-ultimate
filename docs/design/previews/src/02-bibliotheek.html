@@ -1,0 +1,100 @@
+<!-- title: Bibliotheek -->
+<!-- active: /bibliotheek -->
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Bibliotheek</h1>
+    <p class="page-sub">50.196 gemonitorde items over 4 instanties · sortering en filters blijven bewaard</p>
+  </div>
+  <div class="page-actions">
+    <button class="btn"><i data-i="scan-search"></i>Opnieuw inventariseren</button>
+    <button class="btn btn--primary"><i data-i="plus"></i>Toevoegen</button>
+  </div>
+</div>
+
+<div class="tabs" role="tablist" aria-label="Mediatype" style="margin-bottom:14px">
+  <button class="tab" role="tab" aria-selected="true">Series <span class="count">1.204</span></button>
+  <button class="tab" role="tab">Anime <span class="count">386</span></button>
+  <button class="tab" role="tab">Films <span class="count">3.912</span></button>
+  <button class="tab" role="tab">Animefilms <span class="count">241</span></button>
+</div>
+
+<div class="toolbar" style="margin-bottom:12px">
+  <div class="search-field" style="flex:1 1 260px; max-width:360px"><i data-i="search"></i><input class="input" placeholder="Filter op titel, jaar, groep of ID…" aria-label="Filter" /></div>
+  <select class="select" style="width:auto" aria-label="Instantie"><option>Instantie: sonarr-series</option><option>Alle instanties</option></select>
+  <button class="filter-chip" aria-pressed="true"><i data-i="search-x" class="ico-sm"></i>Ontbrekend</button>
+  <button class="filter-chip"><i data-i="triangle-alert" class="ico-sm"></i>Onzeker</button>
+  <button class="filter-chip"><i data-i="zap" class="ico-sm"></i>AV1-kandidaat</button>
+  <button class="filter-chip"><i data-i="aperture" class="ico-sm"></i>DV / HDR</button>
+  <button class="filter-chip"><i data-i="languages" class="ico-sm"></i>Geen NL-subs</button>
+  <span class="topbar-spacer"></span>
+  <div class="segmented desktop-only" role="group" aria-label="Weergave"><button aria-pressed="true"><i data-i="list-tree" class="ico-sm"></i>Tabel</button><button><i data-i="layout-dashboard" class="ico-sm"></i>Posters</button></div>
+</div>
+
+<div class="card">
+  <div class="card-header" style="padding-bottom:10px; border-bottom:1px solid var(--mg-border-soft)">
+    <div class="row"><input type="checkbox" class="check" aria-label="Alles selecteren" checked /><strong style="font-size:13px">3 geselecteerd</strong><span class="t-3" style="font-size:12px">van 87 resultaten</span></div>
+    <div class="row wrap">
+      <button class="btn btn--sm"><i data-i="search"></i>Zoek ontbrekend</button>
+      <button class="btn btn--sm"><i data-i="eye"></i>Monitoring</button>
+      <button class="btn btn--sm"><i data-i="zap"></i>Optimaliseer (dry-run)</button>
+      <button class="btn btn--sm btn--ghost"><i data-i="ellipsis"></i></button>
+    </div>
+  </div>
+  <div class="table-wrap">
+  <table class="table table--stack">
+    <thead><tr><th style="width:36px"></th><th aria-sort="ascending">Titel</th><th>Compleet</th><th>Kwaliteit</th><th>Status</th><th>Monitoring</th><th class="num">Grootte</th></tr></thead>
+    <tbody>
+      <tr aria-selected="true"><td class="hide-mobile"><input type="checkbox" class="check" checked aria-label="Selecteer Severance" /></td>
+        <td class="cell-primary"><div class="media-row"><span class="poster" style="--p1:#2F5A6E;--p2:#0D1820"><span class="poster-art"></span></span><div class="media-meta"><div class="media-title">Severance</div><div class="media-sub">2022 · Apple TV+ · 2 seizoenen · tvdb 371980</div></div></div></td>
+        <td data-label="Compleet"><div style="min-width:120px"><div class="row-between" style="font-size:12px"><span class="num">19 / 19</span><span class="t-success">100%</span></div><div class="progress progress--thin progress--success" style="margin-top:5px"><span style="width:100%"></span></div></div></td>
+        <td data-label="Kwaliteit"><span class="qribbon"><span>2160p</span><span>WEB-DL</span><span class="q-av1">AV1</span><span class="q-hdr">HDR10</span><span class="q-lang">EN·NL</span></span></td>
+        <td data-label="Status"><span class="chip chip--success"><i data-i="circle-check"></i>Compleet</span></td>
+        <td data-label="Monitoring"><span class="chip chip--accent"><i data-i="eye"></i>Alles + toekomst</span></td>
+        <td data-label="Grootte" class="num">48,2 GB</td></tr>
+      <tr aria-selected="true"><td class="hide-mobile"><input type="checkbox" class="check" checked aria-label="Selecteer Shōgun" /></td>
+        <td class="cell-primary"><div class="media-row"><span class="poster" style="--p1:#6E2F2A;--p2:#1E0E0C"><span class="poster-art"></span></span><div class="media-meta"><div class="media-title">Shōgun</div><div class="media-sub">2024 · FX · 1 seizoen · tvdb 391178</div></div></div></td>
+        <td data-label="Compleet"><div style="min-width:120px"><div class="row-between" style="font-size:12px"><span class="num">8 / 10</span><span class="t-warning">80%</span></div><div class="progress progress--thin progress--warning" style="margin-top:5px"><span style="width:80%"></span></div></div></td>
+        <td data-label="Kwaliteit"><span class="qribbon"><span>2160p</span><span>WEB-DL</span><span>HEVC</span><span class="q-dv">DV 8.1</span><span class="q-lang">EN·JA</span></span></td>
+        <td data-label="Status"><span class="chip chip--warning"><i data-i="search-x"></i>2 ontbreken</span></td>
+        <td data-label="Monitoring"><span class="chip chip--accent"><i data-i="eye"></i>Alles + toekomst</span></td>
+        <td data-label="Grootte" class="num">71,9 GB</td></tr>
+      <tr><td class="hide-mobile"><input type="checkbox" class="check" aria-label="Selecteer The Bear" /></td>
+        <td class="cell-primary"><div class="media-row"><span class="poster" style="--p1:#6B3A2A;--p2:#1B1210"><span class="poster-art"></span></span><div class="media-meta"><div class="media-title">The Bear</div><div class="media-sub">2022 · FX · 4 seizoenen · tvdb 403245</div></div></div></td>
+        <td data-label="Compleet"><div style="min-width:120px"><div class="row-between" style="font-size:12px"><span class="num">31 / 31</span><span class="t-success">100%</span></div><div class="progress progress--thin progress--success" style="margin-top:5px"><span style="width:100%"></span></div></div></td>
+        <td data-label="Kwaliteit"><span class="qribbon"><span>1080p</span><span>WEB-DL</span><span class="q-av1">AV1</span><span class="q-lang">EN</span></span></td>
+        <td data-label="Status"><span class="chip chip--success"><i data-i="circle-check"></i>Compleet</span></td>
+        <td data-label="Monitoring"><span class="chip chip--accent"><i data-i="eye"></i>Alles + toekomst</span></td>
+        <td data-label="Grootte" class="num">22,4 GB</td></tr>
+      <tr aria-selected="true"><td class="hide-mobile"><input type="checkbox" class="check" checked aria-label="Selecteer Breaking Bad" /></td>
+        <td class="cell-primary"><div class="media-row"><span class="poster" style="--p1:#3D5A2A;--p2:#10180C"><span class="poster-art"></span></span><div class="media-meta"><div class="media-title">Breaking Bad</div><div class="media-sub">2008 · AMC · 5 seizoenen · tvdb 81189</div></div></div></td>
+        <td data-label="Compleet"><div style="min-width:120px"><div class="row-between" style="font-size:12px"><span class="num">60 / 60</span><span class="t-success">100%</span></div><div class="progress progress--thin progress--success" style="margin-top:5px"><span style="width:100%"></span></div></div></td>
+        <td data-label="Kwaliteit"><span class="qribbon"><span>1080p</span><span>Bluray</span><span>H.264</span><span class="q-lang">EN·NL</span></span></td>
+        <td data-label="Status"><span class="chip chip--info"><i data-i="zap"></i>AV1-kandidaat</span></td>
+        <td data-label="Monitoring"><span class="chip"><i data-i="eye"></i>S3–S5</span></td>
+        <td data-label="Grootte" class="num">318 GB</td></tr>
+      <tr><td class="hide-mobile"><input type="checkbox" class="check" aria-label="Selecteer Andor" /></td>
+        <td class="cell-primary"><div class="media-row"><span class="poster" style="--p1:#4A2D63;--p2:#140E1E"><span class="poster-art"></span></span><div class="media-meta"><div class="media-title">Andor</div><div class="media-sub">2022 · Disney+ · 2 seizoenen · tvdb 393189</div></div></div></td>
+        <td data-label="Compleet"><div style="min-width:120px"><div class="row-between" style="font-size:12px"><span class="num">21 / 21</span><span class="t-success">100%</span></div><div class="progress progress--thin progress--success" style="margin-top:5px"><span style="width:100%"></span></div></div></td>
+        <td data-label="Kwaliteit"><span class="qribbon"><span>2160p</span><span>WEB-DL</span><span class="q-av1">AV1</span><span class="q-dv">DV 8.1</span><span class="q-lang">EN·NL</span></span></td>
+        <td data-label="Status"><span class="chip chip--success"><i data-i="circle-check"></i>Compleet</span></td>
+        <td data-label="Monitoring"><span class="chip chip--accent"><i data-i="eye"></i>Alles + toekomst</span></td>
+        <td data-label="Grootte" class="num">39,0 GB</td></tr>
+      <tr><td class="hide-mobile"><input type="checkbox" class="check" aria-label="Selecteer The Expanse" /></td>
+        <td class="cell-primary"><div class="media-row"><span class="poster" style="--p1:#24405E;--p2:#0A121C"><span class="poster-art"></span></span><div class="media-meta"><div class="media-title">The Expanse</div><div class="media-sub">2015 · Prime Video · 6 seizoenen · tvdb 280619</div></div></div></td>
+        <td data-label="Compleet"><div style="min-width:120px"><div class="row-between" style="font-size:12px"><span class="num">58 / 62</span><span class="t-warning">94%</span></div><div class="progress progress--thin progress--warning" style="margin-top:5px"><span style="width:94%"></span></div></div></td>
+        <td data-label="Kwaliteit"><span class="qribbon"><span>1080p</span><span>WEB-DL</span><span>HEVC</span><span class="q-lang">EN</span></span></td>
+        <td data-label="Status"><span class="chip chip--warning"><i data-i="loader-circle"></i>4 zoekend</span></td>
+        <td data-label="Monitoring"><span class="chip chip--accent"><i data-i="eye"></i>Alles</span></td>
+        <td data-label="Grootte" class="num">142 GB</td></tr>
+      <tr><td class="hide-mobile"><input type="checkbox" class="check" aria-label="Selecteer Dark" /></td>
+        <td class="cell-primary"><div class="media-row"><span class="poster" style="--p1:#2E3640;--p2:#0B0E12"><span class="poster-art"></span></span><div class="media-meta"><div class="media-title">Dark</div><div class="media-sub">2017 · Netflix · 3 seizoenen · tvdb 334824</div></div></div></td>
+        <td data-label="Compleet"><div style="min-width:120px"><div class="row-between" style="font-size:12px"><span class="num">26 / 26</span><span class="t-success">100%</span></div><div class="progress progress--thin progress--success" style="margin-top:5px"><span style="width:100%"></span></div></div></td>
+        <td data-label="Kwaliteit"><span class="qribbon"><span>2160p</span><span>WEB-DL</span><span>HEVC</span><span class="q-hdr">HDR10</span><span class="q-lang">DE·EN·NL</span></span></td>
+        <td data-label="Status"><span class="chip chip--info"><i data-i="zap"></i>AV1-kandidaat</span></td>
+        <td data-label="Monitoring"><span class="chip"><i data-i="eye"></i>Afgerond</span></td>
+        <td data-label="Grootte" class="num">96,7 GB</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="card-footer"><span>Toont 1–7 van 87 · gefilterd op <strong style="color:var(--mg-text)">Ontbrekend</strong> in sonarr-series</span><span class="row"><span class="stale-mark"><i data-i="history" class="ico-sm"></i>Metadata 4 min oud</span><button class="btn btn--sm">Meer laden</button></span></div>
+</div>

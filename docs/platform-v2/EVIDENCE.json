@@ -1,0 +1,102 @@
+[
+ {
+  "id": "B04-001",
+  "status": "Bezig",
+  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); docs/platform-v2/INVENTARIS.md §1 (tag, digests, compat-matrix) en §8–§11; DELTA_MATRIX.md §B04-001 en §K.1; lokaal 2026-11-09: core pytest 1069 passed/2 skipped, ruff groen; encoder CI-subset 124 passed/1 skipped, ruff+mypy groen; web lint+typecheck groen (INVENTARIS.md §11.1); tweede lezing: tag v1.2.2^{} = 30f7415 en digest ghcr.io/lvos04/mediaguard-core:1.2.2-aio = sha256:14e540ba…52dc6 opnieuw gemeten; GitHub release-run 42554745125 (30f7415), CI-run 42587401041 (60b50ab) en CI-run 42593595185 (3512931) success; scripts/platform-v2-routes.py --probe en --json (432 routes); testfouten gerepareerd (ADR-0015, commits aa176d2, 69d9106, 1eac2d1, e8792a5, 361b37b): encoder volledige suite in het toolchain-image lokaal 456 passed/4 skipped (was 19 failed), ruff+mypy groen; web E2E lokaal zonder herkansingen 99 passed/4 skipped met de fonts van de machine; core 3.12 en 3.14 1069 passed/2 skipped; GitHub CI-run 42649081512 (workflow_dispatch heavy, 361b37b) volledig success, inclusief encoder-image, forks en upstream-sync; push-run 42646936214 success na herhaling van één tijdgevoelige coretest (test_hooks: 1261 ms > 1000 ms op de runner); QA na de Peil-ronde (ADR-0020): GHCR-blobs nu bereikbaar, labels van ghcr.io/lvos04/mediaguard-core:1.2.2-aio gelezen met docker buildx imagetools inspect: org.opencontainers.image.revision 30f7415a99e4…, version 1.2.2, created 2026-11-09T03:08:55Z (gelijk aan tag v1.2.2); ghcr.io/lvos04/mediaguard-encode:1.2.2 (sha256:b796d101…67da) gepulld",
+  "blokkade": "Geïnstalleerde image-tag/digest, datasets, poorten en schema op de echte TrueNAS zijn onbekend (D-gegevens). Eigenaar: readback via Hub/TrueNAS-API, stap I03-03-01 bij jelly-leon-platform.",
+  "opmerking": "Afgeronde 1.2.2-functies (bewaking, Seerr-sync, noodstop, VMAF, GPU/CPU-banen, AV1/DV, Android-push, audit, back-up/herstel, offsite-kopie van de herstelbundel) staan als 'bestaand' en worden niet opnieuw als werk geboekt. Unit-getest = de bestaande 1.2.2-suites lokaal gedraaid; Sim-getest = in-process contractprobe met API-sleutels. Tag v1.2.2 wijst naar 30f7415 (= de710c7 + 2 CI/E2E-commits). Tweede lezing: 177 van 185 rijen bevestigd, 8 claims gecorrigeerd, 24 rijen toegevoegd (DELTA_MATRIX.md §K). Testronde 2026-11-09 (ADR-0015): de VMAF-productdrempel (93) blijft ongewijzigd; de encodertests encoderen nu boven die poort. Web-fixes: Inter echt toegepast, chips lopen om, CSRF-wacht tijdens het laden van de sessie, Problemen-tab crasht niet meer op rijen zonder actions. Status blijft Bezig: echte NAS-acceptatie ontbreekt. Peil-ronde: Inter is daarna weer verwijderd (systeemfont, ADR-0017 punt 12); de overige web-fixes blijven.",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-09"
+ },
+ {
+  "id": "B04-002",
+  "status": "Niet gestart",
+  "validatie": "NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); INVENTARIS.md §4.2 en §4.4; DELTA_MATRIX.md §B04-002, §D en §K (A-35, N-15, N-24)",
+  "blokkade": "",
+  "opmerking": "Nieuw werk nog niet gebouwd. Hiaat: /connector/v1 (discover/health/items/evidence/events), /healthz, /readyz, cursor/ETag, contractfoutformaat en OpenAPI-export (P3-01, P3-03). Daarbij uit de tweede lezing: 'cursor_expired' als de cursor ouder is dan de outbox-bewaartermijn (standaard 14 dagen) en een stabiele event_id. Bestaand deel (1.2.2): alle leesroutes geven 200 met een viewer-sleutel (in-process probe). De Hub-adapter zelf hoort bij ai-server-manager.",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-09"
+ },
+ {
+  "id": "B04-003",
+  "status": "Niet gestart",
+  "validatie": "NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); DELTA_MATRIX.md §B04-003 en §K.3 (003a, 003d); INVENTARIS.md §4.4 (operator-sleutel zet noodstop aan én uit), §10",
+  "blokkade": "",
+  "opmerking": "Nieuw werk nog niet gebouwd. Bestaand deel (1.2.2): de noodstop zelf is unit-getest in de repo-CI (15× test_noodstop_* in test_regels.py; test_regels.py:161 dekt ook de download-opruimer). Hiaat: scopes op API-sleutels zodat de Hub alleen 'noodstop aan' kan (P3-02; migratie in de kernreeks volgens migrations/README.md, ADR-0014). Een herzoek tijdens de noodstop geeft HTTP 429 'Noodstop actief.'. De Hub leest de noodstop uit /api/v1/status: het aandachtspunt kan met 'Bewust zo gekozen' verborgen zijn. De statusbalk hoort in de Hub-UI.",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-09"
+ },
+ {
+  "id": "B04-004",
+  "status": "Niet gestart",
+  "validatie": "NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); DELTA_MATRIX.md §B04-004 en §K.2 (004b)",
+  "blokkade": "",
+  "opmerking": "Nieuw werk nog niet gebouwd. Bestaand deel (1.2.2): diagnose per item en zoekquotum zijn unit-getest; correlatie core↔AV1-engine bestaat al (body correlation_id). Hiaat: X-Correlation-Id-header in/uit en koppeling aan de audit voor externe verzoeken (P3-05), keten-UI in de Hub, integrale E2E met MSO.",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-09"
+ },
+ {
+  "id": "B04-005",
+  "status": "Niet gestart",
+  "validatie": "NIET GEVALIDEERD (hardware)",
+  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); DELTA_MATRIX.md §B04-005 en §K.2 (005a, 005b): test_mediaserver.py::test_watching_holds_encodes_and_marks_recent, test_encoding_lanes.py::test_gpu_idle_benign_pauses_and_no_work_do_not_alert, services/encoder/tests/test_mediaguard_resources.py, services/encoder/tests/test_playback_hold.py",
+  "blokkade": "Eindacceptatie (kijken stopt zware transcode zonder vals GPU-alarm) vraagt de echte Arc A310 en een echte client op de NAS.",
+  "opmerking": "Nieuw werk nog niet gebouwd. Bestaand deel (1.2.2): kijkpauze, geen vals GPU-alarm en CPU-, temperatuur- en tijdvenstergrens (unit-getest). Hiaat: alleen een begrensde pauze voor NAS-back-up/ZFS-scrub via de Hub, met het bestaande patroon 'eigen pauze met voorvoegsel' (apply_playback_hold) en een TTL en frequentiegrens (P3-10).",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-09"
+ },
+ {
+  "id": "B04-006",
+  "status": "Niet gestart",
+  "validatie": "NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); INVENTARIS.md §5 en §8; DELTA_MATRIX.md §B04-006 en §K (006a, 006b, N-10)",
+  "blokkade": "",
+  "opmerking": "Nieuw werk nog niet gebouwd. Bestaand deel (1.2.2): geverifieerde back-ups, herstelbundel, set vóór elke update met terugzetten, en een offsite-kopie van de bundel met sha256-controle (status alleen voor admin leesbaar). Hiaat: read-only herstelrapport met dekking core/encoder/bundel/offsite/fork-back-ups en sleutelvingerafdruk (P3-06). Bestaande back-ups niet vervangen of dubbel bouwen.",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-09"
+ },
+ {
+  "id": "B04-007",
+  "status": "Niet gestart",
+  "validatie": "NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); DELTA_MATRIX.md §B04-007 en §K.4 (N-06)",
+  "blokkade": "Eindacceptatie (juiste playback en watch-state na AV1-vervanging) vraagt de echte Jellyfin/Jelly Leon op de NAS en echte clients.",
+  "opmerking": "Nieuw werk nog niet gebouwd. Bestaand deel (1.2.2): verversen na overdracht en afspeeltest zijn unit-getest; watch-state niet getest. Hiaat: test met Jellyfin-simulator voor padbehoud en watch-state, en outbox-events met correlatie (P3-11). Bij een extensiewissel .mp4→.mkv verandert het pad.",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-09"
+ },
+ {
+  "id": "B04-008",
+  "status": "Niet gestart",
+  "validatie": "NIET GEVALIDEERD (echte NAS); NIET GEVALIDEERD (hardware)",
+  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); DELTA_MATRIX.md §B04-008 en §K.2 (EX11), §K.4 (N-16)",
+  "blokkade": "Echte deployment-fixtures en Samsung/tv-compatibiliteit vragen de echte NAS en tv.",
+  "opmerking": "Nieuw werk nog niet gebouwd. Bestaand deel (1.2.2): profielkeuze, anime/film, vastlopers, volle quarantaine, gemeten degraded pool (alleen quarantaine-opruimen) en geen terugkeer van verwijderde titels zijn unit-getest. Hiaten: 'verantwoordelijke app' in incidenten (P3-12), onbekende poolstatus (P3-13, eerst ADR), en nieuw uit de tweede lezing: de download-opruimer stopt niet bij een gemeten degraded pool (P3-14, ADR-0014).",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-09"
+ },
+ {
+  "id": "B04-009",
+  "status": "Niet gestart",
+  "validatie": "NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); DELTA_MATRIX.md §B04-009 en §K.2 (009a), §K.5; release-run 42554745125",
+  "blokkade": "",
+  "opmerking": "Nieuw werk nog niet gebouwd. Bestaand deel (1.2.2): release-gate (tests → rooktest → publiceren). Het MSO-gebruikspatroon is getest voor 3 van de 19 routes (test_api_keys.py:74); handmatige kruiscontrole 17/19 exact, 2 compatibel. Hiaten: MSO-contracttest op de volledige routelijst in CI (P3-09), base-images op digest plus release/digests.json en SBOM (P3-08), scopes (P3-02), schemabescherming tegen tag-only-rollback met het bestaande herstel van vóór de update (P3-04).",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-09"
+ },
+ {
+  "id": "B04-010",
+  "status": "Geblokkeerd",
+  "validatie": "NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); DELTA_MATRIX.md §B04-010 en §K.4 (N-09, N-19)",
+  "blokkade": "Schaduwfase, echte download en canary 24–48 u vragen de echte NAS, een geldige back-up en expliciet akkoord van de gebruiker. Eigenaar: de gebruiker (akkoord en NAS-toegang), samen met jelly-leon-platform en ai-server-manager (Hub-readback en go/no-go).",
+  "opmerking": "Status in de tweede lezing van 'Niet gestart' naar 'Geblokkeerd' (B04 §4: bij een blocker 'Geblokkeerd' + reden + eigenaar). Het go/no-go-rapport hoort bij de Hub; MediaGuard levert de evidence via de connector (na P3-01).",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-09"
+ }
+]

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Peil 1.1.0, licht (design/ontwerptaal/tokens.json): kleur.oppervlak.background en kleur.interactie.primary.
+         Alleen voor het venster vóór de eerste Compose-frame; de app zelf leest PeilTokens.kt. -->
+    <color name="mg_bg">#EEF1F5</color>
+    <color name="mg_accent">#123DA3</color>
+    <!-- Achtergrond van het app-icoon: altijd donker, los van het thema (merk, geen Peil-token) -->
+    <color name="mg_brand_bg">#0C111B</color>
+</resources>

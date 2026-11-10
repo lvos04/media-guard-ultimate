@@ -1,0 +1,212 @@
+# MediaGuard Ultimate — CI
+#
+# push/PR: core, encoder unit tests (zonder toolchain), web (Peil-driftcontrole, lint/typecheck/unit/build/e2e).
+# Nightly (03:17 UTC) + handmatig: encoder-suite in het toolchain-image (--target test),
+# beide fork-images bouwen en de upstream-sync van de forks in rapportmodus.
+# release.yml roept deze workflow aan (workflow_call): zonder groene tests geen release.
+# Niets in deze workflow pusht images of wijzigt de repo; publiceren: release.yml.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      heavy:
+        description: "Ook zware jobs (encoder-image, fork-images, upstream-sync) draaien"
+        type: boolean
+        default: true
+  # vanuit release.yml: alleen core, encoder-unit en web (de zware jobs vragen
+  # github.event_name 'schedule' of 'workflow_dispatch' met heavy=true)
+  workflow_call:
+    inputs:
+      heavy:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FFMPEG_HDR10PLUS_VERSION: "8.1.3"
+  FFMPEG_HDR10PLUS_SHA256: "7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3"
+
+jobs:
+  # 3.12 = het losse core-image (apps/core/Dockerfile); 3.14 = het alles-in-één-image, waar
+  # core op de Python van het encode-image draait (deploy/release-manifest.json,
+  # toolchain.encode.python). test_release_pipeline.py bewaakt dat die twee overeenkomen.
+  core:
+    name: core (python ${{ matrix.python }}, ruff, pytest)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: apps/core/pyproject.toml
+      - name: ffprobe/mediainfo (lichte analyse in core-tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg mediainfo
+      - run: pip install -e "apps/core[test]"
+      - name: ruff
+        working-directory: apps/core
+        run: ruff check .
+      - name: pytest
+        working-directory: apps/core
+        run: python -m pytest -q -rfEs -p no:cacheprovider
+
+  encoder-unit:
+    name: encoder unit (zonder toolchain)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # zelfde Python als het encode- en alles-in-één-image (Ubuntu 26.04)
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: services/encoder/pyproject.toml
+      # Ubuntu 24.04: FFmpeg 6.1 met libsvtav1; geen dovi_tool/mkvmerge/FFmpeg ≥ 7.1.
+      # Daarom alleen de suites die geen DV-/HDR10+-fixtures of echte encodes vragen.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg acl
+      - run: pip install -e "services/encoder[test]"
+      - name: ruff + mypy
+        working-directory: services/encoder
+        run: ruff check app tests && mypy app
+      - name: pytest (subset)
+        working-directory: services/encoder
+        run: >-
+          python -m pytest -q -rfEs -p no:cacheprovider
+          tests/test_mediaguard_policy.py tests/test_beslissen.py tests/test_bestandsfilter.py
+          tests/test_db.py tests/test_opslag.py tests/test_onderhoud.py
+          tests/test_mediaguard_storage_guard.py tests/test_scanscheduler.py
+          tests/test_smb_helper.py tests/test_ai_controller.py tests/test_integraties.py
+          tests/test_verificatie.py tests/test_systeem.py
+
+  encoder-image:
+    name: encoder volledige suite in toolchain-image (traag)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.heavy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: FFmpeg-bron (gepinde sha256)
+        run: |
+          mkdir -p /tmp/ffmpeg-src
+          curl -fsSL --retry 5 -o "/tmp/ffmpeg-src/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz" \
+            "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz"
+          echo "${FFMPEG_HDR10PLUS_SHA256}  /tmp/ffmpeg-src/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz" | sha256sum -c -
+      - name: build --target test
+        run: |
+          docker buildx build --load --target test \
+            --build-context ffmpeg-src=/tmp/ffmpeg-src \
+            -t mediaguard/encode:test services/encoder
+      - name: pytest + ruff + mypy in het image
+        run: |
+          docker run --rm mediaguard/encode:test python3 -m pytest -q -rfEs -p no:cacheprovider
+          docker run --rm mediaguard/encode:test sh -c "ruff check app tests && mypy app"
+
+  web:
+    name: web (node 22, lint, typecheck, build, e2e)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: core voor e2e (echte core, geen mocks)
+        run: |
+          python -m venv /tmp/corevenv
+          /tmp/corevenv/bin/pip install -e apps/core
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/web
+      - name: Peil-kopieën ongewijzigd (versie + sha256, O-14)
+        run: npm run check:peil
+        working-directory: apps/web
+      - run: npm run lint
+        working-directory: apps/web
+      - run: npm run typecheck
+        working-directory: apps/web
+      - name: unit-tests web (vitest)
+        run: npm run test:unit
+        working-directory: apps/web
+      - run: npm run build
+        working-directory: apps/web
+      - name: playwright browsers
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: e2e (playwright start core + web zelf, zie playwright.config.ts)
+        working-directory: apps/web
+        env:
+          MG_E2E_PYTHON: /tmp/corevenv/bin/python
+        run: npm run e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: apps/web/e2e/.results
+          retention-days: 7
+          # de map begint met een punt: zonder dit wordt hij overgeslagen
+          include-hidden-files: true
+
+  forks:
+    name: fork-images bouwen (${{ matrix.app }})
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.heavy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [sonarr, radarr]
+    steps:
+      - uses: actions/checkout@v4
+      - name: build runtime-image uit gepinde upstream-SHA + patches
+        run: forks/${{ matrix.app }}/build.sh
+      - name: unit tests (MediaGuard + decision/import engines)
+        run: forks/${{ matrix.app }}/build.sh --target unittest
+
+  upstream-sync:
+    name: upstream-sync rapport (${{ matrix.app }})
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.heavy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [sonarr, radarr]
+    steps:
+      - uses: actions/checkout@v4
+      - name: sync-upstream.sh (rapportmodus, wijzigt niets)
+        run: forks/${{ matrix.app }}/sync-upstream.sh --out "$RUNNER_TEMP/sync-${{ matrix.app }}"
+      - name: rapport in job-samenvatting
+        if: always()
+        run: cat "$RUNNER_TEMP/sync-${{ matrix.app }}/REPORT.md" >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-sync-${{ matrix.app }}
+          path: ${{ runner.temp }}/sync-${{ matrix.app }}
+          retention-days: 14

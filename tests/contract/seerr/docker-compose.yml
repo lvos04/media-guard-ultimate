@@ -1,0 +1,115 @@
+# Seerr compatibility contract stack (DEEL H, R4, R6.6, Q3.12).
+#
+# Real, unmodified Seerr + a real Jellyfin (Seerr needs a media server to initialize) +
+# the four MediaGuard fork instances (2 fork images) + the stub MediaGuard hook server.
+# Started by tests/contract/seerr/run.sh. Host ports are 2xxxx so this stack can run next to
+# tests/integration/forks (1xxxx).
+name: mgseerr
+
+x-hooks: &hooks
+  MEDIAGUARD_URL: http://stub-mediaguard:8100
+  MEDIAGUARD_HOOK_TIMEOUT_MS: "1500"
+  MEDIAGUARD_HOOK_CIRCUIT_BREAK_SECONDS: "0"
+  MEDIAGUARD_HOOK_FAIL_POLICY: open
+
+x-sonarr: &sonarr
+  image: ${SONARR_IMAGE:-mediaguard/sonarr-fork:bc54afb-mg1}
+  networks: [mgnet]
+  depends_on: [stub-mediaguard]
+
+x-radarr: &radarr
+  image: ${RADARR_IMAGE:-mediaguard/radarr-fork:a96bf7c-mg1}
+  networks: [mgnet]
+  depends_on: [stub-mediaguard]
+
+services:
+  stub-mediaguard:
+    image: ${FAKES_IMAGE:-mirror.gcr.io/library/python:3.12-slim-bookworm}
+    user: "1000:1000"
+    command: ["python", "-u", "/fakes/stub_mediaguard.py", "--port", "8100",
+              "--keys", "sonarr-series=key-sonarr-series,sonarr-anime=key-sonarr-anime,radarr-films=key-radarr-films,radarr-animefilms=key-radarr-animefilms"]
+    volumes: ["../../integration/fakes:/fakes:ro"]
+    networks: [mgnet]
+
+  sonarr-series:
+    <<: *sonarr
+    hostname: sonarr-series
+    environment:
+      <<: *hooks
+      SONARR__AUTH__APIKEY: 5e1a0000000000000000000000000001
+      SONARR__SERVER__PORT: "8989"
+      SONARR__APP__INSTANCENAME: Sonarr sonarr-series
+      MEDIAGUARD_INSTANCE_ID: sonarr-series
+      MEDIAGUARD_HOOK_KEY: key-sonarr-series
+    volumes: ["sonarr-series-config:/config", "./.run/media/sonarr-series:/media/tv"]
+    ports: ["127.0.0.1:28989:8989"]
+
+  sonarr-anime:
+    <<: *sonarr
+    hostname: sonarr-anime
+    environment:
+      <<: *hooks
+      SONARR__AUTH__APIKEY: 5e1a0000000000000000000000000002
+      SONARR__SERVER__PORT: "8990"
+      SONARR__APP__INSTANCENAME: Sonarr sonarr-anime
+      MEDIAGUARD_INSTANCE_ID: sonarr-anime
+      MEDIAGUARD_HOOK_KEY: key-sonarr-anime
+    volumes: ["sonarr-anime-config:/config", "./.run/media/sonarr-anime:/media/anime"]
+    ports: ["127.0.0.1:28990:8990"]
+
+  radarr-films:
+    <<: *radarr
+    hostname: radarr-films
+    environment:
+      <<: *hooks
+      RADARR__AUTH__APIKEY: 5e1a0000000000000000000000000003
+      RADARR__SERVER__PORT: "7878"
+      RADARR__APP__INSTANCENAME: radarr-films
+      MEDIAGUARD_INSTANCE_ID: radarr-films
+      MEDIAGUARD_HOOK_KEY: key-radarr-films
+    volumes: ["radarr-films-config:/config", "./.run/media/radarr-films:/media/movies"]
+    ports: ["127.0.0.1:27878:7878"]
+
+  radarr-animefilms:
+    <<: *radarr
+    hostname: radarr-animefilms
+    environment:
+      <<: *hooks
+      RADARR__AUTH__APIKEY: 5e1a0000000000000000000000000004
+      RADARR__SERVER__PORT: "7879"
+      RADARR__APP__INSTANCENAME: radarr-animefilms
+      MEDIAGUARD_INSTANCE_ID: radarr-animefilms
+      MEDIAGUARD_HOOK_KEY: key-radarr-animefilms
+    volumes: ["radarr-animefilms-config:/config", "./.run/media/radarr-animefilms:/media/animefilms"]
+    ports: ["127.0.0.1:27879:7879"]
+
+  jellyfin:
+    image: ${JELLYFIN_IMAGE:-ghcr.io/jellyfin/jellyfin:12.4}
+    hostname: jellyfin
+    volumes: ["jellyfin-config:/config", "jellyfin-cache:/cache"]
+    networks: [mgnet]
+    ports: ["127.0.0.1:28096:8096"]
+
+  seerr:
+    image: ${SEERR_IMAGE:-ghcr.io/seerr-team/seerr:v3.5.1}
+    hostname: seerr
+    init: true
+    environment:
+      LOG_LEVEL: debug
+      TZ: Europe/Amsterdam
+    volumes: ["seerr-config:/app/config"]
+    networks: [mgnet]
+    ports: ["127.0.0.1:25055:5055"]
+    depends_on: [jellyfin, sonarr-series, sonarr-anime, radarr-films, radarr-animefilms]
+
+volumes:
+  sonarr-series-config:
+  sonarr-anime-config:
+  radarr-films-config:
+  radarr-animefilms-config:
+  jellyfin-config:
+  jellyfin-cache:
+  seerr-config:
+
+networks:
+  mgnet:

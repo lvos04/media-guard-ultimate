@@ -1,0 +1,20 @@
+/* Peil 1.1.0 (docs/ontwerp/PEIL_MIGRATIE.md §8). Volgorde is bindend.
+   De bestaande MediaGuard-stijl staat in de cascadelaag "legacy" (tussen Tailwinds base en utilities): Peil-tokens →
+   mg.css + av1.css → gedeelde aliaslaag → MediaGuard-correcties (peil-mg.css). Zo winnen Tailwind-utilities en de
+   shadcn/ui-componenten (fase 2) altijd van mg.css, en mg.css nog steeds van de Tailwind-preflight. */
+@layer theme, base, legacy, components, utilities;
+@import "tailwindcss";
+@import "../styles/peil/ontwerptaal.css";
+@import "../styles/mg.css" layer(legacy);
+@import "../styles/av1.css" layer(legacy);
+@import "../styles/peil/mediaguard-mso.css" layer(legacy);
+@import "../styles/peil-mg.css" layer(legacy);
+
+/* "table" is een MediaGuard-klassennaam (.table, .table--stack), geen Tailwind-utility: niet genereren, anders wint
+   display:table van de gestapelde tabel op de telefoon. */
+@source not inline("table");
+
+@layer legacy {
+  /* groepskop in tabellen (bv. Release Lab: "312 afgewezen: …") */
+  .table tr.table-group td { background: var(--muted); font-size: 0.875rem; padding-top: 10px; padding-bottom: 8px; }
+}

@@ -1,0 +1,43 @@
+import type { nl } from "../webpunten";
+
+export const en: Record<keyof typeof nl, string> = {
+  "unsaved.title": "Not saved",
+  "unsaved.body": "Your changes are not saved yet. If you continue, they are lost.",
+  "unsaved.stay": "Stay",
+  "unsaved.leave": "Discard and continue",
+
+  "titleSet.title": "Settings for this title",
+  "titleSet.noSearch": "Stop searching",
+  "titleSet.noSearchHintSeries": "MediaGuard no longer searches for this series. New episodes via RSS still arrive while the series is monitored.",
+  "titleSet.noSearchHintMovie": "MediaGuard no longer searches for this movie. A release via RSS still arrives while the movie is monitored.",
+  "titleSet.noSearchOn": "MediaGuard no longer searches for this title",
+  "titleSet.noSearchOff": "MediaGuard searches for this title again",
+  "titleSet.exceptions": "Exceptions ({count})",
+  "titleSet.none": "No exceptions: this title follows your normal settings.",
+  "titleSet.add": "Add an exception",
+  "titleSet.pickCategory": "Choose a topic…",
+  "titleSet.allSet": "Everything in this topic is already an exception.",
+  "titleSet.remove": "Remove exception",
+  "titleSet.removed": "Exception removed",
+  "titleSet.savedBody": "Applies to this title only.",
+  "titleSet.allSettings": "All settings",
+  "titleSet.otherTitle": "Choose another title",
+  "titleSet.pickFirst": "Choose a title above first.",
+
+  "delivery.statusTitle": "Delivery",
+  "delivery.runningFor": "Running for {age}",
+  "delivery.deliveredAfter": "Delivered after {age}",
+  "delivery.age.lessHour": "less than an hour",
+  "delivery.age.hours": "{count} h",
+  "delivery.age.days": "{count} day(s)",
+  "delivery.attempts": "{count} search attempt(s)",
+  "delivery.searchNow": "Search now",
+  "delivery.searchNowLabel": "Search now for {title}",
+  "delivery.searched": "Search sent",
+  "delivery.notSearched": "Not searched",
+  "delivery.showAll": "Show all {count}",
+
+  "estop.releaseFailed": "Could not release the emergency stop",
+  "hero.estop": "Emergency stop is on: MediaGuard does nothing until you release it.",
+  "hero.estopPaused": "Emergency stop is on: {count} encode(s) paused.",
+};

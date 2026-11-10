@@ -1,0 +1,362 @@
+{
+ "overzicht-licht-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(29, 102, 201)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [
+   "a \"NachttreinS02E02 · 11 nov 2026Verwacht\"",
+   "a \"NachttreinS02E03 · 12 nov 2026Verwacht\"",
+   "a \"Noorderzondigitaal · 14 nov 2026Verwacht\"",
+   "a \"BergpasS03E06 · 15 nov 2026Verwacht\""
+  ],
+  "focusstijlen": [
+   "solid 2px rgb(29, 102, 201)"
+  ],
+  "grafieken": []
+ },
+ "bibliotheek-licht-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(29, 102, 201)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [
+   "a \"De Kustlijn2020 · HBO\""
+  ],
+  "focusstijlen": [
+   "solid 2px rgb(29, 102, 201)",
+   "none 3px rgb(14, 22, 36) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "instellingen-licht-390": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(29, 102, 201)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [
+   "a \"Dolby VisionBeleid en uitzonderingen per\"",
+   "a \"Kwaliteit & profielenKwaliteitsprofielen\"",
+   "input \"\"",
+   "input \"\""
+  ],
+  "focusstijlen": [
+   "solid 2px rgb(29, 102, 201)",
+   "none 3px rgb(14, 22, 36) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "terugzetten-licht-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(29, 102, 201)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [
+   "a \"Details\"",
+   "button \"Terugzetten\"",
+   "button \"Meer acties\""
+  ],
+  "focusstijlen": [
+   "solid 2px rgb(29, 102, 201)",
+   "solid 2px rgb(29, 102, 201) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "systeem-licht-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(29, 102, 201)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [
+   "button \"Geavanceerd tonen (2)\"",
+   "button \"Lege map weghalen\"",
+   "button \"Nu controleren\""
+  ],
+  "focusstijlen": [
+   "solid 2px rgb(29, 102, 201)",
+   "none 3px rgb(14, 22, 36) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "overzicht-licht-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(29, 102, 201)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 2px rgb(29, 102, 201)"
+  ],
+  "grafieken": []
+ },
+ "bibliotheek-licht-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(29, 102, 201)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 2px rgb(29, 102, 201)",
+   "none 3px rgb(14, 22, 36) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "instellingen-licht-1440": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(29, 102, 201)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 2px rgb(29, 102, 201)",
+   "none 3px rgb(14, 22, 36) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "terugzetten-licht-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(29, 102, 201)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 2px rgb(29, 102, 201)",
+   "solid 2px rgb(29, 102, 201) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "systeem-licht-1440": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(29, 102, 201)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 2px rgb(29, 102, 201)",
+   "none 3px rgb(14, 22, 36) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "overzicht-donker-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(142, 193, 255)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [
+   "a \"NachttreinS02E02 · 11 nov 2026Verwacht\"",
+   "a \"NachttreinS02E03 · 12 nov 2026Verwacht\"",
+   "a \"Noorderzondigitaal · 14 nov 2026Verwacht\"",
+   "a \"BergpasS03E06 · 15 nov 2026Verwacht\""
+  ],
+  "focusstijlen": [
+   "solid 2px rgb(142, 193, 255)"
+  ],
+  "grafieken": []
+ },
+ "bibliotheek-donker-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(142, 193, 255)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [
+   "a \"De Kustlijn2020 · HBO\""
+  ],
+  "focusstijlen": [
+   "solid 2px rgb(142, 193, 255)",
+   "none 3px rgb(240, 244, 250) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "instellingen-donker-390": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(142, 193, 255)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [
+   "a \"Dolby VisionBeleid en uitzonderingen per\"",
+   "a \"Kwaliteit & profielenKwaliteitsprofielen\"",
+   "input \"\"",
+   "input \"\""
+  ],
+  "focusstijlen": [
+   "solid 2px rgb(142, 193, 255)",
+   "none 3px rgb(240, 244, 250) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "terugzetten-donker-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(142, 193, 255)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [
+   "a \"Details\"",
+   "button \"Terugzetten\"",
+   "button \"Meer acties\""
+  ],
+  "focusstijlen": [
+   "solid 2px rgb(142, 193, 255)",
+   "solid 2px rgb(79, 156, 249)",
+   "solid 2px rgb(142, 193, 255) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "systeem-donker-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(142, 193, 255)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [
+   "button \"Geavanceerd tonen (2)\"",
+   "button \"Lege map weghalen\"",
+   "button \"Nu controleren\""
+  ],
+  "focusstijlen": [
+   "solid 2px rgb(142, 193, 255)",
+   "none 3px rgb(240, 244, 250) + box-shadow",
+   "solid 2px rgb(79, 156, 249)"
+  ],
+  "grafieken": []
+ },
+ "overzicht-donker-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(142, 193, 255)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 2px rgb(142, 193, 255)"
+  ],
+  "grafieken": []
+ },
+ "bibliotheek-donker-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(142, 193, 255)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 2px rgb(142, 193, 255)",
+   "none 3px rgb(240, 244, 250) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "instellingen-donker-1440": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(142, 193, 255)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 2px rgb(142, 193, 255)",
+   "none 3px rgb(240, 244, 250) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "terugzetten-donker-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(142, 193, 255)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 2px rgb(142, 193, 255)",
+   "solid 2px rgb(79, 156, 249)",
+   "solid 2px rgb(142, 193, 255) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "systeem-donker-1440": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 2px rgb(142, 193, 255)",
+   "schaduw": false,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 2px rgb(142, 193, 255)",
+   "none 3px rgb(240, 244, 250) + box-shadow",
+   "solid 2px rgb(79, 156, 249)"
+  ],
+  "grafieken": []
+ }
+}

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- lucide "octagon-x" uit lucide-react 1.66.0 (ISC; zie assets/licenses/lucide-LICENSE.txt).
+     Gegenereerd door apps/android/tools/lucide_naar_vector.mjs; niet met de hand wijzigen. Kleur via de tint. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:pathData="m15 9 -6 6"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M2.586 16.726 A2 2 0 0 1 2 15.312 V8.688 a2 2 0 0 1 0.586 -1.414 l4.688 -4.688 A2 2 0 0 1 8.688 2 h6.624 a2 2 0 0 1 1.414 0.586 l4.688 4.688 A2 2 0 0 1 22 8.688 v6.624 a2 2 0 0 1 -0.586 1.414 l-4.688 4.688 a2 2 0 0 1 -1.414 0.586 H8.688 a2 2 0 0 1 -1.414 -0.586 z"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="m9 9 6 6"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+</vector>

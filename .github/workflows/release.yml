@@ -1,0 +1,420 @@
+# MediaGuard Ultimate — release: testen, bouwen, rooktest en pas dan publiceren naar GHCR.
+#
+# Trigger: een tag v* (bv. v0.1.0), een branch release/v<versie> of handmatig (met versie).
+# Volgorde; niets komt onder een versietag te staan voordat alles groen is:
+#   1. meta         versie bepalen; stopt als die versie al in GHCR staat (tags zijn vast)
+#   2. tests        de jobs uit ci.yml: core (Python 3.12 én 3.14), encoder-unit en web
+#   3. *-images     core/web/encode en de forks bouwen (pas na geslaagde tests) en als
+#                   kandidaat pushen: <tag>-kandidaat-<run-id>
+#   4. aio-image    alles-in-één uit die kandidaten, ook als kandidaat
+#   5. aio-smoke    het AIO-image starten op een gevulde database van een eerdere versie:
+#                   health, versie, inloggen, migraties en nette stop (scripts/aio-smoke.py)
+#   6. publish      de kandidaten onder de echte tags zetten, zonder opnieuw te bouwen;
+#                   de AIO-tag als laatste
+# TrueNAS "Install via YAML" bouwt niets zelf; deploy/truenas/compose.yaml verwijst naar:
+#   ghcr.io/lvos04/mediaguard-{core,web,encode}:<versie>
+#   ghcr.io/lvos04/mediaguard-sonarr-fork:<UPSTREAM_VERSION>-<MG_PATCH_REV>  (+ :<sha7>-<rev>)
+#   ghcr.io/lvos04/mediaguard-radarr-fork:<UPSTREAM_VERSION>-<MG_PATCH_REV>  (+ :<sha7>-<rev>)
+# Een fork-tag die al bestaat wordt hergebruikt en nooit overschreven. Andere patches of een
+# ander Dockerfile vragen een nieuwe MG_PATCH_REV in forks/<app>/Dockerfile.
+# Kandidaat-tags zijn tussenstappen van één run; gebruik ze niet in TrueNAS.
+# Na de eerste publicatie: maak de packages publiek (GitHub → Packages → Package settings →
+# Change visibility) of geef TrueNAS een registry-credential voor ghcr.io.
+# Alleen linux/amd64. Nooit 'latest'.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+    # alternatief voor een tag-push: een branch release/v<versie> (de workflow maakt dan zelf
+    # de tag v<versie> aan zodra alle images gepubliceerd zijn)
+    branches: ["release/v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versie zonder v (bv. 0.1.0); moet gelijk zijn aan deploy/release-manifest.json"
+        required: true
+        default: "0.1.0"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: lvos04
+  FFMPEG_HDR10PLUS_VERSION: "8.1.3"
+  FFMPEG_HDR10PLUS_SHA256: "7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3"
+
+jobs:
+  meta:
+    name: versie bepalen
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      created: ${{ steps.v.outputs.created }}
+      candidate: ${{ steps.v.outputs.candidate }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then V="${{ inputs.version }}"
+          elif [ "${GITHUB_REF_TYPE}" = "branch" ]; then V="${GITHUB_REF_NAME#release/v}"
+          else V="${GITHUB_REF_NAME#v}"; fi
+          M="$(python3 -c 'import json;print(json.load(open("deploy/release-manifest.json"))["version"])')"
+          if [ "$V" != "$M" ]; then
+            echo "::error::versie $V wijkt af van deploy/release-manifest.json ($M)"; exit 1
+          fi
+          {
+            echo "version=$V"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            # tussentag van deze run; pas na de rooktest komen de echte tags (job publish)
+            echo "candidate=kandidaat-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: versie nog niet gepubliceerd (tags worden nooit overschreven)
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          R="${REGISTRY}/${OWNER}"
+          for ref in "$R/mediaguard-core:$VERSION" "$R/mediaguard-web:$VERSION" \
+                     "$R/mediaguard-encode:$VERSION" "$R/mediaguard-core:$VERSION-aio"; do
+            rc=0; scripts/image-tag-exists.sh "$ref" || rc=$?
+            case "$rc" in
+              0) echo "::error::$ref bestaat al. Een versietag wordt nooit overschreven: verhoog de versie."; exit 1 ;;
+              1) echo "$ref: nog vrij" ;;
+              *) echo "::error::kan niet controleren of $ref al bestaat; er wordt niets gepubliceerd."; exit 1 ;;
+            esac
+          done
+
+  # Dezelfde jobs als bij elke push (ci.yml): core op Python 3.12 (losse core-image) én 3.14
+  # (alles-in-één), encoder-unit en web (lint, typecheck, build, e2e).
+  tests:
+    name: tests
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  app-images:
+    name: ${{ matrix.name }}
+    needs: [meta, tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: core
+            context: apps/core
+            title: MediaGuard core/recovery
+            license: "GPL-3.0-only"
+          - name: web
+            context: apps/web
+            title: MediaGuard web
+            license: "GPL-3.0-only"
+          - name: encode
+            context: services/encoder
+            title: MediaGuard encode (AV1-engine, lvos04/av1)
+            license: "GPL-3.0-only"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: FFmpeg-bron voor de HDR10+-route (gepinde sha256)
+        if: matrix.name == 'encode'
+        run: |
+          mkdir -p /tmp/ffmpeg-src
+          F="/tmp/ffmpeg-src/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz"
+          # ffmpeg.org reset verbindingen soms (release 0.2.13): herhalen en uitwijken naar
+          # de officiële GitHub-mirror; de sha256 hieronder controleert de inhoud
+          for url in "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz" \
+                     "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG_HDR10PLUS_VERSION}.tar.gz#skip"; do
+            case "$url" in *"#skip") continue ;; esac
+            curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 -o "$F" "$url" && break
+          done
+          if ! echo "${FFMPEG_HDR10PLUS_SHA256}  $F" | sha256sum -c - >/dev/null 2>&1; then
+            sleep 30
+            curl -fsSL --retry 8 --retry-all-errors --retry-delay 10 -o "$F" \
+              "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz"
+          fi
+          echo "${FFMPEG_HDR10PLUS_SHA256}  /tmp/ffmpeg-src/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz" | sha256sum -c -
+      - name: build + push (kandidaat)
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          CREATED: ${{ needs.meta.outputs.created }}
+          CANDIDATE: ${{ needs.meta.outputs.candidate }}
+        run: |
+          IMAGE="${REGISTRY}/${OWNER}/mediaguard-${{ matrix.name }}"
+          EXTRA=()
+          case "${{ matrix.name }}" in
+            core)   EXTRA=(--build-context release=deploy) ;;
+            encode) EXTRA=(--build-context ffmpeg-src=/tmp/ffmpeg-src --target runtime) ;;
+          esac
+          docker buildx build --push --platform linux/amd64 "${EXTRA[@]}" \
+            -t "${IMAGE}:${VERSION}-${CANDIDATE}" \
+            --label "org.opencontainers.image.title=${{ matrix.title }}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.created=${CREATED}" \
+            --label "org.opencontainers.image.licenses=${{ matrix.license }}" \
+            --label "org.opencontainers.image.description=MediaGuard Ultimate ${VERSION} (${{ matrix.name }})" \
+            ${{ matrix.context }}
+
+  fork-images:
+    name: ${{ matrix.app }}-fork
+    needs: [meta, tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: sonarr
+            upstream: https://github.com/Sonarr/Sonarr
+          - app: radarr
+            upstream: https://github.com/Radarr/Radarr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: bestaande tag hergebruiken of opnieuw bouwen
+        id: f
+        run: |
+          D="forks/${{ matrix.app }}"
+          VER="$(sed -n 's/^ARG UPSTREAM_VERSION=//p' "$D/Dockerfile")"
+          REV="$(sed -n 's/^ARG MG_PATCH_REV=//p' "$D/Dockerfile")"; REV="${REV:-mg1}"
+          FINAL="${REGISTRY}/${OWNER}/mediaguard-${{ matrix.app }}-fork:${VER}-${REV}"
+          PATCHES="$(cat "$D"/patches/*.patch | sha256sum | cut -c1-16)"
+          DOCKERFILE="$(sha256sum "$D/Dockerfile" | cut -c1-16)"
+          rc=0; scripts/image-tag-exists.sh "$FINAL" || rc=$?
+          case "$rc" in
+            0)
+              docker pull -q "$FINAL" >/dev/null
+              HAVE_P="$(docker inspect -f '{{ with index .Config.Labels "io.mediaguard.patches.sha256" }}{{ . }}{{ end }}' "$FINAL")"
+              HAVE_D="$(docker inspect -f '{{ with index .Config.Labels "io.mediaguard.dockerfile.sha256" }}{{ . }}{{ end }}' "$FINAL")"
+              if [ "$HAVE_P" != "$PATCHES" ] || { [ -n "$HAVE_D" ] && [ "$HAVE_D" != "$DOCKERFILE" ]; }; then
+                echo "::error::$FINAL bestaat al met andere patches of een ander Dockerfile. Verhoog MG_PATCH_REV in $D/Dockerfile (een bestaande tag wordt nooit overschreven)."
+                exit 1
+              fi
+              echo "::notice::$FINAL bestaat al met dezelfde patches: hergebruikt, niet opnieuw gebouwd."
+              echo "build=false" >> "$GITHUB_OUTPUT" ;;
+            1) echo "build=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit 1 ;;
+          esac
+      - name: build (gepinde upstream-SHA + patchreeks, forks/${{ matrix.app }}/build.sh)
+        if: steps.f.outputs.build == 'true'
+        env:
+          CREATED: ${{ needs.meta.outputs.created }}
+        run: |
+          D="forks/${{ matrix.app }}"
+          SHA="$(sed -n 's/^ARG UPSTREAM_SHA=//p' "$D/Dockerfile")"
+          VER="$(sed -n 's/^ARG UPSTREAM_VERSION=//p' "$D/Dockerfile")"
+          REV="$(sed -n 's/^ARG MG_PATCH_REV=//p' "$D/Dockerfile")"; REV="${REV:-mg1}"
+          IMAGE_REPO="${REGISTRY}/${OWNER}/mediaguard-${{ matrix.app }}-fork" "$D/build.sh" \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.title=MediaGuard ${{ matrix.app }} fork" \
+            --label "org.opencontainers.image.version=${VER}-${REV}" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.created=${CREATED}" \
+            --label "org.opencontainers.image.licenses=GPL-3.0-only" \
+            --label "org.opencontainers.image.base.name=${{ matrix.upstream }}@${SHA}" \
+            --label "io.mediaguard.upstream.sha=${SHA}" \
+            --label "io.mediaguard.gpl-source=Corresponding source: ${{ matrix.upstream }} @ ${SHA} + patches in ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}/forks/${{ matrix.app }}/patches (GPL-3.0)" \
+            --label "org.opencontainers.image.description=${{ matrix.app }} ${VER} + MediaGuard-patchreeks ${REV} (GPL-3.0; broncode: upstream-SHA + forks/${{ matrix.app }}/patches)"
+          echo "VER=${VER}" >> "$GITHUB_ENV"
+          echo "REV=${REV}" >> "$GITHUB_ENV"
+      - name: push (kandidaat)
+        if: steps.f.outputs.build == 'true'
+        env:
+          CANDIDATE: ${{ needs.meta.outputs.candidate }}
+        run: |
+          IMAGE="${REGISTRY}/${OWNER}/mediaguard-${{ matrix.app }}-fork"
+          docker tag "${IMAGE}:${VER}-${REV}" "${IMAGE}:${VER}-${REV}-${CANDIDATE}"
+          docker push "${IMAGE}:${VER}-${REV}-${CANDIDATE}"
+
+  # Alles-in-één-image voor TrueNAS' gewone "Custom App"-formulier (deploy/aio). Wordt als
+  # tag <versie>-aio in het (al publieke) package mediaguard-core gepubliceerd, zodat er geen
+  # nieuw package met andere zichtbaarheid ontstaat.
+  aio-image:
+    name: alles-in-één
+    needs: [meta, app-images, fork-images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build + push (kandidaat)
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          CREATED: ${{ needs.meta.outputs.created }}
+          CANDIDATE: ${{ needs.meta.outputs.candidate }}
+        run: |
+          R="${REGISTRY}/${OWNER}"
+          fork() {  # bestaande (hergebruikte) fork-tag, anders de kandidaat van deze run
+            local app="$1" ver rev final rc=0
+            ver="$(sed -n 's/^ARG UPSTREAM_VERSION=//p' "forks/$app/Dockerfile")"
+            rev="$(sed -n 's/^ARG MG_PATCH_REV=//p' "forks/$app/Dockerfile")"; rev="${rev:-mg1}"
+            final="${R}/mediaguard-${app}-fork:${ver}-${rev}"
+            scripts/image-tag-exists.sh "$final" || rc=$?
+            case "$rc" in
+              0) echo "$final" ;;
+              1) echo "${final}-${CANDIDATE}" ;;
+              *) return 1 ;;
+            esac
+          }
+          SONARR="$(fork sonarr)"; RADARR="$(fork radarr)"
+          echo "Sonarr: $SONARR"; echo "Radarr: $RADARR"
+          docker buildx build --push --platform linux/amd64 \
+            -f deploy/aio/Dockerfile \
+            --build-context core=apps/core --build-context release=deploy \
+            --build-arg "ENCODE_IMAGE=${R}/mediaguard-encode:${VERSION}-${CANDIDATE}" \
+            --build-arg "WEB_IMAGE=${R}/mediaguard-web:${VERSION}-${CANDIDATE}" \
+            --build-arg "SONARR_IMAGE=${SONARR}" \
+            --build-arg "RADARR_IMAGE=${RADARR}" \
+            -t "${R}/mediaguard-core:${VERSION}-aio-${CANDIDATE}" \
+            --label "org.opencontainers.image.title=MediaGuard Ultimate (alles-in-één)" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.created=${CREATED}" \
+            --label "org.opencontainers.image.description=MediaGuard Ultimate ${VERSION}: core, web, AV1-engine en Sonarr/Radarr-forks (GPL-3.0, broncode in forks/) in één image" \
+            deploy/aio
+
+  # Het image dat TrueNAS draait één keer echt starten vóór publicatie: op een gevulde
+  # database van een eerdere versie (tests/fixtures/aio), als root gestart en met de drie
+  # mappen van 568, net als de Custom App. Zie scripts/aio-smoke.py.
+  aio-smoke:
+    name: rooktest alles-in-één
+    needs: [meta, aio-image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: start, health, versie, inloggen, migratie en nette stop
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          CANDIDATE: ${{ needs.meta.outputs.candidate }}
+        run: |
+          IMG="${REGISTRY}/${OWNER}/mediaguard-core:${VERSION}-aio-${CANDIDATE}"
+          docker pull -q "$IMG"
+          sudo --preserve-env=GITHUB_STEP_SUMMARY python3 scripts/aio-smoke.py \
+            --image "$IMG" --version "$VERSION"
+
+  # Pas hier komen de echte tags: tests, bouw en rooktest zijn geslaagd. Kopiëren in de
+  # registry (geen nieuwe build), dus precies het geteste image. Bestaat een tag inmiddels
+  # toch met een ander image, dan stopt de job zonder iets te overschrijven. Mislukt deze job
+  # halverwege: 'Re-run failed jobs' maakt hem af (tags die al goed staan worden overgeslagen).
+  publish:
+    name: publiceren
+    needs: [meta, tests, app-images, fork-images, aio-image, aio-smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: kandidaten onder de versietags zetten
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          CANDIDATE: ${{ needs.meta.outputs.candidate }}
+        run: |
+          R="${REGISTRY}/${OWNER}"
+          # scripts/promote-image.sh: een bestaande tag wordt nooit overschreven; staat hij al op
+          # precies dit image (eerdere poging, 'Re-run failed jobs'), dan slaat hij hem over.
+          for app in sonarr radarr; do
+            D="forks/$app"
+            SHA="$(sed -n 's/^ARG UPSTREAM_SHA=//p' "$D/Dockerfile")"
+            VER="$(sed -n 's/^ARG UPSTREAM_VERSION=//p' "$D/Dockerfile")"
+            REV="$(sed -n 's/^ARG MG_PATCH_REV=//p' "$D/Dockerfile")"; REV="${REV:-mg1}"
+            IMAGE="${R}/mediaguard-${app}-fork"
+            # alleen een fork die deze run gebouwd heeft, heeft een kandidaat-tag
+            rc=0; scripts/image-tag-exists.sh "${IMAGE}:${VER}-${REV}-${CANDIDATE}" || rc=$?
+            case "$rc" in
+              0) scripts/promote-image.sh "${IMAGE}:${VER}-${REV}-${CANDIDATE}" \
+                   "${IMAGE}:${VER}-${REV}" "${IMAGE}:${SHA:0:7}-${REV}" ;;
+              1) rc=0; scripts/image-tag-exists.sh "${IMAGE}:${VER}-${REV}" || rc=$?
+                 if [ "$rc" -ne 0 ]; then
+                   echo "::error::${IMAGE}:${VER}-${REV} ontbreekt en is niet gebouwd"; exit 1
+                 fi
+                 echo "${IMAGE}:${VER}-${REV} hergebruikt" ;;
+              *) exit 1 ;;
+            esac
+          done
+          for n in core web encode; do
+            scripts/promote-image.sh "${R}/mediaguard-$n:${VERSION}-${CANDIDATE}" "${R}/mediaguard-$n:${VERSION}"
+          done
+          # als laatste: het image dat TrueNAS (Custom App) gebruikt
+          scripts/promote-image.sh "${R}/mediaguard-core:${VERSION}-aio-${CANDIDATE}" "${R}/mediaguard-core:${VERSION}-aio"
+
+  summary:
+    needs: [meta, publish]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          V="${{ needs.meta.outputs.version }}"
+          {
+            echo "## MediaGuard ${V} gepubliceerd"
+            echo
+            echo "| image | tag |"; echo "|---|---|"
+            for n in core web encode; do echo "| ghcr.io/${OWNER}/mediaguard-$n | $V |"; done
+            echo "| ghcr.io/${OWNER}/mediaguard-core (alles-in-één) | ${V}-aio |"
+            for app in sonarr radarr; do
+              VER="$(sed -n 's/^ARG UPSTREAM_VERSION=//p' "forks/$app/Dockerfile")"
+              REV="$(sed -n 's/^ARG MG_PATCH_REV=//p' "forks/$app/Dockerfile")"
+              echo "| ghcr.io/${OWNER}/mediaguard-${app}-fork | ${VER}-${REV:-mg1} |"
+            done
+            echo
+            echo "Maak de packages publiek of voeg in TrueNAS een ghcr.io-credential toe."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Bij een release/v*-branch: tag v<versie> aanmaken nadat alle images gepubliceerd zijn.
+  tag:
+    name: tag v${{ needs.meta.outputs.version }}
+    if: github.ref_type == 'branch'
+    needs: [meta, publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          T="v${{ needs.meta.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$T" >/dev/null; then
+            echo "tag $T bestaat al"; exit 0
+          fi
+          git tag -a "$T" -m "MediaGuard Ultimate ${{ needs.meta.outputs.version }}"
+          git push origin "$T"

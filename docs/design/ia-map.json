@@ -1,0 +1,533 @@
+{
+ "routes": {
+  "/": {
+   "area": "Overzicht",
+   "where": "—",
+   "behaviour": "blijft"
+  },
+  "/activiteit": {
+   "area": "Activiteit",
+   "where": "filterchips: Nu · Problemen · Downloads · Wat is er gebeurd · Geschiedenis",
+   "behaviour": "blijft"
+  },
+  "/aanvragen": {
+   "area": "Aanvragen",
+   "where": "Zoeken & ontdekken · Mijn aanvragen · Levering",
+   "behaviour": "nieuw"
+  },
+  "/bibliotheek": {
+   "area": "Bibliotheek",
+   "where": "Series · Anime · Films (+ Ontbrekend, Kalender als chips)",
+   "behaviour": "blijft"
+  },
+  "/bibliotheek/[instance]/[id]": {
+   "area": "Bibliotheek › titel",
+   "where": "Seizoenen (aan/uit) · Kwaliteit · Upgrades",
+   "behaviour": "blijft"
+  },
+  "/bibliotheek/[instance]/[id]/aflevering/[episode]": {
+   "area": "Bibliotheek › aflevering",
+   "where": "Kwaliteit · Upgrades · Video en audio",
+   "behaviour": "blijft"
+  },
+  "/ontbrekend": {
+   "area": "Bibliotheek",
+   "where": "chip Ontbrekend",
+   "behaviour": "blijft"
+  },
+  "/kalender": {
+   "area": "Bibliotheek",
+   "where": "chip Kalender",
+   "behaviour": "blijft"
+  },
+  "/av1": {
+   "area": "Ruimte",
+   "where": "tab Besparing (+ sectie #opslag)",
+   "behaviour": "blijft"
+  },
+  "/av1/wachtrij": {
+   "area": "Ruimte",
+   "where": "tab Wachtrij",
+   "behaviour": "blijft"
+  },
+  "/av1/kwaliteit": {
+   "area": "Ruimte",
+   "where": "tab Kwaliteit",
+   "behaviour": "blijft"
+  },
+  "/quarantaine": {
+   "area": "Ruimte",
+   "where": "tab Terugzetten",
+   "behaviour": "blijft"
+  },
+  "/av1/instellingen": {
+   "area": "Instellingen › AV1-engine",
+   "where": "via Instellingen#av1 en knop 'Instellingen' op Ruimte",
+   "behaviour": "blijft"
+  },
+  "/instellingen": {
+   "area": "Instellingen",
+   "where": "één pagina: secties + inhoudsopgave + zoeken",
+   "behaviour": "blijft"
+  },
+  "/instellingen/instanties": {
+   "area": "Instellingen › Instanties",
+   "where": "Instellingen#koppelingen",
+   "behaviour": "blijft"
+  },
+  "/inrichten": {
+   "area": "Instellingen › Koppelingen",
+   "where": "Instellingen#koppelingen (eigen tabrij)",
+   "behaviour": "blijft"
+  },
+  "/kwaliteit": {
+   "area": "Instellingen › Kwaliteit & profielen",
+   "where": "Instellingen#downloads",
+   "behaviour": "blijft"
+  },
+  "/systeem": {
+   "area": "Instellingen › Systeem",
+   "where": "Instellingen#systeem",
+   "behaviour": "blijft"
+  },
+  "/instellingen/meldingen": {
+   "area": "Instellingen › Meldingen",
+   "where": "Instellingen#meldingen",
+   "behaviour": "blijft"
+  },
+  "/instellingen/gebruikers": {
+   "area": "Instellingen › Gebruikers",
+   "where": "Instellingen#beveiliging",
+   "behaviour": "blijft"
+  },
+  "/instellingen/api-sleutels": {
+   "area": "Instellingen › API-sleutels & app",
+   "where": "Instellingen#beveiliging",
+   "behaviour": "blijft"
+  },
+  "/instellingen/geheimen": {
+   "area": "Instellingen › Geheimen",
+   "where": "Instellingen#beveiliging",
+   "behaviour": "blijft"
+  },
+  "/instellingen/beveiliging": {
+   "area": "Instellingen › Beveiliging",
+   "where": "Instellingen#beveiliging",
+   "behaviour": "blijft"
+  },
+  "/instellingen/audit": {
+   "area": "Activiteit",
+   "where": "Geschiedenis › Audit",
+   "behaviour": "omleiding"
+  },
+  "/instellingen/gevorderd": {
+   "area": "Instellingen",
+   "where": "#gereedschap",
+   "behaviour": "omleiding"
+  },
+  "/release-lab": {
+   "area": "Instellingen › Release Lab",
+   "where": "Instellingen#gereedschap",
+   "behaviour": "blijft"
+  },
+  "/anime": {
+   "area": "Instellingen › Anime-routering",
+   "where": "Instellingen#gereedschap",
+   "behaviour": "blijft"
+  },
+  "/dolby-vision": {
+   "area": "Instellingen › Dolby Vision",
+   "where": "Instellingen#av1",
+   "behaviour": "blijft"
+  },
+  "/ai": {
+   "area": "Instellingen › AI-adviseur",
+   "where": "Instellingen#gereedschap",
+   "behaviour": "blijft"
+  },
+  "/audio": {
+   "area": "Instellingen › Audio & ondertiteling",
+   "where": "Instellingen#taal",
+   "behaviour": "blijft"
+  },
+  "/downloads": {
+   "area": "Instellingen › Downloadclients",
+   "where": "Instellingen#koppelingen",
+   "behaviour": "blijft"
+  },
+  "/seerr": {
+   "area": "Instellingen › Seerr",
+   "where": "Instellingen#koppelingen",
+   "behaviour": "blijft"
+  },
+  "/migratie": {
+   "area": "Instellingen › Migratie",
+   "where": "Instellingen#gereedschap (+ Overzicht zolang er een migratie loopt)",
+   "behaviour": "blijft"
+  },
+  "/hoe-werkt-het": {
+   "area": "Hulp",
+   "where": "vraagteken in de kopbalk · Instellingen#gereedschap",
+   "behaviour": "blijft"
+  },
+  "/jobs": {
+   "area": "Activiteit",
+   "where": "Geschiedenis",
+   "behaviour": "omleiding"
+  },
+  "/login": {
+   "area": "Inloggen",
+   "where": "—",
+   "behaviour": "blijft"
+  },
+  "/setup": {
+   "area": "Eerste installatie",
+   "where": "—",
+   "behaviour": "blijft"
+  }
+ },
+ "deep_links": [
+  {
+   "from": "/activiteit?tab=aanvragen",
+   "to": "/aanvragen"
+  },
+  {
+   "from": "/activiteit?tab=opslag",
+   "to": "/av1#opslag"
+  },
+  {
+   "from": "/activiteit?tab=opslag&periode=7d",
+   "to": "/av1?periode=7d#opslag"
+  },
+  {
+   "from": "/activiteit?tab=problemen",
+   "to": "/activiteit?tab=problemen"
+  },
+  {
+   "from": "/activiteit?tab=geschiedenis&view=audit",
+   "to": "/activiteit?tab=geschiedenis&view=audit"
+  },
+  {
+   "from": "/av1/wachtrij?job=1",
+   "to": "/av1/wachtrij?job=1"
+  },
+  {
+   "from": "/av1/wachtrij?status=mislukt",
+   "to": "/av1/wachtrij?status=mislukt"
+  },
+  {
+   "from": "/av1/fouten",
+   "to": "/av1/wachtrij?status=mislukt"
+  },
+  {
+   "from": "/av1/logs?job=1",
+   "to": "/av1/wachtrij?job=1"
+  },
+  {
+   "from": "/av1/profielen",
+   "to": "/av1/instellingen#profielen"
+  },
+  {
+   "from": "/av1/workers",
+   "to": "/av1/instellingen#workers"
+  },
+  {
+   "from": "/av1/ai",
+   "to": "/ai"
+  },
+  {
+   "from": "/av1/beslissingen",
+   "to": "/av1/wachtrij"
+  },
+  {
+   "from": "/av1/bibliotheken",
+   "to": "/av1/instellingen"
+  },
+  {
+   "from": "/av1/encoder-instellingen",
+   "to": "/av1/instellingen"
+  },
+  {
+   "from": "/instellingen/gevorderd",
+   "to": "/instellingen#gereedschap"
+  },
+  {
+   "from": "/instellingen?tab=opslag",
+   "to": "/systeem#opslag"
+  },
+  {
+   "from": "/inrichten?tab=seerr",
+   "to": "/inrichten?tab=seerr"
+  },
+  {
+   "from": "/kwaliteit?tab=optimaliseren",
+   "to": "/kwaliteit?tab=optimaliseren"
+  },
+  {
+   "from": "/systeem#quarantaine-wezen",
+   "to": "/systeem#quarantaine-wezen"
+  },
+  {
+   "from": "/ontbrekend?reason_code=import-failed",
+   "to": "/ontbrekend?reason_code=import-failed"
+  },
+  {
+   "from": "/migratie?run=1",
+   "to": "/migratie?run=1"
+  }
+ ],
+ "settings": [
+  "ai.action_timeout_seconds",
+  "ai.anthropic.base_url",
+  "ai.anthropic.effort",
+  "ai.anthropic.model",
+  "ai.bounded_auto.allowed_actions",
+  "ai.bounded_auto.max_actions_per_day",
+  "ai.bounded_auto.min_benchmark_accuracy",
+  "ai.bounded_auto.min_improvement",
+  "ai.bounded_auto.min_shadow_cases",
+  "ai.budget.currency",
+  "ai.budget.max_calls_per_day",
+  "ai.budget.monthly_limit",
+  "ai.budget.per_analysis_limit",
+  "ai.budget.usd_to_eur",
+  "ai.cache_ttl_days",
+  "ai.max_input_tokens",
+  "ai.max_output_tokens",
+  "ai.max_retries",
+  "ai.mode",
+  "ai.openai.base_url",
+  "ai.openai.model",
+  "ai.price_table",
+  "ai.provider",
+  "ai.retention_days",
+  "ai.retry_budget_per_day",
+  "ai.task_models",
+  "ai.task_types",
+  "ai.timeout_seconds",
+  "app.public_url",
+  "arr.cleanup_removed_titles",
+  "audio.anime_preference",
+  "audio.nl_audio_mode",
+  "audio.nl_subtitles_wanted",
+  "backfill.base_backoff_hours",
+  "backfill.batch_size",
+  "backfill.collect_candidates",
+  "backfill.command_wait_seconds",
+  "backfill.enabled",
+  "backfill.excluded",
+  "backfill.include_cutoff_unmet",
+  "backfill.interval_hours",
+  "backfill.max_backoff_days",
+  "backfill.max_searches_per_day",
+  "backfill.max_searches_per_hour",
+  "backfill.priority",
+  "backfill.priority_recent_days",
+  "backfill.season_search_threshold",
+  "backfill.unavailable_after_attempts",
+  "backfill.unavailable_retry_days",
+  "backup.bundle_retention",
+  "backup.daily_enabled",
+  "backup.offsite.email_channel",
+  "backup.offsite.keep",
+  "backup.offsite.kind",
+  "backup.offsite.path",
+  "backup.offsite.s3_access_key",
+  "backup.offsite.s3_bucket",
+  "backup.offsite.s3_endpoint",
+  "backup.offsite.s3_prefix",
+  "backup.offsite.s3_region",
+  "backup.offsite.webdav_url",
+  "backup.offsite.webdav_user",
+  "backup.retention_count",
+  "delivery.enabled",
+  "downloads.cleanup_enabled",
+  "downloads.cleanup_interval_hours",
+  "downloads.min_free_percent",
+  "downloads.orphan_days",
+  "downloads.public_seed_hours",
+  "downloads.recovery_enabled",
+  "downloads.trash_days",
+  "downloads.unimported_days",
+  "dv.allow_av1",
+  "dv.allowed_profiles",
+  "dv.dv81_route",
+  "dv.hdr10plus_mode",
+  "dv.mode",
+  "dv.show_playback_warnings",
+  "encoding.auto_commit_after_verify",
+  "encoding.autopilot_enabled",
+  "encoding.autopilot_interval_minutes",
+  "encoding.autopilot_lane_buffer",
+  "encoding.autopilot_queue_depth",
+  "encoding.cache_min_free_gb",
+  "encoding.canary_required",
+  "encoding.crf",
+  "encoding.encoder",
+  "encoding.identity_gate",
+  "encoding.keep_all_audio",
+  "encoding.keep_all_subtitles",
+  "encoding.min_saving_percent",
+  "encoding.poll_interval_seconds",
+  "encoding.preset",
+  "hooks.audio_score_step",
+  "hooks.post_import_analysis",
+  "hooks.pregrab_enabled",
+  "hooks.pregrab_identity_check",
+  "hooks.preimport_cache_minutes",
+  "hooks.preimport_defer_on_uncertain",
+  "hooks.preimport_enforce_audio",
+  "identity.ai_tiebreak",
+  "identity.auto_replace_on_mismatch",
+  "identity.duration_tolerance_percent",
+  "identity.mismatch_min_weight",
+  "identity.remember_verified_hashes",
+  "identity.thexem_enabled",
+  "identity.uncertain_auto_keep_days",
+  "imports.stuck_after_hours",
+  "imports.stuck_auto_fix",
+  "instances.health_interval_seconds",
+  "integrity.recovery_verify_checksums",
+  "integrity.release_check_before_purge",
+  "integrity.require_recoverable_copy",
+  "integrity.verify_streams_before_activate",
+  "jobs.max_concurrency",
+  "library.sync_interval_minutes",
+  "library.write_enabled",
+  "logging.level",
+  "maintenance.retention_days_audit",
+  "maintenance.retention_days_events",
+  "maintenance.retention_days_history",
+  "maintenance.retention_days_hooks",
+  "maintenance.retention_days_jobs",
+  "maintenance.retention_days_notifications",
+  "maintenance.retry_transient_failures",
+  "mediaserver.kind",
+  "mediaserver.pause_while_watching",
+  "mediaserver.playback_fail_action",
+  "mediaserver.playback_test",
+  "mediaserver.recent_watch_hours",
+  "mediaserver.refresh_after_handoff",
+  "mediaserver.skip_recent_watch",
+  "mediaserver.url",
+  "migration.command_wait_seconds",
+  "migration.episode_wait_seconds",
+  "migration.max_backup_mb",
+  "migration.path_sample_size",
+  "migration.restart_wait_seconds",
+  "monitor.emergency_stop_hours",
+  "monitor.enabled",
+  "monitor.interval_minutes",
+  "monitor.lane_idle_minutes",
+  "monitor.request_stall_hours",
+  "notify.base_url",
+  "notify.digest.daily",
+  "notify.digest.time",
+  "notify.digest.weekday",
+  "notify.digest.weekly",
+  "notify.pref.av1_done",
+  "notify.pref.downloads",
+  "notify.pref.errors",
+  "notify.pref.security",
+  "notify.pref.storage",
+  "notify.pref.waiting",
+  "notify.rate_per_hour",
+  "notify.timezone",
+  "optimization.av1_threshold_1080_kbps",
+  "optimization.av1_threshold_2160_kbps",
+  "optimization.av1_threshold_720_kbps",
+  "optimization.batch_size",
+  "optimization.downloads_need_confirmation",
+  "optimization.dry_run_valid_hours",
+  "optimization.estimated_av1_saving_percent",
+  "optimization.estimated_av1_saving_percent_hevc",
+  "optimization.max_active_downloads",
+  "optimization.max_concurrent_encodes",
+  "optimization.max_gb_per_day",
+  "optimization.max_searches_per_hour",
+  "optimization.staging_reserve_gb",
+  "optimization.window",
+  "optimization.window_enabled",
+  "policy.profile_id",
+  "policy.ranking_mode",
+  "provisioning.auto_repair",
+  "provisioning.drift_check_enabled",
+  "provisioning.drift_interval_hours",
+  "provisioning.on_startup",
+  "provisioning.startup_delay_seconds",
+  "quarantine.auto_purge",
+  "quarantine.max_size_gb",
+  "quarantine.min_age_hours",
+  "quarantine.mode",
+  "quarantine.purge_target_percent",
+  "quarantine.release_check_full_decode",
+  "quarantine.release_check_timeout_minutes",
+  "quarantine.retention_days",
+  "quarantine.safety_net_gb",
+  "quarantine.safety_net_hours",
+  "recovery.hardlink_policy",
+  "recovery.min_free_gb",
+  "recovery.quarantine_location",
+  "recovery.refresh_arr_after_commit",
+  "recovery.truenas_url",
+  "recovery.truenas_verify_tls",
+  "recovery.zfs_dataset",
+  "recovery.zfs_snapshot_enabled",
+  "resources.av1_cpu_percent",
+  "resources.encode_window",
+  "resources.encode_window_enabled",
+  "resources.encodes_cpu",
+  "resources.encodes_gpu",
+  "resources.max_cpu_temp_c",
+  "routing.anime.detect_animation_japanese",
+  "routing.anime.enabled",
+  "routing.anime.max_age_hours",
+  "routing.anime.mode",
+  "routing.anime.sweep_minutes",
+  "routing.anime.target_profile",
+  "routing.anime.target_root",
+  "security.login_max_attempts",
+  "security.login_max_delay_minutes",
+  "security.notify_failed_logins",
+  "security.notify_new_login",
+  "security.nudge_2fa",
+  "security.require_2fa_admins",
+  "security.trusted_proxies",
+  "seerr.request_sync_interval_minutes",
+  "seerr.url",
+  "storage.growth_alert_gb",
+  "storage.ledger_notify_daily",
+  "storage.ledger_notify_weekly",
+  "subtitles.bazarr_url",
+  "subtitles.nl_auto",
+  "subtitles.opensubtitles_daily",
+  "subtitles.opensubtitles_enabled",
+  "system.hub_url",
+  "system.timezone",
+  "ui.theme",
+  "updates.check_enabled",
+  "wanted.relaxed_allowed_categories"
+ ],
+ "encoder_knobs": [
+  "max_4k_gpu",
+  "max_4k_cpu",
+  "nacht_start",
+  "nacht_einde",
+  "lange_jobs_alleen_nacht",
+  "lange_job_uren",
+  "vastloper_minuten",
+  "vmaf_minimum",
+  "ssim_minimum",
+  "bitrate_ondergrens_schaal",
+  "gpu_hardware_decode",
+  "gpu_lookahead",
+  "gpu_vmaf_sturing",
+  "vmaf_doel",
+  "gpu_plekken_auto",
+  "cpu_tweede_plek_proef",
+  "geheugen_reserve_gb",
+  "anime_route",
+  "max_cpu_uren",
+  "cpu_harde_grens"
+ ]
+}

@@ -1,0 +1,66 @@
+<!-- title: Dolby Vision & HDR -->
+<!-- active: /dolby-vision -->
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Dolby Vision &amp; HDR</h1>
+    <p class="page-sub">Jij bepaalt of DV naar AV1 mag. Metadata-, stream- en herstelcontroles blijven altijd aan.</p>
+  </div>
+  <div class="page-actions"><button class="btn"><i data-i="server"></i>Toolchain: ffmpeg 7.1 · dovi_tool 2.1 · SVT-AV1 2.3</button></div>
+</div>
+
+<div class="grid">
+  <section class="card span-7">
+    <div class="card-header"><h2 class="card-title"><i data-i="aperture"></i>Dolby Vision → AV1 toestaan</h2>
+      <div class="segmented" role="group" aria-label="Scope"><button aria-pressed="false">Globaal</button><button aria-pressed="false">Bibliotheek</button><button aria-pressed="true">Profiel</button><button>Titel</button><button>Job</button></div>
+    </div>
+    <div class="card-body stack">
+      <div class="row-between"><div><div class="setting-name">Toestaan voor profiel <span class="tag">Films 4K</span></div><div class="setting-help">Overschrijft de globale standaard ‘Origineel behouden’.</div></div><button class="switch" role="switch" aria-checked="true" aria-label="DV naar AV1 toestaan"></button></div>
+      <div>
+        <div class="eyebrow" style="margin-bottom:6px">Overerving</div>
+        <div class="trace"><span class="trace-step">Globaal · uit</span><span class="trace-arrow">→</span><span class="trace-step trace-step--unset">Bibliotheek · niet gezet</span><span class="trace-arrow">→</span><span class="trace-step trace-step--active">Profiel Films 4K · aan</span><span class="trace-arrow">→</span><span class="trace-step trace-step--unset">Titel</span><span class="trace-arrow">→</span><span class="trace-step trace-step--unset">Job</span></div>
+      </div>
+      <fieldset style="border:0; padding:0; margin:0">
+        <legend class="label">Modus</legend>
+        <div class="grid" style="gap:8px">
+          <label class="card md-span-6 span-6" style="padding:12px; display:flex; gap:10px; background:var(--mg-sunken)"><input type="radio" name="m" class="check" /><span><strong style="font-size:13px">Origineel behouden</strong><br /><span class="t-3" style="font-size:12px">Geen conversie; bron blijft ongewijzigd.</span></span></label>
+          <label class="card md-span-6 span-6" style="padding:12px; display:flex; gap:10px; background:var(--mg-sunken)"><input type="radio" name="m" class="check" /><span><strong style="font-size:13px">Proefconversie op kopie</strong><br /><span class="t-3" style="font-size:12px">Resultaat apart klaarzetten, origineel onaangeroerd.</span></span></label>
+          <label class="card md-span-6 span-6" style="padding:12px; display:flex; gap:10px; border-color:var(--mg-accent); background:var(--mg-accent-tint)"><input type="radio" name="m" class="check" checked /><span><strong style="font-size:13px">Automatisch na verificatie</strong><br /><span class="t-2" style="font-size:12px">Alleen na RPU-, kleur- en streamcontrole én canary.</span></span></label>
+          <label class="card md-span-6 span-6" style="padding:12px; display:flex; gap:10px; background:var(--mg-sunken)"><input type="radio" name="m" class="check" /><span><strong style="font-size:13px">Experimenteel (behoud bron)</strong><br /><span class="t-3" style="font-size:12px">Voor 7 FEL: apart resultaat, bron nooit vervangen.</span></span></label>
+        </div>
+      </fieldset>
+      <div class="inline-state"><i data-i="lock"></i><span><strong>Altijd actief, niet uitschakelbaar:</strong> controle of DV/HDR-metadata is meegedragen, behoud van vereiste streams, crash-safe vervanging, werkende rollback vóór Full Auto, stop bij gewijzigd bronbestand.</span></div>
+    </div>
+    <div class="card-footer"><span>Laatst gewijzigd door jan · 1 nov 21:14 · audit #8812</span><span class="row"><button class="btn btn--sm btn--ghost">Herstel standaard</button><button class="btn btn--sm btn--primary">Opslaan</button></span></div>
+  </section>
+
+  <section class="card span-5">
+    <div class="card-header"><h2 class="card-title"><i data-i="list-tree"></i>Profielondersteuning</h2></div>
+    <div class="table-wrap">
+    <table class="table table--compact">
+      <thead><tr><th>Bron</th><th>Route</th><th>Status</th><th class="num">Titels</th></tr></thead>
+      <tbody>
+        <tr><td><strong>DV 8.1 / 8.4</strong></td><td class="t-2">SVT-AV1 + RPU</td><td><span class="chip chip--success"><i data-i="circle-check"></i>Toegestaan</span></td><td class="num">87</td></tr>
+        <tr><td><strong>DV 7 MEL</strong></td><td class="t-2">7 → 8.1 via dovi_tool</td><td><span class="chip chip--accent"><i data-i="flask-conical"></i>Proefconversie</span></td><td class="num">31</td></tr>
+        <tr><td><strong>DV 7 FEL</strong></td><td class="t-2">apart resultaat</td><td><span class="chip chip--warning"><i data-i="triangle-alert"></i>FEL-verlies</span></td><td class="num">12</td></tr>
+        <tr><td><strong>DV 5</strong></td><td class="t-2">geen bewezen route</td><td><span class="chip chip--danger"><i data-i="circle-x"></i>Niet ondersteund</span></td><td class="num">9</td></tr>
+        <tr><td><strong>HDR10+</strong></td><td class="t-2">eigen schakelaar</td><td><span class="chip"><i data-i="pause"></i>Origineel behouden</span></td><td class="num">44</td></tr>
+        <tr><td><strong>HDR10</strong></td><td class="t-2">mastering display mux</td><td><span class="chip chip--success"><i data-i="circle-check"></i>Gecontroleerd</span></td><td class="num">612</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="card span-12">
+    <div class="card-header"><h2 class="card-title"><i data-i="flask-conical"></i>Proefconversies</h2><button class="btn btn--sm btn--primary"><i data-i="play"></i>Test een bestand</button></div>
+    <div class="table-wrap">
+    <table class="table table--stack">
+      <thead><tr><th>Titel</th><th>Bron</th><th>Verificatie</th><th>Afspeelketen</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        <tr><td class="cell-primary"><div class="media-row"><span class="poster" style="--p1:#7A4A1E;--p2:#1E120A"><span class="poster-art"></span></span><div class="media-meta"><div class="media-title">Blade Runner 2049</div><div class="media-sub">job 4412 · CPU SVT-AV1 p5 · CRF 24</div></div></div></td><td data-label="Bron"><span class="qribbon"><span>2160p</span><span class="q-dv">DV 8.1</span></span></td><td data-label="Verificatie"><span class="row wrap" style="gap:4px"><span class="chip chip--success"><i data-i="check"></i>RPU</span><span class="chip chip--success"><i data-i="check"></i>Kleur</span><span class="chip chip--success"><i data-i="check"></i>5 audio</span></span></td><td data-label="Afspeelketen" class="t-2">Shield Pro · Jellyfin · bevestigd</td><td data-label="Status"><span class="chip chip--info"><i data-i="check-check"></i>Gecontroleerd</span></td><td><div class="row"><button class="btn btn--sm btn--icon" aria-label="Metadata vóór/na"><i data-i="git-compare-arrows"></i></button><button class="btn btn--sm btn--primary">Activeer</button></div></td></tr>
+        <tr><td class="cell-primary"><div class="media-row"><span class="poster" style="--p1:#2A4A6E;--p2:#0C141E"><span class="poster-art"></span></span><div class="media-meta"><div class="media-title">Wadi (2021)</div><div class="media-sub">job 4409 · DV 7 MEL → 8.1</div></div></div></td><td data-label="Bron"><span class="qribbon"><span>2160p</span><span class="q-dv">DV 7 MEL</span></span></td><td data-label="Verificatie"><div style="min-width:140px"><div class="progress progress--indeterminate"><span></span></div><div class="t-3" style="font-size:12px; margin-top:4px">RPU-timing controleren…</div></div></td><td data-label="Afspeelketen" class="t-3">nog niet bevestigd</td><td data-label="Status"><span class="chip chip--accent chip--pending"><i data-i="loader-circle"></i>Proefconversie</span></td><td><button class="btn btn--sm">Log</button></td></tr>
+        <tr><td class="cell-primary"><div class="media-row"><span class="poster" style="--p1:#3A2A5E;--p2:#100C1C"><span class="poster-art"></span></span><div class="media-meta"><div class="media-title">Interstellar</div><div class="media-sub">job 4398 · DV 8.1</div></div></div></td><td data-label="Bron"><span class="qribbon"><span>2160p</span><span class="q-dv">DV 8.1</span></span></td><td data-label="Verificatie"><span class="chip chip--danger"><i data-i="circle-x"></i>RPU ontbreekt in output</span></td><td data-label="Afspeelketen" class="t-3">—</td><td data-label="Status"><span class="chip chip--danger"><i data-i="circle-x"></i>Verificatie mislukt · bron behouden</span></td><td><button class="btn btn--sm">Diagnose</button></td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+</div>

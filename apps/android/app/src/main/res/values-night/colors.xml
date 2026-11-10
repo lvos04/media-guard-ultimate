@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Peil 1.1.0, donker (design/ontwerptaal/tokens.json): kleur.oppervlak.background en kleur.interactie.primary. -->
+    <color name="mg_bg">#0A0D12</color>
+    <color name="mg_accent">#8DB6FF</color>
+</resources>

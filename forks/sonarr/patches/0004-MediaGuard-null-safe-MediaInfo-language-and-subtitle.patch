@@ -1,0 +1,44 @@
+From 35d5e5744efdbe32750a23bc2af46467e75ff2ef Mon Sep 17 00:00:00 2001
+From: MediaGuard <mediaguard@localhost>
+Date: Tue, 3 Nov 2026 10:43:56 +0000
+Subject: [PATCH] MediaGuard: null-safe MediaInfo language and subtitle lists
+
+Migrated databases can contain media info with null AudioLanguages/Subtitles.
+GET /api/v3/episodefile then fails with ArgumentNullException (Parameter 'source')
+in MediaInfoResourceMapper. Treat null as an empty list in the model.
+---
+ .../MediaFiles/MediaInfo/MediaInfoModel.cs     | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/src/NzbDrone.Core/MediaFiles/MediaInfo/MediaInfoModel.cs b/src/NzbDrone.Core/MediaFiles/MediaInfo/MediaInfoModel.cs
+index 41b4059..9039688 100644
+--- a/src/NzbDrone.Core/MediaFiles/MediaInfo/MediaInfoModel.cs
++++ b/src/NzbDrone.Core/MediaFiles/MediaInfo/MediaInfoModel.cs
+@@ -53,9 +53,21 @@ public class MediaInfoModel : IEmbeddedDocument
+ 
+         public decimal VideoFps { get; set; }
+ 
+-        public List<string> AudioLanguages { get; set; }
+-
+-        public List<string> Subtitles { get; set; }
++        // MediaGuard: gemigreerde databases bevatten soms null; overal behandelen als lege lijst
++        // (anders: ArgumentNullException 'source' in o.a. GET /api/v3/episodefile)
++        private List<string> _audioLanguages = new List<string>();
++        public List<string> AudioLanguages
++        {
++            get => _audioLanguages;
++            set => _audioLanguages = value ?? new List<string>();
++        }
++
++        private List<string> _subtitles = new List<string>();
++        public List<string> Subtitles
++        {
++            get => _subtitles;
++            set => _subtitles = value ?? new List<string>();
++        }
+ 
+         public string ScanType { get; set; }
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,26 @@
+<!-- title: Eerste installatie -->
+<!-- bare: 1 -->
+<div class="auth">
+  <aside class="auth-side">
+    <div class="brand"><span class="brand-mark"><i data-i="shield-check"></i></span><span><div class="brand-name">MediaGuard Ultimate</div><div class="brand-sub">Media Operations Control Center</div></span></div>
+    <div class="auth-points">
+      <div class="auth-point"><span class="list-icon list-icon--accent"><i data-i="server"></i></span><span><strong>Vier gescheiden instanties</strong>Series, Anime, Films en Animefilms — elk met eigen database en wachtrij.</span></div>
+      <div class="auth-point"><span class="list-icon list-icon--success"><i data-i="search-x"></i></span><span><strong>Ontbrekende afleveringen terugvinden</strong>Per oorzaak gediagnosticeerd en veilig ingepland.</span></div>
+      <div class="auth-point"><span class="list-icon list-icon--info"><i data-i="shield-check"></i></span><span><strong>Niets zonder herstelroute</strong>Elke vervanging is verifieerbaar en terug te draaien.</span></div>
+    </div>
+    <p class="t-3" style="font-size:12px">v0.4.0 · draait lokaal op TrueNAS SCALE · geen gegevens verlaten je netwerk zonder toestemming</p>
+  </aside>
+  <main class="auth-main">
+    <div class="auth-card">
+      <div class="hstepper" style="margin-bottom:24px" aria-label="Installatiestappen"><span class="hstep" style="color:var(--mg-text)"><span class="step-no" style="border-color:var(--mg-accent); color:var(--mg-accent)">1</span>Beheerder</span><span class="hstep-line"></span><span class="hstep"><span class="step-no">2</span>Taal</span><span class="hstep-line"></span><span class="hstep"><span class="step-no">3</span>Migratie</span></div>
+      <h1 class="page-title">Welkom bij MediaGuard</h1>
+      <p class="page-sub" style="margin-bottom:24px">Maak het eerste beheerdersaccount. Dit scherm is alleen beschikbaar zolang er nog geen gebruikers zijn.</p>
+      <form class="stack" onsubmit="return false">
+        <div><label class="label" for="u">Gebruikersnaam</label><input id="u" class="input" value="jan" autocomplete="username" /></div>
+        <div><label class="label" for="p">Wachtwoord</label><input id="p" class="input" type="password" value="••••••••••••" autocomplete="new-password" /><p class="hint">Minimaal 12 tekens. Wordt met Argon2/PBKDF2 gehasht opgeslagen.</p></div>
+        <div><label class="label" for="p2">Herhaal wachtwoord</label><input id="p2" class="input" type="password" value="•••••••••" aria-invalid="true" aria-describedby="perr" /><div class="field-error" id="perr"><i data-i="circle-x" class="ico-sm"></i>Wachtwoorden komen niet overeen</div></div>
+        <button class="btn btn--primary" style="height:40px">Account aanmaken en doorgaan <i data-i="arrow-right"></i></button>
+      </form>
+    </div>
+  </main>
+</div>

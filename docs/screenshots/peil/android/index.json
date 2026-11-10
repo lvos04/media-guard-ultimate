@@ -1,0 +1,1028 @@
+{
+ "aanvraagvenster-donker-360.png": {
+  "test": "DocsDark360.aanvraagVenster",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvraagvenster-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.aanvraagVenster",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1180
+  ]
+ },
+ "aanvraagvenster-donker-393.png": {
+  "test": "DocsDark393.aanvraagVenster",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "aanvraagvenster-licht-360.png": {
+  "test": "DocsLight360.aanvraagVenster",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvraagvenster-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.aanvraagVenster",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1180
+  ]
+ },
+ "aanvraagvenster-licht-393.png": {
+  "test": "DocsLight393.aanvraagVenster",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "aanvragen-mijn-donker-360.png": {
+  "test": "DocsDark360.aanvragenMijn",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvragen-mijn-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.aanvragenMijn",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1399
+  ]
+ },
+ "aanvragen-mijn-donker-393.png": {
+  "test": "DocsDark393.aanvragenMijn",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "aanvragen-mijn-licht-360.png": {
+  "test": "DocsLight360.aanvragenMijn",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvragen-mijn-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.aanvragenMijn",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1399
+  ]
+ },
+ "aanvragen-mijn-licht-393.png": {
+  "test": "DocsLight393.aanvragenMijn",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "aanvragen-ontdekken-donker-360.png": {
+  "test": "DocsDark360.aanvragen",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvragen-ontdekken-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.aanvragen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2341
+  ]
+ },
+ "aanvragen-ontdekken-donker-393.png": {
+  "test": "DocsDark393.aanvragen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "aanvragen-ontdekken-licht-360.png": {
+  "test": "DocsLight360.aanvragen",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvragen-ontdekken-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.aanvragen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2341
+  ]
+ },
+ "aanvragen-ontdekken-licht-393.png": {
+  "test": "DocsLight393.aanvragen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "activiteit-nu-donker-360.png": {
+  "test": "DocsDark360.activiteit",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-nu-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.activiteit",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1935
+  ]
+ },
+ "activiteit-nu-donker-393.png": {
+  "test": "DocsDark393.activiteit",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "activiteit-nu-licht-360.png": {
+  "test": "DocsLight360.activiteit",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-nu-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.activiteit",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1935
+  ]
+ },
+ "activiteit-nu-licht-393.png": {
+  "test": "DocsLight393.activiteit",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "activiteit-problemen-donker-360.png": {
+  "test": "DocsDark360.activiteitProblemen",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-problemen-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.activiteitProblemen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2246
+  ]
+ },
+ "activiteit-problemen-donker-393.png": {
+  "test": "DocsDark393.activiteitProblemen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "activiteit-problemen-licht-360.png": {
+  "test": "DocsLight360.activiteitProblemen",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-problemen-licht-393-grote-letter.png": {
+  "test": "DocsLightGroteLetter.activiteitProblemen",
+  "breedte_dp": 393,
+  "letterschaal": 1.3,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "activiteit-problemen-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.activiteitProblemen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2246
+  ]
+ },
+ "activiteit-problemen-licht-393.png": {
+  "test": "DocsLight393.activiteitProblemen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-donker-360.png": {
+  "test": "DocsDark360.activiteitGebeurd",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.activiteitGebeurd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2792
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-donker-393.png": {
+  "test": "DocsDark393.activiteitGebeurd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-licht-360.png": {
+  "test": "DocsLight360.activiteitGebeurd",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.activiteitGebeurd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2792
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-licht-393.png": {
+  "test": "DocsLight393.activiteitGebeurd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "bibliotheek-detail-donker-360.png": {
+  "test": "DocsDark360.bibliotheekDetail",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-detail-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.bibliotheekDetail",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2473
+  ]
+ },
+ "bibliotheek-detail-donker-393.png": {
+  "test": "DocsDark393.bibliotheekDetail",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "bibliotheek-detail-licht-360.png": {
+  "test": "DocsLight360.bibliotheekDetail",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-detail-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.bibliotheekDetail",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2473
+  ]
+ },
+ "bibliotheek-detail-licht-393.png": {
+  "test": "DocsLight393.bibliotheekDetail",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "bibliotheek-donker-360.png": {
+  "test": "DocsDark360.bibliotheek",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.bibliotheek",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1868
+  ]
+ },
+ "bibliotheek-donker-393.png": {
+  "test": "DocsDark393.bibliotheek",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "bibliotheek-licht-360.png": {
+  "test": "DocsLight360.bibliotheek",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-licht-393-grote-letter.png": {
+  "test": "DocsLightGroteLetter.bibliotheek",
+  "breedte_dp": 393,
+  "letterschaal": 1.3,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "bibliotheek-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.bibliotheek",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1868
+  ]
+ },
+ "bibliotheek-licht-393.png": {
+  "test": "DocsLight393.bibliotheek",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "bibliotheek-ontbrekend-donker-360.png": {
+  "test": "DocsDark360.bibliotheekOntbrekend",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-ontbrekend-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.bibliotheekOntbrekend",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   903
+  ]
+ },
+ "bibliotheek-ontbrekend-donker-393.png": {
+  "test": "DocsDark393.bibliotheekOntbrekend",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "bibliotheek-ontbrekend-licht-360.png": {
+  "test": "DocsLight360.bibliotheekOntbrekend",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-ontbrekend-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.bibliotheekOntbrekend",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   903
+  ]
+ },
+ "bibliotheek-ontbrekend-licht-393.png": {
+  "test": "DocsLight393.bibliotheekOntbrekend",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "instellingen-donker-360.png": {
+  "test": "DocsDark360.instellingen",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "instellingen-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.instellingen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2240
+  ]
+ },
+ "instellingen-donker-393.png": {
+  "test": "DocsDark393.instellingen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "instellingen-licht-360.png": {
+  "test": "DocsLight360.instellingen",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "instellingen-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.instellingen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2240
+  ]
+ },
+ "instellingen-licht-393.png": {
+  "test": "DocsLight393.instellingen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "instellingen-waarschuwingen-donker-360.png": {
+  "test": "DocsDark360.instellingenWaarschuwingen",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "instellingen-waarschuwingen-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.instellingenWaarschuwingen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   3627
+  ]
+ },
+ "instellingen-waarschuwingen-donker-393.png": {
+  "test": "DocsDark393.instellingenWaarschuwingen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "instellingen-waarschuwingen-licht-360.png": {
+  "test": "DocsLight360.instellingenWaarschuwingen",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "instellingen-waarschuwingen-licht-393-grote-letter.png": {
+  "test": "DocsLightGroteLetter.instellingenWaarschuwingen",
+  "breedte_dp": 393,
+  "letterschaal": 1.3,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "instellingen-waarschuwingen-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.instellingenWaarschuwingen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   3627
+  ]
+ },
+ "instellingen-waarschuwingen-licht-393.png": {
+  "test": "DocsLight393.instellingenWaarschuwingen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "koppelen-donker-360.png": {
+  "test": "DocsDark360.koppelen",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "koppelen-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.koppelen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1078
+  ]
+ },
+ "koppelen-donker-393.png": {
+  "test": "DocsDark393.koppelen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "koppelen-geweigerd-donker-360.png": {
+  "test": "DocsDark360.koppelenGeweigerd",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "koppelen-geweigerd-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.koppelenGeweigerd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1636
+  ]
+ },
+ "koppelen-geweigerd-donker-393.png": {
+  "test": "DocsDark393.koppelenGeweigerd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "koppelen-geweigerd-licht-360.png": {
+  "test": "DocsLight360.koppelenGeweigerd",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "koppelen-geweigerd-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.koppelenGeweigerd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1636
+  ]
+ },
+ "koppelen-geweigerd-licht-393.png": {
+  "test": "DocsLight393.koppelenGeweigerd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "koppelen-licht-360.png": {
+  "test": "DocsLight360.koppelen",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "koppelen-licht-393-grote-letter.png": {
+  "test": "DocsLightGroteLetter.koppelen",
+  "breedte_dp": 393,
+  "letterschaal": 1.3,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "koppelen-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.koppelen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1078
+  ]
+ },
+ "koppelen-licht-393.png": {
+  "test": "DocsLight393.koppelen",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "overzicht-alles-in-orde-donker-360.png": {
+  "test": "DocsDark360.overzichtRustig",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-alles-in-orde-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.overzichtRustig",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2131
+  ]
+ },
+ "overzicht-alles-in-orde-donker-393.png": {
+  "test": "DocsDark393.overzichtRustig",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "overzicht-alles-in-orde-licht-360.png": {
+  "test": "DocsLight360.overzichtRustig",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-alles-in-orde-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.overzichtRustig",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2131
+  ]
+ },
+ "overzicht-alles-in-orde-licht-393.png": {
+  "test": "DocsLight393.overzichtRustig",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "overzicht-donker-360.png": {
+  "test": "DocsDark360.overzicht",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.overzicht",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   3214
+  ]
+ },
+ "overzicht-donker-393.png": {
+  "test": "DocsDark393.overzicht",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "overzicht-licht-360.png": {
+  "test": "DocsLight360.overzicht",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-licht-393-grote-letter.png": {
+  "test": "DocsLightGroteLetter.overzicht",
+  "breedte_dp": 393,
+  "letterschaal": 1.3,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "overzicht-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.overzicht",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   3214
+  ]
+ },
+ "overzicht-licht-393.png": {
+  "test": "DocsLight393.overzicht",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "overzicht-noodstop-donker-360.png": {
+  "test": "DocsDark360.overzichtNoodstop",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-noodstop-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.overzichtNoodstop",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2251
+  ]
+ },
+ "overzicht-noodstop-donker-393.png": {
+  "test": "DocsDark393.overzichtNoodstop",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "overzicht-noodstop-licht-360.png": {
+  "test": "DocsLight360.overzichtNoodstop",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-noodstop-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.overzichtNoodstop",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   2251
+  ]
+ },
+ "overzicht-noodstop-licht-393.png": {
+  "test": "DocsLight393.overzichtNoodstop",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "overzicht-verouderd-donker-360.png": {
+  "test": "DocsDark360.overzichtVerouderd",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-verouderd-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.overzichtVerouderd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   3086
+  ]
+ },
+ "overzicht-verouderd-donker-393.png": {
+  "test": "DocsDark393.overzichtVerouderd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "overzicht-verouderd-licht-360.png": {
+  "test": "DocsLight360.overzichtVerouderd",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-verouderd-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.overzichtVerouderd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   3086
+  ]
+ },
+ "overzicht-verouderd-licht-393.png": {
+  "test": "DocsLight393.overzichtVerouderd",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "ruimte-donker-360.png": {
+  "test": "DocsDark360.ruimte",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "ruimte-donker-393-volledig.png": {
+  "test": "DocsDarkVolledig.ruimte",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   3199
+  ]
+ },
+ "ruimte-donker-393.png": {
+  "test": "DocsDark393.ruimte",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "ruimte-licht-360.png": {
+  "test": "DocsLight360.ruimte",
+  "breedte_dp": 360,
+  "letterschaal": 1.0,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "ruimte-licht-393-grote-letter.png": {
+  "test": "DocsLightGroteLetter.ruimte",
+  "breedte_dp": 393,
+  "letterschaal": 1.3,
+  "px": [
+   786,
+   1702
+  ]
+ },
+ "ruimte-licht-393-volledig.png": {
+  "test": "DocsLightVolledig.ruimte",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   3199
+  ]
+ },
+ "ruimte-licht-393.png": {
+  "test": "DocsLight393.ruimte",
+  "breedte_dp": 393,
+  "letterschaal": 1.0,
+  "px": [
+   786,
+   1702
+  ]
+ }
+}

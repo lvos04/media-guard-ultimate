@@ -1,0 +1,22 @@
+// Bewaking op de achtergrond, 'Bewust zo gekozen' en achtergrondtaken (verbeterlijst 1, 8, 9).
+export const nl = {
+  "attention.dismissedCount": "{count} punt(en) bewust zo gekozen en verborgen",
+  "attention.dismissedSub": "Ze komen vanzelf terug als je de instelling verandert.",
+  "attention.restore": "Weer tonen",
+  "attention.restored": "Verborgen punten staan weer in de lijst",
+  "system.tasks": "Achtergrondtaken",
+  "system.tasksSub": "Wat MediaGuard zelf doet, en wanneer het voor het laatst lukte.",
+  "system.taskLastOk": "Laatst gelukt {when}",
+  "system.taskNeverOk": "Nog niet gelukt sinds de start",
+  "system.taskEvent": "Draait op de achtergrond, zonder vaste ronde",
+  "system.taskError": "Laatste fout: {error}",
+  "system.taskRestarts": "{count}× opnieuw gestart",
+  "system.taskOk": "Loopt",
+  "system.taskStale": "Doet niets",
+  "system.taskFailing": "Mislukt",
+  "system.monitorLast": "Bewaking: laatste ronde {when}",
+  "system.monitorOff": "Bewaking op de achtergrond staat uit",
+  "system.monitorNever": "Bewaking: nog geen ronde sinds de start (de eerste volgt na ± 3 minuten)",
+  "system.monitorRun": "Nu controleren",
+  "system.monitorDone": "Bewaking: alles nagelopen",
+};

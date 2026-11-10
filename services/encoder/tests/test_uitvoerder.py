@@ -1,0 +1,373 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import threading
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from conftest import TESTDATA
+
+from app.config import Settings, settings
+from app.db import Database
+from app.media.beslissen import STANDAARD
+from app.media.probe import probe
+from app.scanner import scan_library
+from app.uitvoerder import create_job_from_decision, run_job
+from app.verificatie import VerificationResult
+from app.vervanging import file_sha256
+
+
+def _case(tmp_path: Path, source_name: str = "hdr10.mkv") -> tuple[Database, Settings, Path, int]:
+    roots = {name: tmp_path / name for name in ("cache", "work", "config", "backups")}
+    for path in roots.values():
+        path.mkdir()
+    library = tmp_path / "library"
+    library.mkdir()
+    source = library / source_name
+    shutil.copy2(TESTDATA / source_name, source)
+    configured = replace(
+        settings,
+        library_root=library,
+        pipeline_root=tmp_path,
+        cache_root=roots["cache"],
+        work_root=roots["work"],
+        config_root=roots["config"],
+        backup_root=roots["backups"],
+        database_path=roots["config"] / "app.db",
+    )
+    database = Database(configured)
+    database.initialize()
+    profile = {
+        **STANDAARD,
+        "drempel_1080": 500,
+        "drempel_720": 100,
+        "preset_1080": 12,
+        # Boven de echte VMAF-poort (93): CRF 45 gaf op sdr-meertalig.mkv VMAF 88,9
+        # en werd terecht afgekeurd; CRF 28 ligt tussen 96,0 (CRF 30) en 97,1 (CRF 25),
+        # gemeten met SVT-AV1 2.3.0 in het testimage.
+        "crf_1080": 28,
+        "gpu_voor_sdr_1080": False,
+    }
+    profile_id = database.execute_insert(
+        "INSERT INTO profiel(naam,inst) VALUES (?,?)", ("Test", json.dumps(profile))
+    )
+    database.execute_insert(
+        "INSERT INTO library(naam,pad,profiel_id,verwacht_device) VALUES (?,?,?,?)",
+        ("Test", str(library), profile_id, library.stat().st_dev),
+    )
+    scan_library(database, 1)
+    decision = database.fetch_one(
+        "SELECT id FROM besluit WHERE actie='hercoderen' ORDER BY id LIMIT 1"
+    )
+    assert decision is not None
+    decision_id = int(decision["id"])
+    database.execute("UPDATE besluit SET status='goedgekeurd' WHERE id=?", (decision_id,))
+    return database, configured, source, create_job_from_decision(database, decision_id)
+
+
+@pytest.mark.asyncio
+async def test_hdr_wordt_pas_na_verificatie_atomisch_vervangen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database, configured, source, job_id = _case(tmp_path)
+    source.chmod(0o640)
+    source_xattr = b"blijft-behouden"
+    os.setxattr(source, "user.av1-test", source_xattr)
+    subprocess.run(["setfacl", "-m", "u:daemon:r--", str(source)], check=True)
+    before_hash = file_sha256(source)
+    event_loop_thread = threading.get_ident()
+    replacement_threads: list[int] = []
+    promotion_threads: list[int] = []
+    from app import uitvoerder
+
+    real_atomic_replace = uitvoerder.atomic_replace
+    real_promote_partial = uitvoerder._promote_partial
+
+    def observed_atomic_replace(*args, **kwargs) -> None:
+        replacement_threads.append(threading.get_ident())
+        real_atomic_replace(*args, **kwargs)
+
+    def observed_promote_partial(*args, **kwargs) -> None:
+        promotion_threads.append(threading.get_ident())
+        real_promote_partial(*args, **kwargs)
+
+    monkeypatch.setattr(uitvoerder, "atomic_replace", observed_atomic_replace)
+    monkeypatch.setattr(uitvoerder, "_promote_partial", observed_promote_partial)
+
+    assert await run_job(database, configured, job_id, storage_validator=lambda: None)
+    assert replacement_threads and replacement_threads[0] != event_loop_thread
+    assert promotion_threads and promotion_threads[0] != event_loop_thread
+
+    result_probe = probe(str(source))
+    assert result_probe is not None and result_probe["is_hdr10"] is True
+    assert result_probe["codec"] == "av1"
+    assert file_sha256(source) != before_hash
+    assert os.getxattr(source, "user.av1-test") == source_xattr
+    assert source.stat().st_mode & 0o777 == 0o640
+    acl = subprocess.run(
+        ["getfacl", "--omit-header", str(source)], capture_output=True, text=True, check=True
+    ).stdout
+    assert "user:daemon:r--" in acl
+    assert database.fetch_one("SELECT status FROM job WHERE id=?", (job_id,))[0] == "klaar"
+    catalog = database.fetch_one(
+        "SELECT grootte,mtime,inode,probe FROM bestand WHERE id="
+        "(SELECT bestand_id FROM job WHERE id=?)",
+        (job_id,),
+    )
+    assert catalog is not None
+    assert catalog["grootte"] == source.stat().st_size
+    assert catalog["mtime"] == source.stat().st_mtime
+    assert catalog["inode"] == source.stat().st_ino
+    assert json.loads(str(catalog["probe"]))["codec"] == "av1"
+    decision_count = database.fetch_one("SELECT COUNT(*) FROM besluit")[0]
+    scan_library(database, 1)
+    assert database.fetch_one("SELECT COUNT(*) FROM besluit")[0] == decision_count
+    assert database.fetch_one(
+        "SELECT status FROM job_poging WHERE job_id=?", (job_id,)
+    )[0] == "klaar"
+    assert (
+        database.fetch_one("SELECT status FROM vervang_transactie WHERE job_id=?", (job_id,))[0]
+        == "vervangen"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mislukte_verificatie_laat_bron_bytegelijk_staan(tmp_path: Path) -> None:
+    database, configured, source, job_id = _case(tmp_path)
+    before_hash = file_sha256(source)
+
+    def reject(result: VerificationResult) -> VerificationResult:
+        return replace(result, passed=False, reason="geforceerde SDR-regressie")
+
+    assert not await run_job(
+        database,
+        configured,
+        job_id,
+        storage_validator=lambda: None,
+        verification_hook=reject,
+    )
+
+    assert file_sha256(source) == before_hash
+    job = database.fetch_one("SELECT status,fout FROM job WHERE id=?", (job_id,))
+    assert job is not None and job["status"] == "mislukt"
+    assert "verificatie" in str(job["fout"])
+    # Het afgekeurde resultaat (tot tientallen GB) blijft niet in /work liggen;
+    # er is geen route die het nog gebruikt. Het joblog bewaart de reden.
+    assert not (configured.cache_root / str(job_id)).exists()
+
+
+@pytest.mark.asyncio
+async def test_afbreken_ruimt_cache_op_en_raakt_bron_niet(tmp_path: Path) -> None:
+    database, configured, source, job_id = _case(tmp_path)
+    before_hash = file_sha256(source)
+    task = asyncio.create_task(
+        run_job(
+            database,
+            configured,
+            job_id,
+            storage_validator=lambda: None,
+            command_override=["/usr/bin/python3", "-c", "import time; time.sleep(10)"],
+        )
+    )
+    for _ in range(50):
+        row = database.fetch_one("SELECT proces_pid FROM job WHERE id=?", (job_id,))
+        if row is not None and row[0]:
+            break
+        await asyncio.sleep(0.05)
+    database.execute("UPDATE job SET afbreken_gevraagd=1 WHERE id=?", (job_id,))
+
+    assert not await asyncio.wait_for(task, timeout=5)
+    assert file_sha256(source) == before_hash
+    assert not (configured.cache_root / str(job_id)).exists()
+    assert database.fetch_one("SELECT status FROM job WHERE id=?", (job_id,))[0] == "afgebroken"
+
+
+@pytest.mark.asyncio
+async def test_explicitiet_bevestigde_hardlink_wordt_alleen_op_bronpad_verbroken(
+    tmp_path: Path,
+) -> None:
+    database, configured, source, job_id = _case(tmp_path, "sdr-meertalig.mkv")
+    torrent = source.with_name("torrent-seed.mkv")
+    torrent.hardlink_to(source)
+    old_hash = file_sha256(source)
+    database.execute(
+        "UPDATE bestand SET nlink=2 WHERE id=(SELECT bestand_id FROM job WHERE id=?)",
+        (job_id,),
+    )
+    database.execute(
+        "UPDATE besluit SET hardlink_bevestigd=1 WHERE id=(SELECT besluit_id FROM job WHERE id=?)",
+        (job_id,),
+    )
+    database.execute("UPDATE instelling SET hardlink_modus='verbreek_na_bevestiging' WHERE id=1")
+    database.execute("UPDATE functie SET ingeschakeld=1 WHERE sleutel='hardlink_verbreken'")
+
+    assert await run_job(database, configured, job_id, storage_validator=lambda: None)
+
+    assert file_sha256(torrent) == old_hash
+    assert file_sha256(source) != old_hash
+    assert source.stat().st_ino != torrent.stat().st_ino
+    assert source.stat().st_nlink == 1 and torrent.stat().st_nlink == 1
+
+
+@pytest.mark.asyncio
+async def test_grotere_opschoonremux_is_veilig_geen_besparing(tmp_path: Path) -> None:
+    database, configured, source, job_id = _case(tmp_path, "sdr-meertalig.mkv")
+    before_hash = file_sha256(source)
+    decision_row = database.fetch_one("SELECT besluit_id FROM job WHERE id=?", (job_id,))
+    assert decision_row is not None
+    decision_id = int(decision_row["besluit_id"])
+    decision = database.fetch_one("SELECT payload FROM besluit WHERE id=?", (decision_id,))
+    assert decision is not None
+    payload = json.loads(str(decision["payload"]))
+    payload["actie"] = "opschonen"
+    database.execute(
+        "UPDATE besluit SET actie='opschonen',payload=? WHERE id=?",
+        (json.dumps(payload), decision_id),
+    )
+    partial = configured.cache_root / str(job_id) / "resultaat.mkv.deel"
+    script = (
+        "import pathlib,shutil,sys;shutil.copyfile(sys.argv[1],sys.argv[2]);"
+        "pathlib.Path(sys.argv[2]).open('ab').write(b'x')"
+    )
+
+    assert not await run_job(
+        database,
+        configured,
+        job_id,
+        storage_validator=lambda: None,
+        command_override=["/usr/bin/python3", "-c", script, str(source), str(partial)],
+    )
+
+    assert file_sha256(source) == before_hash
+    job = database.fetch_one("SELECT status,foutsoort FROM job WHERE id=?", (job_id,))
+    assert job is not None and job["status"] == "overgeslagen"
+    assert job["foutsoort"] == "GeenBesparing"
+    assert not (configured.cache_root / str(job_id)).exists()
+    assert database.fetch_one(
+        "SELECT status FROM job_poging WHERE job_id=?", (job_id,)
+    )[0] == "overgeslagen"
+
+
+@pytest.mark.asyncio
+async def test_lange_bronnaam_werkt_in_cache_en_bij_vervanging(tmp_path: Path) -> None:
+    database, configured, source, job_id = _case(tmp_path, "sdr-meertalig.mkv")
+    long_source = source.with_name(f"{'lange-aflevering-' * 14}x.mkv")
+    source.rename(long_source)
+    database.execute(
+        "UPDATE bestand SET pad=? WHERE id=(SELECT bestand_id FROM job WHERE id=?)",
+        (str(long_source), job_id),
+    )
+    decision_id = int(
+        database.fetch_one("SELECT besluit_id FROM job WHERE id=?", (job_id,))[0]
+    )
+    payload = json.loads(
+        str(database.fetch_one("SELECT payload FROM besluit WHERE id=?", (decision_id,))[0])
+    )
+    payload["actie"] = "opschonen"
+    database.execute(
+        "UPDATE besluit SET actie='opschonen',payload=? WHERE id=?",
+        (json.dumps(payload), decision_id),
+    )
+
+    assert await run_job(database, configured, job_id, storage_validator=lambda: None)
+    assert long_source.is_file()
+    assert database.fetch_one("SELECT status FROM job WHERE id=?", (job_id,))[0] == "klaar"
+
+
+@pytest.mark.asyncio
+async def test_tijdelijk_sqliteprobleem_stopt_lopend_mediaproces_niet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database, configured, _source, job_id = _case(tmp_path, "sdr-meertalig.mkv")
+    from app import uitvoerder
+
+    real_fetch_one = database.fetch_one
+    failed_once = False
+
+    def flaky_fetch_one(sql, parameters=()):
+        nonlocal failed_once
+        if "afbreken_gevraagd" in sql and not failed_once:
+            failed_once = True
+            raise sqlite3.OperationalError("tijdelijk niet bereikbaar")
+        return real_fetch_one(sql, parameters)
+
+    monkeypatch.setattr(database, "fetch_one", flaky_fetch_one)
+    log_path = configured.config_root / "logs" / f"job-{job_id}.log"
+    log_path.parent.mkdir(parents=True)
+
+    succeeded = await uitvoerder._run_process(
+        database,
+        job_id,
+        [
+            "/usr/bin/python3",
+            "-u",
+            "-c",
+            "import time;print('out_time_ms=500000');time.sleep(0.6)",
+        ],
+        log_path,
+        1.0,
+    )
+
+    assert succeeded is True
+    assert failed_once is True
+
+
+@pytest.mark.asyncio
+async def test_sigterm_bij_serviceherstart_zet_job_terug_in_wachtrij(
+    tmp_path: Path,
+) -> None:
+    database, configured, source, job_id = _case(tmp_path, "sdr-meertalig.mkv")
+    before_hash = file_sha256(source)
+
+    result = await run_job(
+        database,
+        configured,
+        job_id,
+        storage_validator=lambda: None,
+        command_override=[
+            "/usr/bin/python3",
+            "-c",
+            "import os,signal;os.kill(os.getpid(),signal.SIGTERM)",
+        ],
+    )
+
+    assert result is False
+    job = database.fetch_one(
+        "SELECT status,fout,foutsoort,proces_pid FROM job WHERE id=?", (job_id,)
+    )
+    assert job is not None and job["status"] == "wacht"
+    assert "service- of systeemstop" in str(job["fout"])
+    assert job["foutsoort"] is None and job["proces_pid"] is None
+    assert not (configured.cache_root / str(job_id)).exists()
+    assert file_sha256(source) == before_hash
+
+
+@pytest.mark.asyncio
+async def test_snel_falend_proces_bewaart_fatale_laatste_logregel(tmp_path: Path) -> None:
+    database, configured, _source, job_id = _case(tmp_path, "sdr-meertalig.mkv")
+    script = (
+        "import sys;"
+        "print('eerste waarschuwing', flush=True);"
+        "print('fatale laatste regel', flush=True);"
+        "sys.exit(7)"
+    )
+
+    assert not await run_job(
+        database,
+        configured,
+        job_id,
+        storage_validator=lambda: None,
+        command_override=["/usr/bin/python3", "-c", script],
+    )
+
+    log = (configured.config_root / "logs" / f"job-{job_id}.log").read_text(
+        encoding="utf-8"
+    )
+    assert "eerste waarschuwing" in log
+    assert "fatale laatste regel" in log

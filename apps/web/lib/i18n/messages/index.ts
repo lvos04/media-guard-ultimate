@@ -1,0 +1,36 @@
+import * as activity from "./activity";
+import * as auth from "./auth";
+import * as av1 from "./av1";
+import * as common from "./common";
+import * as components from "./components";
+import * as migration from "./migration";
+import * as pages from "./pages";
+import * as provisioning from "./provisioning";
+import * as r030 from "./r030";
+import * as r031 from "./r031";
+import * as r032 from "./r032";
+import * as r033 from "./r033";
+import * as r034 from "./r034";
+import * as r035 from "./r035";
+import * as r036 from "./r036";
+import * as r037 from "./r037";
+import * as r038 from "./r038";
+import * as apikeys from "./apikeys";
+import * as delivery from "./delivery";
+import * as mediaserver from "./mediaserver";
+import * as settings from "./settings";
+import * as simplify from "./simplify";
+import * as wiring from "./wiring";
+import * as notify from "./notify";
+import * as ledger from "./ledger";
+import * as recovery from "./recovery";
+import * as updates from "./updates";
+import * as onderhoud from "./onderhoud";
+import * as bewaking from "./bewaking";
+import * as beveiliging from "./beveiliging";
+import * as webpunten from "./webpunten";
+import * as peil from "./peil";
+
+// Alleen Nederlands zit in de hoofdbundel; Engels laadt apart (./en) zodra iemand die taal kiest.
+export const nl = { ...common.nl, ...components.nl, ...auth.nl, ...pages.nl, ...settings.nl, ...av1.nl, ...wiring.nl, ...migration.nl, ...provisioning.nl, ...activity.nl, ...simplify.nl, ...r030.nl, ...r031.nl, ...r032.nl, ...r033.nl, ...r034.nl, ...r035.nl, ...r036.nl, ...r037.nl, ...r038.nl, ...apikeys.nl, ...delivery.nl, ...mediaserver.nl, ...notify.nl, ...ledger.nl, ...recovery.nl, ...updates.nl, ...onderhoud.nl, ...bewaking.nl, ...beveiliging.nl, ...webpunten.nl, ...peil.nl };
+export type MessageKey = keyof typeof nl;

@@ -1,0 +1,58 @@
+# "Old production" Sonarr + Radarr for the migration scenario (test_migration.py).
+# Plain fork images WITHOUT MEDIAGUARD_URL = upstream behaviour (hooks off), with their own
+# config dirs and legacy root paths (/tv, /movies) that the migration must remap to /data/media/...
+# Core talks to them only through a recording proxy (old-*-spy) so the test can prove that
+# MediaGuard sent nothing but GETs before cutover.
+x-old: &old
+  user: "568:568"
+  restart: unless-stopped
+  networks: [mediaguard]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+
+x-spy: &spy
+  image: ${MG_DEV_FAKES_IMAGE:-mirror.gcr.io/library/python:3.12-slim-bookworm}
+  user: "568:568"
+  restart: unless-stopped
+  networks: [mediaguard]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  volumes: ["${MG_DEV_FAKES_DIR}:/fakes:ro"]
+
+services:
+  old-sonarr:
+    <<: *old
+    image: ${MG_SONARR_IMAGE}
+    environment:
+      HOME: /config
+      SONARR__AUTH__APIKEY: 01d50000000000000000000000000001
+      SONARR__APP__INSTANCENAME: Sonarr old-production
+    ports: ["127.0.0.1:48990:8989"]
+    volumes:
+      - ${MG_APPDATA}/old-sonarr:/config
+      # legacy layout of the "old" installation: library at /tv, downloads at /downloads
+      - ${MG_DATA_ROOT}/media/tv:/tv
+      - ${MG_DATA_ROOT}/downloads:/downloads
+
+  old-radarr:
+    <<: *old
+    image: ${MG_RADARR_IMAGE}
+    environment:
+      HOME: /config
+      RADARR__AUTH__APIKEY: 01d50000000000000000000000000002
+      RADARR__APP__INSTANCENAME: Radarr old-production
+    ports: ["127.0.0.1:47880:7878"]
+    volumes:
+      - ${MG_APPDATA}/old-radarr:/config
+      - ${MG_DATA_ROOT}/media/movies:/movies
+      - ${MG_DATA_ROOT}/downloads:/downloads
+
+  old-sonarr-spy:
+    <<: *spy
+    command: ["python", "-u", "/fakes/http_spy.py", "--port", "8989", "--upstream", "http://old-sonarr:8989"]
+    ports: ["127.0.0.1:48991:8989"]
+
+  old-radarr-spy:
+    <<: *spy
+    command: ["python", "-u", "/fakes/http_spy.py", "--port", "7878", "--upstream", "http://old-radarr:7878"]
+    ports: ["127.0.0.1:47881:7878"]

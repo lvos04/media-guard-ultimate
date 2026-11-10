@@ -1,0 +1,49 @@
+{
+  "version": "1.2.1",
+  "schema_versions": [
+    "001_core",
+    "002_jobs_maintenance",
+    "003_notifications_merge",
+    "004_api_keys",
+    "020_instances",
+    "021_library",
+    "022_wanted",
+    "023_seerr",
+    "024_anime_routing",
+    "025_provisioning_config",
+    "026_provisioning_items",
+    "027_provisioning_runs",
+    "028_provisioning_optimize",
+    "029_delivery",
+    "040_identity",
+    "041_policy",
+    "042_hooks",
+    "043_dolby_vision",
+    "060_recovery",
+    "061_encoding",
+    "062_optimization",
+    "063_release_checks",
+    "064_av1_autopilot",
+    "065_performance",
+    "066_identity_engine_version",
+    "067_optimization_auto_review",
+    "068_storage_ledger",
+    "069_upgrade_reasons",
+    "078_download_janitor",
+    "079_mediaserver",
+    "080_migration",
+    "090_notify_security",
+    "100_ai_advisor"
+  ],
+  "user": "rooktest",
+  "password": "rooktest-wachtwoord-1",
+  "settings": {
+    "backup.retention_count": 21,
+    "ui.theme": "light"
+  },
+  "min_rows": {
+    "users": 2,
+    "settings_values": 2,
+    "api_keys": 1
+  }
+}

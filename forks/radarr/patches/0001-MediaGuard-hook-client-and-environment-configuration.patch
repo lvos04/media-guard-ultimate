@@ -1,0 +1,700 @@
+From a068168c12aa784fe0e9b0f49d323af1fca2e42c Mon Sep 17 00:00:00 2001
+From: MediaGuard <mediaguard@localhost>
+Date: Mon, 2 Nov 2026 10:00:00 +0000
+Subject: [PATCH 1/3] MediaGuard: hook client and environment configuration
+
+Adds NzbDrone.Core.MediaGuard with:
+- MediaGuardHookOptions read from MEDIAGUARD_* environment variables
+  (URL, INSTANCE_ID, HOOK_KEY, HOOK_TIMEOUT_MS, HOOK_FAIL_POLICY,
+  SHADOW_MODE, HOOK_CIRCUIT_BREAK_SECONDS)
+- MediaGuardHookClient: POST {MEDIAGUARD_URL}/api/v1/hooks/{hook} with
+  X-MediaGuard-Hook-Key, bounded timeout, fail open/closed policy and a
+  short circuit breaker so an outage never stalls RSS sync or imports
+- snake_case request payloads per packages/contracts/fork-hooks.md
+---
+ .../MediaGuardHookClientFixture.cs            | 180 ++++++++++++++
+ .../MediaGuard/MediaGuardHookClient.cs        | 162 +++++++++++++
+ .../MediaGuard/MediaGuardHookOptions.cs       |  81 +++++++
+ .../MediaGuard/MediaGuardPayloads.cs          | 229 ++++++++++++++++++
+ 4 files changed, 652 insertions(+)
+ create mode 100644 src/NzbDrone.Core.Test/MediaGuardTests/MediaGuardHookClientFixture.cs
+ create mode 100644 src/NzbDrone.Core/MediaGuard/MediaGuardHookClient.cs
+ create mode 100644 src/NzbDrone.Core/MediaGuard/MediaGuardHookOptions.cs
+ create mode 100644 src/NzbDrone.Core/MediaGuard/MediaGuardPayloads.cs
+
+diff --git a/src/NzbDrone.Core.Test/MediaGuardTests/MediaGuardHookClientFixture.cs b/src/NzbDrone.Core.Test/MediaGuardTests/MediaGuardHookClientFixture.cs
+new file mode 100644
+index 0000000..6264290
+--- /dev/null
++++ b/src/NzbDrone.Core.Test/MediaGuardTests/MediaGuardHookClientFixture.cs
+@@ -0,0 +1,180 @@
++using System;
++using System.Collections.Generic;
++using System.Net;
++using System.Text;
++using FluentAssertions;
++using Moq;
++using Newtonsoft.Json.Linq;
++using NUnit.Framework;
++using NzbDrone.Common.Http;
++using NzbDrone.Core.MediaGuard;
++using NzbDrone.Core.Test.Framework;
++using NzbDrone.Test.Common;
++
++namespace NzbDrone.Core.Test.MediaGuardTests
++{
++    [TestFixture]
++    public class MediaGuardHookClientFixture : CoreTest<MediaGuardHookClient>
++    {
++        private MediaGuardHookOptions _options;
++        private HttpRequest _request;
++
++        [SetUp]
++        public void Setup()
++        {
++            _options = new MediaGuardHookOptions
++            {
++                Url = "http://mediaguard-core:8100",
++                InstanceId = "radarr-films",
++                HookKey = "secret",
++                TimeoutMs = 1500
++            };
++
++            Mocker.GetMock<IMediaGuardHookOptionsProvider>()
++                  .Setup(v => v.GetOptions())
++                  .Returns(() => _options);
++        }
++
++        private void GivenResponse(string json, HttpStatusCode statusCode = HttpStatusCode.OK)
++        {
++            Mocker.GetMock<IHttpClient>()
++                  .Setup(v => v.Execute(It.IsAny<HttpRequest>()))
++                  .Callback<HttpRequest>(r => _request = r)
++                  .Returns<HttpRequest>(r => new HttpResponse(r, new HttpHeader(), json, statusCode));
++        }
++
++        private void GivenException(Exception ex)
++        {
++            Mocker.GetMock<IHttpClient>()
++                  .Setup(v => v.Execute(It.IsAny<HttpRequest>()))
++                  .Callback<HttpRequest>(r => _request = r)
++                  .Throws(ex);
++        }
++
++        [Test]
++        public void should_post_snake_case_payload_with_hook_key_and_timeout()
++        {
++            GivenResponse("{\"decision\":\"accept\",\"reason_code\":null,\"message\":\"ok\",\"score_adjustment\":0}");
++
++            var result = Subject.Send("pre-grab", new MediaGuardPreGrabRequest { InstanceId = "radarr-films", SearchType = "rss", Release = new MediaGuardReleasePayload { AgeHours = 1.5 } });
++
++            result.Decision.Should().Be(MediaGuardDecision.Accept);
++            result.Unavailable.Should().BeFalse();
++
++            _request.Url.FullUri.Should().Be("http://mediaguard-core:8100/api/v1/hooks/pre-grab");
++            _request.Method.Should().Be(System.Net.Http.HttpMethod.Post);
++            _request.Headers.GetSingleValue(MediaGuardHookClient.HookKeyHeader).Should().Be("secret");
++            _request.RequestTimeout.Should().Be(TimeSpan.FromMilliseconds(1500));
++
++            var body = JObject.Parse(Encoding.UTF8.GetString(_request.ContentData));
++            body["instance_id"].ToString().Should().Be("radarr-films");
++            body["search_type"].ToString().Should().Be("rss");
++            body["release"]["age_hours"].Value<double>().Should().Be(1.5);
++            body.ContainsKey("movie").Should().BeTrue();
++        }
++
++        [TestCase("reject", MediaGuardDecision.Reject)]
++        [TestCase("REJECT", MediaGuardDecision.Reject)]
++        [TestCase("defer", MediaGuardDecision.Defer)]
++        public void should_parse_decision(string decision, MediaGuardDecision expected)
++        {
++            GivenResponse($"{{\"decision\":\"{decision}\",\"reason_code\":\"AUDIO_PREFERENCE\",\"message\":\"Geen Engelse audio\",\"score_adjustment\":15}}");
++
++            var result = Subject.Send("pre-import", new { });
++
++            result.Decision.Should().Be(expected);
++            result.ReasonCode.Should().Be("AUDIO_PREFERENCE");
++            result.ScoreAdjustment.Should().Be(15);
++            result.FormatRejection().Should().Be("MediaGuard: Geen Engelse audio [AUDIO_PREFERENCE]");
++        }
++
++        [Test]
++        public void should_fail_open_on_timeout_by_default()
++        {
++            GivenException(new WebException("timed out", WebExceptionStatus.Timeout));
++
++            var result = Subject.Send("pre-grab", new { });
++
++            result.Decision.Should().Be(MediaGuardDecision.Accept);
++            result.Unavailable.Should().BeTrue();
++            result.ReasonCode.Should().Be(MediaGuardHookClient.UnavailableReasonCode);
++            ExceptionVerification.ExpectedWarns(1);
++        }
++
++        [Test]
++        public void should_fail_closed_when_configured()
++        {
++            _options.FailPolicy = MediaGuardFailPolicy.Closed;
++            GivenException(new WebException("connection refused"));
++
++            var result = Subject.Send("pre-grab", new { });
++
++            result.Decision.Should().Be(MediaGuardDecision.Reject);
++            result.Unavailable.Should().BeTrue();
++            result.FormatRejection().Should().EndWith("[MEDIAGUARD_UNAVAILABLE]");
++            ExceptionVerification.ExpectedWarns(1);
++        }
++
++        [Test]
++        public void should_treat_http_error_and_invalid_decision_as_unavailable()
++        {
++            GivenResponse("{\"decision\":\"maybe\"}");
++
++            Subject.Send("pre-grab", new { }).Unavailable.Should().BeTrue();
++            ExceptionVerification.ExpectedWarns(1);
++        }
++
++        [Test]
++        public void should_not_call_again_while_circuit_is_open()
++        {
++            GivenException(new WebException("connection refused"));
++
++            Subject.Send("pre-grab", new { });
++            Subject.Send("pre-grab", new { }).Unavailable.Should().BeTrue();
++
++            Mocker.GetMock<IHttpClient>().Verify(v => v.Execute(It.IsAny<HttpRequest>()), Times.Once());
++            ExceptionVerification.ExpectedWarns(1);
++        }
++
++        [Test]
++        public void should_apply_fail_policy_without_call_when_key_missing()
++        {
++            _options.HookKey = null;
++            _options.FailPolicy = MediaGuardFailPolicy.Closed;
++
++            Subject.Send("pre-grab", new { }).Decision.Should().Be(MediaGuardDecision.Reject);
++
++            Mocker.GetMock<IHttpClient>().Verify(v => v.Execute(It.IsAny<HttpRequest>()), Times.Never());
++            ExceptionVerification.ExpectedWarns(1);
++        }
++
++        [Test]
++        public void should_read_options_from_environment()
++        {
++            var env = new Dictionary<string, string>
++            {
++                { "MEDIAGUARD_URL", "http://core:8100/" },
++                { "MEDIAGUARD_INSTANCE_ID", "radarr-animefilms" },
++                { "MEDIAGUARD_HOOK_KEY", "k" },
++                { "MEDIAGUARD_HOOK_TIMEOUT_MS", "250" },
++                { "MEDIAGUARD_HOOK_FAIL_POLICY", "Closed" },
++                { "MEDIAGUARD_SHADOW_MODE", "1" }
++            };
++
++            var options = MediaGuardHookOptions.FromEnvironment(k => env.GetValueOrDefault(k));
++
++            options.Url.Should().Be("http://core:8100");
++            options.InstanceId.Should().Be("radarr-animefilms");
++            options.TimeoutMs.Should().Be(250);
++            options.FailPolicy.Should().Be(MediaGuardFailPolicy.Closed);
++            options.ShadowMode.Should().BeTrue();
++            options.IsComplete.Should().BeTrue();
++
++            var defaults = MediaGuardHookOptions.FromEnvironment(k => null);
++            defaults.HooksEnabled.Should().BeFalse();
++            defaults.TimeoutMs.Should().Be(3000);
++            defaults.FailPolicy.Should().Be(MediaGuardFailPolicy.Open);
++            defaults.ShadowMode.Should().BeFalse();
++        }
++    }
++}
+diff --git a/src/NzbDrone.Core/MediaGuard/MediaGuardHookClient.cs b/src/NzbDrone.Core/MediaGuard/MediaGuardHookClient.cs
+new file mode 100644
+index 0000000..27b1ff2
+--- /dev/null
++++ b/src/NzbDrone.Core/MediaGuard/MediaGuardHookClient.cs
+@@ -0,0 +1,162 @@
++using System;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Serialization;
++using NLog;
++using NzbDrone.Common.Extensions;
++using NzbDrone.Common.Http;
++
++namespace NzbDrone.Core.MediaGuard
++{
++    public enum MediaGuardDecision
++    {
++        Accept,
++        Reject,
++        Defer
++    }
++
++    public class MediaGuardHookResult
++    {
++        public MediaGuardDecision Decision { get; set; }
++        public string ReasonCode { get; set; }
++        public string Message { get; set; }
++        public int ScoreAdjustment { get; set; }
++
++        // True when MediaGuard could not be reached (timeout, error, invalid response) and the fail policy was applied
++        public bool Unavailable { get; set; }
++
++        public string FormatRejection()
++        {
++            var reasonCode = ReasonCode.IsNullOrWhiteSpace() ? "UNSPECIFIED" : ReasonCode;
++            var message = Message.IsNullOrWhiteSpace() ? "Release geweigerd" : Message;
++
++            return $"MediaGuard: {message} [{reasonCode}]";
++        }
++    }
++
++    public class MediaGuardHookResponse
++    {
++        public string Decision { get; set; }
++        public string ReasonCode { get; set; }
++        public string Message { get; set; }
++        public int ScoreAdjustment { get; set; }
++    }
++
++    public interface IMediaGuardHookClient
++    {
++        MediaGuardHookOptions Options { get; }
++        MediaGuardHookResult Send(string hook, object payload);
++    }
++
++    public class MediaGuardHookClient : IMediaGuardHookClient
++    {
++        public const string HookKeyHeader = "X-MediaGuard-Hook-Key";
++        public const string UnavailableReasonCode = "MEDIAGUARD_UNAVAILABLE";
++        public const string ShadowModeReasonCode = "MEDIAGUARD_SHADOW_MODE";
++
++        public static readonly JsonSerializerSettings SerializerSettings = new()
++        {
++            ContractResolver = new DefaultContractResolver { NamingStrategy = new SnakeCaseNamingStrategy() },
++            NullValueHandling = NullValueHandling.Include,
++            Formatting = Formatting.None
++        };
++
++        private readonly IHttpClient _httpClient;
++        private readonly IMediaGuardHookOptionsProvider _optionsProvider;
++        private readonly Logger _logger;
++        private readonly object _circuitLock = new();
++        private DateTime _circuitOpenUntil = DateTime.MinValue;
++
++        public MediaGuardHookClient(IHttpClient httpClient, IMediaGuardHookOptionsProvider optionsProvider, Logger logger)
++        {
++            _httpClient = httpClient;
++            _optionsProvider = optionsProvider;
++            _logger = logger;
++        }
++
++        public MediaGuardHookOptions Options => _optionsProvider.GetOptions();
++
++        public MediaGuardHookResult Send(string hook, object payload)
++        {
++            var options = Options;
++
++            if (!options.IsComplete)
++            {
++                return Unavailable(options, hook, "MEDIAGUARD_INSTANCE_ID en/of MEDIAGUARD_HOOK_KEY ontbreken", true);
++            }
++
++            lock (_circuitLock)
++            {
++                if (DateTime.UtcNow < _circuitOpenUntil)
++                {
++                    return Unavailable(options, hook, $"eerdere storing, nieuwe poging na {_circuitOpenUntil:u}", false);
++                }
++            }
++
++            try
++            {
++                var request = new HttpRequestBuilder($"{options.Url}/api/v1/hooks/{hook}")
++                    .Accept(HttpAccept.Json)
++                    .Post()
++                    .Build();
++
++                request.Headers.ContentType = "application/json";
++                request.Headers.Add(HookKeyHeader, options.HookKey);
++                request.RequestTimeout = TimeSpan.FromMilliseconds(options.TimeoutMs);
++                request.LogHttpError = false;
++                request.SetContent(JsonConvert.SerializeObject(payload, SerializerSettings));
++
++                var response = _httpClient.Execute(request);
++                var body = JsonConvert.DeserializeObject<MediaGuardHookResponse>(response.Content, SerializerSettings);
++
++                if (body == null || !Enum.TryParse<MediaGuardDecision>(body.Decision, true, out var decision))
++                {
++                    throw new FormatException($"Invalid MediaGuard {hook} response decision '{body?.Decision}'");
++                }
++
++                lock (_circuitLock)
++                {
++                    _circuitOpenUntil = DateTime.MinValue;
++                }
++
++                _logger.Debug("MediaGuard {0} decision: {1} [{2}] {3}", hook, decision, body.ReasonCode, body.Message);
++
++                return new MediaGuardHookResult
++                {
++                    Decision = decision,
++                    ReasonCode = body.ReasonCode,
++                    Message = body.Message,
++                    ScoreAdjustment = body.ScoreAdjustment
++                };
++            }
++            catch (Exception ex)
++            {
++                lock (_circuitLock)
++                {
++                    _circuitOpenUntil = DateTime.UtcNow.AddSeconds(options.CircuitBreakSeconds);
++                }
++
++                _logger.Debug(ex, "MediaGuard {0} hook call failed", hook);
++
++                return Unavailable(options, hook, $"{ex.GetType().Name}: {ex.Message}", true);
++            }
++        }
++
++        private MediaGuardHookResult Unavailable(MediaGuardHookOptions options, string hook, string detail, bool logWarning)
++        {
++            var failClosed = options.FailPolicy == MediaGuardFailPolicy.Closed;
++
++            if (logWarning)
++            {
++                _logger.Warn("MediaGuard {0} hook unavailable ({1}); fail policy '{2}' applied", hook, detail, failClosed ? "closed" : "open");
++            }
++
++            return new MediaGuardHookResult
++            {
++                Decision = failClosed ? MediaGuardDecision.Reject : MediaGuardDecision.Accept,
++                ReasonCode = UnavailableReasonCode,
++                Message = $"MediaGuard niet bereikbaar ({detail}); fail policy {(failClosed ? "closed" : "open")}",
++                Unavailable = true
++            };
++        }
++    }
++}
+diff --git a/src/NzbDrone.Core/MediaGuard/MediaGuardHookOptions.cs b/src/NzbDrone.Core/MediaGuard/MediaGuardHookOptions.cs
+new file mode 100644
+index 0000000..7fa40e2
+--- /dev/null
++++ b/src/NzbDrone.Core/MediaGuard/MediaGuardHookOptions.cs
+@@ -0,0 +1,81 @@
++using System;
++using NzbDrone.Common.Extensions;
++
++namespace NzbDrone.Core.MediaGuard
++{
++    public enum MediaGuardFailPolicy
++    {
++        Open,
++        Closed
++    }
++
++    public class MediaGuardHookOptions
++    {
++        public const int DefaultTimeoutMs = 3000;
++        public const int DefaultCircuitBreakSeconds = 30;
++
++        public string Url { get; set; }
++        public string InstanceId { get; set; }
++        public string HookKey { get; set; }
++        public int TimeoutMs { get; set; } = DefaultTimeoutMs;
++        public MediaGuardFailPolicy FailPolicy { get; set; } = MediaGuardFailPolicy.Open;
++        public bool ShadowMode { get; set; }
++        public int CircuitBreakSeconds { get; set; } = DefaultCircuitBreakSeconds;
++
++        public bool HooksEnabled => Url.IsNotNullOrWhiteSpace();
++
++        public bool IsComplete => HooksEnabled && InstanceId.IsNotNullOrWhiteSpace() && HookKey.IsNotNullOrWhiteSpace();
++
++        public static MediaGuardHookOptions FromEnvironment(Func<string, string> getVariable)
++        {
++            var options = new MediaGuardHookOptions
++            {
++                Url = getVariable("MEDIAGUARD_URL")?.Trim().TrimEnd('/'),
++                InstanceId = getVariable("MEDIAGUARD_INSTANCE_ID")?.Trim(),
++                HookKey = getVariable("MEDIAGUARD_HOOK_KEY")?.Trim(),
++                ShadowMode = IsTrue(getVariable("MEDIAGUARD_SHADOW_MODE"))
++            };
++
++            if (int.TryParse(getVariable("MEDIAGUARD_HOOK_TIMEOUT_MS"), out var timeoutMs) && timeoutMs > 0)
++            {
++                options.TimeoutMs = timeoutMs;
++            }
++
++            if (int.TryParse(getVariable("MEDIAGUARD_HOOK_CIRCUIT_BREAK_SECONDS"), out var circuitBreakSeconds) && circuitBreakSeconds >= 0)
++            {
++                options.CircuitBreakSeconds = circuitBreakSeconds;
++            }
++
++            if (string.Equals(getVariable("MEDIAGUARD_HOOK_FAIL_POLICY")?.Trim(), "closed", StringComparison.OrdinalIgnoreCase))
++            {
++                options.FailPolicy = MediaGuardFailPolicy.Closed;
++            }
++
++            return options;
++        }
++
++        private static bool IsTrue(string value)
++        {
++            value = value?.Trim();
++
++            return value == "1" ||
++                   string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
++                   string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase);
++        }
++    }
++
++    public interface IMediaGuardHookOptionsProvider
++    {
++        MediaGuardHookOptions GetOptions();
++    }
++
++    public class EnvironmentMediaGuardHookOptionsProvider : IMediaGuardHookOptionsProvider
++    {
++        private readonly Lazy<MediaGuardHookOptions> _options = new(() => MediaGuardHookOptions.FromEnvironment(Environment.GetEnvironmentVariable));
++
++        public MediaGuardHookOptions GetOptions()
++        {
++            return _options.Value;
++        }
++    }
++}
+diff --git a/src/NzbDrone.Core/MediaGuard/MediaGuardPayloads.cs b/src/NzbDrone.Core/MediaGuard/MediaGuardPayloads.cs
+new file mode 100644
+index 0000000..a05b6fd
+--- /dev/null
++++ b/src/NzbDrone.Core/MediaGuard/MediaGuardPayloads.cs
+@@ -0,0 +1,229 @@
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using NzbDrone.Common.Extensions;
++using NzbDrone.Core.CustomFormats;
++using NzbDrone.Core.DecisionEngine;
++using NzbDrone.Core.Download;
++using NzbDrone.Core.Indexers;
++using NzbDrone.Core.Languages;
++using NzbDrone.Core.Movies;
++using NzbDrone.Core.Parser.Model;
++
++namespace NzbDrone.Core.MediaGuard
++{
++    public class MediaGuardPreGrabRequest
++    {
++        public string InstanceId { get; set; }
++        public string App { get; set; }
++        public string SearchType { get; set; }
++        public MediaGuardReleasePayload Release { get; set; }
++        public object Series { get; set; }
++        public MediaGuardMoviePayload Movie { get; set; }
++        public object Episodes { get; set; }
++        public MediaGuardParsedPayload Parsed { get; set; }
++    }
++
++    public class MediaGuardPreImportRequest
++    {
++        public string InstanceId { get; set; }
++        public string App { get; set; }
++        public string Path { get; set; }
++        public long Size { get; set; }
++        public string DownloadClient { get; set; }
++        public string DownloadId { get; set; }
++        public string ReleaseTitle { get; set; }
++        public bool IsUpgrade { get; set; }
++        public object Series { get; set; }
++        public MediaGuardMoviePayload Movie { get; set; }
++        public object Episodes { get; set; }
++        public MediaGuardParsedPayload Parsed { get; set; }
++        public MediaGuardMediaInfoPayload MediaInfo { get; set; }
++    }
++
++    public class MediaGuardReleasePayload
++    {
++        public string Title { get; set; }
++        public string Guid { get; set; }
++        public string Indexer { get; set; }
++        public int IndexerId { get; set; }
++        public string Protocol { get; set; }
++        public long Size { get; set; }
++        public double AgeHours { get; set; }
++        public int? Seeders { get; set; }
++        public string Quality { get; set; }
++        public int Resolution { get; set; }
++        public string Source { get; set; }
++        public List<string> Languages { get; set; }
++        public string ReleaseGroup { get; set; }
++        public int CustomFormatScore { get; set; }
++        public List<string> CustomFormats { get; set; }
++        public List<string> IndexerFlags { get; set; }
++    }
++
++    public class MediaGuardMoviePayload
++    {
++        public int Id { get; set; }
++        public int TmdbId { get; set; }
++        public string ImdbId { get; set; }
++        public string Title { get; set; }
++        public int Year { get; set; }
++    }
++
++    public class MediaGuardParsedPayload
++    {
++        public string MovieTitle { get; set; }
++        public int Year { get; set; }
++        public string Edition { get; set; }
++        public string ReleaseGroup { get; set; }
++        public int TmdbId { get; set; }
++        public string ImdbId { get; set; }
++    }
++
++    public class MediaGuardMediaInfoPayload
++    {
++        public string VideoCodec { get; set; }
++        public List<string> AudioLanguages { get; set; }
++        public List<string> Subtitles { get; set; }
++        public int RunTimeSeconds { get; set; }
++        public string Resolution { get; set; }
++    }
++
++    public static class MediaGuardPayloadBuilder
++    {
++        public const string App = "radarr";
++
++        public static string GetSearchType(ReleaseDecisionInformation information)
++        {
++            var searchCriteria = information?.SearchCriteria;
++
++            if (searchCriteria == null)
++            {
++                return "rss";
++            }
++
++            return searchCriteria.InteractiveSearch ? "interactive" : "search";
++        }
++
++        public static MediaGuardPreGrabRequest BuildPreGrab(MediaGuardHookOptions options, RemoteMovie remoteMovie, ReleaseDecisionInformation information)
++        {
++            var release = remoteMovie.Release;
++            var quality = remoteMovie.ParsedMovieInfo?.Quality?.Quality;
++
++            return new MediaGuardPreGrabRequest
++            {
++                InstanceId = options.InstanceId,
++                App = App,
++                SearchType = GetSearchType(information),
++                Release = new MediaGuardReleasePayload
++                {
++                    Title = release.Title,
++                    Guid = release.Guid,
++                    Indexer = release.Indexer,
++                    IndexerId = release.IndexerId,
++                    Protocol = GetProtocol(release.DownloadProtocol),
++                    Size = release.Size,
++                    AgeHours = Math.Round(release.AgeHours, 2),
++                    Seeders = TorrentInfo.GetSeeders(release),
++                    Quality = quality?.Name,
++                    Resolution = quality?.Resolution ?? 0,
++                    Source = quality?.Source.ToString().ToLowerInvariant(),
++                    Languages = (remoteMovie.Languages ?? new List<Language>()).Select(l => l.Name).ToList(),
++                    ReleaseGroup = remoteMovie.ParsedMovieInfo?.ReleaseGroup,
++                    CustomFormatScore = remoteMovie.CustomFormatScore,
++                    CustomFormats = (remoteMovie.CustomFormats ?? new List<CustomFormat>()).Select(c => c.Name).ToList(),
++                    IndexerFlags = GetIndexerFlags(release.IndexerFlags)
++                },
++                Series = null,
++                Movie = BuildMovie(remoteMovie.Movie),
++                Episodes = null,
++                Parsed = BuildParsed(remoteMovie.ParsedMovieInfo)
++            };
++        }
++
++        public static MediaGuardPreImportRequest BuildPreImport(MediaGuardHookOptions options, LocalMovie localMovie, DownloadClientItem downloadClientItem)
++        {
++            var mediaInfo = localMovie.MediaInfo;
++            var parsed = localMovie.FileMovieInfo ?? localMovie.FolderMovieInfo ?? localMovie.DownloadClientMovieInfo;
++
++            return new MediaGuardPreImportRequest
++            {
++                InstanceId = options.InstanceId,
++                App = App,
++                Path = localMovie.Path,
++                Size = localMovie.Size,
++                DownloadClient = downloadClientItem?.DownloadClientInfo?.Name,
++                DownloadId = downloadClientItem?.DownloadId,
++                ReleaseTitle = localMovie.Release?.Title ?? downloadClientItem?.Title ?? localMovie.SceneName,
++                IsUpgrade = localMovie.Movie?.HasFile ?? false,
++                Series = null,
++                Movie = BuildMovie(localMovie.Movie),
++                Episodes = null,
++                Parsed = BuildParsed(parsed),
++                MediaInfo = mediaInfo == null
++                    ? null
++                    : new MediaGuardMediaInfoPayload
++                    {
++                        VideoCodec = mediaInfo.VideoFormat,
++                        AudioLanguages = mediaInfo.AudioLanguages ?? new List<string>(),
++                        Subtitles = mediaInfo.Subtitles ?? new List<string>(),
++                        RunTimeSeconds = (int)mediaInfo.RunTime.TotalSeconds,
++                        Resolution = mediaInfo.Width > 0 ? $"{mediaInfo.Width}x{mediaInfo.Height}" : null
++                    }
++            };
++        }
++
++        private static string GetProtocol(DownloadProtocol protocol)
++        {
++            return protocol switch
++            {
++                DownloadProtocol.Torrent => "torrent",
++                DownloadProtocol.Usenet => "usenet",
++                _ => "unknown"
++            };
++        }
++
++        private static List<string> GetIndexerFlags(IndexerFlags flags)
++        {
++            return Enum.GetValues<IndexerFlags>()
++                       .Where(f => f != 0 && flags.HasFlag(f))
++                       .Select(f => f.ToString())
++                       .ToList();
++        }
++
++        private static MediaGuardMoviePayload BuildMovie(Movie movie)
++        {
++            if (movie == null)
++            {
++                return null;
++            }
++
++            return new MediaGuardMoviePayload
++            {
++                Id = movie.Id,
++                TmdbId = movie.TmdbId,
++                ImdbId = movie.ImdbId.IsNullOrWhiteSpace() ? null : movie.ImdbId,
++                Title = movie.Title,
++                Year = movie.Year
++            };
++        }
++
++        private static MediaGuardParsedPayload BuildParsed(ParsedMovieInfo parsed)
++        {
++            if (parsed == null)
++            {
++                return null;
++            }
++
++            return new MediaGuardParsedPayload
++            {
++                MovieTitle = parsed.PrimaryMovieTitle,
++                Year = parsed.Year,
++                Edition = parsed.Edition,
++                ReleaseGroup = parsed.ReleaseGroup,
++                TmdbId = parsed.TmdbId,
++                ImdbId = parsed.ImdbId.IsNullOrWhiteSpace() ? null : parsed.ImdbId
++            };
++        }
++    }
++}

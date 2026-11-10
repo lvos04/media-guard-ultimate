@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+node_modules/
+.next/
+*.tsbuildinfo
+testdata/
+.env
+deploy/truenas/.env
+/tmp/
+playwright-report/
+test-results/
+forks/*/src/
+forks/*/build/
+.run/
+.run-*/
+**/.run/
+*.db-shm
+*.db-wal
+# veldtestrapporten en schermafdrukken van een echte installatie horen niet in deze openbare repo
+docs/reports/

@@ -1,0 +1,28 @@
+[Unit]
+Description=AV1 Pipeline backend
+After=network-online.target local-fs.target remote-fs.target av1-pipeline-smb-helper.socket
+Wants=network-online.target remote-fs.target av1-pipeline-smb-helper.socket
+RequiresMountsFor=/srv/av1-pipeline /library
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=av1pipeline
+Group=av1pipeline
+SupplementaryGroups=render video
+EnvironmentFile=/etc/av1-pipeline.env
+WorkingDirectory=__PROJECT_DIR__/backend
+ExecStart=__PROJECT_DIR__/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=45
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+# Alleen nodig om intel_gpu_top/RAPL te lezen; geen algemene beheerrechten.
+AmbientCapabilities=CAP_PERFMON
+CapabilityBoundingSet=CAP_PERFMON
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,330 @@
+{
+ "overzicht-licht-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(18, 61, 163)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(18, 61, 163) + box-shadow",
+   "solid 3px rgb(11, 15, 20) + box-shadow",
+   "solid 3px rgb(255, 255, 255) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "bibliotheek-licht-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(18, 61, 163)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(18, 61, 163) + box-shadow",
+   "solid 3px rgb(11, 15, 20) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "instellingen-licht-390": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(18, 61, 163)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(18, 61, 163) + box-shadow",
+   "solid 3px rgb(11, 15, 20) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "terugzetten-licht-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(18, 61, 163)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(18, 61, 163) + box-shadow",
+   "solid 3px rgb(11, 15, 20) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "systeem-licht-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(18, 61, 163)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(18, 61, 163) + box-shadow",
+   "solid 3px rgb(11, 15, 20) + box-shadow",
+   "solid 3px rgb(255, 255, 255) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "overzicht-licht-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(18, 61, 163)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(18, 61, 163) + box-shadow",
+   "solid 3px rgb(11, 15, 20) + box-shadow",
+   "solid 3px rgb(255, 255, 255) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "bibliotheek-licht-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(18, 61, 163)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(18, 61, 163) + box-shadow",
+   "solid 3px rgb(11, 15, 20) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "instellingen-licht-1440": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(18, 61, 163)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(18, 61, 163) + box-shadow",
+   "solid 3px rgb(11, 15, 20) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "terugzetten-licht-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(18, 61, 163)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(18, 61, 163) + box-shadow",
+   "solid 3px rgb(11, 15, 20) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "systeem-licht-1440": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(18, 61, 163)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(18, 61, 163) + box-shadow",
+   "solid 3px rgb(11, 15, 20) + box-shadow",
+   "solid 3px rgb(255, 255, 255) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "overzicht-donker-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(141, 182, 255)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(141, 182, 255) + box-shadow",
+   "solid 3px rgb(242, 245, 248) + box-shadow",
+   "solid 3px rgb(6, 16, 31) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "bibliotheek-donker-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(141, 182, 255)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(141, 182, 255) + box-shadow",
+   "solid 3px rgb(242, 245, 248) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "instellingen-donker-390": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(141, 182, 255)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(141, 182, 255) + box-shadow",
+   "solid 3px rgb(242, 245, 248) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "terugzetten-donker-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(141, 182, 255)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(141, 182, 255) + box-shadow",
+   "solid 3px rgb(242, 245, 248) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "systeem-donker-390": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(141, 182, 255)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(141, 182, 255) + box-shadow",
+   "solid 3px rgb(242, 245, 248) + box-shadow",
+   "solid 3px rgb(6, 16, 31) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "overzicht-donker-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(141, 182, 255)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(141, 182, 255) + box-shadow",
+   "solid 3px rgb(242, 245, 248) + box-shadow",
+   "solid 3px rgb(6, 16, 31) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "bibliotheek-donker-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(141, 182, 255)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(141, 182, 255) + box-shadow",
+   "solid 3px rgb(242, 245, 248) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "instellingen-donker-1440": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(141, 182, 255)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(141, 182, 255) + box-shadow",
+   "solid 3px rgb(242, 245, 248) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "terugzetten-donker-1440": {
+  "tabstops": 39,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(141, 182, 255)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(141, 182, 255) + box-shadow",
+   "solid 3px rgb(242, 245, 248) + box-shadow"
+  ],
+  "grafieken": []
+ },
+ "systeem-donker-1440": {
+  "tabstops": 40,
+  "eerste": {
+   "tag": "a",
+   "naam": "Naar inhoud",
+   "outline": "solid 3px rgb(141, 182, 255)",
+   "schaduw": true,
+   "bedekt": false
+  },
+  "bedekt_door_vaste_balk": [],
+  "focusstijlen": [
+   "solid 3px rgb(141, 182, 255) + box-shadow",
+   "solid 3px rgb(242, 245, 248) + box-shadow",
+   "solid 3px rgb(6, 16, 31) + box-shadow"
+  ],
+  "grafieken": []
+ }
+}

@@ -1,0 +1,64 @@
+<!-- title: Instanties -->
+<!-- active: /instellingen -->
+<!-- estop: 1 -->
+<div class="page-header">
+  <div>
+    <div class="crumbs"><a href="#">Instellingen</a><i data-i="chevron-right" class="ico-sm"></i><span>Instanties</span></div>
+    <h1 class="page-title">Instanties</h1>
+    <p class="page-sub">Twee forks, vier gescheiden runtime-instanties met eigen database, config, wachtrij en media-scope.</p>
+  </div>
+  <div class="page-actions"><button class="btn"><i data-i="inbox"></i>Seerr-routetest</button><button class="btn btn--primary"><i data-i="plus"></i>Instantie toevoegen</button></div>
+</div>
+
+<div class="instance-grid" style="margin-bottom:16px">
+  <article class="instance">
+    <div class="instance-head"><span class="instance-logo instance-logo--sonarr">SO</span><div class="grow"><div class="instance-name">Sonarr Series</div><div class="instance-id">sonarr-series</div></div><span class="chip chip--success"><i data-i="circle-check"></i>Gezond</span></div>
+    <div class="instance-stats"><div><span>Items</span><strong>1.204</strong></div><div><span>Ontbrekend</span><strong>402</strong></div><div><span>Respons</span><strong>412 ms</strong></div></div>
+    <dl class="kv" style="font-size:12px"><dt>Root</dt><dd class="mono">/media/tv</dd><dt>Categorie</dt><dd class="mono">tv</dd><dt>Versie</dt><dd class="mono">4.0.11 · fork a91c2e</dd></dl>
+    <div class="row"><button class="btn btn--sm">Test</button><button class="btn btn--sm">Pauzeer</button><button class="btn btn--sm btn--ghost">Beheer</button></div>
+  </article>
+  <article class="instance">
+    <div class="instance-head"><span class="instance-logo instance-logo--sonarr">SA</span><div class="grow"><div class="instance-name">Sonarr Anime</div><div class="instance-id">sonarr-anime</div></div><span class="chip chip--success"><i data-i="circle-check"></i>Gezond</span></div>
+    <div class="instance-stats"><div><span>Items</span><strong>386</strong></div><div><span>Ontbrekend</span><strong>851</strong></div><div><span>Respons</span><strong>380 ms</strong></div></div>
+    <dl class="kv" style="font-size:12px"><dt>Root</dt><dd class="mono">/media/anime</dd><dt>Categorie</dt><dd class="mono">tv-anime</dd><dt>Versie</dt><dd class="mono">4.0.11 · fork a91c2e</dd></dl>
+    <div class="row"><button class="btn btn--sm">Test</button><button class="btn btn--sm">Pauzeer</button><button class="btn btn--sm btn--ghost">Beheer</button></div>
+  </article>
+  <article class="instance">
+    <div class="instance-head"><span class="instance-logo instance-logo--radarr">RF</span><div class="grow"><div class="instance-name">Radarr Films</div><div class="instance-id">radarr-films</div></div><span class="chip chip--success"><i data-i="circle-check"></i>Gezond</span></div>
+    <div class="instance-stats"><div><span>Items</span><strong>3.912</strong></div><div><span>Ontbrekend</span><strong>24</strong></div><div><span>Respons</span><strong>295 ms</strong></div></div>
+    <dl class="kv" style="font-size:12px"><dt>Root</dt><dd class="mono">/media/films</dd><dt>Categorie</dt><dd class="mono">movies</dd><dt>Versie</dt><dd class="mono">5.14.0 · fork 3f0d71</dd></dl>
+    <div class="row"><button class="btn btn--sm">Test</button><button class="btn btn--sm">Pauzeer</button><button class="btn btn--sm btn--ghost">Beheer</button></div>
+  </article>
+  <article class="instance instance--degraded">
+    <div class="instance-head"><span class="instance-logo instance-logo--radarr">RA</span><div class="grow"><div class="instance-name">Radarr Animefilms</div><div class="instance-id">radarr-animefilms</div></div><span class="chip chip--warning"><i data-i="triangle-alert"></i>Degraded</span></div>
+    <div class="instance-stats"><div><span>Items</span><strong>241</strong></div><div><span>Ontbrekend</span><strong>7</strong></div><div><span>Respons</span><strong class="t-warning">4,2 s</strong></div></div>
+    <dl class="kv" style="font-size:12px"><dt>Root</dt><dd class="mono">/media/anime-films</dd><dt>Categorie</dt><dd class="mono">movies-anime</dd><dt>Versie</dt><dd class="mono">5.14.0 · fork 3f0d71</dd></dl>
+    <div class="row"><button class="btn btn--sm">Test</button><button class="btn btn--sm">Hervat</button><button class="btn btn--sm btn--ghost">Beheer</button></div>
+  </article>
+</div>
+
+<div class="grid">
+  <section class="card span-7">
+    <div class="card-header"><h2 class="card-title"><i data-i="route"></i>Bron vs doel-mapping</h2><span class="card-sub">uit migratie · 2 nov 09:20</span></div>
+    <div class="table-wrap">
+    <table class="table table--stack">
+      <thead><tr><th>Bron (oud)</th><th></th><th>Doel</th><th>Ownership</th><th>Cutover</th></tr></thead>
+      <tbody>
+        <tr><td class="cell-primary"><div class="cell-title">sonarr @ 10.0.0.12:8989</div><div class="cell-sub">Sonarr v4.0.9 · 1.204 series</div></td><td class="hide-mobile t-3"><i data-i="arrow-right"></i></td><td data-label="Doel"><span class="tag">sonarr-series</span></td><td data-label="Ownership"><span class="chip chip--success"><i data-i="circle-check"></i>Eenduidig</span></td><td data-label="Cutover"><span class="chip chip--outline">Shadow</span></td></tr>
+        <tr><td class="cell-primary"><div class="cell-title">sonarr-anime @ 10.0.0.12:8990</div><div class="cell-sub">Sonarr v4.0.9 · 386 series</div></td><td class="hide-mobile t-3"><i data-i="arrow-right"></i></td><td data-label="Doel"><span class="tag">sonarr-anime</span></td><td data-label="Ownership"><span class="chip chip--success"><i data-i="circle-check"></i>Eenduidig</span></td><td data-label="Cutover"><span class="chip chip--outline">Shadow</span></td></tr>
+        <tr><td class="cell-primary"><div class="cell-title">radarr @ 10.0.0.12:7878</div><div class="cell-sub">Radarr v5.12 · 3.912 films</div></td><td class="hide-mobile t-3"><i data-i="arrow-right"></i></td><td data-label="Doel"><span class="tag">radarr-films</span></td><td data-label="Ownership"><span class="chip chip--warning"><i data-i="triangle-alert"></i>2 conflicten</span></td><td data-label="Cutover"><span class="chip chip--outline">Shadow</span></td></tr>
+        <tr><td class="cell-primary"><div class="cell-title">radarr-anime @ 10.0.0.12:7879</div><div class="cell-sub">Radarr v5.12 · 241 films</div></td><td class="hide-mobile t-3"><i data-i="arrow-right"></i></td><td data-label="Doel"><span class="tag">radarr-animefilms</span></td><td data-label="Ownership"><span class="chip chip--warning"><i data-i="triangle-alert"></i>2 conflicten</span></td><td data-label="Cutover"><span class="chip chip--outline">Shadow</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+  <section class="card span-5">
+    <div class="card-header"><h2 class="card-title"><i data-i="inbox"></i>Seerr-routering</h2><button class="btn btn--sm"><i data-i="play"></i>Test alle routes</button></div>
+    <div class="list">
+      <div class="list-row"><span class="list-icon list-icon--success"><i data-i="tv"></i></span><div class="list-main"><div class="list-title">Serie → sonarr-series</div><div class="list-sub">De Laatste Wacht · route OK · 210 ms</div></div><span class="chip chip--success"><i data-i="check"></i>OK</span></div>
+      <div class="list-row"><span class="list-icon list-icon--success"><i data-i="sparkles"></i></span><div class="list-main"><div class="list-title">Anime-serie → sonarr-anime</div><div class="list-sub">Frieren · keyword ‘anime’ + bestaande override</div></div><span class="chip chip--success"><i data-i="check"></i>OK</span></div>
+      <div class="list-row"><span class="list-icon list-icon--success"><i data-i="film"></i></span><div class="list-main"><div class="list-title">Film → radarr-films</div><div class="list-sub">Wadi: Deel Twee · route OK</div></div><span class="chip chip--success"><i data-i="check"></i>OK</span></div>
+      <div class="list-row"><span class="list-icon list-icon--warning"><i data-i="film"></i></span><div class="list-main"><div class="list-title">Animefilm → radarr-animefilms</div><div class="list-sub">Your Name. · Seerr kiest radarr-films (geen anime-tag)</div></div><span class="chip chip--warning"><i data-i="triangle-alert"></i>Override nodig</span></div>
+    </div>
+  </section>
+</div>

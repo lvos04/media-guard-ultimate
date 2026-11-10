@@ -1,0 +1,262 @@
+From 27ba7d638f800006827e4ce965bb509f0c3e475f Mon Sep 17 00:00:00 2001
+From: MediaGuard <mediaguard@localhost>
+Date: Mon, 2 Nov 2026 10:00:00 +0000
+Subject: [PATCH 2/3] MediaGuard: pre-grab download decision specification
+
+New IDownloadDecisionEngineSpecification evaluated in a new, last
+SpecificationPriority.PolicyHook group, so it only runs for releases
+every upstream specification accepted (RSS, automatic and interactive
+search). Rejections read 'MediaGuard: <message> [<reason_code>]' and are
+visible in interactive search results. MEDIAGUARD_SHADOW_MODE=1 rejects
+all grabs locally without a network call.
+---
+ .../MediaGuardPreGrabSpecificationFixture.cs  | 140 ++++++++++++++++++
+ .../DecisionEngine/DownloadRejectionReason.cs |   5 +-
+ .../DecisionEngine/SpecificationPriority.cs   |   5 +-
+ .../MediaGuardPreGrabSpecification.cs         |  61 ++++++++
+ 4 files changed, 209 insertions(+), 2 deletions(-)
+ create mode 100644 src/NzbDrone.Core.Test/DecisionEngineTests/MediaGuardPreGrabSpecificationFixture.cs
+ create mode 100644 src/NzbDrone.Core/DecisionEngine/Specifications/MediaGuardPreGrabSpecification.cs
+
+diff --git a/src/NzbDrone.Core.Test/DecisionEngineTests/MediaGuardPreGrabSpecificationFixture.cs b/src/NzbDrone.Core.Test/DecisionEngineTests/MediaGuardPreGrabSpecificationFixture.cs
+new file mode 100644
+index 0000000..46d377d
+--- /dev/null
++++ b/src/NzbDrone.Core.Test/DecisionEngineTests/MediaGuardPreGrabSpecificationFixture.cs
+@@ -0,0 +1,140 @@
++using System.Collections.Generic;
++using FluentAssertions;
++using Moq;
++using NUnit.Framework;
++using NzbDrone.Core.DecisionEngine;
++using NzbDrone.Core.DecisionEngine.Specifications;
++using NzbDrone.Core.IndexerSearch.Definitions;
++using NzbDrone.Core.MediaGuard;
++using NzbDrone.Core.Parser.Model;
++using NzbDrone.Core.Qualities;
++using NzbDrone.Core.Test.Framework;
++using NzbDrone.Core.Tv;
++
++namespace NzbDrone.Core.Test.DecisionEngineTests
++{
++    [TestFixture]
++    public class MediaGuardPreGrabSpecificationFixture : CoreTest<MediaGuardPreGrabSpecification>
++    {
++        private MediaGuardHookOptions _options;
++        private RemoteEpisode _remoteEpisode;
++        private object _payload;
++
++        [SetUp]
++        public void Setup()
++        {
++            _options = new MediaGuardHookOptions { Url = "http://core:8100", InstanceId = "sonarr-anime", HookKey = "k" };
++
++            _remoteEpisode = new RemoteEpisode
++            {
++                Release = new ReleaseInfo { Title = "[Group] Show - 05 (1080p)", Guid = "g1", IndexerId = 3, Indexer = "Nyaa" },
++                ParsedEpisodeInfo = new ParsedEpisodeInfo { SeasonNumber = 1, EpisodeNumbers = new[] { 5 }, Quality = new QualityModel(Quality.WEBDL1080p), ReleaseGroup = "Group" },
++                Series = new Series { Id = 12, TvdbId = 81189, Title = "Show", SeriesType = SeriesTypes.Anime },
++                Episodes = new List<Episode> { new Episode { Id = 345, SeasonNumber = 1, EpisodeNumber = 5, AbsoluteEpisodeNumber = 5 } },
++                CustomFormatScore = 100
++            };
++
++            Mocker.GetMock<IMediaGuardHookClient>().SetupGet(v => v.Options).Returns(() => _options);
++        }
++
++        private void GivenResult(MediaGuardHookResult result)
++        {
++            Mocker.GetMock<IMediaGuardHookClient>()
++                  .Setup(v => v.Send(MediaGuardPreGrabSpecification.Hook, It.IsAny<object>()))
++                  .Callback<string, object>((h, p) => _payload = p)
++                  .Returns(result);
++        }
++
++        [Test]
++        public void should_accept_without_call_when_hooks_disabled()
++        {
++            _options.Url = null;
++
++            Subject.IsSatisfiedBy(_remoteEpisode, null).Accepted.Should().BeTrue();
++            Mocker.GetMock<IMediaGuardHookClient>().Verify(v => v.Send(It.IsAny<string>(), It.IsAny<object>()), Times.Never());
++        }
++
++        [Test]
++        public void should_run_after_all_upstream_specifications()
++        {
++            ((int)Subject.Priority).Should().BeGreaterThan((int)SpecificationPriority.Disk);
++        }
++
++        [Test]
++        public void should_reject_everything_locally_in_shadow_mode()
++        {
++            _options.ShadowMode = true;
++            _options.Url = null;
++
++            var decision = Subject.IsSatisfiedBy(_remoteEpisode, null);
++
++            decision.Accepted.Should().BeFalse();
++            decision.Reason.Should().Be(DownloadRejectionReason.MediaGuardShadowMode);
++            decision.Message.Should().Contain("[MEDIAGUARD_SHADOW_MODE]");
++            Mocker.GetMock<IMediaGuardHookClient>().Verify(v => v.Send(It.IsAny<string>(), It.IsAny<object>()), Times.Never());
++        }
++
++        [Test]
++        public void should_reject_with_mediaguard_reason()
++        {
++            GivenResult(new MediaGuardHookResult { Decision = MediaGuardDecision.Reject, ReasonCode = "IDENTITY_MISMATCH", Message = "Verkeerde aflevering" });
++
++            var decision = Subject.IsSatisfiedBy(_remoteEpisode, null);
++
++            decision.Accepted.Should().BeFalse();
++            decision.Reason.Should().Be(DownloadRejectionReason.MediaGuardRejected);
++            decision.Message.Should().Be("MediaGuard: Verkeerde aflevering [IDENTITY_MISMATCH]");
++        }
++
++        [Test]
++        public void should_mark_unavailable_rejection()
++        {
++            GivenResult(new MediaGuardHookResult { Decision = MediaGuardDecision.Reject, ReasonCode = MediaGuardHookClient.UnavailableReasonCode, Message = "down", Unavailable = true });
++
++            Subject.IsSatisfiedBy(_remoteEpisode, null).Reason.Should().Be(DownloadRejectionReason.MediaGuardUnavailable);
++        }
++
++        [Test]
++        public void should_accept_and_apply_score_adjustment()
++        {
++            GivenResult(new MediaGuardHookResult { Decision = MediaGuardDecision.Accept, ScoreAdjustment = 50 });
++
++            Subject.IsSatisfiedBy(_remoteEpisode, null).Accepted.Should().BeTrue();
++            _remoteEpisode.CustomFormatScore.Should().Be(150);
++        }
++
++        [TestCase(false, "search")]
++        [TestCase(true, "interactive")]
++        public void should_send_contract_payload(bool interactive, string searchType)
++        {
++            GivenResult(new MediaGuardHookResult { Decision = MediaGuardDecision.Accept });
++
++            Subject.IsSatisfiedBy(_remoteEpisode, new SingleEpisodeSearchCriteria { InteractiveSearch = interactive });
++
++            var payload = _payload as MediaGuardPreGrabRequest;
++            payload.Should().NotBeNull();
++            payload.InstanceId.Should().Be("sonarr-anime");
++            payload.App.Should().Be("sonarr");
++            payload.SearchType.Should().Be(searchType);
++            payload.Release.Quality.Should().Be("WEBDL-1080p");
++            payload.Release.Resolution.Should().Be(1080);
++            payload.Release.Source.Should().Be("web");
++            payload.Release.Protocol.Should().Be("unknown");
++            payload.Series.SeriesType.Should().Be("anime");
++            payload.Series.TvdbId.Should().Be(81189);
++            payload.Episodes.Should().ContainSingle(e => e.Id == 345 && e.AbsoluteEpisodeNumber == 5);
++            payload.Parsed.EpisodeNumbers.Should().Equal(5);
++            payload.Movie.Should().BeNull();
++        }
++
++        [Test]
++        public void should_report_rss_search_type_without_criteria()
++        {
++            GivenResult(new MediaGuardHookResult { Decision = MediaGuardDecision.Accept });
++
++            Subject.IsSatisfiedBy(_remoteEpisode, null);
++
++            ((MediaGuardPreGrabRequest)_payload).SearchType.Should().Be("rss");
++        }
++    }
++}
+diff --git a/src/NzbDrone.Core/DecisionEngine/DownloadRejectionReason.cs b/src/NzbDrone.Core/DecisionEngine/DownloadRejectionReason.cs
+index 09b21dc..752a928 100644
+--- a/src/NzbDrone.Core/DecisionEngine/DownloadRejectionReason.cs
++++ b/src/NzbDrone.Core/DecisionEngine/DownloadRejectionReason.cs
+@@ -73,5 +73,8 @@ public enum DownloadRejectionReason
+     DiskCustomFormatCutoffMet,
+     DiskCustomFormatScore,
+     DiskCustomFormatScoreIncrement,
+-    DiskUpgradesNotAllowed
++    DiskUpgradesNotAllowed,
++    MediaGuardRejected,
++    MediaGuardUnavailable,
++    MediaGuardShadowMode
+ }
+diff --git a/src/NzbDrone.Core/DecisionEngine/SpecificationPriority.cs b/src/NzbDrone.Core/DecisionEngine/SpecificationPriority.cs
+index e3eb0b9..0ed6eba 100644
+--- a/src/NzbDrone.Core/DecisionEngine/SpecificationPriority.cs
++++ b/src/NzbDrone.Core/DecisionEngine/SpecificationPriority.cs
+@@ -5,6 +5,9 @@ public enum SpecificationPriority
+         Default = 0,
+         Parsing = 0,
+         Database = 0,
+-        Disk = 1
++        Disk = 1,
++
++        // Evaluated only when every other specification accepted the release (e.g. external policy hooks)
++        PolicyHook = 2
+     }
+ }
+diff --git a/src/NzbDrone.Core/DecisionEngine/Specifications/MediaGuardPreGrabSpecification.cs b/src/NzbDrone.Core/DecisionEngine/Specifications/MediaGuardPreGrabSpecification.cs
+new file mode 100644
+index 0000000..80035f7
+--- /dev/null
++++ b/src/NzbDrone.Core/DecisionEngine/Specifications/MediaGuardPreGrabSpecification.cs
+@@ -0,0 +1,61 @@
++using NLog;
++using NzbDrone.Core.IndexerSearch.Definitions;
++using NzbDrone.Core.MediaGuard;
++using NzbDrone.Core.Parser.Model;
++
++namespace NzbDrone.Core.DecisionEngine.Specifications
++{
++    // MediaGuard fork patch: asks the external MediaGuard policy service whether a release that passed
++    // all upstream specifications may be grabbed. Runs last (PolicyHook priority) for RSS, automatic and
++    // interactive searches, so only otherwise-acceptable releases cause a (bounded) network call.
++    public class MediaGuardPreGrabSpecification : IDownloadDecisionEngineSpecification
++    {
++        public const string Hook = "pre-grab";
++
++        private readonly IMediaGuardHookClient _hookClient;
++        private readonly Logger _logger;
++
++        public MediaGuardPreGrabSpecification(IMediaGuardHookClient hookClient, Logger logger)
++        {
++            _hookClient = hookClient;
++            _logger = logger;
++        }
++
++        public SpecificationPriority Priority => SpecificationPriority.PolicyHook;
++        public RejectionType Type => RejectionType.Permanent;
++
++        public virtual DownloadSpecDecision IsSatisfiedBy(RemoteEpisode subject, SearchCriteriaBase searchCriteria)
++        {
++            var options = _hookClient.Options;
++
++            if (options.ShadowMode)
++            {
++                _logger.Debug("MediaGuard shadow mode active, rejecting {0}", subject.Release.Title);
++
++                return DownloadSpecDecision.Reject(DownloadRejectionReason.MediaGuardShadowMode,
++                    $"MediaGuard: shadow mode actief, grabs worden lokaal geweigerd [{MediaGuardHookClient.ShadowModeReasonCode}]");
++            }
++
++            if (!options.HooksEnabled)
++            {
++                return DownloadSpecDecision.Accept();
++            }
++
++            var result = _hookClient.Send(Hook, MediaGuardPayloadBuilder.BuildPreGrab(options, subject, searchCriteria));
++
++            if (result.Decision == MediaGuardDecision.Accept)
++            {
++                if (result.ScoreAdjustment != 0)
++                {
++                    _logger.Debug("MediaGuard adjusted custom format score of {0} by {1}", subject.Release.Title, result.ScoreAdjustment);
++                    subject.CustomFormatScore += result.ScoreAdjustment;
++                }
++
++                return DownloadSpecDecision.Accept();
++            }
++
++            return DownloadSpecDecision.Reject(result.Unavailable ? DownloadRejectionReason.MediaGuardUnavailable : DownloadRejectionReason.MediaGuardRejected,
++                result.FormatRejection());
++        }
++    }
++}

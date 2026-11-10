@@ -1,0 +1,62 @@
+<!-- title: AI Adviseur -->
+<!-- active: /ai -->
+<div class="page-header">
+  <div>
+    <h1 class="page-title">AI Adviseur</h1>
+    <p class="page-sub">Optioneel. Alleen bij ambigue gevallen, alleen metadata, nooit autoriteit over destructieve acties. MediaGuard werkt volledig zonder AI.</p>
+  </div>
+  <div class="page-actions"><span class="chip chip--info chip--lg"><i data-i="eye"></i>Beleid: Advies</span></div>
+</div>
+
+<div class="grid">
+  <section class="card span-4">
+    <div class="card-header"><h2 class="card-title"><i data-i="bot"></i>Provider</h2></div>
+    <div class="card-body stack">
+      <div class="segmented" role="radiogroup" aria-label="Provider"><button aria-pressed="true">Claude</button><button>OpenAI</button><button>Uit</button></div>
+      <div><label class="label" for="model">Model</label><select id="model" class="select"><option>claude-haiku · goedkoopste geslaagde regressietest</option></select><p class="hint">Lijst komt uit live providercontrole.</p></div>
+      <div><span class="label">API-sleutel</span><div class="row"><span class="chip chip--success"><i data-i="lock"></i>Ingesteld · 28 okt</span><button class="btn btn--sm">Vervangen</button></div><p class="hint">Wordt server-side versleuteld bewaard en nooit naar de browser gestuurd.</p></div>
+      <div class="inline-state inline-state--success"><i data-i="circle-check"></i><span><strong>Verbindingstest geslaagd</strong> · gestructureerd antwoord gevalideerd · 1,2 s</span></div>
+      <div><span class="label">Beleid</span><div class="segmented"><button>Uit</button><button>Schaduw</button><button aria-pressed="true">Advies</button><button disabled title="Pas na geslaagde schaduwfase">Beperkt auto</button></div></div>
+    </div>
+  </section>
+
+  <section class="card span-4">
+    <div class="card-header"><h2 class="card-title"><i data-i="gauge"></i>Budget november</h2></div>
+    <div class="card-body stack">
+      <div class="budget"><div class="budget-figure">€1,84 <span class="t-3" style="font-size:14px; font-weight:500">van €5,00</span></div><div class="progress"><span style="width:36.8%"></span></div><div class="row-between t-3" style="font-size:12px"><span>37% gebruikt</span><span>reset 1 dec 00:00 Europe/Amsterdam</span></div></div>
+      <dl class="kv"><dt>Analyses vandaag</dt><dd>14 / 40</dd><dt>Max per analyse</dt><dd>€0,05</dd><dt>Cachehits</dt><dd>23 (≈ €0,31 bespaard)</dd><dt>Tokens deze maand</dt><dd>412k in · 61k uit</dd></dl>
+    </div>
+  </section>
+
+  <section class="card span-4">
+    <div class="card-header"><h2 class="card-title"><i data-i="shield-check"></i>Privacy &amp; toestemming</h2></div>
+    <div class="card-body stack-sm">
+      <div class="row-between"><span style="font-size:13px">Externe metadataoverdracht</span><button class="switch" role="switch" aria-checked="true" aria-label="Externe overdracht"></button></div>
+      <p class="t-3" style="font-size:12px">Toegestemd door jan op 28 okt 20:41. Nooit verzonden: videobestanden, frames, audio, API-sleutels, absolute paden, configdumps.</p>
+      <span class="label" style="margin-top:6px">Voorbeeld van verzonden velden</span>
+<pre class="payload-preview">{
+  "case_id": "c_7f2a",
+  "task_type": "anime_identity",
+  "titles": ["Golfbreker", "なみよけ"],
+  "claims": [{"src": "sonarr", "abs": 1089, "s": 21},
+             {"src": "thexem", "s": 22, "e": 1}],
+  "reason_codes": ["CONFLICTING_EPISODE_MAP"],
+  "evidence_ids": ["ev_91a", "ev_91b", "ev_91c"]
+}</pre>
+    </div>
+  </section>
+
+  <section class="card span-12">
+    <div class="card-header"><h2 class="card-title"><i data-i="list-tree"></i>Casussen</h2><div class="segmented"><button aria-pressed="true">Open <span class="count">3</span></button><button>Afgehandeld</button><button>Schaduw</button></div></div>
+    <div class="table-wrap">
+    <table class="table table--stack">
+      <thead><tr><th>Casus</th><th>Waarom AI?</th><th>Voorstel</th><th>PolicyGuard</th><th>Onzekerheid</th><th class="num">Kosten</th><th></th></tr></thead>
+      <tbody>
+        <tr><td class="cell-primary"><div class="cell-title">Golfbreker afl. 1089</div><div class="cell-sub">anime_identity · c_7f2a</div></td><td data-label="Waarom">Tegenstrijdige nummering na deterministische check</td><td data-label="Voorstel"><span class="tag">inspect_mapping</span></td><td data-label="PolicyGuard"><span class="chip chip--info"><i data-i="lock"></i>Alleen advies</span></td><td data-label="Onzekerheid"><span class="chip chip--warning">middel</span></td><td data-label="Kosten" class="num">€0,004</td><td><div class="row"><button class="btn btn--sm btn--primary">Accepteer</button><button class="btn btn--sm">Wijs af</button></div></td></tr>
+        <tr><td class="cell-primary"><div class="cell-title">Taskmaster S03 ontbreekt</div><div class="cell-sub">missing_diagnosis · c_7e19</div></td><td data-label="Waarom">30 dagen geen resultaten, alle regels getest</td><td data-label="Voorstel"><span class="tag">adjust_filter</span></td><td data-label="PolicyGuard"><span class="chip chip--success"><i data-i="check"></i>Toegestaan</span></td><td data-label="Onzekerheid"><span class="chip chip--success">laag</span></td><td data-label="Kosten" class="num">€0,006</td><td><div class="row"><button class="btn btn--sm btn--primary">Accepteer</button><button class="btn btn--sm">Wijs af</button></div></td></tr>
+        <tr><td class="cell-primary"><div class="cell-title">Akira (1988) encode-advies</div><div class="cell-sub">encode_advice · c_7d02</div></td><td data-label="Waarom">Filmkorrel: VMAF-proeven liggen dicht bij elkaar</td><td data-label="Voorstel"><span class="tag">compare_trials</span></td><td data-label="PolicyGuard"><span class="chip chip--info"><i data-i="lock"></i>Alleen advies</span></td><td data-label="Onzekerheid"><span class="chip chip--danger">hoog</span></td><td data-label="Kosten" class="num">€0,011</td><td><div class="row"><button class="btn btn--sm">Opnieuw onderzoeken</button></div></td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+</div>

@@ -1,0 +1,36 @@
+import type { MessageKey } from "../index";
+
+import { en as activity } from "./activity";
+import { en as auth } from "./auth";
+import { en as av1 } from "./av1";
+import { en as common } from "./common";
+import { en as components } from "./components";
+import { en as migration } from "./migration";
+import { en as pages } from "./pages";
+import { en as provisioning } from "./provisioning";
+import { en as r030 } from "./r030";
+import { en as r031 } from "./r031";
+import { en as r032 } from "./r032";
+import { en as r033 } from "./r033";
+import { en as r034 } from "./r034";
+import { en as r035 } from "./r035";
+import { en as r036 } from "./r036";
+import { en as r037 } from "./r037";
+import { en as r038 } from "./r038";
+import { en as apikeys } from "./apikeys";
+import { en as delivery } from "./delivery";
+import { en as mediaserver } from "./mediaserver";
+import { en as settings } from "./settings";
+import { en as simplify } from "./simplify";
+import { en as wiring } from "./wiring";
+import { en as notify } from "./notify";
+import { en as ledger } from "./ledger";
+import { en as recovery } from "./recovery";
+import { en as updates } from "./updates";
+import { en as onderhoud } from "./onderhoud";
+import { en as bewaking } from "./bewaking";
+import { en as beveiliging } from "./beveiliging";
+import { en as webpunten } from "./webpunten";
+import { en as peil } from "./peil";
+
+export const en: Record<MessageKey, string> = { ...common, ...components, ...auth, ...pages, ...settings, ...av1, ...wiring, ...migration, ...provisioning, ...activity, ...simplify, ...r030, ...r031, ...r032, ...r033, ...r034, ...r035, ...r036, ...r037, ...r038, ...apikeys, ...delivery, ...mediaserver, ...notify, ...ledger, ...recovery, ...updates, ...onderhoud, ...bewaking, ...beveiliging, ...webpunten, ...peil };

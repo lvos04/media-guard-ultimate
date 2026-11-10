@@ -1,0 +1,53 @@
+<!-- title: AV1 Studio -->
+<!-- active: /av1 -->
+<div class="page-header">
+  <div>
+    <h1 class="page-title">AV1 Studio</h1>
+    <p class="page-sub">Twee banen, altijd allebei zichtbaar. Prognose: wachtrij leeg rond <strong style="color:var(--mg-text)">14 december</strong> — de CPU-baan is de bottleneck (287 films, 34 dagen).</p>
+  </div>
+  <div class="page-actions"><button class="btn"><i data-i="flask-conical"></i>Proefdraai</button><button class="btn"><i data-i="pause"></i>Beide banen pauzeren</button></div>
+</div>
+
+<nav class="tabs" style="margin-bottom:16px" aria-label="AV1 Studio">
+  <a class="tab" aria-current="page" href="#">Overzicht</a><a class="tab" href="#">Wachtrij <span class="count">214</span></a><a class="tab" href="#">Workers</a><a class="tab" href="#">Beslissingen <span class="count">3.740</span></a><a class="tab" href="#">Kwaliteit</a><a class="tab" href="#">Profielen</a><a class="tab" href="#">Bibliotheken</a><a class="tab" href="#">Logs</a><a class="tab" href="#">Fouten <span class="count">7</span></a>
+</nav>
+
+<section class="kpi-grid" style="margin-bottom:16px">
+  <div class="kpi"><span class="kpi-label"><i data-i="list-tree"></i>Wachtrij</span><span class="kpi-value num">214</span><span class="kpi-meta">2 bezig · 38 klaar vandaag · 7 mislukt</span></div>
+  <div class="kpi kpi--success"><span class="kpi-label"><i data-i="zap"></i>Besparing</span><span class="kpi-value num">21,6<small>TB</small></span><span class="kpi-meta">142 GB vandaag · gem. −41% per bestand</span></div>
+  <div class="kpi"><span class="kpi-label"><i data-i="activity"></i>Doorvoer</span><span class="kpi-value num">412<small>GB/dag</small></span><span class="kpi-meta">GPU 31 best./u · CPU 0,6 best./u</span></div>
+  <div class="kpi"><span class="kpi-label"><i data-i="cpu"></i>Systeem</span><span class="kpi-value num">78<small>% CPU</small></span><span class="kpi-meta">GPU video 61% · cache 1,2 TB vrij</span></div>
+</section>
+
+<div class="grid">
+  <div class="span-6 job-card" style="min-height:220px">
+    <div class="row-between"><span class="job-lane job-lane--gpu"><i data-i="cpu" class="ico-sm"></i>GPU · av1_qsv · Arc A380</span><span class="chip chip--success"><i data-i="play"></i>Actief</span></div>
+    <div class="job-file" style="font-size:15px">Severance — S02E07 · Chikhai Bardo.mkv</div>
+    <div class="row-between t-2 num" style="font-size:12px"><span>1080p HEVC 10-bit · 4,1 GB</span><span>62,4%</span></div>
+    <div class="progress"><span style="width:62.4%"></span></div>
+    <div class="job-stats"><div class="job-stat"><span>FPS</span><strong>148</strong></div><div class="job-stat"><span>Snelheid</span><strong>6,2×</strong></div><div class="job-stat"><span>ETA</span><strong>3m 12s</strong></div><div class="job-stat"><span>Nu</span><strong>412 MB / 2,1 GB</strong></div></div>
+    <div class="row" style="margin-top:auto"><button class="btn btn--sm"><i data-i="pause"></i>Pauzeer</button><button class="btn btn--sm btn--danger">Afbreken</button><button class="btn btn--sm btn--ghost">Log</button></div>
+  </div>
+  <div class="span-6 job-card" style="min-height:220px">
+    <div class="row-between"><span class="job-lane job-lane--cpu"><i data-i="cpu" class="ico-sm"></i>CPU · SVT-AV1 preset 5</span><span class="chip chip--warning"><i data-i="clock"></i>Stiltevenster om 23:00</span></div>
+    <div class="job-file" style="font-size:15px">Oppenheimer (2023) 2160p.mkv</div>
+    <div class="row-between t-2 num" style="font-size:12px"><span class="row"><span class="qribbon"><span>2160p</span><span class="q-dv">DV 8.1</span><span class="q-hdr">HDR10</span></span></span><span>21,0%</span></div>
+    <div class="progress progress--cpu"><span style="width:21%"></span></div>
+    <div class="job-stats"><div class="job-stat"><span>FPS</span><strong>11,4</strong></div><div class="job-stat"><span>Snelheid</span><strong>0,48×</strong></div><div class="job-stat"><span>ETA</span><strong>2u 41m</strong></div><div class="job-stat"><span>Nu</span><strong>3,9 GB / 62 GB</strong></div></div>
+    <div class="row" style="margin-top:auto"><button class="btn btn--sm"><i data-i="pause"></i>Pauzeer</button><button class="btn btn--sm btn--danger">Afbreken</button><button class="btn btn--sm btn--ghost">Log</button></div>
+  </div>
+
+  <section class="card span-12">
+    <div class="card-header"><h2 class="card-title"><i data-i="check-check"></i>Laatst geverifieerd</h2><a class="link-more" href="#">Kwaliteit</a></div>
+    <div class="table-wrap">
+    <table class="table table--compact table--stack">
+      <thead><tr><th>Bestand</th><th>Baan</th><th>Verificatie</th><th class="num">VMAF</th><th class="num">Was</th><th class="num">Nu</th><th class="num">Winst</th></tr></thead>
+      <tbody>
+        <tr><td class="cell-primary"><div class="cell-title">The Bear S04E02.mkv</div></td><td data-label="Baan"><span class="job-lane job-lane--gpu">GPU</span></td><td data-label="Verificatie"><span class="row wrap" style="gap:4px"><span class="chip chip--success"><i data-i="check"></i>Duur</span><span class="chip chip--success"><i data-i="check"></i>2 audio</span><span class="chip chip--success"><i data-i="check"></i>Subs</span></span></td><td data-label="VMAF" class="num">95,8</td><td data-label="Was" class="num">2,4 GB</td><td data-label="Nu" class="num">0,7 GB</td><td data-label="Winst" class="num t-success">−71%</td></tr>
+        <tr><td class="cell-primary"><div class="cell-title">Dark S02E05.mkv</div></td><td data-label="Baan"><span class="job-lane job-lane--cpu">CPU</span></td><td data-label="Verificatie"><span class="row wrap" style="gap:4px"><span class="chip chip--success"><i data-i="check"></i>HDR10 MD</span><span class="chip chip--success"><i data-i="check"></i>3 audio</span></span></td><td data-label="VMAF" class="num">96,1</td><td data-label="Was" class="num">6,1 GB</td><td data-label="Nu" class="num">2,9 GB</td><td data-label="Winst" class="num t-success">−52%</td></tr>
+        <tr><td class="cell-primary"><div class="cell-title">Interstellar (2014).mkv</div></td><td data-label="Baan"><span class="job-lane job-lane--cpu">CPU</span></td><td data-label="Verificatie"><span class="chip chip--danger"><i data-i="circle-x"></i>RPU ontbreekt · bron behouden</span></td><td data-label="VMAF" class="num">—</td><td data-label="Was" class="num">58 GB</td><td data-label="Nu" class="num">—</td><td data-label="Winst" class="num">—</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+</div>

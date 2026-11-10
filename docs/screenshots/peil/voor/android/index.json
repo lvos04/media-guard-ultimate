@@ -1,0 +1,770 @@
+{
+ "aanvraagvenster-donker-360.png": {
+  "test": "Dark360ScreenShots.aanvraagVenster",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvragen-ontdekken-donker-360.png": {
+  "test": "Dark360ScreenShots.aanvragen",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvragen-mijn-donker-360.png": {
+  "test": "Dark360ScreenShots.aanvragenMijn",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-nu-donker-360.png": {
+  "test": "Dark360ScreenShots.activiteit",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-donker-360.png": {
+  "test": "Dark360ScreenShots.activiteitGebeurd",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-problemen-donker-360.png": {
+  "test": "Dark360ScreenShots.activiteitProblemen",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-donker-360.png": {
+  "test": "Dark360ScreenShots.bibliotheek",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-detail-donker-360.png": {
+  "test": "Dark360ScreenShots.bibliotheekDetail",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-ontbrekend-donker-360.png": {
+  "test": "Dark360ScreenShots.bibliotheekOntbrekend",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "instellingen-donker-360.png": {
+  "test": "Dark360ScreenShots.instellingen",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "instellingen-waarschuwingen-donker-360.png": {
+  "test": "Dark360ScreenShots.instellingenWaarschuwingen",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-donker-360.png": {
+  "test": "Dark360ScreenShots.overzicht",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-noodstop-donker-360.png": {
+  "test": "Dark360ScreenShots.overzichtNoodstop",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-alles-in-orde-donker-360.png": {
+  "test": "Dark360ScreenShots.overzichtRustig",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-verouderd-donker-360.png": {
+  "test": "Dark360ScreenShots.overzichtVerouderd",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "ruimte-donker-360.png": {
+  "test": "Dark360ScreenShots.ruimte",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvraagvenster-donker-393.png": {
+  "test": "DarkScreenShots.aanvraagVenster",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "aanvragen-ontdekken-donker-393.png": {
+  "test": "DarkScreenShots.aanvragen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "aanvragen-mijn-donker-393.png": {
+  "test": "DarkScreenShots.aanvragenMijn",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "activiteit-nu-donker-393.png": {
+  "test": "DarkScreenShots.activiteit",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-donker-393.png": {
+  "test": "DarkScreenShots.activiteitGebeurd",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "activiteit-problemen-donker-393.png": {
+  "test": "DarkScreenShots.activiteitProblemen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "bibliotheek-donker-393.png": {
+  "test": "DarkScreenShots.bibliotheek",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "bibliotheek-detail-donker-393.png": {
+  "test": "DarkScreenShots.bibliotheekDetail",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "bibliotheek-ontbrekend-donker-393.png": {
+  "test": "DarkScreenShots.bibliotheekOntbrekend",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "instellingen-donker-393.png": {
+  "test": "DarkScreenShots.instellingen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "instellingen-waarschuwingen-donker-393.png": {
+  "test": "DarkScreenShots.instellingenWaarschuwingen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "overzicht-donker-393.png": {
+  "test": "DarkScreenShots.overzicht",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "overzicht-noodstop-donker-393.png": {
+  "test": "DarkScreenShots.overzichtNoodstop",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "overzicht-alles-in-orde-donker-393.png": {
+  "test": "DarkScreenShots.overzichtRustig",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "overzicht-verouderd-donker-393.png": {
+  "test": "DarkScreenShots.overzichtVerouderd",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "ruimte-donker-393.png": {
+  "test": "DarkScreenShots.ruimte",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "aanvraagvenster-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.aanvraagVenster",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1033
+  ]
+ },
+ "aanvragen-ontdekken-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.aanvragen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2158
+  ]
+ },
+ "aanvragen-mijn-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.aanvragenMijn",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1163
+  ]
+ },
+ "activiteit-nu-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.activiteit",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1617
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.activiteitGebeurd",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2451
+  ]
+ },
+ "activiteit-problemen-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.activiteitProblemen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1662
+  ]
+ },
+ "bibliotheek-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.bibliotheek",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1622
+  ]
+ },
+ "bibliotheek-detail-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.bibliotheekDetail",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2016
+  ]
+ },
+ "bibliotheek-ontbrekend-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.bibliotheekOntbrekend",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   800
+  ]
+ },
+ "instellingen-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.instellingen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2040
+  ]
+ },
+ "instellingen-waarschuwingen-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.instellingenWaarschuwingen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2949
+  ]
+ },
+ "overzicht-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.overzicht",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2555
+  ]
+ },
+ "overzicht-noodstop-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.overzichtNoodstop",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1990
+  ]
+ },
+ "overzicht-alles-in-orde-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.overzichtRustig",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1849
+  ]
+ },
+ "overzicht-verouderd-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.overzichtVerouderd",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2380
+  ]
+ },
+ "ruimte-donker-393-volledig.png": {
+  "test": "DarkVolledigScreenShots.ruimte",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2740
+  ]
+ },
+ "aanvraagvenster-licht-360.png": {
+  "test": "Light360ScreenShots.aanvraagVenster",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvragen-ontdekken-licht-360.png": {
+  "test": "Light360ScreenShots.aanvragen",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvragen-mijn-licht-360.png": {
+  "test": "Light360ScreenShots.aanvragenMijn",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-nu-licht-360.png": {
+  "test": "Light360ScreenShots.activiteit",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-licht-360.png": {
+  "test": "Light360ScreenShots.activiteitGebeurd",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "activiteit-problemen-licht-360.png": {
+  "test": "Light360ScreenShots.activiteitProblemen",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-licht-360.png": {
+  "test": "Light360ScreenShots.bibliotheek",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-detail-licht-360.png": {
+  "test": "Light360ScreenShots.bibliotheekDetail",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "bibliotheek-ontbrekend-licht-360.png": {
+  "test": "Light360ScreenShots.bibliotheekOntbrekend",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "instellingen-licht-360.png": {
+  "test": "Light360ScreenShots.instellingen",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "instellingen-waarschuwingen-licht-360.png": {
+  "test": "Light360ScreenShots.instellingenWaarschuwingen",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-licht-360.png": {
+  "test": "Light360ScreenShots.overzicht",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-noodstop-licht-360.png": {
+  "test": "Light360ScreenShots.overzichtNoodstop",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-alles-in-orde-licht-360.png": {
+  "test": "Light360ScreenShots.overzichtRustig",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "overzicht-verouderd-licht-360.png": {
+  "test": "Light360ScreenShots.overzichtVerouderd",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "ruimte-licht-360.png": {
+  "test": "Light360ScreenShots.ruimte",
+  "breedte_dp": 360,
+  "px": [
+   720,
+   1702
+  ]
+ },
+ "aanvraagvenster-licht-393.png": {
+  "test": "LightScreenShots.aanvraagVenster",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "aanvragen-ontdekken-licht-393.png": {
+  "test": "LightScreenShots.aanvragen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "aanvragen-mijn-licht-393.png": {
+  "test": "LightScreenShots.aanvragenMijn",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "activiteit-nu-licht-393.png": {
+  "test": "LightScreenShots.activiteit",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-licht-393.png": {
+  "test": "LightScreenShots.activiteitGebeurd",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "activiteit-problemen-licht-393.png": {
+  "test": "LightScreenShots.activiteitProblemen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "bibliotheek-licht-393.png": {
+  "test": "LightScreenShots.bibliotheek",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "bibliotheek-detail-licht-393.png": {
+  "test": "LightScreenShots.bibliotheekDetail",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "bibliotheek-ontbrekend-licht-393.png": {
+  "test": "LightScreenShots.bibliotheekOntbrekend",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "instellingen-licht-393.png": {
+  "test": "LightScreenShots.instellingen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "instellingen-waarschuwingen-licht-393.png": {
+  "test": "LightScreenShots.instellingenWaarschuwingen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "overzicht-licht-393.png": {
+  "test": "LightScreenShots.overzicht",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "overzicht-noodstop-licht-393.png": {
+  "test": "LightScreenShots.overzichtNoodstop",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "overzicht-alles-in-orde-licht-393.png": {
+  "test": "LightScreenShots.overzichtRustig",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "overzicht-verouderd-licht-393.png": {
+  "test": "LightScreenShots.overzichtVerouderd",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "ruimte-licht-393.png": {
+  "test": "LightScreenShots.ruimte",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1702
+  ]
+ },
+ "aanvraagvenster-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.aanvraagVenster",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1033
+  ]
+ },
+ "aanvragen-ontdekken-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.aanvragen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2158
+  ]
+ },
+ "aanvragen-mijn-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.aanvragenMijn",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1163
+  ]
+ },
+ "activiteit-nu-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.activiteit",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1617
+  ]
+ },
+ "activiteit-wat-is-er-gebeurd-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.activiteitGebeurd",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2451
+  ]
+ },
+ "activiteit-problemen-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.activiteitProblemen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1662
+  ]
+ },
+ "bibliotheek-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.bibliotheek",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1622
+  ]
+ },
+ "bibliotheek-detail-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.bibliotheekDetail",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2016
+  ]
+ },
+ "bibliotheek-ontbrekend-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.bibliotheekOntbrekend",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   800
+  ]
+ },
+ "instellingen-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.instellingen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2040
+  ]
+ },
+ "instellingen-waarschuwingen-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.instellingenWaarschuwingen",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2949
+  ]
+ },
+ "overzicht-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.overzicht",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2555
+  ]
+ },
+ "overzicht-noodstop-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.overzichtNoodstop",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1990
+  ]
+ },
+ "overzicht-alles-in-orde-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.overzichtRustig",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   1849
+  ]
+ },
+ "overzicht-verouderd-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.overzichtVerouderd",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2380
+  ]
+ },
+ "ruimte-licht-393-volledig.png": {
+  "test": "LightVolledigScreenShots.ruimte",
+  "breedte_dp": 393,
+  "px": [
+   785,
+   2740
+  ]
+ }
+}

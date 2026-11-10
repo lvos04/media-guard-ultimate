@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MediaGuard redesign</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0b1120; --surface:#111a2e; --surface-2:#16213a; --line:#22304d; --text:#e6ebf5; --muted:#9aa6bd;
+  --accent:#4f8cff; --accent-soft:rgba(79,140,255,.14); --ok:#34d399; --ok-soft:rgba(52,211,153,.14);
+  --warn:#f5b54a; --warn-soft:rgba(245,181,74,.14); --bad:#f87171; --bad-soft:rgba(248,113,113,.14);
+  --violet:#a78bfa; --radius:14px; --gap:16px;
+  --fs-1:24px; --fs-2:18px; --fs-3:15px; --fs-4:13px;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f4f6fb; --surface:#ffffff; --surface-2:#eef2f9; --line:#dce3ef; --text:#111827; --muted:#5b6578;
+    --accent:#2563eb; --accent-soft:rgba(37,99,235,.10); --ok:#059669; --ok-soft:rgba(5,150,105,.10);
+    --warn:#b45309; --warn-soft:rgba(180,83,9,.10); --bad:#dc2626; --bad-soft:rgba(220,38,38,.10); --violet:#7c3aed;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f4f6fb; --surface:#ffffff; --surface-2:#eef2f9; --line:#dce3ef; --text:#111827; --muted:#5b6578;
+  --accent:#2563eb; --accent-soft:rgba(37,99,235,.10); --ok:#059669; --ok-soft:rgba(5,150,105,.10);
+  --warn:#b45309; --warn-soft:rgba(180,83,9,.10); --bad:#dc2626; --bad-soft:rgba(220,38,38,.10); --violet:#7c3aed;
+}
+:root[data-theme="dark"]{
+  --bg:#0b1120; --surface:#111a2e; --surface-2:#16213a; --line:#22304d; --text:#e6ebf5; --muted:#9aa6bd;
+  --accent:#4f8cff; --accent-soft:rgba(79,140,255,.14); --ok:#34d399; --ok-soft:rgba(52,211,153,.14);
+  --warn:#f5b54a; --warn-soft:rgba(245,181,74,.14); --bad:#f87171; --bad-soft:rgba(248,113,113,.14); --violet:#a78bfa;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font:400 var(--fs-3)/1.5 Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:var(--accent);text-decoration:none}
+button{font:inherit;color:inherit}
+.app{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
+.side{border-right:1px solid var(--line);padding:18px 12px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:4px;background:var(--surface)}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 10px 18px;font-weight:700}
+.logo{width:30px;height:30px;border-radius:9px;background:var(--accent);display:grid;place-items:center;color:#fff;font-size:15px}
+.nav-btn{display:flex;align-items:center;gap:12px;width:100%;padding:10px 12px;border:0;border-radius:10px;background:none;cursor:pointer;text-align:left;color:var(--muted);font-weight:500}
+.nav-btn:hover{background:var(--surface-2);color:var(--text)}
+.nav-btn[aria-current="page"]{background:var(--accent-soft);color:var(--text)}
+.nav-btn .ico{width:20px;text-align:center}
+.nav-btn .badge{margin-left:auto}
+.side .spacer{flex:1}
+.main{min-width:0}
+.top{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5}
+.search{flex:1;max-width:520px;display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 12px;color:var(--muted);min-width:0}
+.search input{all:unset;flex:1;min-width:0;color:var(--text)}
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 12px;font-size:var(--fs-4);font-weight:600;white-space:nowrap}
+.pill.ok{background:var(--ok-soft);color:var(--ok)} .pill.warn{background:var(--warn-soft);color:var(--warn)} .pill.bad{background:var(--bad-soft);color:var(--bad)}
+.pill.info{background:var(--accent-soft);color:var(--accent)} .pill.muted{background:var(--surface-2);color:var(--muted)}
+.dot{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
+.icon-btn{border:1px solid var(--line);background:var(--surface);border-radius:10px;width:38px;height:38px;display:grid;place-items:center;cursor:pointer}
+.content{padding:24px;max-width:1200px;margin:0 auto}
+.page{display:none}.page.on{display:block}
+.head{display:flex;align-items:flex-start;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+.head h1{font-size:var(--fs-1);margin:0 0 4px;line-height:1.2}
+.head p{margin:0;color:var(--muted);font-size:var(--fs-3);max-width:640px}
+.head .act{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:9px 14px;cursor:pointer;font-weight:600;font-size:var(--fs-4);white-space:nowrap}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.ghost{background:none}
+.grid{display:grid;gap:var(--gap)}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))} .g3{grid-template-columns:repeat(3,minmax(0,1fr))} .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px;min-width:0}
+.card h2{font-size:var(--fs-2);margin:0 0 12px;display:flex;align-items:center;gap:8px}
+.card h2 .more{margin-left:auto;font-size:var(--fs-4);font-weight:600}
+.kpi .lab{color:var(--muted);font-size:var(--fs-4)} .kpi .val{font-size:28px;font-weight:700;margin:4px 0 2px} .kpi .sub{color:var(--muted);font-size:var(--fs-4)}
+.hero{display:flex;align-items:center;gap:14px;padding:18px;border-radius:var(--radius);background:var(--ok-soft);border:1px solid color-mix(in srgb,var(--ok) 30%,transparent);margin-bottom:var(--gap)}
+.hero.warn{background:var(--warn-soft);border-color:color-mix(in srgb,var(--warn) 35%,transparent)}
+.hero .big{font-size:var(--fs-2);font-weight:700}
+.hero .act{margin-left:auto}
+.list{display:flex;flex-direction:column}
+.row{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line);min-width:0}
+.row:first-child{border-top:0}
+.row .t{font-weight:600;min-width:0;overflow-wrap:anywhere}
+.row .s{color:var(--muted);font-size:var(--fs-4);overflow-wrap:anywhere}
+.row .grow{flex:1;min-width:0}
+.bar{height:8px;border-radius:99px;background:var(--surface-2);overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--accent);border-radius:99px}
+.bar.gpu>i{background:var(--violet)} .bar.ok>i{background:var(--ok)}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:var(--fs-4);font-weight:600;cursor:pointer;color:var(--muted)}
+.chip[aria-pressed="true"]{background:var(--accent-soft);border-color:transparent;color:var(--text)}
+.seg{display:inline-flex;background:var(--surface-2);border-radius:10px;padding:3px;gap:2px}
+.seg button{border:0;background:none;padding:7px 12px;border-radius:8px;font-size:var(--fs-4);font-weight:600;color:var(--muted);cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.switch{position:relative;width:44px;height:26px;flex:none;border-radius:99px;background:var(--line);border:0;cursor:pointer;transition:.15s}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:.15s}
+.switch[aria-checked="true"]{background:var(--accent)} .switch[aria-checked="true"]::after{left:21px}
+table{width:100%;border-collapse:collapse;font-size:var(--fs-4)}
+th{text-align:left;color:var(--muted);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle}
+.poster{width:44px;height:64px;border-radius:8px;flex:none;background:linear-gradient(135deg,var(--accent),var(--violet));display:grid;place-items:center;color:#fff;font-weight:700;font-size:14px}
+.poster.lg{width:120px;height:176px;font-size:28px}
+.stack{display:flex;flex-direction:column;gap:var(--gap)}
+.tl{position:relative;padding-left:22px}
+.tl::before{content:"";position:absolute;left:7px;top:6px;bottom:6px;width:2px;background:var(--line)}
+.tl .ev{position:relative;padding:0 0 16px}
+.tl .ev::before{content:"";position:absolute;left:-20px;top:5px;width:12px;height:12px;border-radius:50%;background:var(--accent);border:2px solid var(--surface)}
+.tl .ev.av1::before{background:var(--violet)} .tl .ev.dl::before{background:var(--ok)}
+.qrow{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--line);font-size:var(--fs-4)}
+.qrow:first-child{border-top:0}
+.muted{color:var(--muted)} .small{font-size:var(--fs-4)} .b{font-weight:700}
+.score{font-variant-numeric:tabular-nums;font-weight:700}
+.toc{position:sticky;top:76px;display:flex;flex-direction:column;gap:2px}
+.toc a{padding:7px 10px;border-radius:8px;color:var(--muted);font-weight:500;font-size:var(--fs-4)}
+.toc a:hover{background:var(--surface-2);color:var(--text)}
+.settings{display:grid;grid-template-columns:200px 1fr;gap:24px}
+.set{display:flex;gap:16px;align-items:flex-start;padding:14px 0;border-top:1px solid var(--line)}
+.set:first-of-type{border-top:0}
+.set .grow{flex:1;min-width:0}
+.set details{margin-top:4px} .set summary{cursor:pointer;color:var(--accent);font-size:var(--fs-4)}
+.field{background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:var(--fs-4);min-width:120px;color:var(--text)}
+.changes{background:var(--surface);border:1px dashed var(--accent);border-radius:var(--radius);padding:16px 18px;margin-bottom:var(--gap)}
+.changes h3{margin:0 0 8px;font-size:var(--fs-3)}
+.changes ul{margin:0;padding-left:18px;color:var(--muted);font-size:var(--fs-4)}
+.changes li{margin:3px 0}
+.bottom{display:none}
+.hidden{display:none!important}
+.back{display:inline-flex;align-items:center;gap:6px;margin-bottom:12px;cursor:pointer;color:var(--accent);font-weight:600;background:none;border:0;padding:0}
+.req-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:14px}
+.req{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.req .ph{height:170px;background:linear-gradient(160deg,var(--accent),var(--violet));display:grid;place-items:center;color:#fff;font-weight:700;font-size:26px}
+.req .in{padding:10px} .req .in .t{font-weight:600;font-size:var(--fs-4)} .req .in .s{color:var(--muted);font-size:12px}
+@media (max-width:900px){
+  .app{grid-template-columns:1fr}
+  .side{display:none}
+  .top{padding:10px 16px}
+  .content{padding:16px 16px 96px}
+  .g4{grid-template-columns:repeat(2,minmax(0,1fr))} .g3,.g2{grid-template-columns:1fr}
+  .settings{grid-template-columns:1fr} .toc{position:static;flex-direction:row;overflow-x:auto;padding-bottom:4px}
+  .toc a{white-space:nowrap}
+  .bottom{display:grid;grid-template-columns:repeat(5,1fr);position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line);z-index:10;padding-bottom:env(safe-area-inset-bottom)}
+  .bottom button{border:0;background:none;padding:8px 2px 10px;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;color:var(--muted);cursor:pointer;min-height:56px}
+  .bottom button[aria-current="page"]{color:var(--accent)}
+  .bottom .ico{font-size:18px}
+  .hide-sm{display:none}
+  .head .act{margin-left:0}
+  .poster.lg{width:88px;height:128px}
+  table.resp thead{display:none} table.resp tr{display:block;border-bottom:1px solid var(--line);padding:8px 0}
+  table.resp td{display:flex;justify-content:space-between;gap:12px;border:0;padding:3px 0}
+  table.resp td::before{content:attr(data-l);color:var(--muted)}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" aria-label="Hoofdmenu">
+    <div class="brand"><span class="logo">🛡</span>MediaGuard</div>
+    <button class="nav-btn" data-go="overzicht" aria-current="page"><span class="ico">◧</span>Overzicht</button>
+    <button class="nav-btn" data-go="activiteit"><span class="ico">◎</span>Activiteit <span class="pill bad badge" style="padding:2px 8px">2</span></button>
+    <button class="nav-btn" data-go="bibliotheek"><span class="ico">▤</span>Bibliotheek</button>
+    <button class="nav-btn" data-go="ruimte"><span class="ico">⇣</span>Ruimte</button>
+    <button class="nav-btn" data-go="aanvragen"><span class="ico">✚</span>Aanvragen</button>
+    <div class="spacer"></div>
+    <button class="nav-btn" data-go="instellingen"><span class="ico">⚙</span>Instellingen</button>
+    <div class="small muted" style="padding:8px 12px">v1.2 · <span style="color:var(--ok)">● live</span></div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <label class="search"><span>⌕</span><input placeholder="Zoek titel, aanvraag of instelling…" aria-label="Zoeken"></label>
+      <span class="pill warn hide-sm"><span class="dot"></span>2 wachten op jou</span>
+      <button class="icon-btn" id="theme" title="Licht/donker">◐</button>
+      <button class="icon-btn" title="Profiel en instellingen" data-go="instellingen">JV</button>
+    </header>
+
+    <main class="content">
+      <!-- Wat verandert er -->
+      <section class="changes" id="changes">
+        <h3>Wat verandert er (t.o.v. v1.1.2)</h3>
+        <ul>
+          <li><b>5 hoofdonderdelen + Instellingen</b>: Overzicht · Activiteit · Bibliotheek · Ruimte · <b>Aanvragen (nieuw, Seerr)</b>. Instellingen staat los onderaan.</li>
+          <li><b>Hooguit één rij tabs/filters per pagina.</b> Geen tabs-onder-tabs meer (Instellingen had er 7 + 8 + "Gevorderd" met 10 pagina's).</li>
+          <li><b>Instellingen = één pagina</b> met secties, inhoudsopgave en zoeken. "Gevorderd" verdwijnt; elke instelling één regel uitleg, meer achter "Meer uitleg".</li>
+          <li><b>Activiteit = één tijdlijn</b> met filterchips; Opslag &amp; downloads verhuist naar Ruimte, Aanvragen wordt een eigen onderdeel.</li>
+          <li><b>Bibliotheek-detail</b>: seizoenen aan/uit, paneel <b>Kwaliteit</b> (scores, doel bereikt?) en tijdlijn <b>Upgrades</b> (waarom en wat veranderde).</li>
+          <li><b>Ruimte</b>: encodes, wachtrij, terugzetten en opslag op één pagina met secties; AV1-instellingen alleen nog onder Instellingen.</li>
+        </ul>
+        <div style="margin-top:10px"><button class="btn ghost small" onclick="document.getElementById('changes').classList.add('hidden')">Verbergen</button></div>
+      </section>
+
+      <!-- OVERZICHT -->
+      <section class="page on" id="p-overzicht">
+        <div class="head"><div><h1>Overzicht</h1><p>Zondag 8 november · alles draait zelf; hier zie je wat er gebeurde en wat je aandacht vraagt.</p></div></div>
+        <div class="hero warn">
+          <span style="font-size:24px">⚠</span>
+          <div><div class="big">2 dingen wachten op jou</div><div class="muted small">De rest regelt MediaGuard zelf.</div></div>
+          <div class="act"><button class="btn primary" data-go="activiteit">Bekijken</button></div>
+        </div>
+        <div class="grid g4" style="margin-bottom:var(--gap)">
+          <div class="card kpi"><div class="lab">Bespaard met AV1</div><div class="val">913 GB</div><div class="sub">+42 GB vandaag · 61 bestanden</div></div>
+          <div class="card kpi"><div class="lab">Nu bezig</div><div class="val">5</div><div class="sub">3 GPU · 1 CPU · 1 download</div></div>
+          <div class="card kpi"><div class="lab">Ontbrekend</div><div class="val">312</div><div class="sub">MediaGuard zoekt ± 480 per dag</div></div>
+          <div class="card kpi"><div class="lab">Vrije ruimte</div><div class="val">18,4 TB</div><div class="sub">± 14 maanden bij huidig tempo</div></div>
+        </div>
+        <div class="grid g2">
+          <div class="card"><h2>Laatste 24 uur <a class="more" href="#" data-go="activiteit">Alles</a></h2>
+            <div class="list">
+              <div class="row"><span class="pill info">AV1</span><div class="grow"><div class="t">Stormvogel (2017)</div><div class="s">54,5 GB → 7,2 GB · VMAF 96,1 · GPU</div></div></div>
+              <div class="row"><span class="pill ok">Nieuw</span><div class="grow"><div class="t">Spookstad · S02E06</div><div class="s">WEBDL-1080p · Dual Audio · via Seerr-aanvraag</div></div></div>
+              <div class="row"><span class="pill muted">Upgrade</span><div class="grow"><div class="t">Frieren · S01E12</div><div class="s">WEBRip → Bluray-1080p · score 1 700 → 2 200 (doel bereikt)</div></div></div>
+              <div class="row"><span class="pill ok">Geleverd</span><div class="grow"><div class="t">Wadi: Deel Twee</div><div class="s">Aanvraag van 6 nov · 2160p HDR · klaar in 3 u 12 m</div></div></div>
+            </div>
+          </div>
+          <div class="card"><h2>Wacht op jou</h2>
+            <div class="list">
+              <div class="row"><div class="grow"><div class="t">Herstelcode instellen</div><div class="s">Nodig om na een schijfcrash alles terug te zetten.</div></div><button class="btn">Instellen</button></div>
+              <div class="row"><div class="grow"><div class="t">Emby-sleutel ontbreekt</div><div class="s">Voor verversen en afspeeltest na elke vervanging.</div></div><button class="btn">Invullen</button></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ACTIVITEIT -->
+      <section class="page" id="p-activiteit">
+        <div class="head"><div><h1>Activiteit</h1><p>Alles wat MediaGuard deed en doet, in één tijdlijn.</p></div></div>
+        <div class="chips" role="group" aria-label="Filter">
+          <button class="chip" aria-pressed="true">Alles</button><button class="chip" aria-pressed="false">Problemen <b>2</b></button>
+          <button class="chip" aria-pressed="false">Downloads</button><button class="chip" aria-pressed="false">AV1</button>
+          <button class="chip" aria-pressed="false">Aanvragen</button><button class="chip" aria-pressed="false">Taken</button>
+        </div>
+        <div class="grid g2" style="margin-bottom:var(--gap)">
+          <div class="card"><h2>Nu bezig</h2>
+            <div class="list">
+              <div class="row"><div class="grow"><div class="t">Kraanvogels: Laatste Koers</div><div class="s">GPU · 4K HDR10 · 63 % · nog 11 min</div><div class="bar gpu" style="margin-top:6px"><i style="width:63%"></i></div></div></div>
+              <div class="row"><div class="grow"><div class="t">Chainsaw Man · S01E04 (download)</div><div class="s">SABnzbd · 1,1 GB · nog 2 min</div><div class="bar ok" style="margin-top:6px"><i style="width:82%"></i></div></div></div>
+            </div>
+          </div>
+          <div class="card"><h2>Problemen</h2>
+            <div class="list">
+              <div class="row"><span class="pill bad">Fout</span><div class="grow"><div class="t">Rode Haven vs. Torenwachters</div><div class="s">VMAF 70,2 onder grens 93 · origineel blijft staan</div></div></div>
+              <div class="row"><span class="pill warn">Let op</span><div class="grow"><div class="t">SABnzbd: categorie aangemaakt</div><div class="s">tv-anime en movies-anime · 14 downloads alsnog geïmporteerd</div></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="card"><h2>Tijdlijn</h2>
+          <div class="tl">
+            <div class="ev av1"><div class="b">09:42 · AV1 klaar en vervangen</div><div class="muted small">Stormvogel · 54,5 → 7,2 GB · VMAF 96,1 · origineel 48 u in vangnet</div></div>
+            <div class="ev dl"><div class="b">09:18 · Geïmporteerd</div><div class="muted small">Spookstad S02E06 · Sonarr Anime · aangevraagd via Seerr</div></div>
+            <div class="ev"><div class="b">08:55 · Upgrade</div><div class="muted small">Frieren S01E12 · WEBRip → Bluray-1080p · +500 score (Dual Audio)</div></div>
+            <div class="ev"><div class="b">08:00 · Dagoverzicht verstuurd</div><div class="muted small">ntfy · 42 GB bespaard · 37 afleveringen erbij</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- BIBLIOTHEEK -->
+      <section class="page" id="p-bibliotheek">
+        <div id="lib-list">
+          <div class="head"><div><h1>Bibliotheek</h1><p>Series, anime en films met hun kwaliteit en status.</p></div>
+            <div class="act"><div class="seg" role="group"><button aria-pressed="true">Series</button><button aria-pressed="false">Anime</button><button aria-pressed="false">Films</button></div></div></div>
+          <div class="chips"><button class="chip" aria-pressed="true">Alles</button><button class="chip" aria-pressed="false">Onder kwaliteitsgrens</button><button class="chip" aria-pressed="false">Ontbrekend</button><button class="chip" aria-pressed="false">AV1</button><button class="chip" aria-pressed="false">Kalender</button></div>
+          <div class="card" style="padding:6px 18px">
+            <table class="resp"><thead><tr><th>Titel</th><th>Aanwezig</th><th>Kwaliteit</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr style="cursor:pointer" data-open="detail"><td data-l="Titel"><b>De Laatste Wacht</b><div class="muted small">2023 · HBO</div></td><td data-l="Aanwezig">16 / 16</td><td data-l="Kwaliteit"><span class="pill info">2160p HDR · AV1</span></td><td data-l="Status"><span class="pill ok">Compleet</span></td></tr>
+              <tr><td data-l="Titel"><b>Frieren</b><div class="muted small">2023 · Anime</div></td><td data-l="Aanwezig">28 / 28</td><td data-l="Kwaliteit"><span class="pill info">1080p · Dual Audio</span></td><td data-l="Status"><span class="pill ok">Doel bereikt</span></td></tr>
+              <tr><td data-l="Titel"><b>Severance</b><div class="muted small">2022 · Apple TV+</div></td><td data-l="Aanwezig">17 / 19</td><td data-l="Kwaliteit"><span class="pill muted">2160p DV</span></td><td data-l="Status"><span class="pill warn">2 ontbreken</span></td></tr>
+              <tr><td data-l="Titel"><b>Spookstad</b><div class="muted small">2024 · Anime</div></td><td data-l="Aanwezig">18 / 24</td><td data-l="Kwaliteit"><span class="pill warn">Onder grens</span></td><td data-l="Status"><span class="pill info">Wordt gezocht</span></td></tr>
+            </tbody></table>
+          </div>
+        </div>
+
+        <div id="lib-detail" class="hidden">
+          <button class="back" data-close="detail">← Bibliotheek</button>
+          <div class="head" style="align-items:center">
+            <div class="poster lg">DLW</div>
+            <div><h1>De Laatste Wacht</h1><p>2023 · 2 seizoenen · Sonarr Series · profiel “MediaGuard · WEB-2160p”</p>
+              <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><span class="pill ok">Compleet 16/16</span><span class="pill info">AV1 · −118 GB</span></div></div>
+            <div class="act"><button class="btn">Zoeken</button><button class="btn primary">Gevolgd</button></div>
+          </div>
+          <div class="grid g2">
+            <div class="card"><h2>Seizoenen</h2>
+              <div class="list">
+                <div class="row"><div class="grow"><div class="t">Seizoen 1</div><div class="s">9/9 aanwezig · 2160p HDR10 · AV1</div></div><span class="small muted">Gevolgd</span><button class="switch" role="switch" aria-checked="true" aria-label="Seizoen 1 volgen"></button></div>
+                <div class="row"><div class="grow"><div class="t">Seizoen 2</div><div class="s">7/7 aanwezig · 2160p DV 8.1</div></div><span class="small muted">Gevolgd</span><button class="switch" role="switch" aria-checked="true" aria-label="Seizoen 2 volgen"></button></div>
+                <div class="row"><div class="grow"><div class="t">Specials</div><div class="s">0/3 aanwezig</div></div><span class="small muted">Niet gevolgd</span><button class="switch" role="switch" aria-checked="false" aria-label="Specials volgen"></button></div>
+              </div>
+              <div class="small muted" style="margin-top:8px" id="season-hint">Aanzetten vraagt of MediaGuard meteen moet zoeken.</div>
+            </div>
+            <div class="card"><h2>Kwaliteit · S02E03</h2>
+              <div class="qrow"><span class="muted">Kwaliteit</span><span>WEBDL-2160p · 3840×2160</span></div>
+              <div class="qrow"><span class="muted">Beeld</span><span>AV1 10-bit · Dolby Vision 8.1 · HDR10</span></div>
+              <div class="qrow"><span class="muted">Audio</span><span>Engels EAC3 5.1 Atmos</span></div>
+              <div class="qrow"><span class="muted">Custom formats</span><span>HDR +500 · DV +600 · AMZN +0</span></div>
+              <div class="qrow"><span class="muted">Score</span><span class="score">1 100 / doel 1 100</span></div>
+              <div class="qrow"><span class="muted">Doel</span><span class="pill ok">Doel bereikt — geen upgrades meer</span></div>
+            </div>
+          </div>
+          <div class="card" style="margin-top:var(--gap)"><h2>Upgrades · S02E03</h2>
+            <div class="tl">
+              <div class="ev dl"><div class="b">2 nov · Eerste download</div><div class="muted small">WEBDL-1080p · score 0 · via RSS (Sonarr) · 3,1 GB</div></div>
+              <div class="ev"><div class="b">3 nov · Upgrade: 2160p beschikbaar</div><div class="muted small">WEBDL-1080p → WEBDL-2160p · score 0 → 1 100 · <b>nieuw: HDR, DV</b> · reden: kwaliteit onder profielgrens · 14,8 GB</div></div>
+              <div class="ev av1"><div class="b">4 nov · AV1 door MediaGuard</div><div class="muted small">14,8 → 6,2 GB · VMAF 95,8 · DV-RPU behouden · score blijft 1 100 (geen nieuwe upgrade)</div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RUIMTE -->
+      <section class="page" id="p-ruimte">
+        <div class="head"><div><h1>Ruimte</h1><p>AV1-besparing, wachtrij, terugzetten en waar je opslag heen gaat.</p></div><div class="act"><button class="btn">Instellingen</button><button class="btn">Pauzeren</button></div></div>
+        <div class="grid g4" style="margin-bottom:var(--gap)">
+          <div class="card kpi"><div class="lab">Bespaard</div><div class="val">913 GB</div><div class="sub">61 bestanden</div></div>
+          <div class="card kpi"><div class="lab">Wachtrij</div><div class="val">142</div><div class="sub">± 3 weken</div></div>
+          <div class="card kpi"><div class="lab">Vangnet</div><div class="val">412 GB</div><div class="sub">van 500 GB · 48 u</div></div>
+          <div class="card kpi"><div class="lab">Netto 24 u</div><div class="val">+212 GB</div><div class="sub">erbij 254 · AV1 −42</div></div>
+        </div>
+        <div class="grid g2" style="margin-bottom:var(--gap)">
+          <div class="card"><h2>Encodes nu <span class="pill info" style="margin-left:auto">GPU 3/4 · CPU 1/1</span></h2>
+            <div class="list">
+              <div class="row"><span class="pill info">GPU</span><div class="grow"><div class="t">Kraanvogels: Laatste Koers</div><div class="s">4K HDR10 · 4,1× · nog 11 min</div><div class="bar gpu" style="margin-top:6px"><i style="width:63%"></i></div></div></div>
+              <div class="row"><span class="pill info">GPU</span><div class="grow"><div class="t">Frieren · S01E14</div><div class="s">Proefstuk 2/3 · VMAF meten</div><div class="bar gpu" style="margin-top:6px"><i style="width:40%"></i></div></div></div>
+              <div class="row"><span class="pill muted">CPU</span><div class="grow"><div class="t">Valkenoog · S01E03</div><div class="s">Dolby Vision 8 · 0,9× · nog 34 min</div><div class="bar" style="margin-top:6px"><i style="width:22%"></i></div></div></div>
+            </div>
+          </div>
+          <div class="card"><h2>Wachtrij <a class="more" href="#">Alle 142</a></h2>
+            <div class="list">
+              <div class="row"><div class="grow"><div class="t">Elfenvuur · S02E01</div><div class="s">1080p · GPU · ± 3 min</div></div></div>
+              <div class="row"><div class="grow"><div class="t">Oppenheimer</div><div class="s">4K DV · CPU · ± 2 u · alleen ’s nachts</div></div><span class="pill muted">Nacht</span></div>
+              <div class="row"><div class="grow"><div class="t">De Jongens · S04E02</div><div class="s">4K HDR10+ → HDR10 · GPU · ± 14 min</div></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="card"><h2>Waar ging de ruimte heen (24 u)</h2>
+          <table class="resp"><thead><tr><th>Wat</th><th>Waarom</th><th>Grootte</th></tr></thead><tbody>
+            <tr><td data-l="Wat">Spookstad S02E06</td><td data-l="Waarom">Nieuw · Seerr-aanvraag</td><td data-l="Grootte">+1,4 GB</td></tr>
+            <tr><td data-l="Wat">Frieren S01E12</td><td data-l="Waarom">Upgrade · Dual Audio (+500)</td><td data-l="Grootte">+0,8 GB</td></tr>
+            <tr><td data-l="Wat">Stormvogel</td><td data-l="Waarom">AV1 · VMAF 96,1</td><td data-l="Grootte">−47,3 GB</td></tr>
+          </tbody></table>
+        </div>
+      </section>
+
+      <!-- AANVRAGEN -->
+      <section class="page" id="p-aanvragen">
+        <div class="head"><div><h1>Aanvragen</h1><p>Zoek een serie of film en vraag hem aan; MediaGuard volgt hem tot hij er is.</p></div></div>
+        <label class="search" style="max-width:none;margin-bottom:var(--gap)"><span>⌕</span><input placeholder="Zoek in Seerr (bv. ‘Shogun’)" aria-label="Zoek aanvraag"></label>
+        <div class="req-grid" style="margin-bottom:var(--gap)">
+          <div class="req"><div class="ph">SHO</div><div class="in"><div class="t">Shōgun</div><div class="s">2024 · serie</div><button class="btn primary" style="margin-top:8px;width:100%" data-open="req">Aanvragen</button></div></div>
+          <div class="req"><div class="ph">WAD</div><div class="in"><div class="t">Wadi: Deel Twee</div><div class="s">2024 · film</div><span class="pill ok" style="margin-top:8px">Aanwezig</span></div></div>
+          <div class="req"><div class="ph">KAI</div><div class="in"><div class="t">Kaiju No. 8</div><div class="s">2024 · anime</div><span class="pill info" style="margin-top:8px">Wordt gezocht</span></div></div>
+          <div class="req"><div class="ph">NOS</div><div class="in"><div class="t">Nosferatu</div><div class="s">2024 · film</div><span class="pill muted" style="margin-top:8px">Nog niet verschenen</span></div></div>
+        </div>
+        <div class="card hidden" id="req-dialog"><h2>Shōgun aanvragen</h2>
+          <div class="list">
+            <div class="row"><div class="grow"><div class="t">Seizoen 1</div><div class="s">10 afleveringen</div></div><button class="switch" role="switch" aria-checked="true" aria-label="Seizoen 1"></button></div>
+            <div class="row"><div class="grow"><div class="t">Seizoen 2</div><div class="s">Aangekondigd</div></div><button class="switch" role="switch" aria-checked="false" aria-label="Seizoen 2"></button></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px"><button class="btn primary">Aanvragen</button><button class="btn ghost" data-close="req">Annuleren</button></div>
+        </div>
+        <div class="card"><h2>Mijn aanvragen</h2>
+          <table class="resp"><thead><tr><th>Titel</th><th>Stap</th><th>Wat MediaGuard doet</th></tr></thead><tbody>
+            <tr><td data-l="Titel"><b>Kaiju No. 8</b></td><td data-l="Stap"><span class="pill info">Gezocht</span></td><td data-l="Wat MediaGuard doet">Volgende zoekpoging 14:00 · 6/12 aanwezig</td></tr>
+            <tr><td data-l="Titel"><b>Wadi: Deel Twee</b></td><td data-l="Stap"><span class="pill ok">Geleverd</span></td><td data-l="Wat MediaGuard doet">2160p HDR · Seerr op ‘beschikbaar’</td></tr>
+            <tr><td data-l="Titel"><b>Nosferatu</b></td><td data-l="Stap"><span class="pill muted">Nog niet verschenen</span></td><td data-l="Wat MediaGuard doet">Zoekt automatisch zodra hij uitkomt</td></tr>
+          </tbody></table>
+        </div>
+      </section>
+
+      <!-- INSTELLINGEN -->
+      <section class="page" id="p-instellingen">
+        <div class="head"><div><h1>Instellingen</h1><p>Alles op één pagina. Zoek of spring naar een onderdeel.</p></div></div>
+        <label class="search" style="max-width:none;margin-bottom:var(--gap)"><span>⌕</span><input id="set-search" placeholder="Zoek een instelling (bv. ‘ondertitels’, ‘GPU’, ‘Emby’)" aria-label="Zoek instelling"></label>
+        <div class="settings">
+          <nav class="toc" aria-label="Onderdelen">
+            <a href="#s-alg">Algemeen</a><a href="#s-av1">AV1 &amp; ruimte</a><a href="#s-dl">Downloaden &amp; zoeken</a>
+            <a href="#s-taal">Taal &amp; anime</a><a href="#s-kop">Koppelingen</a><a href="#s-meld">Meldingen</a><a href="#s-veil">Beveiliging &amp; toegang</a><a href="#s-sys">Systeem</a>
+          </nav>
+          <div class="stack" id="set-list">
+            <div class="card" id="s-alg"><h2>Algemeen</h2>
+              <div class="set" data-k="taal thema donker licht"><div class="grow"><div class="t b">Thema</div><div class="muted small">Donker, licht of volgens je apparaat.</div></div><select class="field" aria-label="Thema"><option>Volgens apparaat</option><option>Donker</option><option>Licht</option></select></div>
+              <div class="set" data-k="technische details tonen"><div class="grow"><div class="t b">Technische details tonen</div><div class="muted small">ID's, paden en ruwe codes standaard uitgeklapt.</div></div><button class="switch" role="switch" aria-checked="false" aria-label="Technische details"></button></div>
+            </div>
+            <div class="card" id="s-av1"><h2>AV1 &amp; ruimte</h2>
+              <div class="set" data-k="av1 automatisch kleiner gpu"><div class="grow"><div class="t b">Bestanden automatisch kleiner maken</div><div class="muted small">Elke encode wordt gecontroleerd vóór hij het origineel vervangt.</div></div><button class="switch" role="switch" aria-checked="true" aria-label="AV1 aan"></button></div>
+              <div class="set" data-k="vmaf kwaliteit doel"><div class="grow"><div class="t b">Kwaliteitsdoel (VMAF)</div><div class="muted small">Onder dit getal blijft het origineel staan.</div><details><summary>Meer uitleg</summary><div class="muted small">95 is voor het oog niet te onderscheiden van het origineel; 93 is de ondergrens.</div></details></div><input class="field" value="95" aria-label="VMAF-doel" style="min-width:70px;width:70px"></div>
+              <div class="set" data-k="dolby vision dv 8.1 hdr10 gpu"><div class="grow"><div class="t b">Dolby Vision 8.1</div><div class="muted small">Behouden (CPU, langzaam) of omzetten naar HDR10 (GPU, snel).</div></div><select class="field" aria-label="DV 8.1"><option>DV behouden</option><option>Naar HDR10 (GPU)</option></select></div>
+              <div class="set" data-k="vangnet originelen bewaren quarantaine"><div class="grow"><div class="t b">Vangnet</div><div class="muted small">Originelen blijven 48 uur bewaard (max. 500 GB).</div></div><input class="field" value="48 uur" aria-label="Vangnet" style="min-width:90px;width:90px"></div>
+            </div>
+            <div class="card" id="s-dl"><h2>Downloaden &amp; zoeken</h2>
+              <div class="set" data-k="ontbrekend zoeken per dag backfill"><div class="grow"><div class="t b">Ontbrekende afleveringen zoeken</div><div class="muted small">Tot 480 per dag, verspreid over de dag.</div></div><button class="switch" role="switch" aria-checked="true" aria-label="Zoeken"></button></div>
+              <div class="set" data-k="upgrades kwaliteitsdoel"><div class="grow"><div class="t b">Upgrades tot het doel</div><div class="muted small">Stopt zodra de beste realistische versie binnen is.</div></div><button class="switch" role="switch" aria-checked="true" aria-label="Upgrades"></button></div>
+            </div>
+            <div class="card" id="s-taal"><h2>Taal &amp; anime</h2>
+              <div class="set" data-k="ondertitels nederlands bewaren"><div class="grow"><div class="t b">Alle ondertitels bewaren</div><div class="muted small">AV1-versies houden alle ondertitelsporen.</div></div><button class="switch" role="switch" aria-checked="true" aria-label="Ondertitels"></button></div>
+            </div>
+            <div class="card" id="s-kop"><h2>Koppelingen</h2>
+              <div class="list">
+                <div class="row"><div class="grow"><div class="t">Sonarr &amp; Radarr (4)</div><div class="s">Alle instanties in orde</div></div><span class="pill ok">OK</span></div>
+                <div class="row"><div class="grow"><div class="t">SABnzbd · qBittorrent</div><div class="s">Categorieën compleet</div></div><span class="pill ok">OK</span></div>
+                <div class="row" data-k="emby mediaserver"><div class="grow"><div class="t">Emby</div><div class="s">API-sleutel ontbreekt</div></div><button class="btn">Invullen</button></div>
+                <div class="row"><div class="grow"><div class="t">Seerr · Prowlarr</div><div class="s">Verbonden</div></div><span class="pill ok">OK</span></div>
+              </div>
+            </div>
+            <div class="card" id="s-meld"><h2>Meldingen</h2>
+              <div class="set" data-k="ntfy telefoon melding dagoverzicht android"><div class="grow"><div class="t b">Telefoon (ntfy / Android-app)</div><div class="muted small">Fouten direct, de rest in het dagoverzicht van 08:00.</div></div><button class="btn">Koppelen</button></div>
+            </div>
+            <div class="card" id="s-veil"><h2>Beveiliging &amp; toegang</h2>
+              <div class="set" data-k="tweestapsverificatie 2fa"><div class="grow"><div class="t b">Tweestapsverificatie</div><div class="muted small">Aanbevolen: MediaGuard is van buitenaf bereikbaar.</div></div><button class="btn">Instellen</button></div>
+              <div class="set" data-k="api sleutels android app koppelen"><div class="grow"><div class="t b">API-sleutels &amp; Android-app</div><div class="muted small">2 sleutels · Media Source Optimizer, Android-app</div></div><button class="btn">Beheren</button></div>
+            </div>
+            <div class="card" id="s-sys"><h2>Systeem</h2>
+              <div class="set" data-k="back-up herstelbundel"><div class="grow"><div class="t b">Back-ups &amp; herstelbundel</div><div class="muted small">Dagelijks · laatste vannacht 03:00 · ook buiten de NAS</div></div><button class="btn">Bekijken</button></div>
+              <div class="set" data-k="opslag mappen schijf"><div class="grow"><div class="t b">Opslag &amp; mappen</div><div class="muted small">18,4 TB vrij · 4 mediamappen · geen tweelingmappen</div></div><button class="btn">Bekijken</button></div>
+              <div class="set" data-k="noodstop pauzeren alles"><div class="grow"><div class="t b">Noodstop</div><div class="muted small">Pauzeert grabs, encodes en vervangingen tot je hem opheft.</div></div><button class="btn">Noodstop</button></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<nav class="bottom" aria-label="Hoofdmenu">
+  <button data-go="overzicht" aria-current="page"><span class="ico">◧</span>Overzicht</button>
+  <button data-go="activiteit"><span class="ico">◎</span>Activiteit</button>
+  <button data-go="bibliotheek"><span class="ico">▤</span>Bibliotheek</button>
+  <button data-go="ruimte"><span class="ico">⇣</span>Ruimte</button>
+  <button data-go="aanvragen"><span class="ico">✚</span>Aanvragen</button>
+</nav>
+
+<script>
+(function(){
+  var root=document.documentElement;
+  function go(name){
+    document.querySelectorAll('.page').forEach(function(p){p.classList.toggle('on',p.id==='p-'+name)});
+    document.querySelectorAll('[data-go]').forEach(function(b){
+      if(b.classList.contains('nav-btn')||b.parentElement.classList.contains('bottom')){
+        if(b.dataset.go===name) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
+      }
+    });
+    window.scrollTo(0,0);
+  }
+  document.addEventListener('click',function(e){
+    var t=e.target.closest('[data-go]'); if(t){e.preventDefault();go(t.dataset.go);return}
+    var o=e.target.closest('[data-open]');
+    if(o){ if(o.dataset.open==='detail'){document.getElementById('lib-list').classList.add('hidden');document.getElementById('lib-detail').classList.remove('hidden')}
+           if(o.dataset.open==='req'){document.getElementById('req-dialog').classList.remove('hidden')} return}
+    var c=e.target.closest('[data-close]');
+    if(c){ if(c.dataset.close==='detail'){document.getElementById('lib-detail').classList.add('hidden');document.getElementById('lib-list').classList.remove('hidden')}
+           if(c.dataset.close==='req'){document.getElementById('req-dialog').classList.add('hidden')} return}
+    var s=e.target.closest('.switch');
+    if(s){var on=s.getAttribute('aria-checked')!=='true';s.setAttribute('aria-checked',String(on));
+      if(s.closest('#lib-detail')){document.getElementById('season-hint').textContent=on?'Gevolgd — MediaGuard zoekt de ontbrekende afleveringen meteen.':'Niet meer gevolgd — er wordt niets meer voor gezocht.'}
+      return}
+    var ch=e.target.closest('.chip'); if(ch){ch.parentElement.querySelectorAll('.chip').forEach(function(x){x.setAttribute('aria-pressed',String(x===ch))});return}
+    var sg=e.target.closest('.seg button'); if(sg){sg.parentElement.querySelectorAll('button').forEach(function(x){x.setAttribute('aria-pressed',String(x===sg))});return}
+  });
+  document.getElementById('theme').addEventListener('click',function(){
+    var cur=root.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');
+    root.setAttribute('data-theme',cur==='light'?'dark':'light');
+  });
+  document.getElementById('set-search').addEventListener('input',function(e){
+    var q=e.target.value.trim().toLowerCase();
+    document.querySelectorAll('#set-list .set, #set-list .row').forEach(function(el){
+      var hay=(el.dataset.k||'')+' '+el.textContent.toLowerCase();
+      el.classList.toggle('hidden',!!q&&hay.indexOf(q)<0);
+    });
+    document.querySelectorAll('#set-list .card').forEach(function(card){
+      var visible=card.querySelectorAll('.set:not(.hidden), .row:not(.hidden)').length;
+      card.classList.toggle('hidden',!!q&&!visible);
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,99 @@
+# MediaGuard — lokale full-stack (ontwikkeling en tests/integration/stack).
+#
+# Overlay op de ECHTE productie-compose, zodat de tests precies die definitie draaien:
+#
+#   docker compose -p mgdev --env-file <env> \
+#     -f deploy/truenas/compose.yaml -f deploy/dev/compose.dev.yaml up -d
+#
+# <env> = alleen de drie paden (MG_APPDATA, MG_WORK, MG_DATA_ROOT) plus eventueel MG_DEV_*;
+# sleutels maakt mediaguard-init zelf (ADR-011). Voorbeelden: tests/integration/stack/run.sh
+# (vooraf vastgelegde testsleutels) en run_zero_config.sh (niets vooraf, echte zero-config).
+#
+# Relatieve paden worden opgelost t.o.v. deploy/truenas/ (map van het eerste compose-bestand).
+# Wat deze overlay verandert t.o.v. productie:
+#   - voegt een nep-Newznab-indexer en een nep-SABnzbd toe (tests/integration/fakes), zodat de
+#     forks echt RSS → grab → download → import kunnen doen zonder internet/echte indexers;
+#   - publiceert core (en de forks) alleen op 127.0.0.1 voor tests en lokale ontwikkeling;
+#   - encoder zonder /dev/dri (geen GPU in CI);
+#   - web alleen met profiel `web` (docker compose --profile web ...), omdat de web-image
+#     niet altijd gebouwd is;
+#   - lagere resourcelimieten voor een ontwikkelmachine.
+# Nooit op productie gebruiken.
+
+x-fake: &fake
+  image: ${MG_DEV_FAKES_IMAGE:-mirror.gcr.io/library/python:3.12-slim-bookworm}
+  user: "${MG_UID:-568}:${MG_GID:-568}"
+  networks: [mediaguard]
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+
+x-dev-limits: &dev-limits
+  resources:
+    limits: {cpus: "1.5", memory: "1500m"}
+
+services:
+  fakeindexer:
+    <<: *fake
+    command: ["python", "-u", "/fakes/fake_indexer.py", "--port", "9117", "--public-host", "fakeindexer:9117"]
+    volumes:
+      - ${MG_DEV_FAKES_DIR:-../../tests/integration/fakes}:/fakes:ro
+    ports: ["127.0.0.1:${MG_DEV_INDEXER_PORT:-19117}:9117"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9117/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  fakesab:
+    <<: *fake
+    command: ["python", "-u", "/fakes/fake_sabnzbd.py", "--port", "8080", "--apikey", "${MG_DEV_SAB_APIKEY:-sabkey}",
+              "--complete-dir", "/data/downloads", "--sample", "/fixtures/sample.mkv",
+              "--download-seconds", "${MG_DEV_SAB_SECONDS:-3}"]
+    volumes:
+      - ${MG_DEV_FAKES_DIR:-../../tests/integration/fakes}:/fakes:ro
+      - ${MG_DEV_FIXTURES_DIR:-../../tests/integration/stack/.run/fixtures}:/fixtures:ro
+      # zelfde dataset en pad als in de forks (/data/downloads) → geen remote path mapping nodig;
+      # benoemd volume met subpad, net als de productie-services (mediaguard-init maakt het aan)
+      - {type: volume, source: mg_data, target: /data/downloads, volume: {nocopy: true, subpath: downloads}}
+    depends_on:
+      mediaguard-init: {condition: service_completed_successfully}
+    ports: ["127.0.0.1:${MG_DEV_SAB_PORT:-18080}:8080"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mediaguard-core:
+    ports: ["127.0.0.1:${MG_DEV_CORE_PORT:-18100}:8100"]
+    deploy: *dev-limits
+
+  mediaguard-recovery:
+    ports: ["127.0.0.1:${MG_DEV_RECOVERY_PORT:-18101}:8100"]
+    deploy: *dev-limits
+
+  mediaguard-encode:
+    devices: !reset []
+    group_add: !reset []
+    ports: ["127.0.0.1:${MG_DEV_ENCODE_PORT:-18000}:8000"]
+    deploy:
+      resources:
+        limits: {cpus: "2", memory: "2g"}
+
+  mediaguard-web:
+    profiles: ["web"]
+    ports: !override ["127.0.0.1:${MG_WEB_PORT:-30080}:3000"]
+
+  mediaguard-sonarr-series:
+    ports: !override ["127.0.0.1:${MG_PORT_SONARR_SERIES:-38989}:8989"]
+    deploy: *dev-limits
+  mediaguard-sonarr-anime:
+    ports: !override ["127.0.0.1:${MG_PORT_SONARR_ANIME:-38990}:8989"]
+    deploy: *dev-limits
+  mediaguard-radarr-films:
+    ports: !override ["127.0.0.1:${MG_PORT_RADARR_FILMS:-37878}:7878"]
+    deploy: *dev-limits
+  mediaguard-radarr-animefilms:
+    ports: !override ["127.0.0.1:${MG_PORT_RADARR_ANIMEFILMS:-37879}:7878"]
+    deploy: *dev-limits

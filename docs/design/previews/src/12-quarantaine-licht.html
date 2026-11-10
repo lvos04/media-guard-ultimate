@@ -1,0 +1,33 @@
+<!-- title: Quarantaine (licht thema, bevestiging) -->
+<!-- active: /quarantaine -->
+<!-- theme: light -->
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Quarantaine &amp; herstel</h1>
+    <p class="page-sub">Herstelbare items, transacties en snapshots. Originelen blijven bewaard tot de retentie verloopt.</p>
+  </div>
+  <div class="page-actions"><button class="btn"><i data-i="history"></i>Snapshots</button><button class="btn btn--danger"><i data-i="rotate-ccw"></i>Bulk terugzetten</button></div>
+</div>
+<section class="card">
+  <div class="table-wrap">
+  <table class="table table--stack">
+    <thead><tr><th>Item</th><th>Reden</th><th>Transactie</th><th class="num">Grootte</th><th>Bewaard tot</th><th></th></tr></thead>
+    <tbody>
+      <tr><td class="cell-primary"><div class="cell-title">Interstellar (2014).mkv</div><div class="cell-sub">radarr-films · origineel na mislukte DV-verificatie</div></td><td data-label="Reden"><span class="chip chip--danger"><i data-i="circle-x"></i>Verificatie mislukt</span></td><td data-label="Transactie"><span class="tag">tx-4398 · rolled_back</span></td><td data-label="Grootte" class="num">58,2 GB</td><td data-label="Bewaard tot">2 dec 2026</td><td><button class="btn btn--sm">Inspecteren</button></td></tr>
+      <tr><td class="cell-primary"><div class="cell-title">Golfbreker - 1089.mkv</div><div class="cell-sub">sonarr-anime · identiteit onzeker</div></td><td data-label="Reden"><span class="chip chip--warning"><i data-i="triangle-alert"></i>Onzeker</span></td><td data-label="Transactie"><span class="tag">tx-4402 · held</span></td><td data-label="Grootte" class="num">1,4 GB</td><td data-label="Bewaard tot">2 dec 2026</td><td><button class="btn btn--sm">Inspecteren</button></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<div class="overlay" role="presentation">
+  <section class="dialog dialog--danger" role="alertdialog" aria-modal="true" aria-labelledby="dt" aria-describedby="dd">
+    <div class="dialog-head"><span class="list-icon list-icon--danger"><i data-i="rotate-ccw"></i></span><div><h2 class="dialog-title" id="dt">12 items terugzetten naar origineel?</h2><p class="t-2" id="dd" style="font-size:13px; margin-top:4px">De huidige AV1-resultaten worden naar quarantaine verplaatst; de originelen komen terug op hun plek.</p></div></div>
+    <div class="dialog-body">
+      <div class="impact"><div><span>Bestanden</span><strong>12</strong></div><div><span>Totale omvang</span><strong>214 GB</strong></div><div><span>Extra opslag nodig</span><strong>+131 GB</strong></div></div>
+      <dl class="kv"><dt>Dataset</dt><dd class="mono">tank/media/films</dd><dt>Snapshot</dt><dd><span class="chip chip--success"><i data-i="circle-check"></i>auto-2026-11-02_09:00 · geverifieerd</span></dd><dt>Status</dt><dd>AV1 actief → <strong>origineel actief</strong></dd><dt>Rollback</dt><dd>Mogelijk zolang quarantaine-retentie loopt (30 dagen)</dd></dl>
+      <div style="margin-top:14px"><label class="label" for="confirm">Typ <span class="mono">TERUGZETTEN</span> om te bevestigen</label><input id="confirm" class="input" value="TERUGZ" /></div>
+    </div>
+    <div class="dialog-foot"><button class="btn">Annuleren</button><button class="btn btn--danger-solid" disabled>12 items terugzetten</button></div>
+  </section>
+</div>

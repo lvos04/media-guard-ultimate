@@ -1,0 +1,371 @@
+/* ==========================================================================
+   MediaGuard — eigen correcties op Peil 1.1.0
+   Staat in globals.css NA mg.css, av1.css en de gedeelde aliaslaag styles/peil/mediaguard-mso.css, in de cascadelaag
+   "legacy" (Tailwind-utilities en de shadcn/ui-componenten winnen altijd).
+   Alleen uiterlijk: geen klassen, testids, rollen of teksten veranderen.
+   Ontwerp: docs/ontwerp/PEIL_MIGRATIE.md §6.1 (a–m) en §8; besluiten: docs/adr/ADR-0016 en ADR-0017.
+   Fase 2: de schil, knoppen, pillen, tabs, schakelaars, dialogen, toestanden en kaarten zijn shadcn/Tailwind
+   (components/ui, components/mg/primitives.tsx, components/shell/app-shell.tsx); hun regels zijn uit mg.css. Wat hier
+   onder "Klassen in pagina's" staat, is de Peil-vorm voor plekken die die klassen nog rechtstreeks gebruiken.
+   ========================================================================== */
+
+/* (a) Peil-focusring: tweekleurig (3 px ring + 2 px halo), nooit alleen kleur. mg.css haalde bij invoervelden de
+       outline weg (box-shadow 3 px); Peils eigen regel staat in @layer base en verliest van legacy. */
+:focus-visible,
+.input:focus-visible, .select:focus-visible, .textarea:focus-visible {
+  outline: var(--focus-width) solid var(--ring);
+  outline-offset: var(--focus-offset);
+  box-shadow: 0 0 0 var(--focus-offset) var(--ring-halo);
+}
+.input:focus, .select:focus, .textarea:focus { border-color: var(--ring); }
+
+/* (b) Focus nooit achter de vaste kopbalk of ondernavigatie (WCAG 2.4.11). Schil: zijbalk ≥ 1024 px (lg), daaronder
+       ondernavigatie. */
+html { scroll-padding-top: calc(var(--header-h) + 0.75rem); scroll-padding-bottom: 0.75rem; }
+@media (max-width: 63.99rem) {
+  html { scroll-padding-bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + 0.75rem); }
+}
+
+/* Schermbreedte-hulpklassen (was 860 px; Peil wisselt op lg = 1024 px). */
+@media (max-width: 63.99rem) { .desktop-only { display: none !important; } }
+@media (min-width: 64rem) { .mobile-only { display: none !important; } }
+
+/* (c) Geen ellips op inhoud (ONTWERPTAAL §12): titels, bestandsnamen en labels lopen om. */
+.list-title, .list-sub, .media-title, .media-sub, .job-file, .cal-ep strong, .instance-name {
+  white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere;
+}
+.tag { white-space: normal; height: auto; min-height: 1.5rem; max-width: 100%; overflow-wrap: anywhere; line-height: 1.25; font-size: 0.875rem; border-color: var(--border-strong); color: var(--foreground); }
+.qribbon { flex-wrap: wrap; height: auto; max-width: 100%; white-space: normal; font-size: 0.875rem; }
+.hstepper { flex-wrap: wrap; overflow-x: visible; }
+.hstep, .trace-step { white-space: normal; overflow-wrap: anywhere; }
+/* Lange paden (/mnt/…) mogen nooit zijwaarts scrollen veroorzaken (rapport 5) */
+.card .mono, .card code, .card .list-title, .card .list-sub, .card dd, .card td, .card .cell-sub { overflow-wrap: anywhere; }
+.card .row-between > *, .card .list-main { min-width: 0; }
+
+/* (d) Onder 768 px: lijstrijen lopen om, knoppen onder de tekst. */
+@media (max-width: 47.99rem) {
+  .list-row { flex-wrap: wrap; }
+  .list-aside { flex-wrap: wrap; max-width: 100%; }
+}
+
+/* (e) Zekerheid is inkt, nooit groen/amber/rood — ook niet via een inline background (T-24). */
+.confidence .bar > span { background: var(--foreground) !important; }
+
+/* (f) Een getal staat nooit in statuskleur; de status komt als badge ernaast. */
+.kpi--success .kpi-value, .kpi--warning .kpi-value, .kpi--danger .kpi-value { color: var(--foreground); }
+
+/* (g) Uitgeschakeld = gestippelde rand, gedempte kleur, geen opacity op tekst (Peil §4.1 regel 10). */
+.step--blocked { opacity: 1; color: var(--disabled-foreground); }
+.step--blocked .step-no { border-style: dashed; }
+
+/* (h) Verouderd: StaleMark (components/mg/states.tsx) — stippelrand + arcering + clock-alert + woord. */
+.stale-mark {
+  display: inline-flex; align-items: center; gap: 0.375rem; max-width: 100%;
+  color: var(--stale-ink); font-size: 0.875rem; border: 2px dashed var(--stale); border-radius: 999px;
+  padding: 0.125rem 0.5rem; background-color: var(--stale-bg);
+  background-image: repeating-linear-gradient(135deg, var(--stale-hatch) 0 2px, transparent 2px 6px);
+}
+
+/* (i) Bibliotheek vergrendeld = GateBlokkade (slot, neutraal-sterk), geen info/violet. */
+[data-testid="library-lock-banner"] > .inline-state { background: var(--gate-bg); border: 2px solid var(--gate); color: var(--gate-ink); }
+[data-testid="library-lock-banner"] > .inline-state strong { color: var(--gate-ink); }
+[data-testid="library-lock-banner"] .ico { color: var(--gate); }
+
+/* (m) De episodekaart heeft een eigen Peil-vorm (kleur + vorm + tabel), zie components/mg/domain.tsx. */
+
+/* Statusvormen in markup die geen StatusChip gebruikt (de pil zelf: components/ui/badge.tsx). */
+.list-icon--success, .list-icon--accent { background: var(--muted); color: var(--foreground); }
+.list-icon--danger { background: var(--down-bg); color: var(--down-ink); }
+.list-icon--warning { background: var(--degraded-bg); color: var(--degraded-ink); }
+.tl-dot--success, .tl-dot--accent { background: var(--muted); color: var(--foreground); }
+.instance--degraded { border: 2px solid var(--degraded); }
+.instance--offline { border: 2px solid var(--down); }
+.instance-logo--sonarr, .instance-logo--radarr,
+:root[data-theme="light"] .instance-logo--sonarr, :root[data-theme="light"] .instance-logo--radarr {
+  background: var(--muted); color: var(--foreground); border: 1px solid var(--border);
+}
+.t-success { color: var(--foreground); } /* "gelukt" is geen gezondheid */
+.t-danger { color: var(--down-ink); }
+.t-warning { color: var(--degraded-ink); }
+.t-accent { color: var(--link); }
+.legend-swatch { border: 1px solid var(--border); }
+.kpi-badge { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+
+/* Invoervelden (Peil §5/§6): 44 px, 16 px tekst (geen iOS-zoom), rand ≥ 3:1, veldfout met 2 px. */
+.input, .select, .textarea { min-height: var(--touch); height: auto; padding: 0.5rem 0.75rem; border: 2px solid var(--input); border-radius: var(--radius); background-color: var(--card); color: var(--foreground); font-size: 1rem; line-height: 1.5rem; }
+.select { padding-right: 2.25rem; background-position: calc(100% - 18px) 50%, calc(100% - 12px) 50%; }
+.input--sm { min-height: var(--touch); font-size: 1rem; }
+.input[aria-invalid="true"], .select[aria-invalid="true"], .textarea[aria-invalid="true"] { border-color: var(--down); box-shadow: none; }
+.input:disabled, .select:disabled, .textarea:disabled { border-style: dashed; background-color: var(--muted); color: var(--disabled-foreground); }
+.label { font-size: 1rem; color: var(--foreground); }
+.hint { font-size: 0.875rem; color: var(--muted-foreground); }
+.field-error { color: var(--down-ink); font-size: 0.875rem; font-weight: 600; }
+.check { width: 1.25rem; height: 1.25rem; accent-color: var(--primary); }
+.choice, label:has(> .check) { min-height: var(--touch); }
+.filter-chip { min-height: var(--touch); font-size: 0.875rem; border: 2px dashed var(--border-strong); color: var(--foreground); }
+.filter-chip[aria-pressed="true"] { border-style: solid; border-color: var(--primary); background: var(--accent); }
+summary { min-height: var(--touch); cursor: pointer; }
+details.raw summary, .tech-details summary { display: flex; align-items: center; font-size: 0.875rem; }
+
+/* Geen kapitalen-labels (Peil §5): de oude eyebrow-koppen worden gewone kleine koppen. */
+.eyebrow, .nav-group, .job-lane { text-transform: none; letter-spacing: 0; font-size: 0.875rem; font-weight: 600; color: var(--foreground); }
+
+/* 44 px ook voor losse vervolglinks en klikbare labels buiten lopende tekst. */
+.link-more, .kpi-drill { display: inline-flex; align-items: center; min-height: var(--touch); font-size: 0.875rem; color: var(--link); }
+
+/* ---------- Klassen in pagina's die nog rechtstreeks worden gebruikt (Peil-vorm, zelfde als de componenten) ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; max-width: 100%; min-height: var(--touch); min-width: var(--touch);
+  padding: 0.375rem 1rem; border: 2px solid var(--border-strong); border-radius: var(--radius); background: var(--card); color: var(--foreground);
+  font-size: 1rem; font-weight: 600; line-height: 1.375; text-align: center; white-space: normal; text-decoration: none; cursor: pointer;
+}
+.btn:hover { background: var(--accent); }
+.btn svg { width: 1.25rem; height: 1.25rem; flex: none; }
+.btn--primary { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); }
+.btn--primary:hover { border-color: var(--primary-hover); background: var(--primary-hover); }
+.btn--ghost { border-color: transparent; background: transparent; }
+.btn--danger { border-color: var(--destructive); background: var(--card); color: var(--destructive); }
+.btn--danger-solid { border-color: var(--destructive); background: var(--destructive); color: var(--destructive-foreground); }
+.btn--sm { padding-inline: 0.75rem; font-size: 0.875rem; }
+.btn--icon { width: var(--touch); padding: 0; }
+.btn:disabled, .btn[aria-disabled="true"] { cursor: not-allowed; opacity: 1; border-style: dashed; border-color: var(--border-strong); background: var(--muted); color: var(--disabled-foreground); }
+.icon-btn {
+  position: relative; display: inline-grid; place-items: center; width: var(--touch); height: var(--touch); border: 2px solid transparent;
+  border-radius: var(--radius); background: transparent; color: var(--foreground); cursor: pointer;
+}
+.icon-btn:hover { background: var(--accent); }
+.icon-btn .ico { width: 1.25rem; height: 1.25rem; }
+.icon-btn .dot-badge { position: absolute; top: 0; right: -0.125rem; padding: 0 0.25rem; border-radius: 999px; font-weight: 700; text-align: center; box-shadow: 0 0 0 2px var(--background); }
+.chip {
+  display: inline-flex; align-items: center; gap: 0.375rem; width: fit-content; max-width: 100%; min-height: 1.5rem; padding: 0.125rem 0.5rem;
+  border: 2px solid transparent; border-radius: 999px; background: var(--muted); color: var(--foreground);
+  font-size: 0.875rem; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; vertical-align: middle;
+}
+.chip .ico { width: 1.125rem; height: 1.125rem; flex: none; }
+.chip--outline { border: 1px solid var(--border-strong); background: transparent; }
+.chip--accent, .chip--success { background: var(--muted); color: var(--foreground); }
+.card { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--card-foreground); box-shadow: none; }
+.card-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; padding: 1rem 1rem 0.5rem; }
+.card-title { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; font-size: 1.125rem; font-weight: 600; line-height: 1.375; }
+.card-title .ico { width: 1.25rem; height: 1.25rem; color: var(--muted-foreground); }
+.card-sub, .card-subhead { color: var(--muted-foreground); font-size: 0.875rem; font-weight: 400; }
+.card-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.75rem 1rem; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 0.875rem; }
+.page-title { font-size: 1.5rem; line-height: 2rem; font-weight: 700; text-wrap: balance; }
+.page-sub { margin-top: 0.25rem; max-width: 65ch; color: var(--muted-foreground); font-size: 1rem; }
+.state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.625rem; padding: 2.5rem 1.5rem; text-align: center; color: var(--muted-foreground); }
+.state-icon { display: grid; place-items: center; width: 2.75rem; height: 2.75rem; border-radius: 0.75rem; border: 2px solid transparent; background: var(--muted); color: var(--foreground); }
+.state-title { color: var(--foreground); font-size: 1.125rem; font-weight: 600; }
+.state-text { max-width: 65ch; font-size: 1rem; }
+.state-meta { font-size: 0.875rem; }
+.skeleton { border-radius: 0.375rem; background: var(--muted); }
+.skeleton-line { height: 0.875rem; margin: 0.5rem 0; }
+.inline-state--danger { display: flex; align-items: flex-start; gap: 0.625rem; padding: 0.625rem 0.75rem; border: 2px solid var(--down); border-radius: var(--radius); background: var(--down-bg); color: var(--down-ink); font-size: 0.875rem; }
+.popover { border: 2px solid var(--border); border-radius: var(--radius); background: var(--popover); color: var(--popover-foreground); box-shadow: var(--shadow-md); }
+
+/* Geen interactief element in een summary (axe nested-interactive): de schakelaar/link staat ernaast, op dezelfde
+   regel als de summary. */
+.season-wrap, .problem-group { position: relative; }
+.season-wrap > .season > summary { padding-right: 9rem; }
+.season-switch { position: absolute; top: 0; right: 16px; min-height: 48px; display: flex; align-items: center; }
+.problem-group > details > summary { padding-right: 7rem; }
+.problem-group-link { position: absolute; top: 0; right: 12px; }
+@media (max-width: 63.99rem) { .season-wrap > .season > summary { padding-right: 4.5rem; } }
+
+/* SysteemStatusPaneel (Overzicht): totaalstatus als badge; de rand volgt het slechtste GEMETEN onderdeel, nooit rood
+   voor alleen inrichting. */
+.status-hero { flex-wrap: wrap; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+.status-hero > .ico { width: 1.75rem; height: 1.75rem; color: var(--foreground); }
+.status-hero--healthy > .ico { color: var(--healthy); }
+.status-hero--warning { border: 2px solid var(--degraded); }
+.status-hero--warning > .ico { color: var(--degraded); }
+.status-hero--unknown { border: 2px dashed var(--unknown); }
+.status-hero--unknown > .ico { color: var(--unknown); }
+.status-hero-title { font-size: 1.25rem; font-weight: 700; }
+.status-hero-sub { color: var(--muted-foreground); font-size: 1rem; }
+
+/* Voortgang en verdeling: neutraal (100 % is niet groen); de status staat altijd als tekst ernaast. */
+.stackbar { background: var(--chart-meter-track); }
+
+/* Categorie-navigatie op Instellingen (zelfde vorm als de zijbalk), zoekveld in de titelkiezer, inlog-merkpaneel. */
+.nav { display: flex; flex-direction: column; gap: 0.125rem; }
+.nav-item { position: relative; display: flex; align-items: center; gap: 0.75rem; min-height: var(--touch); padding: 0 0.75rem; border-radius: var(--radius); color: var(--foreground); font-size: 1rem; cursor: pointer; }
+.nav-item:hover { background: var(--accent); }
+.nav-item[aria-current="page"] { background: var(--accent); font-weight: 600; }
+.nav-item[aria-current="page"]::before { content: ""; position: absolute; left: 0; top: 0.5rem; bottom: 0.5rem; width: 4px; border-radius: 0 999px 999px 0; background: var(--primary); }
+.nav-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.nav-count { min-width: 1.5rem; padding: 0 0.375rem; border-radius: 999px; background: var(--muted); color: var(--foreground); font-size: 0.875rem; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
+.topbar-search { display: flex; align-items: center; gap: 0.5rem; min-height: var(--touch); min-width: 0; padding: 0 0.625rem; border: 2px solid var(--input); border-radius: var(--radius); background: var(--card); color: var(--muted-foreground); }
+.topbar-search:focus-within { border-color: var(--ring); }
+.topbar-search input { flex: 1; min-width: 0; min-height: 2.5rem; border: 0; background: transparent; color: var(--foreground); font-size: 1rem; }
+.auth-side { background: var(--sidebar); border-right: 1px solid var(--border); }
+.auth-point { color: var(--muted-foreground); font-size: 1rem; }
+.auth-point strong { color: var(--foreground); font-size: 1rem; }
+.toast { border: 2px solid var(--border); border-radius: var(--radius); background: var(--popover); color: var(--popover-foreground); font-size: 1rem; }
+.toast--danger { border-color: var(--down); }
+.toast .ico { color: currentColor; }
+
+/* Lijstrijen op de telefoon (Peil: < 640 px knop onder de tekst): de tekst houdt minstens 12 rem, anders gaan de
+   knoppen naar een eigen regel; bij "Wat actie nodig heeft" altijd. */
+@media (max-width: 39.99rem) {
+  .list-row > .list-main, .card .list-row > .list-main { flex: 1 1 12rem; }
+  .list-row--wrap > .list-main, .card .list-row--wrap > .list-main { flex: 1 1 calc(100% - 3rem); min-width: calc(100% - 3rem); }
+  .list-aside { flex: 1 1 auto; justify-content: flex-start; }
+}
+
+/* StatKaarten: één kolom op smalle telefoons (de reden van "Onbekend" moet leesbaar omlopen). */
+@media (max-width: 29.99rem) { .kpi-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* (m) Episodekaart: kleur ÉN vorm uit de grafiekslots (geen statuskleuren); de tabel is de tweeling. */
+.heat-cell { width: 1rem; height: 1rem; border-radius: 3px; border: 2px solid transparent; background: var(--muted); }
+.heat-cell--ok { background: var(--chart-1); }
+.heat-cell--av1 { background: var(--chart-3); }
+.heat-cell--missing { background: var(--chart-2); }
+.heat-cell--searching { background: transparent; border-color: var(--chart-2); }
+.heat-cell--future { background: transparent; border: 1px solid var(--border-strong); }
+.heat-cell--unmonitored { background-color: var(--muted); background-image: repeating-linear-gradient(0deg, transparent 0 5px, var(--border-strong) 5px 7px); }
+.heat-cell--uncertain { position: relative; background: var(--unknown-bg); border: 2px dashed var(--unknown); }
+.heat-cell--uncertain::after { content: "?"; position: absolute; inset: 0; display: grid; place-items: center; color: var(--unknown-ink); font-size: 0.625rem; font-weight: 700; line-height: 1; }
+.heat-label, .heat-pct { font-size: 0.875rem; color: var(--foreground); }
+
+/* Let op: ".grid" is in mg.css het 12-koloms paginaraster (met .span-*); gebruik in componenten "inline-grid" of
+   "flex" in plaats van de Tailwind-utility "grid", anders erft het element 12 kolommen. */
+
+/* Focusring ook waar mg.css een eigen, dunnere ring zette (vaktermen, sorteerkoppen, uploadvak). */
+.term-btn:focus-visible, .th-sort:focus-visible, .dropzone:focus-within {
+  outline: var(--focus-width) solid var(--ring); outline-offset: var(--focus-offset); box-shadow: 0 0 0 var(--focus-offset) var(--ring-halo);
+}
+
+/* Getalvelden met eenheid lopen om op 320 px (16 px-tekst maakt het veld breder dan de oude 13 px). */
+.setting-control .row { flex-wrap: wrap; }
+.setting-control .row > .input, .setting-control .row > .select { flex: 1 1 6rem; min-width: 0; }
+
+/* Gestapelde tabel (telefoon): het label breekt nooit midden in een woord; een lange waarde gaat eronder. */
+@media (max-width: 860px) {
+  .table--stack td[data-label] { flex-wrap: wrap; column-gap: 0.75rem; row-gap: 0.125rem; }
+  .table--stack td[data-label]::before { flex: 0 0 auto; max-width: 100%; overflow-wrap: normal; word-break: normal; color: var(--muted-foreground); font-weight: 600; }
+}
+
+/* ---------- Peil-review (stap 5, docs/ontwerp/PEIL_REVIEW.md) ---------- */
+
+/* (n) Tekstlinks: Peil --link, altijd onderstreept. mg.css zet elke link op "color: inherit" zonder streep; daardoor
+       was een link in lopende tekst (bv. "Bekijken" achter de opslagregel, "Wat kwam erbij?") niet als link te
+       herkennen (WCAG 1.4.1). Componentlinks (kaart, rij, knop, tab, navigatie, chip) houden hun eigen vorm. */
+a:not([class]):not(:has(div, p, img, h2, h3)), .link-more, .link-arrow, .settings-link-row .link-arrow, .back-link, a.list-sub, .term-pop a {
+  color: var(--link); text-decoration-line: underline; text-underline-offset: 3px; text-decoration-thickness: 1px;
+}
+a:not([class]):not(:has(div, p, img, h2, h3)):hover, .link-more:hover, .link-arrow:hover, .settings-link-row .link-arrow:hover, .back-link:hover, a.list-sub:hover { text-decoration-line: underline; text-decoration-thickness: 2px; }
+
+/* (o) 44 px voor losse links buiten een zin (Peil §6): terug-link, vervolglinks, "en nog n — bekijk alles", de link
+       achter de opslagregel en de categoriechips op Instellingen. */
+.back-link, .settings-link-row .link-arrow, .link-arrow, a.list-sub, [data-testid="storage-ledger-line"] > a { display: inline-flex; align-items: center; min-height: var(--touch); }
+.back-link { padding: 0; }
+a.chip, button.chip, .settings-toc .chip { min-height: var(--touch); padding-inline: 0.75rem; }
+
+/* (p) Vaktermen (Term): 44 px raakvlak zonder de regel hoger te maken (opvulling + negatieve marge); stippellijn als
+       tekstonderstreping zodat hij bij de tekst blijft. */
+.term-btn {
+  display: inline-block; padding-block: 0.75rem; margin-block: -0.75rem; border-bottom: 0;
+  text-decoration-line: underline; text-decoration-style: dotted; text-decoration-thickness: 1px; text-underline-offset: 3px;
+}
+.term-btn:focus-visible { outline: var(--focus-width) solid var(--ring); outline-offset: var(--focus-offset); box-shadow: 0 0 0 var(--focus-offset) var(--ring-halo); border-radius: 4px; }
+
+/* (q) Geen kapitalen-labels (Peil §5): kalenderdag en "Meer hierover" op Instellingen. */
+.day-head, .settings-links-label { text-transform: none; letter-spacing: 0; color: var(--foreground); font-weight: 600; }
+
+/* (r) Dekkingsmatrix koppelingen (Peil §9 "cel = symbool + woord"): elke cel heeft een eigen teken en vorm, niet
+       alleen een kleur; het woord staat in de legenda en in de toegankelijke naam (role=img + aria-label). */
+.prov-cell { display: inline-grid; place-items: center; width: 1.375rem; height: 1.375rem; border-radius: 4px; border: 2px solid var(--border-strong); background: var(--card); color: var(--foreground); vertical-align: middle; font-size: 0.875rem; font-weight: 700; line-height: 1; }
+.prov-cell::after { content: ""; }
+.prov-cell--ok { border-color: var(--healthy); background: transparent; color: var(--healthy-ink); }
+.prov-cell--ok::after { content: "✓"; }
+.prov-cell--drift { border-color: var(--degraded); background: var(--degraded-bg); color: var(--degraded-ink); }
+.prov-cell--drift::after { content: "~"; }
+.prov-cell--missing { border-color: var(--degraded); border-style: solid; background: transparent; color: var(--degraded-ink); }
+.prov-cell--missing::after { content: "−"; }
+.prov-cell--error { border-color: var(--down); background: var(--down-bg); color: var(--down-ink); }
+.prov-cell--error::after { content: "×"; }
+.prov-cell--needs_input { border-color: var(--info); background: var(--info-bg); color: var(--info-ink); }
+.prov-cell--needs_input::after { content: "…"; }
+.prov-cell--skipped { border-style: dashed; border-color: var(--border-strong); background: transparent; }
+.prov-cell--skipped::after { content: "/"; }
+.prov-cell--unknown { border-style: dashed; border-color: var(--unknown); background: var(--unknown-bg); color: var(--unknown-ink); }
+.prov-cell--unknown::after { content: "?"; }
+
+/* (s) Selectievakje in een tabelcel: het omhullende label is het raakvlak van 44 px (Peil §6: 20 px zichtbaar binnen
+       een raakvlak van ≥ 44 px). */
+.check-hit { display: inline-grid; place-items: center; min-width: var(--touch); min-height: var(--touch); margin: -0.625rem -0.5rem; cursor: pointer; }
+
+/* (t) Zoekveld in de titelkiezer: het veld zelf is 44 px binnen de rand (de omhulling is geen label). */
+.stack-sm > .topbar-search > input { min-height: var(--touch); }
+
+/* (u) Tabel → kaartenlijst op de breedte van de INHOUD, niet van het scherm (Peil §8 ResponsieveLijst: tabel ≥ 768 px,
+       daaronder kaarten). Sinds de zijbalk pas vanaf 1024 px verschijnt, is de inhoud tussen 1024 en ± 1280 px smaller
+       dan de brede MediaGuard-tabellen nodig hebben; de oude regel (schermbreedte ≤ 860 px) liet de tabel dan staan en
+       kneep kolommen tot één letter breed (bibliotheek, ontbrekend, terugzetten, gebruikers; gemeten op 1024 en 1100 px).
+       De ouder van een stapeltabel is nu de container; onder 60 rem inhoud wordt het een kaartenlijst. Selectievakjes
+       (.hide-mobile) blijven in deze tussenvorm zichtbaar: alleen de telefoon (≤ 860 px) verbergt ze, zoals voorheen. */
+:has(> .table--stack) { container-type: inline-size; }
+@container (max-width: 59.99rem) {
+  .table--stack thead { display: none; }
+  .table--stack, .table--stack tbody, .table--stack tr, .table--stack td { display: block; width: 100%; }
+  .table--stack tr { padding: 0.625rem 0.875rem; border-bottom: 1px solid var(--border); }
+  .table--stack tr:last-child { border-bottom: 0; }
+  .table--stack td { height: auto; padding: 0.1875rem 0; border: 0; text-align: left !important; }
+  .table--stack td[data-label] { display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: 0.75rem; row-gap: 0.125rem; font-size: 0.875rem; }
+  .table--stack td[data-label]::before { content: attr(data-label); flex: 0 0 auto; max-width: 100%; overflow-wrap: normal; word-break: normal; color: var(--muted-foreground); font-weight: 600; }
+  .table--stack td.cell-primary { padding-bottom: 0.375rem; }
+  .table--stack td.cell-block[data-label] { display: block; }
+  .table--stack td.cell-block[data-label]::before { display: block; margin-bottom: 2px; }
+  .table--stack td:not([data-label]):has(> .check-hit) { padding-bottom: 0.25rem; }
+}
+
+/* (v) Kalenderweek: zeven kolommen pas vanaf 60 rem inhoud; daaronder lopen de dagen om (tussen 1024 en ± 1280 px
+       braken titels midden in een woord en viel "Verwacht" buiten de dagkaart). De telefoon (≤ 860 px) houdt één kolom. */
+:has(> .week) { container-type: inline-size; }
+@container (max-width: 59.99rem) {
+  .week { grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); }
+}
+.cal-ep strong { overflow-wrap: break-word; word-break: normal; }
+
+/* (w) Geen tekst onder 14 px (Peil §5): <small> erft anders 80 % (11,2 px bij "· Stap 2 van 4" in de fasebalk). */
+.phase-label small, .lane-title small, main small { font-size: max(0.875rem, 1em * 0.875); }
+
+/* (x) Losse vervolglinks ook 44 px breed (kort woord, bv. "View"/"Bekijken" achter de opslagregel). */
+.link-more, .link-arrow, a.list-sub, .back-link, [data-testid="storage-ledger-line"] > a { min-width: var(--touch); }
+
+/* (y) Stroomschema "Hoe werkt het": elk schema zijn eigen pijlpunt-id (geen dubbele id's in de DOM). */
+.flow-wide .edge { marker-end: url(#flow-arrow-breed); }
+.flow-narrow .edge { marker-end: url(#flow-arrow-smal); }
+.flow-svg marker path { fill: var(--muted-foreground); }
+/* Peil §4.1 regel 10: nooit opacity op tekst; tekstniveau 2 = muted-foreground (≥ 7:1). */
+.flow-svg .node .sub { opacity: 1; fill: var(--muted-foreground); }
+.flow-svg .node text { fill: var(--foreground); }
+.flow-svg .node rect { fill: var(--card); stroke: var(--border-strong); }
+.flow-svg .node.key rect { stroke: var(--primary); }
+
+/* (z) Uitgeschakeld en gepauzeerd zonder opacity of amber (Peil §4.1 regels 3 en 10): een uitgezette plek en een
+       uitgeschakeld uploadvak worden gestippeld met de gedempte tekstkleur; een gepauzeerde worker is Gepauzeerd (info). */
+.worker--disabled { opacity: 1; border-style: dashed; border-left-style: solid; color: var(--disabled-foreground); }
+.worker--paused { border-left-color: var(--paused); }
+.dropzone--disabled { opacity: 1; border-style: dashed; background: var(--muted); color: var(--disabled-foreground); }
+
+/* StatKaart (Peil C-05): Bron en Bijgewerkt als kleine dl onder de waarde, tekstniveau 2, 14 px. */
+.kpi-bron { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 0.75rem; margin: 0; color: var(--muted-foreground); font-size: 0.875rem; line-height: 1.25rem; }
+.kpi-bron > div { display: contents; }
+.kpi-bron dt { font-weight: 600; color: var(--foreground); }
+.kpi-bron dd { margin: 0; overflow-wrap: anywhere; }
+
+/* (u2) De koppelingsmatrix (13 kolommen) past pas vanaf ± 90 rem inhoud als tabel; daaronder per instantie een kaart
+        (sectie: teken + woord). Eerder werden kolomkoppen afgekapt ("Kwaliteitsdefiniti…") en brak de instantienaam
+        midden in een woord, ook op 1440 px. */
+@container (max-width: 89.99rem) {
+  .prov-grid thead { display: none; }
+  .prov-grid, .prov-grid tbody, .prov-grid tr, .prov-grid td { display: block; width: 100%; }
+  .prov-grid tr { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); column-gap: 1.5rem; padding: 0.625rem 0.875rem; border-bottom: 1px solid var(--border); }
+  .prov-grid tr:last-child { border-bottom: 0; }
+  .prov-grid td.cell-primary { grid-column: 1 / -1; }
+  .prov-grid td { height: auto; padding: 0.1875rem 0; border: 0; text-align: left !important; }
+  .prov-grid td[data-label] { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; column-gap: 0.75rem; font-size: 0.875rem; }
+  .prov-grid td[data-label]::before { content: attr(data-label); color: var(--muted-foreground); font-weight: 600; }
+  .prov-grid td.cell-primary { padding-bottom: 0.375rem; }
+}

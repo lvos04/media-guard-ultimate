@@ -1,0 +1,130 @@
+# MediaGuard fork integration harness: 4 isolated runtime instances from 2 fork images,
+# plus a fake Newznab indexer, a fake SABnzbd and a stub MediaGuard hook server.
+#
+# Started by tests/integration/forks/run.sh (which also prepares ./.run and the optional CA override).
+name: mgforks
+
+x-fake: &fake
+  image: ${FAKES_IMAGE:-mirror.gcr.io/library/python:3.12-slim-bookworm}
+  user: "1000:1000"
+  volumes:
+    - ../fakes:/fakes:ro
+  networks: [mgnet]
+  restart: unless-stopped
+
+x-sonarr: &sonarr
+  image: ${SONARR_IMAGE:-mediaguard/sonarr-fork:bc54afb-mg1}
+  networks: [mgnet]
+  restart: unless-stopped
+  depends_on: [stub-mediaguard, fakeindexer, fakesab]
+
+x-radarr: &radarr
+  image: ${RADARR_IMAGE:-mediaguard/radarr-fork:a96bf7c-mg1}
+  networks: [mgnet]
+  restart: unless-stopped
+  depends_on: [stub-mediaguard, fakeindexer, fakesab]
+
+x-hooks: &hooks
+  MEDIAGUARD_URL: http://stub-mediaguard:8100
+  MEDIAGUARD_HOOK_TIMEOUT_MS: "1500"
+  MEDIAGUARD_HOOK_CIRCUIT_BREAK_SECONDS: "0"
+
+services:
+  stub-mediaguard:
+    <<: *fake
+    command: ["python", "-u", "/fakes/stub_mediaguard.py", "--port", "8100",
+              "--keys", "sonarr-series=key-sonarr-series,sonarr-anime=key-sonarr-anime,radarr-films=key-radarr-films,radarr-animefilms=key-radarr-animefilms"]
+    ports: ["127.0.0.1:18100:8100"]
+
+  fakeindexer:
+    <<: *fake
+    command: ["python", "-u", "/fakes/fake_indexer.py", "--port", "9117", "--public-host", "fakeindexer:9117"]
+    ports: ["127.0.0.1:19117:9117"]
+
+  fakesab:
+    <<: *fake
+    command: ["python", "-u", "/fakes/fake_sabnzbd.py", "--port", "8080", "--apikey", "sabkey",
+              "--complete-dir", "/downloads/complete", "--sample", "/fixtures/sample.mkv", "--download-seconds", "3"]
+    volumes:
+      - ../fakes:/fakes:ro
+      - ./.run/fixtures:/fixtures:ro
+      - ./.run/downloads:/downloads
+    ports: ["127.0.0.1:18080:8080"]
+
+  sonarr-series:
+    <<: *sonarr
+    hostname: sonarr-series
+    environment:
+      <<: *hooks
+      SONARR__AUTH__APIKEY: 5e1a0000000000000000000000000001
+      SONARR__SERVER__PORT: "8989"
+      SONARR__APP__INSTANCENAME: Sonarr sonarr-series
+      MEDIAGUARD_INSTANCE_ID: sonarr-series
+      MEDIAGUARD_HOOK_KEY: key-sonarr-series
+      MEDIAGUARD_HOOK_FAIL_POLICY: open
+    volumes:
+      - sonarr-series-config:/config
+      - ./.run/downloads:/downloads
+      - ./.run/media/sonarr-series:/media/tv
+    ports: ["127.0.0.1:18989:8989"]
+
+  sonarr-anime:
+    <<: *sonarr
+    hostname: sonarr-anime
+    environment:
+      <<: *hooks
+      SONARR__AUTH__APIKEY: 5e1a0000000000000000000000000002
+      SONARR__SERVER__PORT: "8990"
+      SONARR__APP__INSTANCENAME: Sonarr sonarr-anime
+      MEDIAGUARD_INSTANCE_ID: sonarr-anime
+      MEDIAGUARD_HOOK_KEY: key-sonarr-anime
+      MEDIAGUARD_HOOK_FAIL_POLICY: closed
+    volumes:
+      - sonarr-anime-config:/config
+      - ./.run/downloads:/downloads
+      - ./.run/media/sonarr-anime:/media/anime
+    ports: ["127.0.0.1:18990:8990"]
+
+  radarr-films:
+    <<: *radarr
+    hostname: radarr-films
+    environment:
+      <<: *hooks
+      RADARR__AUTH__APIKEY: 5e1a0000000000000000000000000003
+      RADARR__SERVER__PORT: "7878"
+      RADARR__APP__INSTANCENAME: radarr-films
+      MEDIAGUARD_INSTANCE_ID: radarr-films
+      MEDIAGUARD_HOOK_KEY: key-radarr-films
+      MEDIAGUARD_HOOK_FAIL_POLICY: open
+    volumes:
+      - radarr-films-config:/config
+      - ./.run/downloads:/downloads
+      - ./.run/media/radarr-films:/media/movies
+    ports: ["127.0.0.1:17878:7878"]
+
+  radarr-animefilms:
+    <<: *radarr
+    hostname: radarr-animefilms
+    environment:
+      <<: *hooks
+      RADARR__AUTH__APIKEY: 5e1a0000000000000000000000000004
+      RADARR__SERVER__PORT: "7879"
+      RADARR__APP__INSTANCENAME: radarr-animefilms
+      MEDIAGUARD_INSTANCE_ID: radarr-animefilms
+      MEDIAGUARD_HOOK_KEY: key-radarr-animefilms
+      MEDIAGUARD_HOOK_FAIL_POLICY: closed
+      MEDIAGUARD_SHADOW_MODE: ${ANIMEFILMS_SHADOW_MODE:-0}
+    volumes:
+      - radarr-animefilms-config:/config
+      - ./.run/downloads:/downloads
+      - ./.run/media/radarr-animefilms:/media/animefilms
+    ports: ["127.0.0.1:17879:7879"]
+
+volumes:
+  sonarr-series-config:
+  sonarr-anime-config:
+  radarr-films-config:
+  radarr-animefilms-config:
+
+networks:
+  mgnet:

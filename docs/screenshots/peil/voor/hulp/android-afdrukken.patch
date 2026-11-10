@@ -1,0 +1,28 @@
+--- a/apps/android/app/src/test/java/nl/mediaguard/app/shots/ScreenShots.kt
++++ b/apps/android/app/src/test/java/nl/mediaguard/app/shots/ScreenShots.kt
+@@ -45,11 +45,12 @@
+  * Opnemen: ./gradlew :app:recordPaparazziDebug — kopieer daarna naar docs/design/android/
+  * (zie docs/design/android/README.md). In een gewone testrun renderen ze alleen (geen vergelijking).
+  */
+-abstract class ScreenShots(private val dark: Boolean) {
++abstract class ScreenShots(private val dark: Boolean, private val widthPx: Int = 1080, private val heightPx: Int = 2340) {
+     @get:Rule
+     val paparazzi = Paparazzi(
+-        deviceConfig = DeviceConfig.PIXEL_5.copy(nightMode = if (dark) NightMode.NIGHT else NightMode.NOTNIGHT),
++        deviceConfig = DeviceConfig.PIXEL_5.copy(screenWidth = widthPx, screenHeight = heightPx, nightMode = if (dark) NightMode.NIGHT else NightMode.NOTNIGHT),
+         maxPercentDifference = 1.0,
++        useDeviceResolution = true,
+     )
+ 
+     private val day = LocalDate.of(2026, 11, 7)
+@@ -147,5 +148,10 @@
+     }
+ }
+ 
++// Peil-nulmeting (kopie buiten de repo): 393 dp (Pixel 5), 360 dp (990 px bij 440 dpi) en 393 dp met hoge viewport (volledig)
+ class DarkScreenShots : ScreenShots(dark = true)
+ class LightScreenShots : ScreenShots(dark = false)
++class Dark360ScreenShots : ScreenShots(dark = true, widthPx = 990)
++class Light360ScreenShots : ScreenShots(dark = false, widthPx = 990)
++class DarkVolledigScreenShots : ScreenShots(dark = true, heightPx = 7200)
++class LightVolledigScreenShots : ScreenShots(dark = false, heightPx = 7200)

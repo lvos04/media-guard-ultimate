@@ -1,0 +1,66 @@
+<!-- title: Instellingen -->
+<!-- active: /instellingen -->
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Instellingen</h1>
+    <p class="page-sub">Elke instelling komt rechtstreeks uit het backend-register: naam, uitleg, standaard, overerving en validatie.</p>
+  </div>
+  <div class="page-actions"><div class="search-field" style="width:300px"><i data-i="search"></i><input class="input" placeholder="Zoek in alle instellingen…" value="" aria-label="Zoek in instellingen" /></div></div>
+</div>
+
+<div class="tabs" style="margin-bottom:16px">
+  <a class="tab" aria-current="page" href="#">Algemeen</a><a class="tab" href="#">Instanties</a><a class="tab" href="#">Gebruikers</a><a class="tab" href="#">Geheimen</a><a class="tab" href="#">Audit</a>
+</div>
+
+<div class="grid">
+  <aside class="span-3 stack-sm desktop-only">
+    <div class="card" style="padding:8px">
+      <div class="nav">
+        <a class="nav-item" href="#" aria-current="page"><span class="nav-label">Wachtrij &amp; workers</span><span class="nav-count">6</span></a>
+        <a class="nav-item" href="#"><span class="nav-label">Dolby Vision &amp; HDR</span><span class="nav-count">9</span></a>
+        <a class="nav-item" href="#"><span class="nav-label">Audio &amp; ondertiteling</span><span class="nav-count">11</span></a>
+        <a class="nav-item" href="#"><span class="nav-label">Backfill</span><span class="nav-count">8</span></a>
+        <a class="nav-item" href="#"><span class="nav-label">AI Adviseur</span><span class="nav-count">10</span></a>
+        <a class="nav-item" href="#"><span class="nav-label">Systeem</span><span class="nav-count">5</span></a>
+        <a class="nav-item" href="#"><span class="nav-label">Veiligheid</span><span class="nav-count">2</span></a>
+      </div>
+    </div>
+  </aside>
+  <div class="span-9">
+    <div class="card" style="padding:12px 16px; margin-bottom:12px">
+      <div class="row wrap" style="gap:12px">
+        <span class="label" style="margin:0">Scope</span>
+        <div class="segmented"><button aria-pressed="false">Globaal</button><button aria-pressed="false">Media-type</button><button aria-pressed="true">Instantie</button><button>Bibliotheek</button><button>Profiel</button></div>
+        <select class="select" style="width:200px" aria-label="Instantie"><option>sonarr-anime</option></select>
+        <label class="row t-2" style="font-size:12.5px; margin-left:auto"><button class="switch" role="switch" aria-checked="false" aria-label="Geavanceerd tonen"></button>Geavanceerd</label>
+      </div>
+    </div>
+    <section class="card">
+      <div class="card-header" style="border-bottom:1px solid var(--mg-border-soft)"><h2 class="card-title">Wachtrij &amp; workers</h2><span class="card-sub">6 instellingen · 1 gewijzigd op deze scope</span></div>
+      <div class="setting">
+        <div><div class="setting-name">Gelijktijdige achtergrondtaken <span class="chip chip--warning"><i data-i="refresh-cw"></i>Herstart nodig</span></div><div class="setting-key">jobs.max_concurrency</div><div class="setting-help">Aantal taken (scans, zoekacties, verificaties) dat tegelijk mag draaien. Hoger = sneller, maar meer I/O op je pool.</div>
+          <div class="setting-meta"><span class="chip chip--outline">Erft van Globaal</span><span>Standaard 4 · bereik 1–32</span></div></div>
+        <div class="setting-control"><input class="input num" value="4" aria-label="Waarde" /><div class="row"><button class="btn btn--sm btn--ghost" disabled>Herstel standaard</button></div></div>
+      </div>
+      <div class="setting setting--error">
+        <div><div class="setting-name">Backfill-quota per nacht</div><div class="setting-key">backfill.nightly_quota</div><div class="setting-help">Maximaal aantal zoekopdrachten per nacht voor deze instantie. Beschermt je indexer-limieten.</div>
+          <div class="setting-meta"><span class="chip chip--accent">Gezet op Instantie · sonarr-anime</span><span>Standaard 100 · bereik 1–1000</span></div></div>
+        <div class="setting-control"><input class="input num" value="5000" aria-invalid="true" aria-describedby="e1" aria-label="Waarde" /><div class="field-error" id="e1"><i data-i="circle-x" class="ico-sm"></i>backfill.nightly_quota: maximaal 1000 — oude waarde 150 blijft actief</div><div class="row"><button class="btn btn--sm btn--ghost">Ongedaan</button></div></div>
+      </div>
+      <div class="setting setting--dirty">
+        <div><div class="setting-name">Stiltevenster CPU-baan</div><div class="setting-key">workers.cpu.quiet_window</div><div class="setting-help">Geen CPU-encodes in dit venster; GPU loopt door. Lopende jobs pauzeren veilig bij het volgende controlepunt.</div>
+          <div class="setting-meta"><span class="chip chip--outline">Erft van Globaal</span><span>Standaard 23:00–08:00</span><span class="t-accent">Niet opgeslagen</span></div></div>
+        <div class="setting-control"><div class="row" style="justify-content:stretch"><input class="input num" value="22:30" aria-label="Start" /><span class="t-3">–</span><input class="input num" value="07:30" aria-label="Einde" /></div><div class="row"><button class="btn btn--sm btn--ghost">Herstel standaard</button></div></div>
+      </div>
+      <div class="setting">
+        <div><div class="setting-name">Pauzeer bij afspelen</div><div class="setting-key">workers.pause_on_playback</div><div class="setting-help">Vraagt de mediaserver of er wordt gekeken en pauzeert dan de CPU-baan.</div><div class="setting-meta"><span class="chip chip--outline">Erft van Globaal</span><span>Standaard aan</span></div></div>
+        <div class="setting-control"><div class="row"><button class="switch" role="switch" aria-checked="true" aria-label="Pauzeer bij afspelen"></button></div></div>
+      </div>
+      <div class="setting">
+        <div><div class="setting-name">Streams verifiëren vóór activatie <span class="chip"><i data-i="lock"></i>Integriteit</span></div><div class="setting-key">integrity.verify_streams_before_activate</div><div class="setting-help">Altijd aan. Kan niet worden uitgezet — beschermt tegen verlies van audio, ondertitels en HDR/DV-metadata.</div></div>
+        <div class="setting-control"><div class="row"><button class="switch" role="switch" aria-checked="true" disabled aria-label="Streams verifiëren"></button></div></div>
+      </div>
+      <div class="savebar"><i data-i="info" style="color:var(--mg-accent)"></i><span class="grow" style="font-size:13px"><strong>1 wijziging</strong> klaar · 1 fout moet eerst worden opgelost</span><button class="btn btn--sm">Voorbeeldbeslissing</button><button class="btn btn--sm btn--ghost">Verwerpen</button><button class="btn btn--sm btn--primary" disabled>Opslaan</button></div>
+    </section>
+  </div>
+</div>

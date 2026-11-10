@@ -1,0 +1,305 @@
+# MediaGuard Ultimate — TrueNAS SCALE app ("Install via YAML")
+#
+# ┌─ INSTALLEREN ────────────────────────────────────────────────────────────────────────────┐
+# │ 1. Maak in TrueNAS drie datasets aan (bv. tank/apps/mediaguard, tank/mediaguard-work,   │
+# │    tank/data) en geef de gebruiker 'apps' (568) daar lees+schrijfrechten (ACL).          │
+# │ 2. Apps → Discover Apps → ⋮ → Install via YAML → naam "mediaguard" → plak dit bestand.   │
+# │ 3. Pas ALLEEN de drie paden onder 'volumes:' helemaal onderaan aan. Klaar.               │
+# │ Sleutels, mappen en rechten maakt de container 'mediaguard-init' zelf aan.               │
+# │ Open daarna http://<truenas>:30080                                                       │
+# └──────────────────────────────────────────────────────────────────────────────────────────┘
+#
+# Containers (B1, K1, DEEL R):
+#   mediaguard-init       eenmalig per start: mappen, rechten en ALLE sleutels, stopt daarna
+#   mediaguard-web        Nederlandstalige UI (enige UI-poort, 30080), proxyt /api/v1 naar core
+#   mediaguard-core       API, orkestratie, hooks-server voor de forks, policy, backfill
+#   mediaguard-recovery   ENIGE MediaGuard-container die bibliotheekbestanden vervangt (G2)
+#   mediaguard-encode     AV1-engine (lvos04/av1); ziet media alleen-lezen
+#   4 fork-instanties     sonarr-series, sonarr-anime, radarr-films, radarr-animefilms
+#                         uit precies TWEE images (R1), elk met een eigen /config (subpad)
+#
+# Veiligheid: geen privileged containers, geen Docker-socket, capabilities gedropt,
+# no-new-privileges, alles behalve init draait als 568:568. Elke container koppelt alleen de
+# submap die hij nodig heeft (Docker volume-subpaden, vereist TrueNAS SCALE 24.10+).
+# Overal 'nocopy: true': anders kopieert Docker bij een lege submap de inhoud én eigenaar
+# van het image-pad erin (Sonarr/Radarr-image: /config van uid 1000 → fork start niet).
+# Bibliotheek-schrijfrechten: zie docs/DECISIONS.md ADR-011 — de forks importeren alleen buiten
+# schaduwmodus en recovery vervangt pas iets na de overstap of na 'Bibliotheek vrijgeven' in
+# de UI (softwarevergrendeling, standaard dicht).
+#
+# Optioneel (niet nodig voor een werkende installatie, zie env.example): MG_HOST, poorten,
+# MG_RENDER_GID/MG_VIDEO_GID, resourcelimieten, image-versies.
+
+name: mediaguard
+
+x-common: &common
+  restart: unless-stopped
+  # ruimte om netjes af te sluiten (encodes onderbreken, databases wegschrijven)
+  stop_grace_period: 60s
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  user: "568:568"
+  networks: [mediaguard]
+  logging:
+    driver: json-file
+    options: {max-size: "20m", max-file: "5"}
+
+x-after-init: &after-init
+  mediaguard-init: {condition: service_completed_successfully}
+
+x-fork-env: &fork-env
+  TZ: ${TZ:-Europe/Amsterdam}
+  HOME: /config
+  MEDIAGUARD_URL: http://mediaguard-core:8100
+  MEDIAGUARD_HOOK_TIMEOUT_MS: ${MG_HOOK_TIMEOUT_MS:-3000}
+  MEDIAGUARD_HOOK_CIRCUIT_BREAK_SECONDS: ${MG_HOOK_CIRCUIT_BREAK_SECONDS:-30}
+
+x-fork-limits: &fork-limits
+  resources:
+    limits: {cpus: "${MG_FORK_CPUS:-2}", memory: "${MG_FORK_MEM:-2g}"}
+
+x-core-env: &core-env
+  TZ: ${TZ:-Europe/Amsterdam}
+  MG_DATA_DIR: /config
+  MG_SECRETS_DIR: /run/mediaguard
+  # de hele data-dataset: bestaande mapindelingen werken zonder iets te verplaatsen
+  MG_LIBRARY_ROOTS: /data
+  MG_STAGING_DIR: /work/staging
+  MG_QUARANTINE_DIR: /work/quarantine
+  MG_CORE_URL: http://mediaguard-core:8100
+  MG_ENCODER_URL: http://mediaguard-encode:8000
+  MG_RECOVERY_URL: http://mediaguard-recovery:8100
+
+x-core-health: &core-health
+  test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/api/v1/health',timeout=4).status==200 else 1)"]
+  interval: 30s
+  timeout: 5s
+  start_period: 20s
+  retries: 3
+
+services:
+  # Bij iedere start: ontbrekende mappen + sleutels aanmaken (bestaande blijven ongewijzigd).
+  # Draait kort als root met alleen CHOWN/DAC_OVERRIDE/FOWNER; raakt nooit bestaande media aan.
+  mediaguard-init:
+    image: ${MG_CORE_IMAGE:-ghcr.io/lvos04/mediaguard-core:1.2.2}
+    user: "0:0"
+    restart: "no"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    network_mode: none
+    entrypoint: ["python", "-m", "mediaguard.bootstrap"]
+    environment:
+      MG_UID: "568"
+      MG_GID: "568"
+    volumes:
+      - {type: volume, source: mg_appdata, target: /bootstrap/appdata, volume: {nocopy: true}}
+      - {type: volume, source: mg_work, target: /bootstrap/work, volume: {nocopy: true}}
+      - {type: volume, source: mg_data, target: /bootstrap/data, volume: {nocopy: true}}
+
+  mediaguard-web:
+    <<: *common
+    image: ${MG_WEB_IMAGE:-ghcr.io/lvos04/mediaguard-web:1.2.2}
+    environment:
+      TZ: ${TZ:-Europe/Amsterdam}
+      MG_CORE_URL: http://mediaguard-core:8100
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    ports: ["${MG_WEB_PORT:-30080}:3000"]
+    depends_on:
+      mediaguard-core: {condition: service_healthy}
+    read_only: true
+    tmpfs: ["/tmp"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  mediaguard-core:
+    <<: *common
+    image: ${MG_CORE_IMAGE:-ghcr.io/lvos04/mediaguard-core:1.2.2}
+    depends_on: *after-init
+    environment:
+      <<: *core-env
+      MG_ROLE: core
+      # Publieke URL's voor Seerr: MG_HOST (optioneel), anders vult MediaGuard ze in met het
+      # adres waarmee je de UI opent (Inrichten → Seerr).
+      MG_PUBLIC_HOST: ${MG_HOST:-}
+      MG_INSTANCE_SONARR_SERIES_URL: http://mediaguard-sonarr-series:8989
+      MG_INSTANCE_SONARR_SERIES_PUBLIC_PORT: ${MG_PORT_SONARR_SERIES:-38989}
+      MG_INSTANCE_SONARR_ANIME_URL: http://mediaguard-sonarr-anime:8989
+      MG_INSTANCE_SONARR_ANIME_PUBLIC_PORT: ${MG_PORT_SONARR_ANIME:-38990}
+      MG_INSTANCE_RADARR_FILMS_URL: http://mediaguard-radarr-films:7878
+      MG_INSTANCE_RADARR_FILMS_PUBLIC_PORT: ${MG_PORT_RADARR_FILMS:-37878}
+      MG_INSTANCE_RADARR_ANIMEFILMS_URL: http://mediaguard-radarr-animefilms:7878
+      MG_INSTANCE_RADARR_ANIMEFILMS_PUBLIC_PORT: ${MG_PORT_RADARR_ANIMEFILMS:-37879}
+    volumes:
+      - {type: volume, source: mg_appdata, target: /config, volume: {nocopy: true, subpath: core}}
+      - {type: volume, source: mg_appdata, target: /run/mediaguard, read_only: true, volume: {nocopy: true, subpath: secrets}}
+      - {type: volume, source: mg_work, target: /work/staging, read_only: true, volume: {nocopy: true, subpath: encode/staging}}
+      - {type: volume, source: mg_work, target: /work/quarantine, read_only: true, volume: {nocopy: true, subpath: quarantine}}
+      - {type: volume, source: mg_data, target: /data, read_only: true, volume: {nocopy: true}}
+    healthcheck: *core-health
+    deploy:
+      resources:
+        limits: {cpus: "${MG_CORE_CPUS:-2}", memory: "${MG_CORE_MEM:-2g}"}
+
+  # Enige MediaGuard-container met schrijfrechten op de bibliotheek (G2). Deelt de core-DB
+  # (journaal, jobs, locks). Vervangt pas iets na de overstap of 'Bibliotheek vrijgeven'.
+  mediaguard-recovery:
+    <<: *common
+    image: ${MG_CORE_IMAGE:-ghcr.io/lvos04/mediaguard-core:1.2.2}
+    environment:
+      <<: *core-env
+      MG_ROLE: recovery
+    depends_on:
+      mediaguard-core: {condition: service_healthy}
+    volumes:
+      - {type: volume, source: mg_appdata, target: /config, volume: {nocopy: true, subpath: core}}
+      - {type: volume, source: mg_appdata, target: /run/mediaguard/internal, read_only: true, volume: {nocopy: true, subpath: secrets/internal}}
+      - {type: volume, source: mg_work, target: /work/staging, volume: {nocopy: true, subpath: encode/staging}}
+      - {type: volume, source: mg_work, target: /work/quarantine, volume: {nocopy: true, subpath: quarantine}}
+      - {type: volume, source: mg_data, target: /data, volume: {nocopy: true}}
+    healthcheck: *core-health
+    deploy:
+      resources:
+        limits: {cpus: "${MG_RECOVERY_CPUS:-2}", memory: "${MG_RECOVERY_MEM:-1g}"}
+
+  # AV1-engine (docs/AV1_TRUENAS_PORT.md). Vervangt NOOIT zelf bronbestanden (handoff).
+  mediaguard-encode:
+    <<: *common
+    image: ${MG_ENCODE_IMAGE:-ghcr.io/lvos04/mediaguard-encode:1.2.2}
+    depends_on: *after-init
+    group_add: ["${MG_RENDER_GID:-107}", "${MG_VIDEO_GID:-44}"]
+    environment:
+      TZ: ${TZ:-Europe/Amsterdam}
+      MG_CONTAINER_MODE: "1"
+      AV1_REPLACEMENT_MODE: handoff
+      MG_INTERNAL_TOKEN_FILE: /run/mediaguard/token
+      MG_PROTECT_LEGACY_API: "1"
+      MG_MEDIA_ROOTS: /data
+      MG_STAGING_ROOT: /work/staging
+      MG_MIN_STABLE_SECONDS: ${MG_ENCODE_MIN_STABLE_SECONDS:-60}
+    volumes:
+      - {type: volume, source: mg_appdata, target: /config, volume: {nocopy: true, subpath: encode}}
+      - {type: volume, source: mg_appdata, target: /run/mediaguard, read_only: true, volume: {nocopy: true, subpath: secrets/internal}}
+      # cache/, work/ en staging/ op hetzelfde filesystem (rename i.p.v. kopie)
+      - {type: volume, source: mg_work, target: /work, volume: {nocopy: true, subpath: encode}}
+      - {type: volume, source: mg_data, target: /data, read_only: true, volume: {nocopy: true}}
+    read_only: true
+    tmpfs: ["/tmp"]
+    # GPU (Intel iGPU/Arc, QSV). Heeft je TrueNAS geen /dev/dri, verwijder dan deze regel;
+    # de encoder gebruikt dan alleen de CPU (SVT-AV1).
+    devices: ["/dev/dri:/dev/dri"]
+    deploy:
+      resources:
+        limits: {cpus: "${MG_ENCODE_CPUS:-12}", memory: "${MG_ENCODE_MEM:-12g}"}
+
+  # ---- Vier runtime-instanties uit twee fork-images (DEEL R) -------------------------------
+  # API- en hook-sleutel komen uit de door init gegenereerde bestanden; de fork ziet alleen
+  # zijn eigen config-map en zijn eigen sleutels.
+  mediaguard-sonarr-series:
+    <<: *common
+    image: ${MG_SONARR_IMAGE:-ghcr.io/lvos04/mediaguard-sonarr-fork:4.0.20.3014-mg2}
+    depends_on: *after-init
+    entrypoint: &sonarr-entry ["/bin/sh", "-c", "export SONARR__AUTH__APIKEY=\"$$(cat /run/mediaguard/apikey)\" MEDIAGUARD_HOOK_KEY=\"$$(cat /run/mediaguard/hookkey)\"; exec /app/sonarr/bin/Sonarr -nobrowser -data=/config"]
+    environment:
+      <<: *fork-env
+      SONARR__SERVER__PORT: "8989"
+      SONARR__APP__INSTANCENAME: Sonarr sonarr-series
+      MEDIAGUARD_INSTANCE_ID: sonarr-series
+      MEDIAGUARD_HOOK_FAIL_POLICY: ${MG_SONARR_SERIES_FAIL_POLICY:-open}
+      MEDIAGUARD_SHADOW_MODE: ${MG_SONARR_SERIES_SHADOW_MODE:-0}
+    ports: ["${MG_PORT_SONARR_SERIES:-38989}:8989"]
+    volumes:
+      - {type: volume, source: mg_appdata, target: /config, volume: {nocopy: true, subpath: sonarr-series}}
+      - {type: volume, source: mg_appdata, target: /run/mediaguard, read_only: true, volume: {nocopy: true, subpath: secrets/sonarr-series}}
+      # één mount voor downloads + bibliotheek (hardlinks); rootmap /data/media/tv
+      - {type: volume, source: mg_data, target: /data, volume: {nocopy: true}}
+    deploy: *fork-limits
+
+  mediaguard-sonarr-anime:
+    <<: *common
+    image: ${MG_SONARR_IMAGE:-ghcr.io/lvos04/mediaguard-sonarr-fork:4.0.20.3014-mg2}
+    depends_on: *after-init
+    entrypoint: *sonarr-entry
+    environment:
+      <<: *fork-env
+      SONARR__SERVER__PORT: "8989"
+      SONARR__APP__INSTANCENAME: Sonarr sonarr-anime
+      MEDIAGUARD_INSTANCE_ID: sonarr-anime
+      MEDIAGUARD_HOOK_FAIL_POLICY: ${MG_SONARR_ANIME_FAIL_POLICY:-open}
+      MEDIAGUARD_SHADOW_MODE: ${MG_SONARR_ANIME_SHADOW_MODE:-0}
+    ports: ["${MG_PORT_SONARR_ANIME:-38990}:8989"]
+    volumes:
+      - {type: volume, source: mg_appdata, target: /config, volume: {nocopy: true, subpath: sonarr-anime}}
+      - {type: volume, source: mg_appdata, target: /run/mediaguard, read_only: true, volume: {nocopy: true, subpath: secrets/sonarr-anime}}
+      - {type: volume, source: mg_data, target: /data, volume: {nocopy: true}}
+    deploy: *fork-limits
+
+  mediaguard-radarr-films:
+    <<: *common
+    image: ${MG_RADARR_IMAGE:-ghcr.io/lvos04/mediaguard-radarr-fork:6.4.4.10685-mg1}
+    depends_on: *after-init
+    entrypoint: &radarr-entry ["/bin/sh", "-c", "export RADARR__AUTH__APIKEY=\"$$(cat /run/mediaguard/apikey)\" MEDIAGUARD_HOOK_KEY=\"$$(cat /run/mediaguard/hookkey)\"; exec /app/radarr/bin/Radarr -nobrowser -data=/config"]
+    environment:
+      <<: *fork-env
+      RADARR__SERVER__PORT: "7878"
+      RADARR__APP__INSTANCENAME: radarr-films
+      MEDIAGUARD_INSTANCE_ID: radarr-films
+      MEDIAGUARD_HOOK_FAIL_POLICY: ${MG_RADARR_FILMS_FAIL_POLICY:-open}
+      MEDIAGUARD_SHADOW_MODE: ${MG_RADARR_FILMS_SHADOW_MODE:-0}
+    ports: ["${MG_PORT_RADARR_FILMS:-37878}:7878"]
+    volumes:
+      - {type: volume, source: mg_appdata, target: /config, volume: {nocopy: true, subpath: radarr-films}}
+      - {type: volume, source: mg_appdata, target: /run/mediaguard, read_only: true, volume: {nocopy: true, subpath: secrets/radarr-films}}
+      - {type: volume, source: mg_data, target: /data, volume: {nocopy: true}}
+    deploy: *fork-limits
+
+  mediaguard-radarr-animefilms:
+    <<: *common
+    image: ${MG_RADARR_IMAGE:-ghcr.io/lvos04/mediaguard-radarr-fork:6.4.4.10685-mg1}
+    depends_on: *after-init
+    entrypoint: *radarr-entry
+    environment:
+      <<: *fork-env
+      RADARR__SERVER__PORT: "7878"
+      RADARR__APP__INSTANCENAME: radarr-animefilms
+      MEDIAGUARD_INSTANCE_ID: radarr-animefilms
+      MEDIAGUARD_HOOK_FAIL_POLICY: ${MG_RADARR_ANIMEFILMS_FAIL_POLICY:-open}
+      MEDIAGUARD_SHADOW_MODE: ${MG_RADARR_ANIMEFILMS_SHADOW_MODE:-0}
+    ports: ["${MG_PORT_RADARR_ANIMEFILMS:-37879}:7878"]
+    volumes:
+      - {type: volume, source: mg_appdata, target: /config, volume: {nocopy: true, subpath: radarr-animefilms}}
+      - {type: volume, source: mg_appdata, target: /run/mediaguard, read_only: true, volume: {nocopy: true, subpath: secrets/radarr-animefilms}}
+      - {type: volume, source: mg_data, target: /data, volume: {nocopy: true}}
+    deploy: *fork-limits
+
+networks:
+  mediaguard:
+    driver: bridge
+
+# ┌──────────────── ALLEEN DEZE DRIE PADEN AANPASSEN ────────────────────────────────────┐
+volumes:
+  mg_appdata:          # configuratie, databases en gegenereerde sleutels (neem mee in back-ups)
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${MG_APPDATA:-/mnt/tank/apps/mediaguard}
+  mg_work:             # AV1-cache/staging en quarantaine (bij voorkeur op dezelfde pool als data)
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${MG_WORK:-/mnt/tank/mediaguard-work}
+  mg_data:             # je media-dataset (bestaande mappen blijven zoals ze zijn; bij een lege
+                       # dataset maakt init media/{tv,anime,movies,animefilms} en downloads/ aan)
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${MG_DATA_ROOT:-/mnt/tank/data}
+# └───────────────────────────────────────────────────────────────────────────────────────┘

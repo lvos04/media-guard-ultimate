@@ -1,0 +1,15 @@
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+captures/
+*.jks
+*.keystore
+!signing/mediaguard-sideload.keystore
+# Paparazzi: de referentieset (app/src/test/snapshots/images) staat in de repo; afdrukken voor de documentatie
+# (PEIL_AFDRUKKEN=1, klassen Docs*) en de uitkomst van een vergelijking niet.
+app/src/test/snapshots/images/*_Docs*
+app/src/test/snapshots/videos/

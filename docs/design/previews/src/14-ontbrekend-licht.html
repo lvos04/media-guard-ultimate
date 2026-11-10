@@ -1,0 +1,65 @@
+<!-- theme: light -->
+<!-- title: Ontbrekend & herstel -->
+<!-- active: /ontbrekend -->
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Ontbrekend &amp; herstel</h1>
+    <p class="page-sub">Per instantie gediagnosticeerd en gepland. Bewust niet-gemonitorde afleveringen tellen niet mee.</p>
+  </div>
+  <div class="page-actions">
+    <button class="btn"><i data-i="refresh-cw"></i>Alles opnieuw diagnosticeren</button>
+    <button class="btn btn--primary"><i data-i="route"></i>Backfill-plan maken</button>
+  </div>
+</div>
+
+<section class="kpi-grid" style="margin-bottom:16px">
+  <div class="kpi"><span class="kpi-label"><i data-i="search-x"></i>Ontbrekend totaal</span><span class="kpi-value num">1.284</span><span class="kpi-meta">series 402 · anime 851 · films 31</span></div>
+  <div class="kpi"><span class="kpi-label"><i data-i="loader-circle"></i>In zoekqueue</span><span class="kpi-value num">312</span><span class="kpi-meta">volgende batch 15:00 · quota 64%</span></div>
+  <div class="kpi kpi--success"><span class="kpi-label"><i data-i="circle-check"></i>Hersteld (7 dagen)</span><span class="kpi-value num">219</span><span class="kpi-meta">gem. 3,4 pogingen per aflevering</span></div>
+  <div class="kpi kpi--warning"><span class="kpi-label"><i data-i="triangle-alert"></i>Geblokkeerd</span><span class="kpi-value num">96</span><span class="kpi-meta">geen release voldoet aan harde eisen</span></div>
+</section>
+
+<div class="grid">
+  <section class="card span-8">
+    <div class="card-header">
+      <h2 class="card-title"><i data-i="list-tree"></i>Oorzaken</h2>
+      <div class="segmented"><button aria-pressed="true">Alle instanties</button><button>sonarr-series</button><button>sonarr-anime</button><button>radarr-*</button></div>
+    </div>
+    <div class="table-wrap">
+    <table class="table table--stack">
+      <thead><tr><th>Oorzaak</th><th class="num">Afl.</th><th>Voorbeeld</th><th>Slimme oplossing</th><th></th></tr></thead>
+      <tbody>
+        <tr><td class="cell-primary"><div class="row"><span class="list-icon list-icon--danger"><i data-i="gauge"></i></span><div><div class="cell-title">Indexer-quota bereikt</div><div class="cell-sub">Nyaa, AnimeTosho · sonarr-anime</div></div></div></td><td data-label="Afleveringen" class="num">412</td><td data-label="Voorbeeld" class="t-2">Frieren S01E21–E28</td><td data-label="Oplossing">Spreid over 3 nachten (02:00–06:00)</td><td><button class="btn btn--sm btn--primary">Plannen</button></td></tr>
+        <tr><td class="cell-primary"><div class="row"><span class="list-icon list-icon--warning"><i data-i="languages"></i></span><div><div class="cell-title">Geen release met vereiste taal</div><div class="cell-sub">Dual Audio vereist · anime</div></div></div></td><td data-label="Afleveringen" class="num">288</td><td data-label="Voorbeeld" class="t-2">Spookstad S01E01–E12</td><td data-label="Oplossing">Tijdelijk JA + EN-subs toestaan, upgrade later</td><td><button class="btn btn--sm">Simuleer</button></td></tr>
+        <tr><td class="cell-primary"><div class="row"><span class="list-icon list-icon--warning"><i data-i="filter"></i></span><div><div class="cell-title">Afgewezen door kwaliteitsprofiel</div><div class="cell-sub">min. score 1500 · TRaSH</div></div></div></td><td data-label="Afleveringen" class="num">201</td><td data-label="Voorbeeld" class="t-2">The Expanse S06E01–E04</td><td data-label="Oplossing">1080p WEB-DL accepteren (score 1320)</td><td><button class="btn btn--sm">Simuleer</button></td></tr>
+        <tr><td class="cell-primary"><div class="row"><span class="list-icon list-icon--info"><i data-i="list-tree"></i></span><div><div class="cell-title">Nummering wijkt af (scene/XEM)</div><div class="cell-sub">absolute ↔ seizoen</div></div></div></td><td data-label="Afleveringen" class="num">164</td><td data-label="Voorbeeld" class="t-2">Golfbreker 1089–1110</td><td data-label="Oplossing">Mapping herstellen in Anime mapping</td><td><button class="btn btn--sm">Openen</button></td></tr>
+        <tr><td class="cell-primary"><div class="row"><span class="list-icon"><i data-i="search-x"></i></span><div><div class="cell-title">Niet op indexers gevonden</div><div class="cell-sub">0 resultaten in 30 dagen</div></div></div></td><td data-label="Afleveringen" class="num">123</td><td data-label="Voorbeeld" class="t-2">Taskmaster S03</td><td data-label="Oplossing">Wekelijks opnieuw, uitsluiten na 90 dagen</td><td><button class="btn btn--sm">Instellen</button></td></tr>
+        <tr><td class="cell-primary"><div class="row"><span class="list-icon list-icon--danger"><i data-i="download"></i></span><div><div class="cell-title">Download gestopt</div><div class="cell-sub">stalled &gt; 6 u · 0 seeders</div></div></div></td><td data-label="Afleveringen" class="num">96</td><td data-label="Voorbeeld" class="t-2">Wadi: Deel Twee</td><td data-label="Oplossing">Blokkeer release, zoek volgende kandidaat</td><td><button class="btn btn--sm">Herstellen</button></td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="card span-4">
+    <div class="card-header"><h2 class="card-title"><i data-i="route"></i>Backfill per instantie</h2></div>
+    <div class="card-body meter-list">
+      <div class="meter-row"><span><strong>sonarr-anime</strong> <span class="t-3">· 851</span></span><span class="num t-2">quota 64/100</span><div class="progress progress--warning"><span style="width:64%"></span></div></div>
+      <div class="meter-row"><span><strong>sonarr-series</strong> <span class="t-3">· 402</span></span><span class="num t-2">quota 31/150</span><div class="progress"><span style="width:21%"></span></div></div>
+      <div class="meter-row"><span><strong>radarr-films</strong> <span class="t-3">· 24</span></span><span class="num t-2">quota 8/60</span><div class="progress"><span style="width:13%"></span></div></div>
+      <div class="meter-row"><span><strong>radarr-animefilms</strong> <span class="t-3">· 7</span></span><span class="chip chip--warning"><i data-i="pause"></i>Gepauzeerd</span><div class="progress"><span style="width:0%"></span></div></div>
+      <div class="inline-state" style="margin-top:4px"><i data-i="info"></i><span>Elke instantie heeft een eigen zoekquota en dedup-scope; dezelfde release wordt nooit door twee instanties gegrabd.</span></div>
+    </div>
+  </section>
+
+  <section class="card span-12">
+    <div class="card-header"><h2 class="card-title"><i data-i="layout-dashboard"></i>Seizoenscompleetheid</h2><div class="row"><button class="filter-chip" aria-pressed="true">Alleen onvolledig</button><button class="filter-chip">Inclusief toekomstig</button></div></div>
+    <div class="card-body">
+      <div class="heatmap">
+        <div class="heat-row" style="grid-template-columns:200px 1fr 64px"><span class="heat-label">Frieren · S01</span><span class="heat-cells"><span class="heat-cell heat-cell--av1"></span><span class="heat-cell heat-cell--av1"></span><span class="heat-cell heat-cell--av1"></span><span class="heat-cell heat-cell--av1"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--searching"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span></span><span class="heat-pct">71%</span></div>
+        <div class="heat-row" style="grid-template-columns:200px 1fr 64px"><span class="heat-label">Spookstad · S01</span><span class="heat-cells"><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--searching"></span><span class="heat-cell heat-cell--searching"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--future"></span></span><span class="heat-pct">9%</span></div>
+        <div class="heat-row" style="grid-template-columns:200px 1fr 64px"><span class="heat-label">The Expanse · S06</span><span class="heat-cells"><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span></span><span class="heat-pct">33%</span></div>
+        <div class="heat-row" style="grid-template-columns:200px 1fr 64px"><span class="heat-label">Shōgun · S01</span><span class="heat-cells"><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--missing"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--uncertain"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span><span class="heat-cell heat-cell--ok"></span></span><span class="heat-pct">80%</span></div>
+      </div>
+    </div>
+  </section>
+</div>

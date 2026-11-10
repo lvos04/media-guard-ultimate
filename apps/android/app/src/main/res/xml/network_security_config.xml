@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MediaGuard draait thuis vaak op een LAN-adres zonder TLS (http://192.168.x.x:30080). Android kan
+     platte tekst niet per IP-bereik toestaan, dus de basis laat het toe en de app zelf (CleartextGuard,
+     data/NetGuard.kt) weigert elk http-verzoek naar een adres buiten het eigen netwerk (LAN, VPN,
+     Tailscale). Bekende publieke diensten mogen hier nooit platte tekst gebruiken. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">ntfy.sh</domain>
+        <domain includeSubdomains="true">github.com</domain>
+        <domain includeSubdomains="true">githubusercontent.com</domain>
+        <domain includeSubdomains="true">tmdb.org</domain>
+        <domain includeSubdomains="true">trycloudflare.com</domain>
+        <domain includeSubdomains="true">cfargotunnel.com</domain>
+    </domain-config>
+</network-security-config>
