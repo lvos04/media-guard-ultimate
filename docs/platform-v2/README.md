@@ -38,12 +38,29 @@ Onbekende NAS-gegevens (D01–D18) worden nooit met voorbeeldwaarden ingevuld; z
 - `05_TESTS/INTEGRALE_E2E_TESTMATRIX.md`
 - `06_TEMPLATES/PROMPTS_PER_APP/PROMPT_B04_MEDIAGUARD_DELTA.md`
 
+## Contract 1.3 en Peil 1.1.1 (2026-11-10)
+
+- [`PLATFORM_CONTRACTEN.md`](PLATFORM_CONTRACTEN.md) (`contracts 1.3`) en
+  [`CONTRACT_1.3_CONFORMITEIT.md`](CONTRACT_1.3_CONFORMITEIT.md) zijn **byte-gelijke kopieën** van
+  `lvos04/ai-server-manager@0a7143b`; de pin staat in [`HERKOMST.json`](HERKOMST.json). Nooit met de hand wijzigen:
+  `python3 scripts/kopie-herkomst.py controleer` (offline) en `vergelijk --online` (CI-job `kopieen`); een nieuwe kopie
+  is een stap van de orkestratie (`bijwerken --set contract`). Wat deze repo voor 1.3 moet doen: §6 van de
+  conformiteitslijst (C1.3-MGU-01…09).
+- Gedaan in deze ronde (alleen NU-punten, ADR-0021): C1.3-MGU-01 (kopie, drifttest, EVIDENCE-test), C1.3-MGU-03
+  (upgradebewijs, HARDE EIS: `scripts/upgradebewijs.py`, gate in `release.yml` vóór `publish`) en het adresdeel van
+  C1.3-MGU-08 (`system.hub_url` volgens §3.2). Peil 1.1.1 overgenomen (C1.3-ALG-05): `design/ontwerptaal/HERKOMST.md`.
+- Open (latere fasen, in [`EVIDENCE.json`](EVIDENCE.json) als `Niet gestart`): C1.3-MGU-04 (P4-0), -05/-06/-07/-09
+  (P3), terugkeerpad na inloggen (-08, P3); C1.3-MGU-02 is `Geblokkeerd` tot de gebruiker het GHCR-pakket aan de nieuwe
+  repo koppelt.
+- Commit-hashes in `EVIDENCE.json`-regels van vóór 2026-11-10 (B04-001…010) verwijzen naar de oude historie, nu
+  `lvos04/media-guard-ultimate-archief` (privé); deze repo begint met één schone startcommit (`3998bea`).
+
 ## Eigen werkstukken van deze repo (fase P0, 2026-11-09)
 
 - [`INVENTARIS.md`](INVENTARIS.md) — baseline 1.2.2 en compat-matrix (B04-001), diensten, modules, alle API-routes
   met `bestand:regel` (bijlage A), databases/migraties, auth en API-sleutels, events/meldingen, back-up/herstel,
   bewaking, noodstop en invarianten, CI en de echt gedraaide baselinetests, images en installatiewijze.
-- [`DELTA_MATRIX.md`](DELTA_MATRIX.md) — elke eis uit B04, de I-/A-stappen en contracten 1.1 als
+- [`DELTA_MATRIX.md`](DELTA_MATRIX.md) — elke eis uit B04, de I-/A-stappen en contracten 1.1 (gemeten op 2026-11-09; voor 1.3 geldt de conformiteitslijst) als
   bestaand / onvolledig / ontbrekend met bewijs, wat NIET mag, Hub-adapterkaart en de bouwlijst voor fase P3.
 - [`EVIDENCE.json`](EVIDENCE.json) — status per Excel-ID (`B04-001` … `B04-010`) volgens contract §11.
 - Besluiten: [`../adr/ADR-0013-platform-v2-p0-interpretaties.md`](../adr/ADR-0013-platform-v2-p0-interpretaties.md).

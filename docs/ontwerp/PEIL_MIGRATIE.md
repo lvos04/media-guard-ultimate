@@ -1,7 +1,7 @@
 # MediaGuard naar Peil — omzettingsontwerp (stap 2)
 
 **Status:** web (`apps/web`) gebouwd in stap 3 (9 november 2026; zie §13 en [ADR-0017](../adr/ADR-0017-peil-web-bouwkeuzes.md)); Android (`apps/android`) gebouwd in stap 4 (9 november 2026; zie §14 en [ADR-0018](../adr/ADR-0018-peil-android-bouwkeuzes.md)) · ontwerp: design-agent · code-HEAD bij het ontwerp `8060747` (MediaGuard 1.2.2)
-**Ontwerptaal:** Peil **1.1.0**, versie-gepinde kopie in [`design/ontwerptaal/`](../../design/ontwerptaal/HERKOMST.md)
+**Ontwerptaal:** Peil **1.1.0** bij dit ontwerp; sinds 10 november 2026 **1.1.1** (gepinde kopie, ADR-0021), versie-gepinde kopie in [`design/ontwerptaal/`](../../design/ontwerptaal/HERKOMST.md)
 (bindend: `ONTWERPTAAL.md`, `COMPONENTEN.md`, `ADR-ONTWERPTAAL.md`; MediaGuard-pad: ONTWERPTAAL §13.3)
 **Besluiten:** [`docs/adr/ADR-0016-peil-omzetting-interpretaties.md`](../adr/ADR-0016-peil-omzetting-interpretaties.md)
 **Nulmeting:** [`docs/screenshots/peil/voor/`](../screenshots/peil/voor/README.md) (web: afdrukken + `metingen.json` +
@@ -890,6 +890,7 @@ Elke status `semantics { contentDescription = "<woord>, <reden>" }`; voortgang `
 
 - **Gedeelde aliaslaag mist de focusring en scroll-padding voor `mg.css`-apps** (laagvolgorde). Opgelost in
   `peil-mg.css` (a, b); MSO meldde hetzelfde. Vervolgpunt voor de ontwerptaal: in de gedeelde laag opnemen.
+  **Opgelost in Peil 1.1.1 (E14):** de aliaslaag doet het zelf; de eigen kopie in `peil-mg.css` is weg (ADR-0021).
 - **Inline styles winnen van CSS.** Zekerheidsbalkjes, KPI-kleuren en lettermaten volgen in fase 1 alleen met
   `!important` of pas in fase 2. Tekst < 14 px blijft tot fase 2c (ONTWERPTAAL §13.3 zegt dat eerlijk).
 - **Dichtheid.** 44 px en 14 px maken lijsten langer; compensatie via ResponsieveLijst en `details` voor lange uitleg.

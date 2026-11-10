@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+Contract 1.3 en Peil 1.1.1 toegepast (alleen de NU-punten van `CONTRACT_1.3_CONFORMITEIT.md` §6; geen migratie, geen
+nieuwe of gewijzigde route, OpenAPI byte-gelijk). Besluiten: ADR-0021.
+- **Kopieën met gepinde bron-commit** (C1.3-MGU-01): `PLATFORM_CONTRACTEN.md` 1.3 en `CONTRACT_1.3_CONFORMITEIT.md`
+  byte-gelijk aan `lvos04/ai-server-manager@0a7143b`; Peil-kopieën naar 1.1.1 op dezelfde commit.
+  `scripts/kopie-herkomst.py` controleert ze offline (core-tests) en tegen GitHub (CI-job `kopieen`): fout bij drift
+  op de pin, waarschuwing bij een nieuwere bron (Peil: pinregel E08).
+- **Upgradebewijs — HARDE EIS** (C1.3-MGU-03): kijkgeschiedenis en MediaGuard-voortgang blijven bij elke upgrade
+  beschikbaar. `scripts/upgradebewijs.py` start de echte vorige release (1.2.2-aio op digest) op een fixture waarin elke
+  tabel gevuld is, daarna de nieuwe versie, vergelijkt per tabel vóór/na, leest de voortgang terug via de API en bewijst
+  terugzetten (vorige image + snapshot). Draait op elke push (core-kandidaat) en in `release.yml` vóór `publish`.
+- **"Terug naar de Hub"** (C1.3-MGU-08): alleen adressen volgens contract 1.3 §3.2 (canonieke IPv4, IPv6 tussen `[]`,
+  geen `%`-codering of IDN); ongeldig → 422 bij opslaan en geen link in de UI.
+- **Peil 1.1.1:** nieuwe aliaslaag zet focusring en scroll-padding zelf terug; de eigen kopie in `peil-mg.css` is weg.
+  Android-tokens opnieuw gegenereerd. Volledige Peil-matrix (axe, contrast, focus, 44 px) groen.
+- **EVIDENCE-test volgens §11 van 1.3** (`apps/core/tests/test_evidence_contract.py`).
+- **Installatiedocs:** *Install via YAML* en losse containers staan expliciet als ontwikkeling/CI, geen
+  installatiemethode.
+
 QA na de Peil-ronde (onafhankelijke controle van stap 1–5; geen nieuwe functies, geen versie-ophoging). Besluiten:
 ADR-0020.
 - **Hub-adres alleen voor een beheerder:** `system.hub_url` (link "Terug naar de Hub") kon door elke operator en de

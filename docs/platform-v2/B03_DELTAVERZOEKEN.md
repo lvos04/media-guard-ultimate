@@ -32,6 +32,15 @@ reden). Dit geldt voor **elke** release, ook de **eerste release uit de nieuwe p
 4. **Terugzetten:** vorige image plus de database van vóór de migratie geeft de oude stand terug (B04-006, B04-009).
 5. **UI-rondes wijzigen geen datamodel.** Een release die toch het schema wijzigt (bijv. Δ-MG-DUAL), volgt 1–4.
 
+**Stand 2026-11-10 (contract 1.3, C1.3-MGU-03, ADR-0021): gebouwd.** `scripts/upgradebewijs.py` start de echte
+vorige release (`deploy/upgradebewijs/vorige-release.json`: 1.2.2-aio op digest) op de fixture
+`tests/fixtures/aio/core-1.2.2` (105 van 108 tabellen gevuld, ook alle voortgangsdomeinen uit punt 2; de AV1-database
+vult de poort na de eerste start), daarna de nieuwe versie; per tabel rijen + inhoud vóór/na (punt 3), readback via de
+API (inloggen, instellingen, 11 leesroutes), en terugzetten met de vorige image en de snapshot (punt 4). Uitzonderingen
+alleen met reden in `tests/fixtures/aio/upgradebewijs-uitzonderingen.json`; het rapport toont ze. Gate: `release.yml`
+job `upgradebewijs` vóór `publish`; op elke push als core-kandidaat (`ci.yml`) en in-process
+(`apps/core/tests/test_upgradebewijs.py`). Punten (a)–(c) hieronder zijn daarmee opgelost. Niet op een echte NAS.
+
 **Vertrekpunt in deze repo (gemeten 2026-11-09):** `release.yml` job `aio-smoke` start het alles-in-één-image op een
 gevulde database van een eerdere versie (`scripts/aio-smoke.py`); fixture `tests/fixtures/aio/core-1.2.1.{sql,json}`,
 gemaakt met `scripts/make-aio-fixture.py`; dezelfde controle in
