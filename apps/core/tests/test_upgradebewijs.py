@@ -296,6 +296,8 @@ def test_release_publiceert_pas_na_het_upgradebewijs() -> None:
 
 def test_ci_draait_het_upgradebewijs_op_elke_push() -> None:
     jobs = _workflow("ci.yml")["jobs"]
+    # op een push is inputs leeg: 'inputs.x != false' is dan onwaar (null == false), dus format()
+    assert "format('{0}', inputs.upgradebewijs) != 'false'" in jobs["upgradebewijs"]["if"]
     stappen = json.dumps(jobs["upgradebewijs"]["steps"])
     assert "deploy/upgradebewijs/Dockerfile.kandidaat" in stappen
     assert "scripts/upgradebewijs.py poort" in stappen

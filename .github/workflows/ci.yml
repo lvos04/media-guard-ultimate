@@ -96,7 +96,8 @@ jobs:
   # in release.yml vóór publish.
   upgradebewijs:
     name: upgradebewijs (vorige release → core van deze commit)
-    if: github.event_name != 'schedule' && inputs.upgradebewijs != false
+    # format(): op een push is inputs leeg (null), en null == false in GitHub-expressies
+    if: github.event_name != 'schedule' && format('{0}', inputs.upgradebewijs) != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
