@@ -20,6 +20,19 @@ nieuwe of gewijzigde route, OpenAPI byte-gelijk). Besluiten: ADR-0021.
 - **Installatiedocs:** *Install via YAML* en losse containers staan expliciet als ontwikkeling/CI, geen
   installatiemethode.
 
+QA-review contract 1.3 (onafhankelijke controle; geen nieuwe functies, geen migratie, OpenAPI ongewijzigd). Besluiten:
+ADR-0021 punt 6.
+- **Upgradebewijs nooit leeg groen:** een lege of halve meting vóór de upgrade gaf "niets verloren". Nu rood als
+  `core/mediaguard.db` of `encode/app.db` ontbreekt, een tabel minder rijen heeft dan de fixture of de AV1-database niet
+  gevuld is.
+- **Upgradebewijs tegen de echte vorige release:** nieuwe stap `upgradebewijs.py volgorde` (CI en `release.yml`) leest
+  tags en digest uit GHCR en weigert een `vorige-release.json` die niet de direct vorige gepubliceerde release is.
+- **"Terug naar de Hub":** web weigerde `[fe8::1]` (geen link-local); core en web nu gelijk (differentiële test op 5545
+  adressen).
+- **Encoder-tests** van de vrije-ruimtebodem hangen niet meer af van de schijf van de testmachine.
+- **Docs:** geen voorbeeldpool `tank` meer als waarde; de dev-compose heeft geen standaardpad meer (de drie paden zijn
+  verplicht); README §3.3 geeft geen *Install via YAML*-stap meer.
+
 QA na de Peil-ronde (onafhankelijke controle van stap 1–5; geen nieuwe functies, geen versie-ophoging). Besluiten:
 ADR-0020.
 - **Hub-adres alleen voor een beheerder:** `system.hub_url` (link "Terug naar de Hub") kon door elke operator en de
