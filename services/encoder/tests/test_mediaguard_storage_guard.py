@@ -22,6 +22,9 @@ from app.planner import Planner
 
 MgClient = tuple[TestClient, Database, Settings]
 HUGE_GB = 999_999
+# Vaste, ruime meting van de vrije ruimte (zie conftest.ruime_cache): de drempels worden getest,
+# niet de schijf van de testmachine.
+pytestmark = pytest.mark.usefixtures("ruime_cache")
 
 
 def _lane(database: Database, lane: str) -> Any:

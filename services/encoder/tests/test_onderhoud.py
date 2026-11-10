@@ -7,6 +7,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from app.config import Settings, settings
 from app.db import Database
 from app.onderhoud import (
@@ -87,6 +89,7 @@ def test_logrotatie_begrenst_bestand_en_database(tmp_path: Path) -> None:
     assert count is not None and count["aantal"] == 500
 
 
+@pytest.mark.usefixtures("ruime_cache")
 def test_cachegrenzen_pauzeren_en_herstellen_alleen_eigen_pauze(tmp_path: Path) -> None:
     database, configured, _job_id = _case(tmp_path)
     database.execute(

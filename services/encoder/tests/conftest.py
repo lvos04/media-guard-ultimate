@@ -102,3 +102,27 @@ def ruim_werkgeheugen(monkeypatch: pytest.MonkeyPatch) -> None:
     gib = 1024**3
     monkeypatch.setattr(planner, "effective_memory",
                         lambda *_args, **_kwargs: Memory(total=64 * gib, available=48 * gib))
+
+
+# ── Vrije ruimte van de testmachine ────────────────────────────────────────
+@pytest.fixture
+def ruime_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests van de vrije-ruimtebodem toetsen de drempels (1–2 GB tegenover 999 999 GB), niet
+    de schijf van de testmachine. Zonder deze vaste meting faalden ze zodra de tmp van de
+    machine minder dan 2 GB vrij had (gedeelde tmpfs op de ontwikkelmachine), terwijl ze op een
+    CI-runner slaagden. Een pad dat niet bestaat geeft nog steeds FileNotFoundError, zodat
+    'werkruimte weg = pauze' echt getest blijft."""
+
+    import collections
+    import errno
+    import shutil
+
+    gib = 1024**3
+    usage = collections.namedtuple("usage", "total used free")
+
+    def disk_usage(path: os.PathLike[str] | str) -> Any:
+        if not Path(path).exists():
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path))
+        return usage(1024 * gib, 524 * gib, 500 * gib)
+
+    monkeypatch.setattr(shutil, "disk_usage", disk_usage)
