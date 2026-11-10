@@ -31,6 +31,9 @@ describe("hubUrl (Terug naar de Hub, zelfde regels als apps/core/mediaguard/hub_
     ["http://[2001:DB8::5]", "http://[2001:db8::5]"],
     ["http://nas-1.example:08080", "http://nas-1.example:8080"],
     ["http://192.0.2.10:80", "http://192.0.2.10:80"],
+    // grens van fe80::/10: 0fe8:: en fec0:: zijn geen link-local (QA-review: web was strenger dan core)
+    ["http://[fe8::1]", "http://[fe8::1]"],
+    ["http://[FEC0::1]:80", "http://[fec0::1]:80"],
   ])("contract 1.3: %s → %s", (raw, expected) => {
     expect(hubUrl(raw)).toBe(expected);
   });
@@ -44,6 +47,7 @@ describe("hubUrl (Terug naar de Hub, zelfde regels als apps/core/mediaguard/hub_
     "http://\uff11\uff12\uff17.\uff10.\uff10.\uff11", "http://h\u00fcb.example", "http://[v1.x]",
     "http://[fe80::1%25eth0]:80", "http://[::ffff:7f00:1]", "http://[::ffff:127.0.0.1]", "http://[2001:db8::5]x",
     "http://hub.example:", "http://@hub.example", "http://hub.example:80@192.0.2.10", "http://192.0.2.10:65536",
+    "http://[febf::1]", "http://[FE80:0:0:0:0:0:0:1]", "http://[::ffff:169.254.0.1]", "http://[::ffff:0.0.0.0]",
   ])("contract 1.3: geen link voor %j (de browser zou er een ander adres van maken)", (raw) => {
     expect(hubUrl(raw)).toBeNull();
   });

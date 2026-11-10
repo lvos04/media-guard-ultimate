@@ -25,7 +25,8 @@ function ipv6Host(inner: string): string | null {
   let normalised: string;
   try { normalised = new URL(`http://[${inner}]`).hostname.replace(/^\[|\]$/g, ""); } catch { return null; }
   if (normalised === "::" || normalised === "::1") return null;
-  if (/^fe[89ab][0-9a-f]?:/.test(normalised)) return null; // fe80::/10
+  // fe80::/10 = first group fe80–febf; the URL parser drops leading zeros, so "fe8::" is 0fe8:: (not link-local)
+  if (/^fe[89ab][0-9a-f]:/.test(normalised)) return null;
   const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(normalised);
   if (mapped) {
     const hi = parseInt(mapped[1], 16);

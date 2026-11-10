@@ -38,6 +38,9 @@ GOOD_13 = [
     ("http://[2001:DB8::5]", "http://[2001:db8::5]"),
     ("http://nas-1.example:08080", "http://nas-1.example:8080"),
     ("http://192.0.2.10:80", "http://192.0.2.10:80"),
+    # grens van fe80::/10: 0fe8:: en fec0:: zijn geen link-local (QA-review: web was strenger)
+    ("http://[fe8::1]", "http://[fe8::1]"),
+    ("http://[FEC0::1]:80", "http://[fec0::1]:80"),
 ]
 BAD_13 = [
     "http://127.1", "http://2130706433", "http://0x7f000001", "http://0x7f.1", "http://010.0.0.1",
@@ -49,6 +52,8 @@ BAD_13 = [
     "http://[fe80::1%25eth0]:80", "http://[::ffff:7f00:1]", "http://[::ffff:127.0.0.1]",
     "http://[2001:db8::5]x", "http://192.0.2.10:65536",
     "http://hub.example:", "http://@hub.example", "http://hub.example:80@192.0.2.10",
+    "http://[febf::1]", "http://[FE80:0:0:0:0:0:0:1]", "http://[::ffff:169.254.0.1]",
+    "http://[::ffff:0.0.0.0]",
 ]
 
 
