@@ -1,4 +1,4 @@
-// Peil 1.1.0 · design/ontwerptaal/tokens.json sha256:9583506d8585ba39486f75d4c27f8e40f7878104674c27e229d10f92013a30e1
+// Peil 1.1.1 · design/ontwerptaal/tokens.json sha256:cc03fcd019b43d9ee52509c7812eff38a726de80a6cf4041b82593c52e88fb0e
 // Gegenereerd door apps/android/tools/peil_tokens.py — niet met de hand wijzigen;
 // PeilTokensTest vergelijkt elke waarde met tokens.json (docs/ontwerp/PEIL_MIGRATIE.md §10.1).
 package nl.mediaguard.app.ui.theme
@@ -249,10 +249,10 @@ data class PeilKleuren(
 data class PeilRol(val grootteSp: Float, val regelSp: Float, val gewicht: Int)
 
 object PeilTokens {
-    const val VERSIE = "1.1.0"
+    const val VERSIE = "1.1.1"
 
     /** sha256 van design/ontwerptaal/tokens.json waaruit dit bestand is gemaakt. */
-    const val TOKENS_SHA256 = "9583506d8585ba39486f75d4c27f8e40f7878104674c27e229d10f92013a30e1"
+    const val TOKENS_SHA256 = "cc03fcd019b43d9ee52509c7812eff38a726de80a6cf4041b82593c52e88fb0e"
 
     /** `maat.radius` in dp (kaart, knop, veld). */
     const val RADIUS_DP = 8f
@@ -364,11 +364,11 @@ object PeilTokens {
         domainHeat = Color(0xFFEB6834),
         domainHeatBg = Color(0xFFFDEBDD),
         domainHeatInk = Color(0xFF6E2405),
-        domainHeatSoft = Color(0xFFF4A57E),
+        domainHeatSoft = Color(0xFFFFC3A4),
         domainCool = Color(0xFF2A78D6),
         domainCoolBg = Color(0xFFE0EEFB),
         domainCoolInk = Color(0xFF0B3B73),
-        domainCoolSoft = Color(0xFF9EC5F4),
+        domainCoolSoft = Color(0xFFAAD2FF),
         domainBoiler = Color(0xFF00A672),
         domainBoilerBg = Color(0xFFE4E8EE),
         domainBoilerInk = Color(0xFF0B0F14),
@@ -484,11 +484,11 @@ object PeilTokens {
         domainHeat = Color(0xFFD95926),
         domainHeatBg = Color(0xFF3A1F10),
         domainHeatInk = Color(0xFFFFD3B5),
-        domainHeatSoft = Color(0xFF9C3D14),
+        domainHeatSoft = Color(0xFF802300),
         domainCool = Color(0xFF3987E5),
         domainCoolBg = Color(0xFF0F2740),
         domainCoolInk = Color(0xFFC2DDFA),
-        domainCoolSoft = Color(0xFF184F95),
+        domainCoolSoft = Color(0xFF064186),
         domainBoiler = Color(0xFF199E70),
         domainBoilerBg = Color(0xFF1E252E),
         domainBoilerInk = Color(0xFFF2F5F8),

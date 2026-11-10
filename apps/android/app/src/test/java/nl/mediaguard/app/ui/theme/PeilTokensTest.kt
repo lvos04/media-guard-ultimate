@@ -29,9 +29,9 @@ class PeilTokensTest {
     @Test fun shaIsDePinnedeVersie() {
         val sha = MessageDigest.getInstance("SHA-256").digest(bestand.readBytes()).joinToString("") { "%02x".format(it) }
         assertEquals(sha, PeilTokens.TOKENS_SHA256)
-        assertEquals("1.1.0", PeilTokens.VERSIE)
-        // dezelfde sha256 als design/ontwerptaal/HERKOMST.md
-        assertEquals("9583506d8585ba39486f75d4c27f8e40f7878104674c27e229d10f92013a30e1", sha)
+        assertEquals("1.1.1", PeilTokens.VERSIE)
+        // dezelfde sha256 als design/ontwerptaal/HERKOMST.json (Peil 1.1.1, bron-commit 0a7143b)
+        assertEquals("cc03fcd019b43d9ee52509c7812eff38a726de80a6cf4041b82593c52e88fb0e", sha)
     }
 
     @Test fun elkeKleurGelijkAanTokensJson() {
