@@ -1,5 +1,5 @@
 /* ==========================================================================
-   MediaGuard — eigen correcties op Peil 1.1.0
+   MediaGuard — eigen correcties op Peil 1.1.1
    Staat in globals.css NA mg.css, av1.css en de gedeelde aliaslaag styles/peil/mediaguard-mso.css, in de cascadelaag
    "legacy" (Tailwind-utilities en de shadcn/ui-componenten winnen altijd).
    Alleen uiterlijk: geen klassen, testids, rollen of teksten veranderen.
@@ -9,22 +9,11 @@
    onder "Klassen in pagina's" staat, is de Peil-vorm voor plekken die die klassen nog rechtstreeks gebruiken.
    ========================================================================== */
 
-/* (a) Peil-focusring: tweekleurig (3 px ring + 2 px halo), nooit alleen kleur. mg.css haalde bij invoervelden de
-       outline weg (box-shadow 3 px); Peils eigen regel staat in @layer base en verliest van legacy. */
-:focus-visible,
-.input:focus-visible, .select:focus-visible, .textarea:focus-visible {
-  outline: var(--focus-width) solid var(--ring);
-  outline-offset: var(--focus-offset);
-  box-shadow: 0 0 0 var(--focus-offset) var(--ring-halo);
-}
+/* (a) Peil-focusring en (b) scroll-padding (WCAG 2.4.11): sinds Peil 1.1.1 zet de gedeelde aliaslaag
+       styles/peil/mediaguard-mso.css ze zelf terug na mg.css (E14), ook op .input/.select/.textarea en op datum- en
+       tijdvelden (:focus-within). De eigen kopie van 1.1.0 is hier daarom weg (ONTWERPTAAL §13.3). Alleen de randkleur
+       van een invoerveld met focus blijft een MediaGuard-correctie. */
 .input:focus, .select:focus, .textarea:focus { border-color: var(--ring); }
-
-/* (b) Focus nooit achter de vaste kopbalk of ondernavigatie (WCAG 2.4.11). Schil: zijbalk ≥ 1024 px (lg), daaronder
-       ondernavigatie. */
-html { scroll-padding-top: calc(var(--header-h) + 0.75rem); scroll-padding-bottom: 0.75rem; }
-@media (max-width: 63.99rem) {
-  html { scroll-padding-bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + 0.75rem); }
-}
 
 /* Schermbreedte-hulpklassen (was 860 px; Peil wisselt op lg = 1024 px). */
 @media (max-width: 63.99rem) { .desktop-only { display: none !important; } }

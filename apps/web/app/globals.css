@@ -1,4 +1,4 @@
-/* Peil 1.1.0 (docs/ontwerp/PEIL_MIGRATIE.md §8). Volgorde is bindend.
+/* Peil 1.1.1 (docs/ontwerp/PEIL_MIGRATIE.md §8). Volgorde is bindend.
    De bestaande MediaGuard-stijl staat in de cascadelaag "legacy" (tussen Tailwinds base en utilities): Peil-tokens →
    mg.css + av1.css → gedeelde aliaslaag → MediaGuard-correcties (peil-mg.css). Zo winnen Tailwind-utilities en de
    shadcn/ui-componenten (fase 2) altijd van mg.css, en mg.css nog steeds van de Tailwind-preflight. */
