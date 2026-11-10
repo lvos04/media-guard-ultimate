@@ -1,0 +1,73 @@
+{
+  "soort": "peil",
+  "versie": "1.1.1",
+  "bron_repo": "lvos04/ai-server-manager",
+  "bron_commit": "0a7143bc0a94ed5317a9655fa785e73a1fb07ba1",
+  "bron_ref": "ccr-c133d7a0-kuz1cv",
+  "bestanden": {
+    "design/ontwerptaal/ontwerptaal.css": {
+      "bron_pad": "design/ontwerptaal/ontwerptaal.css",
+      "kop": 2,
+      "strikt": true,
+      "gebruik": "web (via de kopie in apps/web/styles/peil)",
+      "sha256": "a69a46d2ccd2eb499511734529d551946844ea00a9d9996fe2acd6bf76cdf0c8"
+    },
+    "design/ontwerptaal/aliaslagen/mediaguard-mso.css": {
+      "bron_pad": "design/ontwerptaal/aliaslagen/mediaguard-mso.css",
+      "kop": 2,
+      "strikt": true,
+      "gebruik": "web (via de kopie in apps/web/styles/peil), laag legacy",
+      "sha256": "f042894fb1bab031eae6c4ac4053af5324b6f3eece0890176292e397f760637c"
+    },
+    "design/ontwerptaal/tokens.json": {
+      "bron_pad": "design/ontwerptaal/tokens.json",
+      "kop": 0,
+      "strikt": true,
+      "gebruik": "Android: bron van PeilTokens.kt (apps/android/tools/peil_tokens.py)",
+      "sha256": "cc03fcd019b43d9ee52509c7812eff38a726de80a6cf4041b82593c52e88fb0e"
+    },
+    "design/ontwerptaal/components.json": {
+      "bron_pad": "design/ontwerptaal/components.json",
+      "kop": 0,
+      "strikt": true,
+      "gebruik": "web: basis voor apps/web/components.json",
+      "sha256": "831fdce06c6c25c7f67d23b737f27184bca9e4a0ff5c0a60175a6a58edbe4c7e"
+    },
+    "design/ontwerptaal/ONTWERPTAAL.md": {
+      "bron_pad": "docs/platform-v2/ONTWERPTAAL.md",
+      "kop": 2,
+      "strikt": false,
+      "gebruik": "regels (bindend; MediaGuard §13.3)",
+      "sha256": "79130d3e7e3002a3205b4a02c565d45cc61ba68a2bea9bf4a6b385e3ab8163db"
+    },
+    "design/ontwerptaal/COMPONENTEN.md": {
+      "bron_pad": "design/ontwerptaal/COMPONENTEN.md",
+      "kop": 2,
+      "strikt": false,
+      "gebruik": "componentspecificaties",
+      "sha256": "9172bf053cedc4821e08ae14e13dc04ddf64ffd253e6fb9b62f2239fdd3cd17c"
+    },
+    "design/ontwerptaal/ADR-ONTWERPTAAL.md": {
+      "bron_pad": "docs/adr/ADR-0015-ontwerptaal-peil.md",
+      "kop": 2,
+      "strikt": false,
+      "gebruik": "besluit en alternatieven",
+      "sha256": "af350a471658a22669b18058b21314d731226a23245f8af4874534f6e2808ac8"
+    },
+    "apps/web/styles/peil/ontwerptaal.css": {
+      "bron_pad": "design/ontwerptaal/ontwerptaal.css",
+      "kop": 2,
+      "strikt": true,
+      "gebruik": "web: globals.css (Docker-context apps/web)",
+      "sha256": "a69a46d2ccd2eb499511734529d551946844ea00a9d9996fe2acd6bf76cdf0c8"
+    },
+    "apps/web/styles/peil/mediaguard-mso.css": {
+      "bron_pad": "design/ontwerptaal/aliaslagen/mediaguard-mso.css",
+      "kop": 2,
+      "strikt": true,
+      "gebruik": "web: globals.css, laag legacy (Docker-context apps/web)",
+      "sha256": "f042894fb1bab031eae6c4ac4053af5324b6f3eece0890176292e397f760637c"
+    }
+  },
+  "toelichting": "Versie-gepinde kopieën van de ontwerptaal Peil (ONTWERPTAAL §14, pin- en driftregel E08). kop = aantal regels herkomstkop; sha256 = bronbestand zonder kop. strikt = E08 (zelfde versie met andere inhoud in de bron is een fout); niet strikt (documentatie) = waarschuwing. Bijwerken: python3 scripts/kopie-herkomst.py bijwerken --set peil --bron <checkout> --commit <40 hex>; daarna peil_tokens.py, de web-tests (axe/contrast) en de Android-tests."
+}

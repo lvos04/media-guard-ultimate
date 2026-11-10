@@ -1,47 +1,50 @@
 # Herkomst van `design/ontwerptaal/` (O-14)
 
-Versie-gepinde kopie van de ontwerptaal **Peil 1.1.0** (9 november 2026, design-agent; goedgekeurd na de onafhankelijke
-ontwerpreview 1.0.0 → 1.1.0). De bron van waarheid wordt na de overdracht
-`ai-server-manager/docs/platform-v2/ONTWERPTAAL.md` + `ai-server-manager/design/ontwerptaal/` (contract §13). Zolang die
-commit er niet is, staat de bron in de map `definitief/` van de ontwerptaal (buiten de repos).
+Versie-gepinde kopie van de ontwerptaal **Peil 1.1.1** (10 november 2026). Bron van waarheid (contract 1.3 §13):
+`lvos04/ai-server-manager` → `docs/platform-v2/ONTWERPTAAL.md` + `design/ontwerptaal/` + `docs/adr/ADR-0015-ontwerptaal-peil.md`,
+gepind op **commit `0a7143bc0a94ed5317a9655fa785e73a1fb07ba1`** (branch `ccr-c133d7a0-kuz1cv`).
 
-**Status in MediaGuard:** sinds stap 3 (fase 1a) gebruikt de web-UI `ontwerptaal.css` en
-`aliaslagen/mediaguard-mso.css`. Omdat de Docker-context van het web-image `apps/web` is, staat daar een tweede,
-byte-gelijke kopie: `apps/web/styles/peil/ontwerptaal.css` en `apps/web/styles/peil/mediaguard-mso.css` (eigen
-herkomstkop van 2 regels, zelfde sha256). `npm run check:peil` (ook in CI, job `web`) controleert dat die kopieën hun
-sha256 halen en gelijk zijn aan deze map. Sinds stap 4 genereert de Android-app zijn kleuren en typografie uit
-`tokens.json` (`apps/android/tools/peil_tokens.py` → `PeilTokens.kt`, met de sha256 in de kop); `PeilTokensTest` en de
-CI-stap `peil_tokens.py --check` (workflow `android`) vergelijken ze met dit bestand (ADR-0018). Hoe de omzetting
-ging, staat in [`docs/ontwerp/PEIL_MIGRATIE.md`](../../docs/ontwerp/PEIL_MIGRATIE.md) en
-[ADR-0017](../../docs/adr/ADR-0017-peil-web-bouwkeuzes.md); "voor" en "na" staan in
-[`docs/screenshots/peil/`](../../docs/screenshots/peil/).
+De machineleesbare pin staat in [`HERKOMST.json`](HERKOMST.json): versie, bronrepo, bron-commit en per kopie het bronpad,
+de sha256 van het bronbestand, het aantal regels herkomstkop en of de pin- en driftregel E08 streng geldt.
 
-| Bestand | Gebruik in MediaGuard | sha256 van het bronbestand |
-|---|---|---|
-| `aliaslagen/mediaguard-mso.css` | web: na `styles/mg.css` en `styles/av1.css` geïmporteerd in de laag `legacy` (gedeeld met MSO) | `b120cf9a41357dc3cc4981db24c08ae6f557a33faa4f62512ba8f45a27124a4c` |
-| `ontwerptaal.css` | web: vóór `mg.css`; Tailwind 4 `@theme` + shadcn-variabelen | `b384b3d074c7c892d8e5a8320b1bdcd3d8612d98b3a05daa9a9e6d12560d020e` |
-| `tokens.json` | Android: bron van `PeilTokens.kt` (kleuren, typografie, radius; gegenereerd en getest); web: controles | `9583506d8585ba39486f75d4c27f8e40f7878104674c27e229d10f92013a30e1` |
-| `components.json` | web: basis voor `apps/web/components.json` (shadcn-CLI, `css: "app/globals.css"`) | `831fdce06c6c25c7f67d23b737f27184bca9e4a0ff5c0a60175a6a58edbe4c7e` |
-| `ONTWERPTAAL.md` | regels (bindend; MediaGuard: §13.3) | `a957370b1eceac49ab9f47204c252a67d15967ebae240eb33440b8963898d33b` |
-| `COMPONENTEN.md` | componentspecificaties (handoff) | `d0b0999d8f07537fcc4447d30ab5a3d45632d559487736082beae8a3c28b0154` |
-| `ADR-ONTWERPTAAL.md` | het besluit en de alternatieven | `df302eb5a727b5649dafec1c0c0d469cf5bfc39fd32b3834c415aaa805db05ac` |
+**Status in MediaGuard:** de web-UI gebruikt `ontwerptaal.css` en `aliaslagen/mediaguard-mso.css` via de byte-gelijke
+kopie in de Docker-context (`apps/web/styles/peil/`, zelfde inhoud en kop met dezelfde commit en sha256). De Android-app
+genereert zijn kleuren en typografie uit `tokens.json` (`apps/android/tools/peil_tokens.py` → `PeilTokens.kt`, met de
+sha256 in de kop; `PeilTokensTest` en de CI-stap `peil_tokens.py --check` controleren ze, ADR-0018). Sinds 1.1.1 zet de
+gedeelde aliaslaag zelf Peils focusring en scroll-padding terug na `mg.css` (E14); de eigen kopie daarvan in
+`apps/web/styles/peil-mg.css` is weg (ONTWERPTAAL §13.3). Overstap van 1.1.0 naar 1.1.1: ADR-0021.
 
-- `.css`- en `.md`-bestanden hebben bovenaan een **herkomstkop van 2 regels**. De rest is byte-gelijk aan de bron.
-  `tokens.json` en `components.json` kunnen geen kop dragen en zijn helemaal byte-gelijk.
-- Zelfde indeling, koppen en sha256 als de kopieën in `media-source-optimizer` en `my_house` (zelfde bronbestanden).
-  `ontwerptaal.css` en `aliaslagen/mediaguard-mso.css` zijn na de kop gelijk aan die in MSO; MSO gebruikt ze al.
-- Niet gekopieerd (te groot of niet nodig in deze repo): `prototypes/`, `shots/`, `bouw/`, `controle/`, `contrast.json`,
-  `statuspagina.*` (MediaGuard heeft geen platform-statuspagina) en de aliaslagen van my_house en de Hub. De besluiten van
-  de gebruiker (`BESLUITEN_GEBRUIKER.md`, 9 november 2026) staan samengevat in `docs/ontwerp/PEIL_MIGRATIE.md` §1.
+| Kopie | Bron (`ai-server-manager@0a7143b`) | Gebruik in MediaGuard | Kop | E08 streng |
+|---|---|---|---|---|
+| `ontwerptaal.css` | `design/ontwerptaal/ontwerptaal.css` | web, via `apps/web/styles/peil/ontwerptaal.css` | 2 regels | ja |
+| `aliaslagen/mediaguard-mso.css` | `design/ontwerptaal/aliaslagen/mediaguard-mso.css` | web, via `apps/web/styles/peil/mediaguard-mso.css` (laag `legacy`, na `mg.css`) | 2 regels | ja |
+| `tokens.json` | `design/ontwerptaal/tokens.json` | Android (`PeilTokens.kt`) | geen (byte-gelijk) | ja |
+| `components.json` | `design/ontwerptaal/components.json` | web: basis voor `apps/web/components.json` | geen (byte-gelijk) | ja |
+| `ONTWERPTAAL.md` | `docs/platform-v2/ONTWERPTAAL.md` | regels (bindend; MediaGuard §13.3) | 2 regels | nee (documentatie) |
+| `COMPONENTEN.md` | `design/ontwerptaal/COMPONENTEN.md` | componentspecificaties | 2 regels | nee (documentatie) |
+| `ADR-ONTWERPTAAL.md` | `docs/adr/ADR-0015-ontwerptaal-peil.md` | besluit en alternatieven | 2 regels | nee (documentatie) |
 
-## Controleren
+- Een kop van **2 regels** noemt `Peil 1.1.1`, `lvos04/ai-server-manager@<commit> <bronpad>` en de sha256 van het
+  bronbestand; de rest is byte-gelijk aan de bron op die commit. Relatieve links in de `.md`-kopieën wijzen naar de
+  bronrepo en werken hier niet.
+- **Pin- en driftregel (ONTWERPTAAL §14, E08):** fout bij (1) een afwijking van de gepinde inhoud en (2) bij een strenge
+  kopie: dezelfde Peil-versie met andere inhoud in de bron. Een nieuwere bronversie is alleen een waarschuwing: bijwerken
+  is een bewuste stap. Bij de documentatie geeft elke latere bronwijziging alleen een waarschuwing (ADR-0021).
+- Niet gekopieerd (niet nodig in deze repo): `prototypes/`, `shots/`, `bouw/`, `controle/`, `contrast.json`,
+  `statuspagina.*` (MediaGuard heeft geen platform-statuspagina) en de aliaslagen van my_house en de Hub.
+
+## Controleren en bijwerken
 
 ```sh
-cd design/ontwerptaal
-for f in aliaslagen/mediaguard-mso.css ontwerptaal.css ONTWERPTAAL.md COMPONENTEN.md ADR-ONTWERPTAAL.md; do
-  echo "$(tail -n +3 "$f" | sha256sum | cut -d' ' -f1)  $f"; done
-sha256sum tokens.json components.json
+python3 scripts/kopie-herkomst.py controleer                       # offline: koppen, sha256 en HERKOMST.json
+python3 scripts/kopie-herkomst.py vergelijk --online               # tegen GitHub: gepinde commit + werkbranch
+python3 scripts/kopie-herkomst.py vergelijk --bron ../ai-server-manager
+(cd apps/web && npm run check:peil)                                # kopie in de Docker-context
+python3 apps/android/tools/peil_tokens.py --check                  # Android-tokens
 ```
 
-De uitkomst moet gelijk zijn aan de tabel. Een CI-stap die dit vergelijkt met de versie in `ai-server-manager` komt
-pas als die bron gecommit is (ONTWERPTAAL §14). Tot dan is dit een handmatige controle.
+Bijwerken naar een nieuwe Peil-versie: `python3 scripts/kopie-herkomst.py bijwerken --set peil --bron <checkout> --commit
+<40 hex> --ref <branch>`, daarna `python3 apps/android/tools/peil_tokens.py`, de pin in `PeilTokensTest`,
+`check-peil.mjs` (`PEIL_VERSION`) en `apps/core/tests/test_kopie_herkomst.py`, en opnieuw de web-tests (axe, contrast,
+Peil-matrix) en de Android-tests. De CI-job `kopieen` (`.github/workflows/ci.yml`) draait `controleer` en
+`vergelijk --online`; `apps/core/tests/test_kopie_herkomst.py` draait in de core-job.
