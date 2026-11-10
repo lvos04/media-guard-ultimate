@@ -28,6 +28,53 @@ BAD = [
 ]
 
 
+# Contract 1.3 §3.2 (adresregels, A11; C1.3-MGU-08): alleen canonieke IP-vormen, IPv6 tussen [],
+# één punt aan het eind van een naam telt niet mee, geen %-codering of IDN (de browser zou er een
+# ander adres van maken: http://127%2e0%2e0%2e1 en http://0x7f.1 worden 127.0.0.1).
+GOOD_13 = [
+    ("http://hub.example.:30443", "http://hub.example:30443"),
+    ("http://192.0.2.10.", "http://192.0.2.10"),
+    ("https://xn--hb-via.example", "https://xn--hb-via.example"),
+    ("http://[2001:DB8::5]", "http://[2001:db8::5]"),
+    ("http://nas-1.example:08080", "http://nas-1.example:8080"),
+    ("http://192.0.2.10:80", "http://192.0.2.10:80"),
+]
+BAD_13 = [
+    "http://127.1", "http://2130706433", "http://0x7f000001", "http://0x7f.1", "http://010.0.0.1",
+    "http://0", "http://192.0.2.010", "http://256.1.2.3", "http://1.2.3.4.5", "http://foo.123",
+    "http://localhost.", "http://localhost..", "http://127.0.0.1.", "http://0.1.2.3",
+    "http://127%2e0%2e0%2e1", "http://hub%2eexample", "http://hub..example", "http://.hub.example",
+    "http://-hub.example", "http://hub_x.example", "http://\u24dbocalhost",
+    "http://\uff11\uff12\uff17.\uff10.\uff10.\uff11", "http://h\u00fcb.example", "http://[v1.x]",
+    "http://[fe80::1%25eth0]:80", "http://[::ffff:7f00:1]", "http://[::ffff:127.0.0.1]",
+    "http://[2001:db8::5]x", "http://192.0.2.10:65536",
+    "http://hub.example:", "http://@hub.example", "http://hub.example:80@192.0.2.10",
+]
+
+
+@pytest.mark.parametrize(("raw", "expected"), GOOD_13)
+def test_contract_13_canonical_forms_are_accepted(raw: str, expected: str) -> None:
+    assert validate_hub_url(raw) == expected
+
+
+@pytest.mark.parametrize("raw", BAD_13)
+def test_contract_13_non_canonical_or_rewritable_hosts_are_refused(raw: str) -> None:
+    with pytest.raises(ValueError, match="Hub-adres"):
+        validate_hub_url(raw)
+
+
+def test_contract_13_bad_value_via_api_gives_422_and_keeps_old_value(client) -> None:
+    ok = client.patch("/api/v1/settings/scoped", json={"changes": [
+        {"scope_type": "global", "key": "system.hub_url", "value": "http://192.0.2.10:30443"}]})
+    assert ok.status_code == 200
+    for raw in ("http://127.1:8080", "http://0x7f000001", "http://127%2e0%2e0%2e1"):
+        bad = client.patch("/api/v1/settings/scoped", json={"changes": [
+            {"scope_type": "global", "key": "system.hub_url", "value": raw}]})
+        assert bad.status_code == 422, raw
+    eff = client.get("/api/v1/settings/effective?keys=system.hub_url").json()[0]
+    assert eff["value"] == "http://192.0.2.10:30443"
+
+
 @pytest.mark.parametrize(("raw", "expected"), GOOD)
 def test_valid_addresses_are_normalised(raw: str, expected: str) -> None:
     assert validate_hub_url(raw) == expected
