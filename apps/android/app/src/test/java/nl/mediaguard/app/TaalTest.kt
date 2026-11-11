@@ -177,6 +177,12 @@ class TaalTest {
         val venster = DailySummary(window = "24h", label = "Laatste 24 uur")
         assertEquals("Laatste 24 uur", recentTitle(venster))
         assertEquals("Last 24 hours", engels { recentTitle(venster) })
+        // een serverlabel dat afwijkt van de vaste tekst van de app: in het Nederlands staat precies dat label, in het
+        // Engels toch de eigen titel (anders kan de Nederlandse helft van deze test niet falen, V-003)
+        val eigenLabel = DailySummary(window = "24h", label = "Laatste 24 uur (server)")
+        assertEquals("Laatste 24 uur (server)", recentTitle(eigenLabel))
+        assertEquals("Last 24 hours", engels { recentTitle(eigenLabel) })
+        assertEquals("Laatste 24 uur", recentTitle(DailySummary(window = "24h")))
         assertEquals("Last 24 hours", engels { recentTitle(DailySummary(window = "24h")) })
         assertEquals("Last 24 hours", engels { recentTitle(null) })
         assertEquals("Yesterday", engels { recentTitle(DailySummary(date = "2026-11-07")) })
