@@ -16,12 +16,18 @@ from cryptography.fernet import Fernet, InvalidToken
 from mediaguard.db import Database, utcnow
 
 _PREFIXED = [
+    # Jellyfin 12.x (Δ-MG-AUTH): ``Authorization: MediaBrowser …, Token="…"``, ook JSON-geëscapet;
+    # vóór de algemene ``token=``-regel, die bij een aanhalingsteken stopt
+    re.compile(r"(?i)(\btoken=\\?\")([^\"\\]+)"),
     # key=waarde in querystrings/URL's
     re.compile(r"(?i)((?:api[_-]?key|apikey|token|password|passkey|secret)=)([^&\s\"']+)"),
     # "apiKey": "waarde" in JSON
     re.compile(r"(?i)(\"(?:api[_-]?key|apikey|token|password|passkey|secret)\"\s*:\s*\")([^\"]+)"),
     re.compile(r"(?i)(x-api-key:\s*)(\S+)"),
     re.compile(r"(?i)(authorization:\s*bearer\s+)(\S+)"),
+    # mediaservers (Δ-MG-AUTH): Emby ``X-Emby-Token: …`` en Jellyfin 12.x
+    # ``Authorization: MediaBrowser …, Token="…"``
+    re.compile(r"(?i)(x-emby-token[\"']?\s*[:=]\s*[\"']?)([^\s\"',}]+)"),
 ]
 _BARE = [re.compile(r"sk-(?:ant-|proj-)?[A-Za-z0-9_\-]{12,}"),
          # MediaGuard API-sleutels (mgk_ + token_urlsafe)

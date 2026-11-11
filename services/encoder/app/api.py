@@ -41,6 +41,7 @@ from app.db import Database
 from app.geheimen import SecretError, SecretStore
 from app.health import cached_dependency_report
 from app.hostlimits import effective_memory
+from app.integraties import mediaserver_headers, mediaserver_product
 from app.jobstatus import (
     ACTIVE_STATUSES,
     DONE_SQL,
@@ -3189,10 +3190,20 @@ def create_api_router() -> APIRouter:
             raise HTTPException(422, f"{kind} URL en API-sleutel zijn niet ingesteld")
         if not url.startswith(("http://", "https://")):
             raise HTTPException(422, "Integratie-URL moet met http:// of https:// beginnen")
-        headers = {"X-Emby-Token": api_key} if kind == "jellyfin" else {"X-Api-Key": api_key}
         try:
             async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
-                response = await client.get(url.rstrip("/") + paths[kind], headers=headers)
+                if kind == "jellyfin":
+                    # Δ-MG-AUTH: Emby X-Emby-Token, Jellyfin 12.x Authorization: MediaBrowser;
+                    # de openbare info-route zegt welke het is, daarna een route mét sleutel
+                    product = await mediaserver_product(client, url)
+                    try:
+                        headers = mediaserver_headers(product, api_key)
+                    except ValueError as exc:
+                        raise HTTPException(422, str(exc)) from exc
+                    path = "/System/Info"
+                else:
+                    headers, path = {"X-Api-Key": api_key}, paths[kind]
+                response = await client.get(url.rstrip("/") + path, headers=headers)
         except httpx.HTTPError as exc:
             raise HTTPException(502, f"Verbinding mislukt: {exc}") from exc
         if response.status_code >= 400:

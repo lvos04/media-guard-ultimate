@@ -3,12 +3,18 @@
 Emby en Jellyfin delen dezelfde API (Jellyfin is van Emby afgeleid); Emby zet er ``/emby``
 voor. Eén client met een prefix dekt dus beide.
 
+Authenticatie **per server** (Δ-MG-AUTH, besluit BG-01, contract 1.3 §2.3 regel 2): Emby houdt
+``X-Emby-Token``; Jellyfin (Jelly Leon 12.x en stock-Jellyfin 12.x, waar
+``EnableLegacyAuthorization`` uit staat) krijgt alleen ``Authorization: MediaBrowser …
+Token="…"``. De sleutel staat nooit in een URL (geen ``api_key=``) en nooit in een log.
+
 Alle clients gebruiken ``ctx.services["mediaserver_transport"]`` als die er is (tests geven
 daar een ``httpx.MockTransport``). Fouten worden ``MediaServerError`` met een Nederlandse tekst.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -20,7 +26,43 @@ TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 
 class MediaServerError(RuntimeError):
-    pass
+    """Fout van een mediaserver, met Nederlandse tekst; ``status`` is de HTTP-status (0 = geen
+    antwoord of geen HTTP-fout)."""
+
+    def __init__(self, message: str, status: int = 0) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+#: tekens die in een sleutel nooit voorkomen en de kop ``Authorization: MediaBrowser …`` zouden
+#: breken (aanhalingsteken, komma, backslash, spaties en stuurtekens)
+_KEY_OK = re.compile(r"[\x21-\x7e]+")
+_KEY_BAD = set('"\\,')
+
+
+def valid_key(key: str) -> bool:
+    """Een API-sleutel van Emby/Jellyfin/Plex: zichtbare ASCII zonder ``"``, ``,`` of ``\\``."""
+    return bool(_KEY_OK.fullmatch(key)) and not (_KEY_BAD & set(key)) and len(key) <= 300
+
+
+def auth_headers(kind: str, key: str) -> dict[str, str]:
+    """Aanmeldkop per soort server (Δ-MG-AUTH).
+
+    - ``emby``: ``X-Emby-Token`` (ongewijzigd sinds 1.2.2; de Emby-koppeling onderbreekt nooit);
+    - ``jellyfin``: ``Authorization: MediaBrowser Client=…, Device=…, DeviceId=…, Version=…,
+      Token="…"``. Jellyfin 12.x weigert ``X-Emby-Token``, ``api_key=`` en
+      ``X-Emby-Authorization`` zodra ``EnableLegacyAuthorization`` uit staat (12.x-standaard);
+      deze kop werkt ook op 10.x.
+    """
+    if not key:
+        return {}
+    if not valid_key(key):
+        raise MediaServerError("ongeldige API-sleutel (onverwachte tekens)")
+    if kind == "jellyfin":
+        return {"Authorization": (
+            'MediaBrowser Client="MediaGuard", Device="MediaGuard", '
+            f'DeviceId="mediaguard-core", Version="{__version__}", Token="{key}"')}
+    return {"X-Emby-Token": key}
 
 
 def _transport(services: dict[str, Any]) -> httpx.AsyncBaseTransport | None:
@@ -37,9 +79,12 @@ async def _call(services: dict[str, Any], method: str, url: str, *,
     except httpx.HTTPError as exc:
         raise MediaServerError(f"niet bereikbaar ({type(exc).__name__})") from exc
     if resp.status_code in (401, 403):
-        raise MediaServerError("sleutel geweigerd (controleer de API-sleutel)")
+        raise MediaServerError("sleutel geweigerd (controleer de API-sleutel)", resp.status_code)
+    if resp.status_code == 503:
+        # Jellyfin 12.x antwoordt zo op elke route zolang hij opstart of migreert (gemeten)
+        raise MediaServerError("start nog op of is even niet beschikbaar (fout 503)", 503)
     if resp.status_code >= 400:
-        raise MediaServerError(f"fout {resp.status_code}: {resp.text[:200]}")
+        raise MediaServerError(f"fout {resp.status_code}: {resp.text[:200]}", resp.status_code)
     if raw:
         return resp.content
     if not resp.content:
@@ -89,37 +134,52 @@ class EmbyClient:
     """Emby (``kind='emby'``, paden onder ``/emby``) of Jellyfin (``kind='jellyfin'``)."""
 
     def __init__(self, services: dict[str, Any], url: str, api_key: str | None,
-                 kind: str = "emby") -> None:
+                 kind: str = "emby", label: str | None = None) -> None:
         self.services, self.key, self.kind = services, api_key or "", kind
         self.base = url.rstrip("/")
         if self.base.endswith("/emby"):
             self.base = self.base[:-5]
         self.url = self.base + ("/emby" if kind == "emby" else "")
+        self._label = label
 
     @property
     def label(self) -> str:
-        return "Emby" if self.kind == "emby" else "Jellyfin"
+        return self._label or ("Emby" if self.kind == "emby" else "Jellyfin")
 
     @property
     def headers(self) -> dict[str, str]:
-        h = {"Accept": "application/json"}
-        if self.key:
-            h["X-Emby-Token"] = self.key
-        return h
+        return {"Accept": "application/json", **auth_headers(self.kind, self.key)}
 
     async def _get(self, path: str, **params: Any) -> Any:
         return await _call(self.services, "GET", self.url + path, headers=self.headers,
                            params=params or None)
 
+    async def _public_info(self) -> Any:
+        """Openbare info, zonder sleutel. Jellyfin 12.x kent het voorvoegsel ``/emby`` niet meer
+        (404, gemeten op 12.4); dan nog één keer zonder, zodat zoeken en "automatisch" ook een
+        Jellyfin-server vinden en de test kan zeggen wat er op het adres draait."""
+        accept = {"Accept": "application/json"}
+        try:
+            return await _call(self.services, "GET", self.url + "/System/Info/Public",
+                               headers=accept, timeout=5.0)
+        except MediaServerError as exc:
+            if exc.status != 404 or self.url == self.base:
+                raise
+        return await _call(self.services, "GET", self.base + "/System/Info/Public",
+                           headers=accept, timeout=5.0)
+
     async def info(self) -> dict[str, Any]:
-        data = await _call(self.services, "GET", self.url + "/System/Info/Public",
-                           headers={"Accept": "application/json"}, timeout=5.0)
-        if not isinstance(data, dict) or not (data.get("Id") or data.get("ServerName")):
+        data = await self._public_info()
+        # hoofdletterongevoelig: Jellyfin 12.x antwoordt tijdens het opstarten in camelCase
+        low = {str(k).lower(): v for k, v in data.items()} if isinstance(data, dict) else {}
+        if not (low.get("id") or low.get("servername")):
             raise MediaServerError(f"geen {self.label}-server op dit adres")
-        product = str(data.get("ProductName") or "")
-        detected = "jellyfin" if "jellyfin" in product.lower() else "emby"
-        return {"name": data.get("ServerName"), "version": data.get("Version"),
-                "id": data.get("Id"), "kind": detected}
+        # Alleen wie zich als Jellyfin meldt, is Jellyfin. Emby 4.10.2.0 geeft hier geen
+        # ``ProductName`` (gemeten): zonder die naam blijft het Emby, zoals in 1.2.2.
+        detected = "jellyfin" if "jellyfin" in str(low.get("productname") or "").lower() \
+            else "emby"
+        return {"name": low.get("servername"), "version": low.get("version"),
+                "id": low.get("id"), "kind": detected}
 
     async def check_key(self) -> None:
         await self._get("/System/Info")
@@ -197,6 +257,23 @@ class EmbyClient:
         return judge_playback(info, item_id, self.label)
 
 
+#: taalcodes waaraan Emby/Jellyfin een Nederlandse ondertitel herkennen (ISO 639-1/-2 en namen)
+NL_LANGUAGES = {"nl", "nld", "dut", "dutch", "nederlands", "flemish", "vlaams"}
+
+
+def nl_subtitle_visible(streams: list[dict[str, Any]]) -> bool:
+    """Ziet de server een Nederlandse ondertitel (ingebed of extern ``.nl.srt``)?"""
+    for st in streams:
+        if st.get("Type") != "Subtitle":
+            continue
+        lang = str(st.get("Language") or "").strip().lower()
+        title = str(st.get("DisplayTitle") or st.get("Title") or "").lower()
+        if lang in NL_LANGUAGES or lang.split("-")[0] in NL_LANGUAGES or any(
+                w in title for w in ("dutch", "nederlands")):
+            return True
+    return False
+
+
 def judge_playback(info: dict[str, Any], item_id: str | None = None,
                    label: str = "Emby") -> PlaybackResult:
     if not isinstance(info, dict):
@@ -211,7 +288,7 @@ def judge_playback(info: dict[str, Any], item_id: str | None = None,
     streams = src.get("MediaStreams") or []
     video: dict[str, Any] = next((s for s in streams if s.get("Type") == "Video"), {})
     extra = {"codec": video.get("Codec"), "range": video.get("VideoRangeType")
-             or video.get("VideoRange")}
+             or video.get("VideoRange"), "nl_subtitles": nl_subtitle_visible(streams)}
     if src.get("SupportsDirectPlay") or src.get("SupportsDirectStream"):
         return PlaybackResult("ok", "Speelt direct af op een gangbare tv", item_id, extra)
     if src.get("SupportsTranscoding") and src.get("TranscodingUrl"):
@@ -225,10 +302,10 @@ def judge_playback(info: dict[str, Any], item_id: str | None = None,
 class PlexClient:
     kind = "plex"
 
-    label = "Plex"
-
-    def __init__(self, services: dict[str, Any], url: str, api_key: str | None) -> None:
+    def __init__(self, services: dict[str, Any], url: str, api_key: str | None,
+                 label: str | None = None) -> None:
         self.services, self.url, self.key = services, url.rstrip("/"), api_key or ""
+        self.label = label or "Plex"
 
     @property
     def headers(self) -> dict[str, str]:
@@ -293,10 +370,11 @@ class PlexClient:
 Server = EmbyClient | PlexClient
 
 
-def make_server(kind: str, services: dict[str, Any], url: str, key: str | None) -> Server:
+def make_server(kind: str, services: dict[str, Any], url: str, key: str | None,
+                label: str | None = None) -> Server:
     if kind == "plex":
-        return PlexClient(services, url, key)
-    return EmbyClient(services, url, key, "jellyfin" if kind == "jellyfin" else "emby")
+        return PlexClient(services, url, key, label)
+    return EmbyClient(services, url, key, "jellyfin" if kind == "jellyfin" else "emby", label)
 
 
 # -- Bazarr ---------------------------------------------------------------------------------

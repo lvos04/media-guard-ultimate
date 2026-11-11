@@ -104,6 +104,13 @@ def _commit_txn(ctx, path: str = MOVIE, kind: str = "replace", job: int | None =
         (kind, path, path, "/work/x", "{}", "committed", job, utcnow(), utcnow()))
 
 
+def _due(ctx, txn: int) -> None:  # type: ignore[no-untyped-def]
+    """Tijd laten verstrijken: de afspeeltest is nu aan de beurt (overdracht en elke server)."""
+    for table in ("mediaserver_pending", "mediaserver_server_results"):
+        ctx.db.execute(f"UPDATE {table} SET test_after=? WHERE transaction_id=? AND "
+                       "test_after IS NOT NULL", ("2000-01-01T00:00:00+00:00", txn))
+
+
 def test_paths_map_on_tail_and_both_ways() -> None:
     m = P.build_map([MG_ROOT, "/data/Media/TV"], [EMBY_ROOT, "/mnt/tank/Media/TV", "/x/Muziek"])
     assert (MG_ROOT, EMBY_ROOT) in m and len(m) == 2
@@ -142,8 +149,7 @@ def test_refresh_after_handoff_then_playback_test(ctx, emby) -> None:  # type: i
     asyncio.run(S.tick(ctx, sessions=False))
     assert emby.updated == [EMBY_MOVIE]
     # afspeeltest pas na ± 10 min
-    ctx.db.execute("UPDATE mediaserver_pending SET test_after=? WHERE transaction_id=?",
-                   ("2000-01-01T00:00:00+00:00", txn))
+    _due(ctx, txn)
     asyncio.run(S.tick(ctx, sessions=False))
     row = S.playback_for_job(ctx, 7)
     assert row and row["result"] == "ok" and "direct" in row["detail_nl"]
@@ -154,8 +160,7 @@ def test_failed_playback_notifies(ctx, emby) -> None:  # type: ignore[no-untyped
     asyncio.run(S.tick(ctx, sessions=False))
     txn = _commit_txn(ctx)
     asyncio.run(S.tick(ctx, sessions=False))
-    ctx.db.execute("UPDATE mediaserver_pending SET test_after=? WHERE transaction_id=?",
-                   ("2000-01-01T00:00:00+00:00", txn))
+    _due(ctx, txn)
     asyncio.run(S.tick(ctx, sessions=False))
     assert S.playback_for_job(ctx, 7)["result"] == "failed"
     n = ctx.db.fetch_one("SELECT title FROM notifications WHERE title LIKE 'Afspeeltest%'")

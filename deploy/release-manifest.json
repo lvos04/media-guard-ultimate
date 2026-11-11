@@ -181,7 +181,8 @@
       "079_mediaserver",
       "080_migration",
       "090_notify_security",
-      "100_ai_advisor"
+      "100_ai_advisor",
+      "150_mediaserver_servers"
     ],
     "encoder": [
       1,

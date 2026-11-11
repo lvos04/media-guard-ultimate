@@ -18,10 +18,53 @@ from app.geheimen import SecretError, SecretStore
 LOGGER = logging.getLogger(__name__)
 
 
+def mediaserver_headers(product: str, api_key: str) -> dict[str, str]:
+    """Aanmeldkop per soort server (Δ-MG-AUTH, besluit BG-01, contract 1.3 §2.3 regel 2).
+
+    Emby houdt ``X-Emby-Token``. Jellyfin (Jelly Leon 12.x, stock 12.x) krijgt alleen
+    ``Authorization: MediaBrowser … Token="…"``: 12.x weigert ``X-Emby-Token``, ``api_key=`` en
+    ``X-Emby-Authorization`` zolang ``EnableLegacyAuthorization`` uit staat. Nooit in de URL.
+
+    De Jellyfin-kop gaat alleen naar een server die zich als Jellyfin meldt. Elke andere
+    server houdt de kop van 1.2.2: Emby 4.10.2.0 geeft op de openbare info-route geen
+    ``ProductName`` (gemeten in ``tests/contract/mediaserver``), en een bestaande
+    Emby-koppeling mag door deze wijziging nooit een andere kop krijgen (ADR-0022).
+    """
+    if any(c in api_key for c in '"\\,') or any(c.isspace() for c in api_key):
+        raise ValueError("ongeldige API-sleutel (onverwachte tekens)")
+    if "jellyfin" in product.lower():
+        return {
+            "Authorization": (
+                'MediaBrowser Client="MediaGuard AV1", Device="MediaGuard", '
+                f'DeviceId="mediaguard-encode", Version="1", Token="{api_key}"'
+            )
+        }
+    return {"X-Emby-Token": api_key}
+
+
+async def mediaserver_product(client: httpx.AsyncClient, url: str) -> str:
+    """``ProductName`` van de openbare info-route (zonder sleutel): "Jellyfin Server" bij
+    Jellyfin 12.x. Leeg bij Emby 4.10.2.0 (dat veld ontbreekt daar) en als de route niet te
+    lezen is; dan geldt de Emby-kop van 1.2.2."""
+    try:
+        response = await client.get(url.rstrip("/") + "/System/Info/Public")
+        if response.status_code >= 400:
+            return ""
+        value = response.json()
+    except (httpx.HTTPError, ValueError):
+        return ""
+    if not isinstance(value, dict):
+        return ""
+    # hoofdletterongevoelig: Jellyfin 12.x antwoordt tijdens het opstarten in camelCase
+    lower = {str(key).lower(): item for key, item in value.items()}
+    return str(lower.get("productname") or "")
+
+
 async def jellyfin_is_playing(client: httpx.AsyncClient, url: str, api_key: str) -> bool:
+    product = await mediaserver_product(client, url)
     response = await client.get(
         url.rstrip("/") + "/Sessions",
-        headers={"X-Emby-Token": api_key},
+        headers=mediaserver_headers(product, api_key),
     )
     response.raise_for_status()
     value = response.json()

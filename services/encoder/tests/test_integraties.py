@@ -65,7 +65,13 @@ async def test_jellyfin_pauzeert_alleen_cpu_en_heft_eigen_pauze_op(tmp_path: Pat
     playing = True
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["X-Emby-Token"] == "sleutel"
+        if request.url.path == "/System/Info/Public":
+            return httpx.Response(200, json={"ProductName": "Jellyfin Server", "Id": "x"})
+        # Δ-MG-AUTH: Jellyfin 12.x krijgt alleen Authorization: MediaBrowser … Token="…"
+        assert "x-emby-token" not in request.headers
+        assert request.headers["Authorization"].startswith("MediaBrowser ")
+        assert request.headers["Authorization"].endswith('Token="sleutel"')
+        assert "api_key" not in str(request.url)
         sessions = [{"NowPlayingItem": {"Id": "1"}, "PlayState": {"IsPaused": False}}]
         return httpx.Response(200, json=sessions if playing else [])
 
@@ -156,3 +162,64 @@ async def test_proefdraai_encodeert_drie_echte_tijdelijke_resultaten(tmp_path: P
     assert all(row["status"] == "klaar" and row["grootte"] > 0 for row in rows)
     assert rows[0]["grootte"] > rows[1]["grootte"] > rows[2]["grootte"]
     assert not (configured.work_root / "proefdraaien" / "proef-test").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("product", "kop", "weg"),
+    [
+        # Emby 4.10.2.0 geeft op /System/Info/Public géén ProductName (gemeten tegen de echte
+        # container): zonder dat veld blijft het de kop van 1.2.2
+        ("", "X-Emby-Token", "authorization"),
+        ("Emby Server", "X-Emby-Token", "authorization"),
+        ("Jellyfin Server", "Authorization", "x-emby-token"),
+    ],
+)
+async def test_sessies_met_de_aanmeldkop_van_de_eigen_server(
+    tmp_path: Path, product: str, kop: str, weg: str
+) -> None:
+    """Δ-MG-AUTH per server: Emby houdt X-Emby-Token (de Emby-koppeling onderbreekt nooit);
+    Jellyfin 12.x (legacy-auth uit) alleen Authorization: MediaBrowser Token=…. Alleen een
+    server die zich als Jellyfin meldt krijgt de nieuwe kop."""
+    from app.integraties import jellyfin_is_playing, mediaserver_headers
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/System/Info/Public":
+            return httpx.Response(200, json={"ProductName": product} if product else {})
+        return httpx.Response(200, json=[])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await jellyfin_is_playing(client, "http://server", "k-1") is False
+    last = seen[-1]
+    assert kop.lower() in last.headers and weg not in last.headers
+    assert "k-1" in last.headers[kop] and "api_key" not in str(last.url)
+    with pytest.raises(ValueError):
+        mediaserver_headers("Jellyfin Server", 'a"b')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("antwoord", "verwacht"),
+    [
+        (httpx.Response(200, json={"ProductName": "Jellyfin Server"}), "Jellyfin Server"),
+        # Jellyfin 12.x antwoordt tijdens het opstarten in camelCase (gemeten)
+        (httpx.Response(200, json={"productName": "Jellyfin Server"}), "Jellyfin Server"),
+        (httpx.Response(200, json={"ServerName": "emby", "Version": "4.10.2.0"}), ""),
+        (httpx.Response(200, json=["geen", "object"]), ""),
+        (httpx.Response(503, text="<html>Server is starting</html>"), ""),
+        (httpx.Response(200, text="geen json"), ""),
+    ],
+)
+async def test_productnaam_van_de_openbare_info_route(
+    antwoord: httpx.Response, verwacht: str
+) -> None:
+    """Onleesbaar of zonder ProductName is leeg: dan blijft het de Emby-kop van 1.2.2."""
+    from app.integraties import mediaserver_product
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: antwoord)
+    ) as client:
+        assert await mediaserver_product(client, "http://server/") == verwacht

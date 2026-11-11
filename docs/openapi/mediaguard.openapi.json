@@ -3527,7 +3527,13 @@
       },
       "ServerConfig": {
         "additionalProperties": false,
+        "description": "Zonder ``server_id`` (of met 1): de bestaande koppeling, precies als in 1.2.2. Met een\n``server_id`` vanaf 2: die extra server. ``add`` maakt een extra server (Δ-MG-DUAL) en raakt\nde bestaande koppeling nooit; ``remove`` verwijdert een extra server.",
         "properties": {
+          "add": {
+            "default": false,
+            "title": "Add",
+            "type": "boolean"
+          },
           "api_key": {
             "anyOf": [
               {
@@ -3544,6 +3550,17 @@
             "default": false,
             "title": "Clear Key",
             "type": "boolean"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
           },
           "features": {
             "anyOf": [
@@ -3574,6 +3591,35 @@
               }
             ],
             "title": "Kind"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "remove": {
+            "default": false,
+            "title": "Remove",
+            "type": "boolean"
+          },
+          "server_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Id"
           },
           "url": {
             "anyOf": [
@@ -16782,7 +16828,27 @@
     },
     "/api/v1/mediaserver/test": {
       "post": {
+        "description": "Verbinding testen: zonder ``server_id`` de bestaande koppeling (zoals in 1.2.2).",
         "operationId": "test_api_v1_mediaserver_test_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "server_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Server Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -16795,6 +16861,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Test",
