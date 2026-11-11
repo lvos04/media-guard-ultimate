@@ -106,8 +106,8 @@ def server(ctx: AppContext) -> Server | None:
 
 async def test_connection(ctx: AppContext, server_id: int | None = None) -> dict[str, Any]:
     """Verbinding testen: server 1 (de bestaande koppeling, standaard) of een extra server."""
-    if server_id not in (None, M.LEGACY_ID):
-        return await _test_extra(ctx, int(server_id))
+    if server_id is not None and server_id != M.LEGACY_ID:
+        return await _test_extra(ctx, server_id)
     result = await _test_legacy(ctx)
     first = M.legacy(ctx)
     if first is not None and first.followed:

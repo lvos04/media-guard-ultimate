@@ -84,7 +84,10 @@ staat nooit in een URL of in een logregel.
    blijven bewaard, zodat weer aanzetten niets opnieuw vraagt. Verwijderen van server 1 bestaat niet (422). Een extra
    server zet je uit of verwijder je; bij verwijderen gaan alleen de eigen rij, het eigen geheim en de eigen
    statussleutels weg. Open werk voor een losgemaakte server wordt afgesloten als "overgeslagen"; er komt geen
-   incident, en de actiegeschiedenis blijft binnen de bewaarregel.
+   incident, en de actiegeschiedenis blijft binnen de bewaarregel. Een losgemaakte server 1 blijft in `servers[]`
+   staan met `enabled: false` zolang adres of sleutel bewaard zijn, zodat de beheerder ziet wat er bewaard is en
+   hem in één handeling weer koppelt. Is de soort van vóór het losmaken niet bekend (uitgezet in 1.2.2 zonder
+   meting), dan staat er `auto`: er wordt niets geraden.
 9. **Upgradebewijs en de Emby-koppeling.** De fixture `core-1.2.2` bevat bewust geen geheimen (tabel `secrets` staat
    bij de uitzonderingen van de vergelijking: een geheim hoort niet in een openbare repo). De eis "upgrade van een
    gevulde database met één Emby-koppeling → Emby blijft actief" wordt daarom bewezen in de contracttest: de echte

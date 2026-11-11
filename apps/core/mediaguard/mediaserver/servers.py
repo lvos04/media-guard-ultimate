@@ -118,9 +118,31 @@ def extras(ctx: AppContext, *, include_disabled: bool = True) -> list[ServerConf
     return [s for s in out if include_disabled or s.enabled]
 
 
+def detached_legacy(ctx: AppContext) -> ServerConf | None:
+    """Server 1 nadat hij is losgemaakt (soort "Uit") terwijl adres of sleutel bewaard zijn.
+    Hij wordt niet gevolgd (``enabled=False``), maar blijft in de lijst staan zodat de beheerder
+    ziet dat er iets bewaard is en hem in één handeling weer kan koppelen. De soort is wat er
+    vóór het losmaken stond of gemeten is; is dat onbekend, dan ``auto`` (nooit geraden)."""
+    if str(ctx.config.value("mediaserver.kind") or "") != "off":
+        return None
+    url = str(ctx.config.value("mediaserver.url") or "").strip()
+    key_set = ctx.secrets.has(LEGACY_SECRET)
+    if not url and not key_set:
+        return None
+    seen = ctx.state_get(LEGACY_STATE["connected"], {}) or {}
+    kind = next((str(k) for k in (ctx.state_get("mediaserver_kind_before_off"),
+                                  seen.get("kind") if isinstance(seen, dict) else None,
+                                  ctx.state_get("mediaserver_detected_kind"))
+                 if k in EXTRA_KINDS), "auto")
+    return ServerConf(id=LEGACY_ID, kind=kind, label=LABEL.get(kind, "Mediaserver"), url=url,
+                      url_source="ingesteld" if url else "niet gevonden", key_set=key_set,
+                      enabled=False, legacy=True, position=0)
+
+
 def all_servers(ctx: AppContext) -> list[ServerConf]:
-    """Server 1 (als die niet uit staat) en daarna de extra servers, in volgorde."""
-    first = legacy(ctx)
+    """Server 1 en daarna de extra servers, in volgorde. Een losgemaakte server 1 staat erbij
+    met ``enabled=False`` zolang adres of sleutel bewaard zijn; zonder beide ontbreekt hij."""
+    first = legacy(ctx) or detached_legacy(ctx)
     return ([first] if first else []) + extras(ctx)
 
 

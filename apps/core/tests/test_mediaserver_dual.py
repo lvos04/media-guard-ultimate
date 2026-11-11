@@ -555,8 +555,12 @@ def test_emby_losmaken_stopt_pollen_en_geeft_geen_incident(client, ctx, net) -> 
     r = client.post("/api/v1/mediaserver/config", json={"server_id": 1, "enabled": False})
     assert r.status_code == 200, r.text
     st = r.json()["status"]
-    assert [x["kind"] for x in st["servers"]] == ["jellyfin"]
-    assert st["kind"] == "jellyfin" and st["label"] == "Jelly Leon"   # eerste ingestelde server
+    # losgemaakt, niet weg: Emby staat er nog, uit, met adres en sleutel bewaard
+    assert [(x["kind"], x["enabled"], x["followed"], x["connected"]) for x in st["servers"]] == [
+        ("emby", False, False, False), ("jellyfin", True, True, True)]
+    assert st["servers"][0]["key_set"] and st["servers"][0]["url"] == "http://emby:8096"
+    assert st["servers"][0]["hold"] == {"active": False}
+    assert st["kind"] == "jellyfin" and st["label"] == "Jelly Leon"   # eerste server die aan staat
     n_emby, n_notes = len(emby.requests), ctx.db.fetch_one(
         "SELECT COUNT(*) AS n FROM notifications")["n"]
     emby.watching()
@@ -571,8 +575,22 @@ def test_emby_losmaken_stopt_pollen_en_geeft_geen_incident(client, ctx, net) -> 
     # adres en sleutel blijven bewaard: in één handeling terug naar Emby
     assert ctx.config.value("mediaserver.url") == "http://emby:8096"
     r = client.post("/api/v1/mediaserver/config", json={"server_id": 1, "enabled": True})
-    assert [x["kind"] for x in r.json()["status"]["servers"]] == ["emby", "jellyfin"]
+    assert [(x["kind"], x["enabled"]) for x in r.json()["status"]["servers"]] == [
+        ("emby", True), ("jellyfin", True)]
     assert r.json()["test"]["ok"]
+
+
+def test_losgemaakte_server_1_zonder_adres_en_sleutel_staat_niet_in_de_lijst(client, ctx) -> None:  # type: ignore[no-untyped-def]
+    """Wie nooit een mediaserver had en "Uit" kiest, krijgt geen lege regel; en zonder bekende
+    soort wordt er niets geraden."""
+    assert client.post("/api/v1/mediaserver/config", json={"kind": "off"}).status_code == 200
+    assert client.get("/api/v1/mediaserver/status").json()["servers"] == []
+    ctx.config.set("global", "", "mediaserver.url", "http://ergens:8096", "test")
+    ctx.state_set("mediaserver_kind_before_off", "auto")
+    only = client.get("/api/v1/mediaserver/status").json()["servers"]
+    assert [(x["server_id"], x["kind"], x["label"], x["enabled"], x["key_set"], x["auth"])
+            for x in only] == [(1, "auto", "Mediaserver", False, False, None)]
+    assert M.followed(ctx) == []
 
 
 def test_extra_server_los_vast_en_verwijderen(client, ctx, net) -> None:  # type: ignore[no-untyped-def]
