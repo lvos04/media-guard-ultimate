@@ -244,9 +244,11 @@ function ServerItem({ s, status, result, reload, onResult }: {
   const [error, setError] = useState<string | null>(null);
   // server 1 gaat zonder server_id: precies het verzoek van 1.2.2
   const target = s.legacy ? {} : { server_id: s.server_id };
+  // Een verzoek dat mislukt (geweigerde invoer, geen rechten, core onbereikbaar) is geen meting: de fout staat als
+  // melding (role=alert) bij de server of in de open dialoog, nooit als "mislukt" in de live-regio van het TestResultaat.
   const run = async (name: string, fn: () => Promise<unknown>) => {
     setBusy(name); setError(null);
-    try { await fn(); reload(); return true; } catch (e) { const message = e instanceof Error ? e.message : String(e); setError(message); onResult(s.server_id, { ok: false, message_nl: message }); return false; } finally { setBusy(null); }
+    try { await fn(); reload(); return true; } catch (e) { setError(e instanceof Error ? e.message : String(e)); return false; } finally { setBusy(null); }
   };
   const save = () => run("save", async () => {
     const r = await api.post<ConfigAnswer>("/mediaserver/config", {
@@ -302,6 +304,8 @@ function ServerItem({ s, status, result, reload, onResult }: {
         <div role="status" className="[&:not(:empty)]:mt-3" data-testid={`ms-result-${s.server_id}`}>
           {result ? <InlineState tone={result.ok ? "success" : "danger"}>{result.message_nl}</InlineState> : null}
         </div>
+        {/* met een open dialoog staat de fout daar, niet twee keer */}
+        {error && !confirm ? <div className="mt-3"><InlineState tone="danger" role="alert">{error}</InlineState></div> : null}
       </div>
       <Modal open={confirm === "detach"} onClose={() => setConfirm(null)} role="alertdialog" icon={Unlink}
         title={t("ms.detach.title", { label: s.label })} description={t("ms.detach.body", { label: s.label })}

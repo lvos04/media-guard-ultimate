@@ -203,6 +203,13 @@ for (const width of [1440, 390] as const) {
       const tab = page.getByTestId("mediaserver-tab");
       const eerste = tab.getByTestId("ms-server-1");
       // server 1 heeft nog geen sleutel: voor een beheerder staat het formulier open
+      // een adres dat de core weigert, is een fout van het verzoek en geen meting: de fout staat als melding
+      // (role=alert) bij deze server en de live-regio van het TestResultaat blijft leeg (nooit "mislukt" als storing)
+      await eerste.locator("#ms-url-1").fill("http://127.0.0.1 9");
+      await eerste.getByRole("button", { name: /^Opslaan en testen/ }).click();
+      await expect(eerste.getByRole("alert")).toContainText("Ongeldig adres");
+      await expect(tab.getByTestId("ms-result-1")).toBeEmpty();
+      expect((await servers(page))[0]).toMatchObject({ server_id: 1, key_set: false, url: voor.servers[0].url });
       await eerste.locator("#ms-url-1").fill("http://127.0.0.1:9");
       await eerste.locator("#ms-key-1").fill("e2e-sleutel-server-1");
       await eerste.getByRole("button", { name: /^Opslaan en testen/ }).click();
@@ -223,7 +230,8 @@ for (const width of [1440, 390] as const) {
       await expect(tab.getByTestId("ms-why-1")).toContainText("Adres en sleutel zijn bewaard");
       // ontkoppelen is een keuze, geen meting: geen "mislukt"-uitslag in de live-regio van de server
       await expect(tab.getByTestId("ms-result-1")).toBeEmpty();
-      // de core noemt server 1 zonder soort anders (zie het rapport van S-P2-590); de knop draagt de naam van nu
+      // de core noemt een ontkoppelde server 1 zonder soort anders (apps/core/mediaguard/mediaserver/servers.py,
+      // functie detached_legacy); de knop draagt de naam van nu
       const naamNu = (await servers(page))[0].label;
       await expect(eerste.getByRole("button", { name: `Weer koppelen: ${naamNu}` })).toBeVisible();
       // server 1 is de bestaande koppeling: verwijderen kan niet, alleen ontkoppelen
@@ -247,6 +255,38 @@ for (const width of [1440, 390] as const) {
     }
   });
 }
+
+test("ondertitels: wat ontbreekt is een neutraal label, een mislukte test is gemeten falen in de vaste live-regio", async ({ page }) => {
+  // de e2e-core kent geen titels: het echte statusantwoord, alleen met een telling van ontbrekende ondertitels erin
+  await page.route("**/api/v1/mediaserver/status", async (route) => {
+    const r = await route.fetch();
+    const body = await r.json() as { subtitles: { missing: number } };
+    body.subtitles.missing = 3;
+    await route.fulfill({ response: r, json: body });
+  });
+  await login(page);
+  const voor = await status(page) as unknown as { subtitles: { bazarr_url: string; bazarr_key_set: boolean; source: string | null } };
+  // zonder Bazarr-sleutel en zonder OpenSubtitles-account mislukt de test altijd; dat is de begintoestand van de e2e
+  expect(voor.subtitles).toMatchObject({ bazarr_key_set: false, source: null });
+  await page.goto("/inrichten?tab=mediaserver");
+  const kaart = page.locator("section.card", { has: page.getByTestId("subtitles-card") });
+  // een telling is een feit, geen gezondheid: sterk-neutraal label, zonder statusvorm, nooit amber of groen
+  const telling = kaart.locator(".card-header .chip");
+  await expect(telling).toHaveText("NL-ondertitel ontbreekt bij 3 titels");
+  await expect(telling).toHaveClass(/(^| )chip--strong( |$)/);
+  expect(await telling.getAttribute("data-status")).toBeNull();
+  await expect(telling.locator("svg")).toHaveCount(0);
+  // TestResultaat (C-58): de vaste live-regio staat er al (leeg) en krijgt de uitslag als gemeten falen (danger)
+  const uitslag = kaart.getByTestId("subs-result");
+  await expect(uitslag).toHaveAttribute("role", "status");
+  await expect(uitslag).toBeEmpty();
+  await kaart.getByRole("button", { name: "Opslaan en testen" }).click();
+  await expect(uitslag.locator(".inline-state")).toHaveAttribute("data-tone", "danger");
+  await expect(uitslag.locator(".inline-state svg")).toHaveClass(/lucide-octagon-x/);
+  await expect(uitslag).toContainText("Nog geen Bazarr-sleutel of OpenSubtitles-account.");
+  // opslaan zonder wijziging laat de instellingen zoals ze waren
+  expect((await status(page) as unknown as typeof voor).subtitles).toMatchObject(voor.subtitles);
+});
 
 test("kijker en operator: de reden staat erbij, het beheerformulier niet", async ({ browser, page }) => {
   await login(page);
