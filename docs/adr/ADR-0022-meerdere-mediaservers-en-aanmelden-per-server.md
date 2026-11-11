@@ -48,7 +48,8 @@ opnieuw aan tot de films er staan), niet MediaGuard: die vraagt bij een import e
 2. **Extra servers komen erbij in eigen opslag.** Tabel `mediaserver_servers` (id vanaf 2, hoogstens 8), geheim
    `mediaserver.server.<id>.api_key`, statussleutels `mediaserver:<id>:<naam>`. Uitkomsten per server en per
    overdracht staan in `mediaserver_server_results`; `mediaserver_pending` blijft de samenvatting per overdracht die
-   de web-UI, de Android-app en de AV1-vergelijking al lezen. `mediaserver_actions` krijgt de kolom `server_id`
+   de web-UI en de AV1-vergelijking (`GET /api/v1/mediaserver/playback/{encoding_job_id}`) al lezen.
+   `mediaserver_actions` krijgt de kolom `server_id`
    (leeg voor rijen van vóór deze versie). Migratie `150_mediaserver_servers` voegt alleen toe: geen bestaande rij
    wordt gewijzigd, verplaatst of gewist. De reeks 060–079 is vol na `079_mediaserver`; mediaservers gaan verder in
    150–159.
@@ -107,7 +108,9 @@ opnieuw aan tot de films er staan), niet MediaGuard: die vraagt bij een import e
 
 ## Gevolgen
 
-- De web-UI en de Android-app tonen een lijst mediaservers in plaats van één; teksten in nl en en-US.
+- De web-UI toont een lijst mediaservers in plaats van één; teksten in nl en en-US. De Android-app heeft geen
+  scherm voor mediaservers (de API voor de app levert die gegevens niet) en verandert hierdoor niet; dat de app ook
+  in en-US bestaat, staat los hiervan in ADR-0023.
 - `deploy/release-manifest.json` noemt `150_mediaserver_servers`; de rooktest en het upgradebewijs eisen dat.
 - Jelly Leon kan `servers[]` lezen voor de koppelcontrole G8 (B03-009, B03-064); dat is werk in jelly-leon.
 - Niet gebouwd: Δ-MG-4 (kijkpauze bij een gepauzeerde Watch Together-groep en transcode-bewust bevriezen), BG-27 open.

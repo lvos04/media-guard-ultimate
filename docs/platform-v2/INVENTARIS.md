@@ -252,6 +252,11 @@ Nummerreeksen (`apps/core/mediaguard/migrations/README.md`): 001–019 kern, 020
 identiteit/beleid, 060–079 recovery/encoding, 080–099 migratie, 100–119 AI, 120–139 systeem. Een eventuele
 P3-migratie voor connector/scopes krijgt een **nieuwe** reeks (voorstel 140–159).
 
+**Bijgewerkt 2026-11-11 (na de peildatum; de rest van deze inventaris is de stand van 1.2.2):** er is één migratie
+bij gekomen, `150_mediaserver_servers.sql` (meerdere mediaservers, Δ-MG-DUAL, ADR-0022). Ze voegt alleen tabellen en
+kolommen toe. De core heeft nu 36 migraties; de reeks 150–159 is voor mediaservers (vervolg op `079_mediaserver`).
+De reeks 140–149 blijft vrij voor de P3-migratie voor connector/scopes.
+
 ---
 
 ## 6. Auth, rollen en API-sleutels (hoe de Hub ze gebruikt)

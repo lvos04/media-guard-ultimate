@@ -43,6 +43,10 @@ release: het is de runtime van de vorige release met de nieuwe core erin, net al
 **24 tests geslaagd, 0 mislukt; 113 van 113 controles goed. Duur 722,5 s (12 min 2 s); pytest-exitcode 0.**
 Geen handmatige stap tijdens de run.
 
+Dezelfde test draaide op 2026-11-11 ook op een GitHub-runner (CI-job `mediaservers`, zware run 42979806055 op commit
+`c5e3016`, gestart met `workflow_dispatch heavy=true`): 24 passed in 725,4 s. De tabellen hieronder zijn die van de
+lokale run.
+
 ### Deel A: de clients van core en de encoder, rechtstreeks tegen beide servers
 
 | test | bewijst | Emby | Jellyfin |

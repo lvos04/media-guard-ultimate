@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+Meerdere mediaservers tegelijk en aanmelden per server (Δ-MG-DUAL, Δ-MG-AUTH; contract 1.3 §2.3 regel 2,
+C1.3-MGU-04). Besluiten: ADR-0022 en ADR-0023. Eén migratie (`150_mediaserver_servers`, voegt alleen toe); de
+status-API krijgt er velden bij, geen veld verdwijnt. Geen release.
+- **Emby én Jelly Leon/Jellyfin tegelijk:** MediaGuard volgt elke gekoppelde mediaserver. De koppeling van 1.2.2
+  (bijvoorbeeld Emby) is na het bijwerken zonder één handeling server 1: adres, sleutel en gekoppelde mappen blijven
+  waar ze stonden ("nul-migratie"), dus de Emby-koppeling valt op geen moment weg. Extra servers (hoogstens 8) staan
+  in eigen opslag met een eigen geheim.
+- **Kijkpauze over alle servers:** nieuwe encodes wachten zodra iemand op één van de servers kijkt. Een fout of
+  storing bij de ene server raakt de andere niet; een server zonder contact telt nog hoogstens 10 minuten mee.
+- **Per server:** verversen na een vervanging, afspeeltest en controle op Nederlandse ondertitels, met de uitkomst
+  per server; de samenvatting per overdracht is de slechtste uitkomst.
+- **Aanmelden per server:** Emby houdt `X-Emby-Token`; Jellyfin en Jelly Leon 12.x krijgen
+  `Authorization: MediaBrowser … Token="…"` (core en encoder). Een sleutel staat nooit in een adres of logregel; de
+  logfilter maskeert nu ook `Token="…"` en `X-Emby-Token`. Een server wordt herkend aan zijn openbare info; alleen een
+  server die zich als Jellyfin meldt, krijgt de nieuwe kop.
+- **Status-API:** `GET /api/v1/mediaserver/status` houdt alle velden van 1.2.2 en krijgt `servers[]` erbij (soort,
+  naam, adres, aan/uit, verbonden, laatste contact, aantallen; nooit sessies, titels of gebruikers). `POST /config` en
+  `POST /test` nemen een optioneel `server_id`; zonder werken ze als voorheen. OpenAPI-export bijgewerkt.
+- **Losmaken:** een server losmaken stopt het volgen zonder storing of incident; adres en sleutel blijven bewaard en
+  weer koppelen is één handeling. Server 1 kan los, niet weg; een extra server kan ook verwijderd worden.
+- **Web-UI (Peil, nl en en-US):** *Instellingen → Koppelingen → Mediaserver & ondertitels* toont een lijst
+  mediaservers met per server *Gekoppeld*/*Ontkoppeld* en daarnaast de gemeten stand (*Gezond* alleen na een gelukt
+  contact, anders *Storing* of *Onbekend* met de reden), toevoegen, wijzigen, losmaken, weer koppelen en verwijderen.
+- **Upgradebewijs — HARDE EIS:** de alles-in-één-rooktest (`scripts/aio-smoke.py`, ook in `release.yml`) vergelijkt nu
+  per tabel rijen en inhoud vóór en na de upgrade van de gevulde 1.2.2-database en is rood bij elk verlies.
+- **Contracttest met echte servers** (`tests/contract/mediaserver/`): Emby 4.10.2.0 en Jellyfin 12.4 op digest, de
+  echte vorige release (1.2.2) en daarna de kandidaat op dezelfde datamap; al het verkeer van MediaGuard loopt via een
+  loggend doorgeefluik. 24 tests, 113 controles; in CI in de zware run (job `mediaservers`). Uitkomst: `RESULTS.md`.
+- **Android-app ook in en-US** (ADR-0023): de taal volgt Android (systeemtaal, of vanaf Android 13 de taal per app);
+  Nederlands blijft de standaard. Getallen, datums en tijden volgen de taal. Teksten die MediaGuard zelf aanlevert,
+  blijven Nederlands. De Nederlandse app is ongewijzigd (78 referentiebeelden gelijk); 6 Engelse beelden erbij.
+- **Niet gevalideerd:** de echte NAS met de eigen Emby en kijkgeschiedenis, een echte Jelly Leon-image, echte spelers,
+  een echte telefoon. Sessies in de contracttest zijn nagebootst met de sessie-API van de servers.
+
 Contract 1.3 en Peil 1.1.1 toegepast (alleen de NU-punten van `CONTRACT_1.3_CONFORMITEIT.md` §6; geen migratie, geen
 nieuwe of gewijzigde route, OpenAPI byte-gelijk). Besluiten: ADR-0021.
 - **Kopieën met gepinde bron-commit** (C1.3-MGU-01): `PLATFORM_CONTRACTEN.md` 1.3 en `CONTRACT_1.3_CONFORMITEIT.md`

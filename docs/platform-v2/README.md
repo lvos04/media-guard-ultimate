@@ -49,7 +49,14 @@ Onbekende NAS-gegevens (D01–D18) worden nooit met voorbeeldwaarden ingevuld; z
 - Gedaan in deze ronde (alleen NU-punten, ADR-0021): C1.3-MGU-01 (kopie, drifttest, EVIDENCE-test), C1.3-MGU-03
   (upgradebewijs, HARDE EIS: `scripts/upgradebewijs.py`, gate in `release.yml` vóór `publish`) en het adresdeel van
   C1.3-MGU-08 (`system.hub_url` volgens §3.2). Peil 1.1.1 overgenomen (C1.3-ALG-05): `design/ontwerptaal/HERKOMST.md`.
-- Open (latere fasen, in [`EVIDENCE.json`](EVIDENCE.json) als `Niet gestart`): C1.3-MGU-04 (P4-0), -05/-06/-07/-09
+- Gedaan op 2026-11-11 (C1.3-MGU-04, contract §2.3 regel 2; ADR-0022 en ADR-0023): MediaGuard volgt meerdere
+  mediaservers tegelijk (Emby én Jelly Leon/Jellyfin; Δ-MG-DUAL) en meldt zich per server aan (Emby `X-Emby-Token`,
+  Jellyfin 12.x `Authorization: MediaBrowser`; Δ-MG-AUTH). De bestaande Emby-koppeling is zonder handeling server 1
+  en wordt niet verplaatst. Contracttest tegen echte containers: `tests/contract/mediaserver/` (CI-job
+  `mediaservers`, zware run). Het upgradebewijs vergelijkt nu ook in de alles-in-één-rooktest per tabel. De
+  Android-app bestaat ook in en-US. Stand per verzoek: [`B03_DELTAVERZOEKEN.md`](B03_DELTAVERZOEKEN.md) §3 en §4.
+  Alles Sim-getest; op de echte NAS NIET GEVALIDEERD.
+- Open (latere fasen, in [`EVIDENCE.json`](EVIDENCE.json) als `Niet gestart`): C1.3-MGU-05/-06/-07/-09
   (P3), terugkeerpad na inloggen (-08, P3); C1.3-MGU-02 is `Geblokkeerd` tot de gebruiker het GHCR-pakket aan de nieuwe
   repo koppelt.
 - Commit-hashes in `EVIDENCE.json`-regels van vóór 2026-11-10 (B04-001…010) verwijzen naar de oude historie, nu
