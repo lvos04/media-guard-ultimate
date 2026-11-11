@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 from conftest import TESTDATA
+from fastapi.testclient import TestClient
+from mg_helpers import HEADERS
 
 from app.config import Settings, settings
 from app.db import Database
@@ -223,3 +226,134 @@ async def test_productnaam_van_de_openbare_info_route(
         transport=httpx.MockTransport(lambda request: antwoord)
     ) as client:
         assert await mediaserver_product(client, "http://server/") == verwacht
+
+
+# ── Testknop van de encoder: POST /api/integraties/jellyfin/test ────────────────────────────
+# Δ-MG-AUTH op de derde plek (B03_DELTAVERZOEKEN §3: core clients.py, encoder integraties.py
+# en encoder api.py). De route leest eerst zonder sleutel de openbare info-route en vraagt
+# daarna /System/Info met de aanmeldkop van de soort server die zich daar meldt.
+MgClient = tuple[TestClient, Database, Settings]
+SLEUTEL = "testsleutel-1"
+# Emby 4.10.2.0 geeft op /System/Info/Public géén ProductName (gemeten tegen de echte container
+# in tests/contract/mediaserver); Jellyfin 12.x meldt "Jellyfin Server".
+EMBY_INFO = {"ServerName": "emby-test", "Version": "4.10.2.0", "Id": "emby-test-id"}
+JELLYFIN_INFO = {"ProductName": "Jellyfin Server", "ServerName": "jf-test", "Id": "jf-test-id"}
+
+
+def _nep_mediaserver(
+    monkeypatch: pytest.MonkeyPatch, info: dict[str, str], status: int = 200
+) -> list[httpx.Request]:
+    """Zet een nep-server achter de httpx-client van de route; geeft elk verzoek terug."""
+    seen: list[httpx.Request] = []
+    echte_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/System/Info/Public":
+            return httpx.Response(200, json=info)
+        return httpx.Response(status, json={"Id": info["Id"]})
+
+    def client(**kwargs: Any) -> httpx.AsyncClient:
+        return echte_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr("app.api.httpx.AsyncClient", client)
+    return seen
+
+
+def _testknop(client: TestClient, sleutel: str) -> httpx.Response:
+    return client.post(
+        "/api/integraties/jellyfin/test",
+        headers=HEADERS,
+        json={"url": "http://server:8096/", "api_sleutel": sleutel},
+    )
+
+
+def _sleutel_nergens_in_de_url(seen: list[httpx.Request], sleutel: str) -> None:
+    for request in seen:
+        assert sleutel not in str(request.url)
+        assert "api_key" not in str(request.url).lower()
+
+
+@pytest.mark.parametrize(
+    ("info", "kop", "weg"),
+    [
+        (EMBY_INFO, "x-emby-token", "authorization"),
+        (JELLYFIN_INFO, "authorization", "x-emby-token"),
+    ],
+    ids=["emby-zonder-productname", "jellyfin"],
+)
+def test_testknop_meldt_zich_aan_met_de_kop_van_de_eigen_server(
+    mg_client: MgClient,
+    monkeypatch: pytest.MonkeyPatch,
+    info: dict[str, str],
+    kop: str,
+    weg: str,
+) -> None:
+    """Emby zonder ProductName houdt X-Emby-Token (de kop van 1.2.2); Jellyfin 12.x krijgt alleen
+    Authorization: MediaBrowser … Token="…". De openbare info-route krijgt geen sleutel, de
+    sleutel staat in geen enkele URL en niet in het antwoord, en de route doet alleen twee
+    leesverzoeken (RV1: geen schrijfroute naar Emby)."""
+    client, _database, _settings = mg_client
+    seen = _nep_mediaserver(monkeypatch, info)
+
+    response = _testknop(client, SLEUTEL)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"integratie": "jellyfin", "bereikbaar": True, "statuscode": 200}
+    assert SLEUTEL not in response.text
+    assert [(r.method, r.url.path) for r in seen] == [
+        ("GET", "/System/Info/Public"),
+        ("GET", "/System/Info"),
+    ]
+    openbaar, met_sleutel = seen
+    assert "x-emby-token" not in openbaar.headers
+    assert "authorization" not in openbaar.headers
+    assert weg not in met_sleutel.headers
+    if kop == "x-emby-token":
+        assert met_sleutel.headers["x-emby-token"] == SLEUTEL
+    else:
+        assert met_sleutel.headers["authorization"].startswith("MediaBrowser ")
+        assert met_sleutel.headers["authorization"].endswith(f'Token="{SLEUTEL}"')
+    _sleutel_nergens_in_de_url(seen, SLEUTEL)
+
+
+@pytest.mark.parametrize("sleutel", ['sleutel"1', "sleutel 1", "sleutel,1", "sleutel\\1"])
+@pytest.mark.parametrize("info", [EMBY_INFO, JELLYFIN_INFO], ids=["emby", "jellyfin"])
+def test_testknop_weigert_een_ongeldige_sleutel_met_422_en_verstuurt_hem_niet(
+    mg_client: MgClient,
+    monkeypatch: pytest.MonkeyPatch,
+    info: dict[str, str],
+    sleutel: str,
+) -> None:
+    """Een sleutel met tekens die de MediaBrowser-kop zouden breken geeft 422 met een vaste
+    melding. Alleen de openbare info-route (zonder sleutel) is gevraagd; de sleutel gaat in geen
+    enkel verzoek mee en staat niet in de foutmelding."""
+    client, _database, _settings = mg_client
+    seen = _nep_mediaserver(monkeypatch, info)
+
+    response = _testknop(client, sleutel)
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert "ongeldige API-sleutel" in detail and sleutel not in detail
+    assert [(r.method, r.url.path) for r in seen] == [("GET", "/System/Info/Public")]
+    assert all(sleutel not in value for r in seen for value in r.headers.values())
+    _sleutel_nergens_in_de_url(seen, sleutel)
+
+
+@pytest.mark.parametrize("info", [EMBY_INFO, JELLYFIN_INFO], ids=["emby", "jellyfin"])
+def test_testknop_geweigerde_sleutel_geeft_502_zonder_de_sleutel_in_de_melding(
+    mg_client: MgClient, monkeypatch: pytest.MonkeyPatch, info: dict[str, str]
+) -> None:
+    """Weigert de server de sleutel (401), dan meldt de route dat met de statuscode van de
+    server; de sleutel staat niet in de foutmelding."""
+    client, _database, _settings = mg_client
+    seen = _nep_mediaserver(monkeypatch, info, status=401)
+
+    response = _testknop(client, SLEUTEL)
+
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"] == "jellyfin antwoordde met HTTP 401"
+    assert SLEUTEL not in response.text
+    assert [(r.method, r.url.path) for r in seen][-1] == ("GET", "/System/Info")
+    _sleutel_nergens_in_de_url(seen, SLEUTEL)
