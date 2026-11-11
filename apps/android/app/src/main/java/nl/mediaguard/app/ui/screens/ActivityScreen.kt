@@ -24,6 +24,7 @@ import nl.mediaguard.app.data.formatClock
 import nl.mediaguard.app.data.formatDay
 import nl.mediaguard.app.data.formatEta
 import nl.mediaguard.app.data.formatTime
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.ui.Banner
 import nl.mediaguard.app.ui.ButtonKind
 import nl.mediaguard.app.ui.CardHeader
@@ -63,12 +64,14 @@ import nl.mediaguard.app.ui.theme.TouchTarget
 import java.time.LocalDate
 
 /** De filterchips van Activiteit (één rij, zoals in de web). */
-enum class ActivityTab(val key: String, val label: String) {
-    Nu("nu", "Nu"),
-    Problemen("problemen", "Problemen"),
-    Downloads("downloads", "Downloads"),
-    Gebeurd("gebeurd", "Wat is er gebeurd"),
-    Geschiedenis("geschiedenis", "Geschiedenis");
+enum class ActivityTab(val key: String, private val nl: String, private val en: String) {
+    Nu("nu", "Nu", "Now"),
+    Problemen("problemen", "Problemen", "Problems"),
+    Downloads("downloads", "Downloads", "Downloads"),
+    Gebeurd("gebeurd", "Wat is er gebeurd", "What happened"),
+    Geschiedenis("geschiedenis", "Geschiedenis", "History");
+
+    val label: String get() = tr(nl, en)
 
     companion object { fun of(key: String?) = entries.firstOrNull { it.key == key } ?: Nu }
 }
@@ -101,7 +104,7 @@ fun ActivityContent(
         else -> status.refreshing
     }
     ScreenList(refreshing = refreshing, onRefresh = a.refresh) {
-        item { PageHeader("Activiteit", "Wat MediaGuard nu doet en wat er gebeurd is") }
+        item { PageHeader(tr("Activiteit", "Activity"), tr("Wat MediaGuard nu doet en wat er gebeurd is", "What MediaGuard is doing now and what happened")) }
         item {
             FilterChips(ActivityTab.entries.map { it to it.label }, tab, a.selectTab,
                 counts = mapOf(ActivityTab.Problemen to (s?.attention?.count ?: 0), ActivityTab.Downloads to (s?.downloads?.active ?: 0)))
@@ -165,7 +168,7 @@ fun EncodeRow(r: RunningEncode, divider: Boolean) {
         }
         Spacer(Modifier.size(6.dp))
         MgProgress(r.percent?.let { (it / 100).toFloat() }, color = laneColor(r.lane),
-            description = r.percent?.let { "%.0f procent".format(it) })
+            description = r.percent?.let { tr("%.0f procent", "%.0f percent").format(it) })
         Spacer(Modifier.size(4.dp))
         val meta = listOfNotNull(r.phase, formatEta(r.etaSeconds).ifBlank { null }).joinToString(" · ")
         if (meta.isNotBlank()) Text(meta, style = Mg.type.meta, color = Mg.colors.muted)
@@ -184,7 +187,7 @@ fun DownloadRow(d: DownloadItem) {
             }
         }
         Spacer(Modifier.size(6.dp))
-        MgProgress(d.percent?.let { (it / 100).toFloat() }, color = Mg.peil.chart1, description = d.percent?.let { "%.0f procent".format(it) })
+        MgProgress(d.percent?.let { (it / 100).toFloat() }, color = Mg.peil.chart1, description = d.percent?.let { tr("%.0f procent", "%.0f percent").format(it) })
         Spacer(Modifier.size(4.dp))
         Text(listOfNotNull(formatEta(d.etaSeconds).ifBlank { null }, d.client.ifBlank { null }, d.size?.let { formatBytes(it) })
             .joinToString(" · "), style = Mg.type.meta, color = Mg.colors.muted)
@@ -195,25 +198,25 @@ fun DownloadRow(d: DownloadItem) {
 private fun NowTab(s: AppStatus) {
     Column(verticalArrangement = Arrangement.spacedBy(MgSpace.s3)) {
         TileRow {
-            KpiTile("Encodes", "${s.encoder.running.size}", Modifier.weight(1f).fillMaxHeight(), sub = "${s.encoder.queued} in de wachtrij",
+            KpiTile("Encodes", "${s.encoder.running.size}", Modifier.weight(1f).fillMaxHeight(), sub = tr("${s.encoder.queued} in de wachtrij", "${s.encoder.queued} in the queue"),
                 icon = R.drawable.lucide_zap)
             KpiTile("Downloads", "${s.downloads.active}", Modifier.weight(1f).fillMaxHeight(),
                 sub = when (s.downloads.clientsOk) {
-                    true -> "downloadclient bereikbaar"
-                    false -> "downloadclient onbereikbaar"
-                    null -> "status onbekend"
+                    true -> tr("downloadclient bereikbaar", "download client reachable")
+                    false -> tr("downloadclient onbereikbaar", "download client unreachable")
+                    null -> tr("status onbekend", "status unknown")
                 },
                 icon = R.drawable.lucide_download, status = PeilStatus.Storing.takeIf { s.downloads.clientsOk == false })
         }
         MgCard {
-            CardHeader("AV1-encodes", R.drawable.lucide_zap, count = s.encoder.running.size)
-            if (!s.encoder.reachable) Melding(Tone.Bad, R.drawable.lucide_octagon_x, "De AV1-engine is niet bereikbaar.")
-            if (s.encoder.running.isEmpty()) EmptyState("Geen actieve encodes", "Live banen en wachtrij staan bij Ruimte.")
+            CardHeader(tr("AV1-encodes", "AV1 encodes"), R.drawable.lucide_zap, count = s.encoder.running.size)
+            if (!s.encoder.reachable) Melding(Tone.Bad, R.drawable.lucide_octagon_x, tr("De AV1-engine is niet bereikbaar.", "The AV1 engine cannot be reached."))
+            if (s.encoder.running.isEmpty()) EmptyState(tr("Geen actieve encodes", "No active encodes"), tr("Live banen en wachtrij staan bij Ruimte.", "Live lanes and the queue are under Space."))
             s.encoder.running.forEachIndexed { i, r -> EncodeRow(r, i > 0) }
         }
         MgCard {
             CardHeader("Downloads", R.drawable.lucide_cloud_download, count = s.downloads.active)
-            if (s.downloads.items.isEmpty()) EmptyState("Er wordt nu niets gedownload")
+            if (s.downloads.items.isEmpty()) EmptyState(tr("Er wordt nu niets gedownload", "Nothing is downloading right now"))
             s.downloads.items.take(5).forEach { DownloadRow(it) }
         }
     }
@@ -222,24 +225,24 @@ private fun NowTab(s: AppStatus) {
 @Composable
 private fun ProblemsTab(s: AppStatus, a: ActivityActions) {
     MgCard {
-        CardHeader("Problemen en wacht op jou", R.drawable.lucide_list_checks, count = s.attention.count,
+        CardHeader(tr("Problemen en wacht op jou", "Problems and waiting for you"), R.drawable.lucide_list_checks, count = s.attention.count,
             countLabel = "${s.attention.count} open")
         if (s.attention.items.isEmpty())
-            EmptyState("Geen problemen", "Alles loopt. Gaat er iets mis, dan krijg je een melding.")
+            EmptyState(tr("Geen problemen", "No problems"), tr("Alles loopt. Gaat er iets mis, dan krijg je een melding.", "All running. If something goes wrong, you get a notification."))
         s.attention.items.forEachIndexed { i, item -> AttentionRow(item, i > 0, a.openWeb, a.retryJob, a.action) }
         if (s.attention.count > s.attention.items.size)
-            Text("Nog ${s.attention.count - s.attention.items.size} punten in de web.", style = Mg.type.meta, color = Mg.colors.muted)
+            Text(tr("Nog ${s.attention.count - s.attention.items.size} punten in de web.", "${s.attention.count - s.attention.items.size} more items in the web UI."), style = Mg.type.meta, color = Mg.colors.muted)
     }
 }
 
 @Composable
 private fun DownloadsTab(s: AppStatus) {
     Column(verticalArrangement = Arrangement.spacedBy(MgSpace.s3)) {
-        if (s.downloads.clientsOk == false) Banner("Downloadclient niet bereikbaar", Tone.Bad, R.drawable.lucide_octagon_x,
-            sub = "Downloads lopen pas weer als de client bereikbaar is.")
+        if (s.downloads.clientsOk == false) Banner(tr("Downloadclient niet bereikbaar", "Download client unreachable"), Tone.Bad, R.drawable.lucide_octagon_x,
+            sub = tr("Downloads lopen pas weer als de client bereikbaar is.", "Downloads resume once the client can be reached."))
         MgCard {
             CardHeader("Downloads", R.drawable.lucide_cloud_download, count = s.downloads.active)
-            if (s.downloads.items.isEmpty()) EmptyState("Er wordt nu niets gedownload", "Nieuwe afleveringen en upgrades verschijnen hier vanzelf.")
+            if (s.downloads.items.isEmpty()) EmptyState(tr("Er wordt nu niets gedownload", "Nothing is downloading right now"), tr("Nieuwe afleveringen en upgrades verschijnen hier vanzelf.", "New episodes and upgrades appear here by themselves."))
             s.downloads.items.forEach { DownloadRow(it) }
         }
     }
@@ -252,7 +255,7 @@ private fun DateBar(date: LocalDate, today: LocalDate, a: ActivityActions) {
     MgCard(padding = androidx.compose.foundation.layout.PaddingValues(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             MgButton("", { a.setDate(date.minusDays(1)) }, kind = ButtonKind.Ghost, icon = R.drawable.lucide_arrow_left,
-                contentDescription = "Vorige dag")
+                contentDescription = tr("Vorige dag", "Previous day"))
             Row(Modifier.weight(1f).heightIn(min = TouchTarget).clickable(onClick = a.pickDate).padding(vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
                 PeilIcon(R.drawable.lucide_calendar_days, Mg.colors.muted)
@@ -260,7 +263,7 @@ private fun DateBar(date: LocalDate, today: LocalDate, a: ActivityActions) {
                 Text(formatDay(date).replaceFirstChar { it.uppercase() }, style = Mg.type.bodyStrong, color = Mg.colors.text)
             }
             MgButton("", { a.setDate(date.plusDays(1)) }, kind = ButtonKind.Ghost, icon = R.drawable.lucide_arrow_right,
-                enabled = date.isBefore(today), contentDescription = "Volgende dag")
+                enabled = date.isBefore(today), contentDescription = tr("Volgende dag", "Next day"))
         }
     }
 }
@@ -268,34 +271,34 @@ private fun DateBar(date: LocalDate, today: LocalDate, a: ActivityActions) {
 private fun androidx.compose.foundation.lazy.LazyListScope.happened(s: DailySummary, a: ActivityActions) {
     item {
         MgCard {
-            Text(s.headline.ifBlank { "Geen activiteit op deze dag." }, style = Mg.type.bodyStrong, color = Mg.colors.text)
+            Text(s.headline.ifBlank { tr("Geen activiteit op deze dag.", "No activity on this day.") }, style = Mg.type.bodyStrong, color = Mg.colors.text)
             Row {
-                SummaryStat("Netto", formatBytes(s.storage.netBytes, signed = true), Modifier.weight(1f))
-                SummaryStat("Erbij", formatBytes(s.storage.addedBytes), Modifier.weight(1f))
-                SummaryStat("AV1 bespaard", formatBytes(s.storage.savedBytes), Modifier.weight(1f))
+                SummaryStat(tr("Netto", "Net"), formatBytes(s.storage.netBytes, signed = true), Modifier.weight(1f))
+                SummaryStat(tr("Erbij", "Added"), formatBytes(s.storage.addedBytes), Modifier.weight(1f))
+                SummaryStat(tr("AV1 bespaard", "AV1 saved"), formatBytes(s.storage.savedBytes), Modifier.weight(1f))
             }
             Row {
-                SummaryStat("Vervangen", "${s.encoder.done}", Modifier.weight(1f))
-                SummaryStat("Mislukt", "${s.encoder.failed}", Modifier.weight(1f),
+                SummaryStat(tr("Vervangen", "Replaced"), "${s.encoder.done}", Modifier.weight(1f))
+                SummaryStat(tr("Mislukt", "Failed"), "${s.encoder.failed}", Modifier.weight(1f),
                     icon = if (s.encoder.failed > 0) R.drawable.lucide_octagon_x else null)
-                SummaryStat("Gedownload", "${s.downloaded.size}", Modifier.weight(1f))
+                SummaryStat(tr("Gedownload", "Downloaded"), "${s.downloaded.size}", Modifier.weight(1f))
             }
         }
     }
     if (s.attention.isNotEmpty()) item {
         MgCard {
-            CardHeader("Aandacht", R.drawable.lucide_list_checks, count = s.attention.size)
+            CardHeader(tr("Aandacht", "Attention"), R.drawable.lucide_list_checks, count = s.attention.size)
             s.attention.forEachIndexed { i, x ->
                 val kind = AttentionKind.of(x.severity)
                 ListRow(x.title, divider = i > 0, leading = { IconBubble(kind.icoon, kind.tone) },
-                    trailing = if (!x.href.isNullOrBlank()) ({ MgButton("Bekijken", { a.openWeb(x.href) }, small = true) }) else null)
+                    trailing = if (!x.href.isNullOrBlank()) ({ MgButton(tr("Bekijken", "View"), { a.openWeb(x.href) }, small = true) }) else null)
             }
         }
     }
     item {
         MgCard {
-            CardHeader("Vervangen door AV1", R.drawable.lucide_zap, count = s.replaced.size)
-            if (s.replaced.isEmpty()) EmptyState("Niets vervangen op deze dag")
+            CardHeader(tr("Vervangen door AV1", "Replaced by AV1"), R.drawable.lucide_zap, count = s.replaced.size)
+            if (s.replaced.isEmpty()) EmptyState(tr("Niets vervangen op deze dag", "Nothing replaced on this day"))
             else Timeline(s.replaced.map { r ->
                 TimelineEntry(listOfNotNull(r.title, r.label).joinToString(" · "),
                     "${formatBytes(r.fromSize)} → ${formatBytes(r.toSize)}" + (r.saved?.let { " · −${formatBytes(it)}" } ?: "") +
@@ -306,11 +309,11 @@ private fun androidx.compose.foundation.lazy.LazyListScope.happened(s: DailySumm
     }
     item {
         MgCard {
-            CardHeader("Gedownload", R.drawable.lucide_download, count = s.downloaded.size)
-            if (s.downloaded.isEmpty()) EmptyState("Niets gedownload op deze dag")
+            CardHeader(tr("Gedownload", "Downloaded"), R.drawable.lucide_download, count = s.downloaded.size)
+            if (s.downloaded.isEmpty()) EmptyState(tr("Niets gedownload op deze dag", "Nothing downloaded on this day"))
             else Timeline(s.downloaded.map { d ->
                 TimelineEntry(listOfNotNull(d.title, d.label).joinToString(" · "),
-                    listOfNotNull(if (d.kind == "upgrade") "upgrade" else "nieuw", d.quality, d.source, d.size?.let { formatBytes(it) })
+                    listOfNotNull(if (d.kind == "upgrade") "upgrade" else tr("nieuw", "new"), d.quality, d.source, d.size?.let { formatBytes(it) })
                         .joinToString(" · "),
                     formatClock(d.at))
             })
@@ -318,7 +321,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.happened(s: DailySumm
     }
     if (s.upgrades.isNotEmpty()) item {
         MgCard {
-            CardHeader("Upgrades — waarom", R.drawable.lucide_trending_up, count = s.upgrades.size)
+            CardHeader(tr("Upgrades — waarom", "Upgrades — why"), R.drawable.lucide_trending_up, count = s.upgrades.size)
             Timeline(s.upgrades.map { u ->
                 TimelineEntry(u.reason ?: "Upgrade", listOfNotNull(u.title, u.label).joinToString(" · "), formatClock(u.at))
             })
@@ -326,11 +329,11 @@ private fun androidx.compose.foundation.lazy.LazyListScope.happened(s: DailySumm
     }
     item {
         MgCard {
-            CardHeader("Aanvragen", R.drawable.lucide_inbox, count = s.requests.size)
-            if (s.requests.isEmpty()) EmptyState("Geen nieuwe aanvragen")
+            CardHeader(tr("Aanvragen", "Requests"), R.drawable.lucide_inbox, count = s.requests.size)
+            if (s.requests.isEmpty()) EmptyState(tr("Geen nieuwe aanvragen", "No new requests"))
             s.requests.forEachIndexed { i, r ->
                 ListRow(r.title, divider = i > 0,
-                    sub = listOfNotNull(if (r.mediaType == "tv") "Serie" else "Film", formatTime(r.requestedAt).ifBlank { null })
+                    sub = listOfNotNull(if (r.mediaType == "tv") tr("Serie", "Series") else tr("Film", "Movie"), formatTime(r.requestedAt).ifBlank { null })
                         .joinToString(" · "),
                     trailing = r.deliveryState?.let { { PeilLabel(Kenmerk(it, R.drawable.lucide_inbox)) } })
             }
@@ -354,13 +357,13 @@ private fun SummaryStat(label: String, value: String, modifier: Modifier, icon: 
 @Composable
 private fun HistoryTab(days: List<DailySummary>, a: ActivityActions) {
     MgCard {
-        CardHeader("Afgelopen 7 dagen", R.drawable.lucide_calendar_days)
+        CardHeader(tr("Afgelopen 7 dagen", "Past 7 days"), R.drawable.lucide_calendar_days)
         days.forEachIndexed { i, d ->
             val date = runCatching { LocalDate.parse(d.date) }.getOrNull()
             ListRow(
                 date?.let { formatDay(it).replaceFirstChar { c -> c.uppercase() } } ?: d.date,
                 divider = i > 0,
-                sub = d.headline.ifBlank { "Geen activiteit" },
+                sub = d.headline.ifBlank { tr("Geen activiteit", "No activity") },
                 trailingText = if (d.storage.savedBytes > 0) "−${formatBytes(d.storage.savedBytes)}" else null,
                 onClick = date?.let { { a.setDate(it); a.selectTab(ActivityTab.Gebeurd) } },
             )

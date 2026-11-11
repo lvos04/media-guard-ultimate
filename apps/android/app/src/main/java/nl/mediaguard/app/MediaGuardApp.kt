@@ -3,6 +3,8 @@ package nl.mediaguard.app
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Context
+import android.content.res.Configuration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,14 +18,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 import nl.mediaguard.app.data.ApiClient
 import nl.mediaguard.app.data.ApiHooks
 import nl.mediaguard.app.data.ApiRepository
+import nl.mediaguard.app.data.AppTaal
 import nl.mediaguard.app.data.KeyRejection
 import nl.mediaguard.app.data.PairingPayload
 import nl.mediaguard.app.data.PushRegistration
 import nl.mediaguard.app.data.Repository
 import nl.mediaguard.app.data.SettingsStore
 import nl.mediaguard.app.data.StateStore
+import nl.mediaguard.app.data.Taal
 import nl.mediaguard.app.data.friendlyMessage
 import nl.mediaguard.app.data.isUnauthorized
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.work.Alerts
 import nl.mediaguard.app.work.Schedules
 
@@ -33,6 +38,14 @@ import nl.mediaguard.app.work.Schedules
  * de app te hoeven afsluiten.
  */
 data class Session(val generation: Int, val paired: Boolean, val rejected: Boolean)
+
+/**
+ * De app volgt de taal die Android voor deze app kiest: de systeemtaal, of vanaf Android 13 de taal per app.
+ * `values/` is Nederlands en `values-en/` Engels; elke andere taal valt terug op Nederlands (ADR-0023).
+ */
+fun Context.volgAppTaal() {
+    Taal.huidig = AppTaal.of(getString(R.string.app_taal))
+}
 
 class MediaGuardApp : Application() {
     lateinit var settings: SettingsStore
@@ -50,6 +63,7 @@ class MediaGuardApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        volgAppTaal()
         settings = SettingsStore(this)
         state = StateStore(this)
         if (settings.recovered) { state.storageReset = true; state.keyRejected = false }
@@ -57,6 +71,13 @@ class MediaGuardApp : Application() {
         _session.value = Session(0, settings.isPaired, state.keyRejected)
         if (settings.isPaired) Schedules.apply(this, settings, state)
         retryPushIfPending()
+    }
+
+    /** Andere taal gekozen terwijl de app draait: teksten en de namen van de meldingskanalen volgen. */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        volgAppTaal()
+        createChannels()
     }
 
     /** Repository voor de huidige koppeling; null zolang de app niet gekoppeld is. */
@@ -81,7 +102,7 @@ class MediaGuardApp : Application() {
         Alerts.cancel(this, Alerts.ID_NO_CONTACT)
         Schedules.apply(this, settings, state, rescheduleDaily = true)
         _session.update { Session(it.generation + 1, paired = true, rejected = false) }
-        if (role == "viewer") _notice.value = "Gekoppeld met alleen-lezen rechten (viewer). Bediening werkt met een operator-sleutel."
+        if (role == "viewer") _notice.value = tr("Gekoppeld met alleen-lezen rechten (viewer). Bediening werkt met een operator-sleutel.", "Linked with read-only rights (viewer). Controls need an operator key.")
         registerPush()
     }
 
@@ -110,8 +131,8 @@ class MediaGuardApp : Application() {
                 if (PushRegistration.giveUp(e)) state.pushPending = false
             }
             val text = result.fold(
-                { it.message.ifBlank { "Pushmeldingen naar deze telefoon staan aan" } },
-                { "Aanzetten in MediaGuard mislukt: ${it.friendlyMessage()}" },
+                { it.message.ifBlank { tr("Pushmeldingen naar deze telefoon staan aan", "Push notifications to this phone are on") } },
+                { tr("Aanzetten in MediaGuard mislukt: ${it.friendlyMessage()}", "Turning on in MediaGuard failed: ${it.friendlyMessage()}") },
             )
             onDone?.let { cb -> withContext(Dispatchers.Main) { cb(text) } }
         }
@@ -126,8 +147,8 @@ class MediaGuardApp : Application() {
     /** Koppelscherm na een 401: de opgeslagen sleutel nog één keer proberen (bv. na een storing).
      *  Geeft null als het weer werkt, anders de fout in gewone taal. */
     suspend fun retryCurrentKey(): String? {
-        val url = settings.serverUrl ?: return "Geen adres bewaard. Scan een koppelcode."
-        val key = settings.apiKey ?: return "Geen sleutel bewaard. Scan een koppelcode."
+        val url = settings.serverUrl ?: return tr("Geen adres bewaard. Scan een koppelcode.", "No address saved. Scan a pairing code.")
+        val key = settings.apiKey ?: return tr("Geen sleutel bewaard. Scan een koppelcode.", "No key saved. Scan a pairing code.")
         return runCatching { ApiRepository(ApiClient.create(url, key)).me() }.fold(
             {
                 state.keyRejected = false

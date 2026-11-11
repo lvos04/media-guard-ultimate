@@ -111,9 +111,9 @@ data class UpdateInfo(
 
     /** Korte zin voor de banner op Overzicht; null als alles bij is. */
     fun headline(): String? = when {
-        serverUpdate != null && appUpdate != null -> "MediaGuard $serverUpdate is uit (server en app)"
-        serverUpdate != null -> "MediaGuard $serverUpdate is uit; je server draait $serverVersion"
-        appUpdate != null -> "Nieuwere app beschikbaar: $appUpdate (jij hebt $appVersion)"
+        serverUpdate != null && appUpdate != null -> tr("MediaGuard $serverUpdate is uit (server en app)", "MediaGuard $serverUpdate is out (server and app)")
+        serverUpdate != null -> tr("MediaGuard $serverUpdate is uit; je server draait $serverVersion", "MediaGuard $serverUpdate is out; your server runs $serverVersion")
+        appUpdate != null -> tr("Nieuwere app beschikbaar: $appUpdate (jij hebt $appVersion)", "Newer app available: $appUpdate (you have $appVersion)")
         else -> null
     }
 

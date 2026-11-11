@@ -30,6 +30,7 @@ import nl.mediaguard.app.data.formatClockMillis
 import nl.mediaguard.app.data.formatDate
 import nl.mediaguard.app.data.formatTime
 import nl.mediaguard.app.data.today
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.ui.Banner
 import nl.mediaguard.app.ui.ButtonKind
 import nl.mediaguard.app.ui.CardHeader
@@ -92,26 +93,26 @@ fun heroFor(s: AppStatus, staleSince: Long?): HeroModel {
     val n = s.attention.count
     return when {
         s.emergencyStop.active -> HeroModel(
-            "Noodstop actief",
-            listOfNotNull("Nieuwe grabs, encodes en vervangingen staan stil.",
-                s.emergencyStop.since?.let { "Sinds ${formatTime(it)}." }, s.emergencyStop.reason?.ifBlank { null })
+            tr("Noodstop actief", "Emergency stop active"),
+            listOfNotNull(tr("Nieuwe grabs, encodes en vervangingen staan stil.", "New grabs, encodes and replacements are on hold."),
+                s.emergencyStop.since?.let { tr("Sinds ${formatTime(it)}.", "Since ${formatTime(it)}.") }, s.emergencyStop.reason?.ifBlank { null })
                 .joinToString(" "),
             PeilStatus.Gepauzeerd, HeroModel.Kind.Stop)
         staleSince != null -> HeroModel(
-            "Niet bijgewerkt sinds ${formatClockMillis(staleSince)}",
-            "MediaGuard antwoordt niet. Je ziet de laatst bekende stand.",
+            tr("Niet bijgewerkt sinds ${formatClockMillis(staleSince)}", "Not updated since ${formatClockMillis(staleSince)}"),
+            tr("MediaGuard antwoordt niet. Je ziet de laatst bekende stand.", "MediaGuard is not responding. You see the last known state."),
             PeilStatus.Verouderd, HeroModel.Kind.Stale)
         n > 0 -> {
             val total = totalStatus(s.attention.errors, s.attention.items)
             HeroModel(
-                if (n == 1) "1 ding wacht op jou" else "$n dingen wachten op jou",
-                if (s.attention.errors == 0) "Er loopt nu niets vast; MediaGuard houdt alles in de gaten."
-                else "${s.attention.errors} met een fout. De rest gaat gewoon door.",
-                total, HeroModel.Kind.Waiting, statusLabel = if (total == PeilStatus.Gezond) "Alles gezond" else null)
+                if (n == 1) tr("1 ding wacht op jou", "1 thing is waiting for you") else tr("$n dingen wachten op jou", "$n things are waiting for you"),
+                if (s.attention.errors == 0) tr("Er loopt nu niets vast; MediaGuard houdt alles in de gaten.", "Nothing is stuck right now; MediaGuard keeps watch.")
+                else tr("${s.attention.errors} met een fout. De rest gaat gewoon door.", "${s.attention.errors} with an error. The rest carries on."),
+                total, HeroModel.Kind.Waiting, statusLabel = if (total == PeilStatus.Gezond) tr("Alles gezond", "All healthy") else null)
         }
-        else -> HeroModel("Alles loopt — niets nodig van jou",
-            "Niets wacht op jou. MediaGuard zoekt, downloadt en bespaart vanzelf verder.", PeilStatus.Gezond,
-            HeroModel.Kind.Ok, statusLabel = "Alles gezond")
+        else -> HeroModel(tr("Alles loopt — niets nodig van jou", "All running — nothing needed from you"),
+            tr("Niets wacht op jou. MediaGuard zoekt, downloadt en bespaart vanzelf verder.", "Nothing is waiting for you. MediaGuard keeps searching, downloading and saving space by itself."), PeilStatus.Gezond,
+            HeroModel.Kind.Ok, statusLabel = tr("Alles gezond", "All healthy"))
     }
 }
 
@@ -128,12 +129,12 @@ fun OverviewContent(
     ScreenList(refreshing = status.refreshing, onRefresh = a.refresh) {
         item {
             val version = (status as? UiState.Data)?.value?.version?.ifBlank { null }
-            PageHeader("Overzicht", listOfNotNull(formatDate(date), version?.let { "MediaGuard v$it" }).joinToString(" · "))
+            PageHeader(tr("Overzicht", "Overview"), listOfNotNull(formatDate(date), version?.let { "MediaGuard v$it" }).joinToString(" · "))
         }
         extras.phoneWarning?.let { w ->
             item {
-                Banner(w, Tone.Info, R.drawable.lucide_bell_off, sub = "Zonder meldingen merk je problemen pas als je de app opent.",
-                    action = { MgButton("Oplossen", a.openSettings, small = true) })
+                Banner(w, Tone.Info, R.drawable.lucide_bell_off, sub = tr("Zonder meldingen merk je problemen pas als je de app opent.", "Without notifications you only notice problems when you open the app."),
+                    action = { MgButton(tr("Oplossen", "Fix"), a.openSettings, small = true) })
             }
         }
         when (status) {
@@ -143,7 +144,7 @@ fun OverviewContent(
                 val s = status.value
                 item { Hero(heroFor(s, extras.staleSince), extras.staleError, a) }
                 extras.update?.let { u ->
-                    item { Banner(u, Tone.Info, R.drawable.lucide_download, action = { MgButton("Bekijken", a.openSettings, small = true) }) }
+                    item { Banner(u, Tone.Info, R.drawable.lucide_download, action = { MgButton(tr("Bekijken", "View"), a.openSettings, small = true) }) }
                 }
                 item { Kpis(s, missing, a, extras.staleSince?.let { formatClockMillis(it) }) }
                 item { Recent(recent, a) }
@@ -161,9 +162,9 @@ private fun Hero(h: HeroModel, staleError: String?, a: OverviewActions) {
     }
     val sub = if (h.kind == HeroModel.Kind.Stale && staleError != null) "${h.sub} $staleError" else h.sub
     val (label, onAction) = when (h.kind) {
-        HeroModel.Kind.Stop -> "Naar Ruimte" to a.openSpace
-        HeroModel.Kind.Stale -> "Opnieuw proberen" to a.refresh
-        HeroModel.Kind.Waiting -> "Naar de lijst" to a.openAttention
+        HeroModel.Kind.Stop -> tr("Naar Ruimte", "Go to Space") to a.openSpace
+        HeroModel.Kind.Stale -> tr("Opnieuw proberen", "Try again") to a.refresh
+        HeroModel.Kind.Waiting -> tr("Naar de lijst", "Go to the list") to a.openAttention
         HeroModel.Kind.Ok -> null to null
     }
     StatusPanel(h.title, sub, h.status, statusLabel = h.statusLabel, icon = icon, actionLabel = label, onAction = onAction)
@@ -174,20 +175,20 @@ private fun Hero(h: HeroModel, staleError: String?, a: OverviewActions) {
 private fun Kpis(s: AppStatus, missing: Int?, a: OverviewActions, stale: String?) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         TileRow {
-            KpiTile("Bespaard met AV1", if (s.savingsBytes > 0) formatBytes(s.savingsBytes) else "—", Modifier.weight(1f).fillMaxHeight(),
-                sub = "kleiner, zelfde kwaliteit", icon = R.drawable.lucide_zap, staleSince = stale, onClick = a.openSpace)
+            KpiTile(tr("Bespaard met AV1", "Saved with AV1"), if (s.savingsBytes > 0) formatBytes(s.savingsBytes) else "—", Modifier.weight(1f).fillMaxHeight(),
+                sub = tr("kleiner, zelfde kwaliteit", "smaller, same quality"), icon = R.drawable.lucide_zap, staleSince = stale, onClick = a.openSpace)
             val busy = s.encoder.running.size + s.downloads.active
-            KpiTile("Nu bezig", "$busy", Modifier.weight(1f).fillMaxHeight(),
+            KpiTile(tr("Nu bezig", "Busy now"), "$busy", Modifier.weight(1f).fillMaxHeight(),
                 sub = "${s.encoder.running.size} encodes · ${s.downloads.active} downloads",
                 icon = R.drawable.lucide_activity, staleSince = stale, onClick = a.openActivity)
         }
         TileRow {
-            KpiTile("Ontbrekend", missing?.toString(), Modifier.weight(1f).fillMaxHeight(),
-                sub = if (missing == null) "nog niet bekend" else "MediaGuard zoekt vanzelf",
+            KpiTile(tr("Ontbrekend", "Missing"), missing?.toString(), Modifier.weight(1f).fillMaxHeight(),
+                sub = if (missing == null) tr("nog niet bekend", "not known yet") else tr("MediaGuard zoekt vanzelf", "MediaGuard searches by itself"),
                 icon = R.drawable.lucide_search_x, staleSince = stale.takeIf { missing != null },
                 onClick = if ((missing ?: 0) > 0) a.openMissing else a.openLibrary)
-            KpiTile("Vrije ruimte", formatBytes(s.storage.freeBytes), Modifier.weight(1f).fillMaxHeight(),
-                sub = s.storage.daysLeft?.let { "vol over $it" } ?: "nog geen prognose",
+            KpiTile(tr("Vrije ruimte", "Free space"), formatBytes(s.storage.freeBytes), Modifier.weight(1f).fillMaxHeight(),
+                sub = s.storage.daysLeft?.let { tr("vol over $it", "full in $it") } ?: tr("nog geen prognose", "no forecast yet"),
                 icon = R.drawable.lucide_hard_drive, staleSince = stale, onClick = a.openSpace)
         }
     }
@@ -195,9 +196,9 @@ private fun Kpis(s: AppStatus, missing: Int?, a: OverviewActions, stale: String?
 
 /** Titel van de kaart: rollend venster of (oudere server) het overzicht van gisteren. */
 fun recentTitle(d: DailySummary?): String = when {
-    d == null -> "Laatste 24 uur"
-    d.window == "24h" -> d.label ?: "Laatste 24 uur"
-    else -> "Gisteren"
+    d == null -> tr("Laatste 24 uur", "Last 24 hours")
+    d.window == "24h" -> d.label ?: tr("Laatste 24 uur", "Last 24 hours")
+    else -> tr("Gisteren", "Yesterday")
 }
 
 @Composable
@@ -211,11 +212,11 @@ private fun Recent(recent: UiState<DailySummary>, a: OverviewActions) {
             is UiState.Error -> Text(recent.message, style = Mg.type.small, color = Mg.colors.muted)
             is UiState.Data -> {
                 val d = recent.value
-                Text(d.headline.ifBlank { "Geen activiteit." }, style = Mg.type.body, color = Mg.colors.text)
+                Text(d.headline.ifBlank { tr("Geen activiteit.", "No activity.") }, style = Mg.type.body, color = Mg.colors.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Stat("Netto", formatBytes(d.storage.netBytes, signed = true), Modifier.weight(1f))
-                    Stat("AV1 bespaard", formatBytes(d.storage.savedBytes.takeIf { it > 0 } ?: d.encoder.savedBytes), Modifier.weight(1f))
-                    Stat("Erbij", "${d.downloaded.size}", Modifier.weight(1f))
+                    Stat(tr("Netto", "Net"), formatBytes(d.storage.netBytes, signed = true), Modifier.weight(1f))
+                    Stat(tr("AV1 bespaard", "AV1 saved"), formatBytes(d.storage.savedBytes.takeIf { it > 0 } ?: d.encoder.savedBytes), Modifier.weight(1f))
+                    Stat(tr("Erbij", "Added"), "${d.downloaded.size}", Modifier.weight(1f))
                 }
             }
         }
@@ -233,11 +234,11 @@ private fun Stat(label: String, value: String, modifier: Modifier) {
 @Composable
 private fun Waiting(items: List<AttentionItem>, count: Int, a: OverviewActions) {
     MgCard {
-        CardHeader("Wat actie nodig heeft", R.drawable.lucide_list_checks, count = count,
-            countLabel = if (count == 1) "1 ding wacht op jou" else "$count dingen wachten op jou")
-        if (items.isEmpty()) EmptyState("Niets wacht op jou", "Komt er iets bij, dan zie je het hier en krijg je een melding.")
+        CardHeader(tr("Wat actie nodig heeft", "What needs action"), R.drawable.lucide_list_checks, count = count,
+            countLabel = if (count == 1) tr("1 ding wacht op jou", "1 thing is waiting for you") else tr("$count dingen wachten op jou", "$count things are waiting for you"))
+        if (items.isEmpty()) EmptyState(tr("Niets wacht op jou", "Nothing is waiting for you"), tr("Komt er iets bij, dan zie je het hier en krijg je een melding.", "When something comes up, you see it here and get a notification."))
         items.take(6).forEachIndexed { i, item -> AttentionRow(item, i > 0, a.openWeb, a.retryJob, a.action, compact = true) }
-        if (items.size > 6 || count > items.size) MgButton("Alle $count bekijken", a.openAttention, kind = ButtonKind.Ghost, small = true)
+        if (items.size > 6 || count > items.size) MgButton(tr("Alle $count bekijken", "View all $count"), a.openAttention, kind = ButtonKind.Ghost, small = true)
     }
 }
 
@@ -265,14 +266,14 @@ fun AttentionRow(
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(item.title, style = Mg.type.body.copy(fontWeight = FontWeight.SemiBold), color = Mg.colors.text)
                 item.detail?.ifBlank { null }?.let { Text(it, style = Mg.type.small, color = Mg.colors.muted) }
-                if (kind == AttentionKind.Voorwaarde) Text("Dit is geen storing; er wacht een voorwaarde.",
+                if (kind == AttentionKind.Voorwaarde) Text(tr("Dit is geen storing; er wacht een voorwaarde.", "This is not a fault; a condition is waiting."),
                     style = Mg.type.small, color = Mg.colors.muted)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     item.actions.forEach { act ->
                         MgButton(act.label, { action(act) }, kind = if (act.primary) ButtonKind.Primary else ButtonKind.Secondary, small = true)
                     }
-                    if (jobId != null) MgButton("Opnieuw proberen", { retryJob(jobId) }, small = true)
-                    if (!item.href.isNullOrBlank()) MgButton("Bekijken", { openWeb(item.href) },
+                    if (jobId != null) MgButton(tr("Opnieuw proberen", "Try again"), { retryJob(jobId) }, small = true)
+                    if (!item.href.isNullOrBlank()) MgButton(tr("Bekijken", "View"), { openWeb(item.href) },
                         kind = if (item.actions.isEmpty()) ButtonKind.Primary else ButtonKind.Ghost, small = true)
                 }
                 if (!compact) item.rows.forEach { r ->
@@ -288,9 +289,9 @@ fun AttentionRow(
                     }
                 }
                 val more = buildList {
-                    if (compact && item.rows.isNotEmpty()) add("Per bestand kiezen: Activiteit → Problemen")
-                    else if (item.moreRows > 0) add("Nog ${item.moreRows} in de web")
-                    if (item.adminActions > 0) add("Meer knoppen in de web (alleen beheerder)")
+                    if (compact && item.rows.isNotEmpty()) add(tr("Per bestand kiezen: Activiteit → Problemen", "Choose per file: Activity → Problems"))
+                    else if (item.moreRows > 0) add(tr("Nog ${item.moreRows} in de web", "${item.moreRows} more in the web UI"))
+                    if (item.adminActions > 0) add(tr("Meer knoppen in de web (alleen beheerder)", "More buttons in the web UI (admin only)"))
                 }
                 if (more.isNotEmpty()) Text(more.joinToString(" · "), style = Mg.type.meta, color = Mg.colors.muted)
             }

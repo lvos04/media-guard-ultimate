@@ -20,10 +20,11 @@ import nl.mediaguard.app.data.AppStatus
 import nl.mediaguard.app.data.DailySummary
 import nl.mediaguard.app.data.Lane
 import nl.mediaguard.app.data.RunningEncode
-import nl.mediaguard.app.data.formatEta
+import nl.mediaguard.app.data.formatDuur
 import nl.mediaguard.app.data.formatBytes
 import nl.mediaguard.app.data.formatDay
 import nl.mediaguard.app.data.formatTime
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.ui.ButtonKind
 import nl.mediaguard.app.ui.CardHeader
 import nl.mediaguard.app.ui.EmptyState
@@ -73,7 +74,7 @@ class SpaceActions(
 @Composable
 fun SpaceContent(status: UiState<AppStatus>, recent: UiState<DailySummary>, a: SpaceActions) {
     ScreenList(refreshing = status.refreshing, onRefresh = a.refresh) {
-        item { PageHeader("Ruimte", "Ruimte besparen zonder kwaliteitsverlies: elke encode wordt gecontroleerd voordat hij het origineel vervangt.") }
+        item { PageHeader(tr("Ruimte", "Space"), tr("Ruimte besparen zonder kwaliteitsverlies: elke encode wordt gecontroleerd voordat hij het origineel vervangt.", "Save space without quality loss: every encode is checked before it replaces the original.")) }
         when (status) {
             UiState.Loading -> item { LoadingState(3) }
             is UiState.Error -> item { ErrorState(status.message, a.refresh) }
@@ -97,17 +98,17 @@ fun SpaceContent(status: UiState<AppStatus>, recent: UiState<DailySummary>, a: S
 private fun EmergencyCard(s: AppStatus, a: SpaceActions) {
     val on = s.emergencyStop.active
     MgCard(tone = if (on) Tone.Paused else null) {
-        CardHeader("Noodstop", if (on) R.drawable.lucide_circle_pause else R.drawable.lucide_octagon_alert)
-        if (on) StatusBadge(PeilStatus.Gepauzeerd, label = "Noodstop actief")
-        else PeilLabel(Kenmerk("Uit", R.drawable.lucide_power_off))
+        CardHeader(tr("Noodstop", "Emergency stop"), if (on) R.drawable.lucide_circle_pause else R.drawable.lucide_octagon_alert)
+        if (on) StatusBadge(PeilStatus.Gepauzeerd, label = tr("Noodstop actief", "Emergency stop active"))
+        else PeilLabel(Kenmerk(tr("Uit", "Off"), R.drawable.lucide_power_off))
         Text(
-            if (on) listOfNotNull("Nieuwe grabs, encodes en vervangingen staan stil.", s.emergencyStop.reason?.ifBlank { null },
-                s.emergencyStop.since?.let { "Sinds ${formatTime(it)}." }).joinToString(" ")
-            else "Stopt in één keer nieuwe grabs, encodes en vervangingen; lopende encodes pauzeren.",
+            if (on) listOfNotNull(tr("Nieuwe grabs, encodes en vervangingen staan stil.", "New grabs, encodes and replacements are on hold."), s.emergencyStop.reason?.ifBlank { null },
+                s.emergencyStop.since?.let { tr("Sinds ${formatTime(it)}.", "Since ${formatTime(it)}.") }).joinToString(" ")
+            else tr("Stopt in één keer nieuwe grabs, encodes en vervangingen; lopende encodes pauzeren.", "Stops new grabs, encodes and replacements at once; running encodes pause."),
             style = Mg.type.small, color = Mg.colors.muted,
         )
-        if (on) MgButton("Noodstop opheffen", { a.emergency(false) }, kind = ButtonKind.Primary, modifier = Modifier.fillMaxWidth())
-        else MgButton("Noodstop aanzetten", { a.emergency(true) }, kind = ButtonKind.Danger,
+        if (on) MgButton(tr("Noodstop opheffen", "Release emergency stop"), { a.emergency(false) }, kind = ButtonKind.Primary, modifier = Modifier.fillMaxWidth())
+        else MgButton(tr("Noodstop aanzetten", "Turn on emergency stop"), { a.emergency(true) }, kind = ButtonKind.Danger,
             icon = R.drawable.lucide_octagon_alert, modifier = Modifier.fillMaxWidth())
     }
 }
@@ -116,17 +117,17 @@ private fun EmergencyCard(s: AppStatus, a: SpaceActions) {
 private fun SpaceKpis(s: AppStatus) {
     Column(verticalArrangement = Arrangement.spacedBy(MgSpace.s3)) {
         TileRow {
-            KpiTile("Bespaard", if (s.savingsBytes > 0) formatBytes(s.savingsBytes) else "—", Modifier.weight(1f).fillMaxHeight(),
-                sub = "totaal door AV1", icon = R.drawable.lucide_zap)
-            KpiTile("Vrije ruimte", formatBytes(s.storage.freeBytes), Modifier.weight(1f).fillMaxHeight(),
-                sub = s.storage.daysLeft?.let { "vol over $it" }, icon = R.drawable.lucide_hard_drive)
+            KpiTile(tr("Bespaard", "Saved"), if (s.savingsBytes > 0) formatBytes(s.savingsBytes) else "—", Modifier.weight(1f).fillMaxHeight(),
+                sub = tr("totaal door AV1", "total through AV1"), icon = R.drawable.lucide_zap)
+            KpiTile(tr("Vrije ruimte", "Free space"), formatBytes(s.storage.freeBytes), Modifier.weight(1f).fillMaxHeight(),
+                sub = s.storage.daysLeft?.let { tr("vol over $it", "full in $it") }, icon = R.drawable.lucide_hard_drive)
         }
         TileRow {
-            KpiTile("Wachtrij", "${s.encoder.queued}", Modifier.weight(1f).fillMaxHeight(), sub = "jobs wachten",
+            KpiTile(tr("Wachtrij", "Queue"), "${s.encoder.queued}", Modifier.weight(1f).fillMaxHeight(), sub = tr("jobs wachten", "jobs waiting"),
                 icon = R.drawable.lucide_list_ordered)
             val slots = s.encoder.lanes.sumOf { it.slots }
-            KpiTile("Bezig", "${s.encoder.running.size}", Modifier.weight(1f).fillMaxHeight(),
-                sub = if (slots > 0) "van $slots plekken" else null, icon = R.drawable.lucide_activity)
+            KpiTile(tr("Bezig", "Busy"), "${s.encoder.running.size}", Modifier.weight(1f).fillMaxHeight(),
+                sub = if (slots > 0) tr("van $slots plekken", "of $slots slots") else null, icon = R.drawable.lucide_activity)
         }
     }
 }
@@ -134,11 +135,11 @@ private fun SpaceKpis(s: AppStatus) {
 @Composable
 private fun EncodesNow(s: AppStatus, a: SpaceActions) {
     MgCard {
-        CardHeader("Encodes nu", R.drawable.lucide_zap, count = s.encoder.running.size)
+        CardHeader(tr("Encodes nu", "Encodes now"), R.drawable.lucide_zap, count = s.encoder.running.size)
         if (!s.encoder.reachable) Melding(Tone.Bad, R.drawable.lucide_octagon_x,
-            "De AV1-engine reageert niet.", "MediaGuard probeert het automatisch opnieuw.")
+            tr("De AV1-engine reageert niet.", "The AV1 engine is not responding."), tr("MediaGuard probeert het automatisch opnieuw.", "MediaGuard retries automatically."))
         s.encoder.lanes.forEach { l -> LaneRow(l, s.encoder.running.filter { it.lane == l.lane }, a) }
-        if (s.encoder.running.isEmpty()) EmptyState("Geen actieve encodes", "Zodra er werk is, start de volgende vanzelf.")
+        if (s.encoder.running.isEmpty()) EmptyState(tr("Geen actieve encodes", "No active encodes"), tr("Zodra er werk is, start de volgende vanzelf.", "As soon as there is work, the next one starts by itself."))
         s.encoder.running.forEachIndexed { i, r -> EncodeRow(r, i > 0) }
     }
 }
@@ -146,11 +147,11 @@ private fun EncodesNow(s: AppStatus, a: SpaceActions) {
 /** "2 van 4 bezig" (of "uit" als de baan geen plekken heeft), met de eerstvolgende ETA op deze baan. */
 fun laneSummary(l: Lane, running: List<RunningEncode>): Pair<String, String?> {
     val head = when {
-        l.slots == 0 && l.running == 0 -> "uit"
-        else -> "${l.running} van ${l.slots} bezig"
-    } + if (l.paused) " · gepauzeerd" else ""
+        l.slots == 0 && l.running == 0 -> tr("uit", "off")
+        else -> tr("${l.running} van ${l.slots} bezig", "${l.running} of ${l.slots} busy")
+    } + if (l.paused) tr(" · gepauzeerd", " · paused") else ""
     val eta = running.mapNotNull { it.etaSeconds }.filter { it > 0 }.minOrNull()
-    return head to eta?.let { "eerstvolgende klaar ${formatEta(it).removePrefix("nog ").let { t -> "over $t" }}" }
+    return head to eta?.let { tr("eerstvolgende klaar over ${formatDuur(it)}", "next one done in ${formatDuur(it)}") }
 }
 
 @Composable
@@ -164,12 +165,12 @@ private fun LaneRow(l: Lane, running: List<RunningEncode>, a: SpaceActions) {
                 Text(head, style = Mg.type.small.copy(fontWeight = FontWeight.SemiBold), color = Mg.colors.text)
                 eta?.let { Text(it, style = Mg.type.meta, color = Mg.colors.muted) }
             }
-            MgButton(if (l.paused) "Hervatten" else "Pauzeren", { a.lane(l.lane, l.paused) }, small = true,
+            MgButton(if (l.paused) tr("Hervatten", "Resume") else tr("Pauzeren", "Pause"), { a.lane(l.lane, l.paused) }, small = true,
                 icon = if (l.paused) R.drawable.lucide_play else R.drawable.lucide_pause)
         }
         if (l.paused) StatusBadge(PeilStatus.Gepauzeerd)
         MgProgress(if (l.slots > 0) l.running.toFloat() / l.slots else 0f, color = laneColor(l.lane), height = 6.dp,
-            description = "${l.running} van ${l.slots} plekken bezig")
+            description = tr("${l.running} van ${l.slots} plekken bezig", "${l.running} of ${l.slots} slots busy"))
         l.reason?.let {
             Row(verticalAlignment = Alignment.Top) {
                 PeilIcon(R.drawable.lucide_info, Mg.peil.info, Modifier.padding(top = 1.dp), size = 18.dp)
@@ -183,11 +184,11 @@ private fun LaneRow(l: Lane, running: List<RunningEncode>, a: SpaceActions) {
 @Composable
 private fun Queue(s: AppStatus, a: SpaceActions) {
     MgCard {
-        CardHeader("Wachtrij", R.drawable.lucide_list_ordered, count = s.encoder.queued, trailing = {
-            MgButton("Autopilot nu", a.autopilot, small = true)
+        CardHeader(tr("Wachtrij", "Queue"), R.drawable.lucide_list_ordered, count = s.encoder.queued, trailing = {
+            MgButton(tr("Autopilot nu", "Autopilot now"), a.autopilot, small = true)
         })
-        Text(if (s.encoder.queued == 0) "Er wacht niets. De autopilot zet nieuw werk klaar zodra er iets te besparen valt."
-            else "${s.encoder.queued} jobs wachten op een vrije plek.", style = Mg.type.small, color = Mg.colors.muted)
+        Text(if (s.encoder.queued == 0) tr("Er wacht niets. De autopilot zet nieuw werk klaar zodra er iets te besparen valt.", "Nothing is waiting. The autopilot queues new work as soon as there is something to save.")
+            else tr("${s.encoder.queued} jobs wachten op een vrije plek.", "${s.encoder.queued} jobs are waiting for a free slot."), style = Mg.type.small, color = Mg.colors.muted)
     }
 }
 
@@ -198,7 +199,7 @@ private fun Queue(s: AppStatus, a: SpaceActions) {
 @Composable
 private fun WhereDidSpaceGo(recent: UiState<DailySummary>, a: SpaceActions) {
     MgCard {
-        CardHeader("Waar ging de ruimte heen", R.drawable.lucide_scale, trailing = {
+        CardHeader(tr("Waar ging de ruimte heen", "Where the space went"), R.drawable.lucide_scale, trailing = {
             MgButton("Details", a.openHappened, kind = ButtonKind.Ghost, small = true)
         })
         when (recent) {
@@ -208,15 +209,15 @@ private fun WhereDidSpaceGo(recent: UiState<DailySummary>, a: SpaceActions) {
                 val st = recent.value.storage
                 val date = runCatching { LocalDate.parse(recent.value.date) }.getOrNull()
                 val label = if (recent.value.window != null) recentTitle(recent.value)
-                else date?.let { formatDay(it).replaceFirstChar { c -> c.uppercase() } } ?: "Gisteren"
-                Text("$label: netto ${formatBytes(st.netBytes, signed = true)}", style = Mg.type.bodyStrong, color = Mg.colors.text)
+                else date?.let { formatDay(it).replaceFirstChar { c -> c.uppercase() } } ?: tr("Gisteren", "Yesterday")
+                Text(tr("$label: netto ${formatBytes(st.netBytes, signed = true)}", "$label: net ${formatBytes(st.netBytes, signed = true)}"), style = Mg.type.bodyStrong, color = Mg.colors.text)
                 val max = listOf(st.addedBytes, st.savedBytes, st.unexplainedBytes ?: 0).maxOf { abs(it) }.coerceAtLeast(1)
-                SpaceBar("Erbij", "nieuwe bestanden en upgrades", st.addedBytes, max, Mg.peil.chart1, plus = true)
-                SpaceBar("AV1-besparing", "bestanden kleiner gemaakt", st.savedBytes, max, Mg.peil.chart2, plus = false)
+                SpaceBar(tr("Erbij", "Added"), tr("nieuwe bestanden en upgrades", "new files and upgrades"), st.addedBytes, max, Mg.peil.chart1, plus = true)
+                SpaceBar(tr("AV1-besparing", "AV1 savings"), tr("bestanden kleiner gemaakt", "files made smaller"), st.savedBytes, max, Mg.peil.chart2, plus = false)
                 val unexplained = st.unexplainedBytes
-                if (unexplained == null) SpaceBar("Niet verklaard", "nog niet gemeten (de vrije ruimte wordt elk uur gemeten)",
+                if (unexplained == null) SpaceBar(tr("Niet verklaard", "Unexplained"), tr("nog niet gemeten (de vrije ruimte wordt elk uur gemeten)", "not measured yet (free space is measured every hour)"),
                     null, max, Mg.peil.chartOther, plus = true, hatched = true)
-                else SpaceBar("Niet verklaard", "verschil dat MediaGuard niet kan toewijzen (bv. andere apps op de pool)",
+                else SpaceBar(tr("Niet verklaard", "Unexplained"), tr("verschil dat MediaGuard niet kan toewijzen (bv. andere apps op de pool)", "difference MediaGuard cannot attribute (e.g. other apps on the pool)"),
                     unexplained, max, Mg.peil.chartOther, plus = unexplained >= 0, hatched = true)
             }
         }

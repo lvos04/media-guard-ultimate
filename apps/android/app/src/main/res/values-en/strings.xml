@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_taal">en</string>
+    <string name="channel_daily">Daily summary</string>
+    <string name="channel_daily_desc">A daily summary from MediaGuard</string>
+    <string name="channel_alerts">Notifications</string>
+    <string name="channel_alerts_desc">Instant notifications from MediaGuard (via ntfy)</string>
+</resources>

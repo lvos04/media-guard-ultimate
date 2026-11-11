@@ -81,14 +81,14 @@ fun Throwable.friendlyMessage(): String = when (this) {
         }
         when {
             !detail.isNullOrBlank() -> detail
-            code() == 401 -> "API-sleutel geweigerd. Koppel de app opnieuw."
-            code() == 403 -> "Deze API-sleutel mag dit niet (rol operator nodig)."
-            code() == 404 -> "Deze MediaGuard-versie kent deze functie nog niet."
-            else -> "MediaGuard gaf fout ${code()}."
+            code() == 401 -> tr("API-sleutel geweigerd. Koppel de app opnieuw.", "API key rejected. Pair the app again.")
+            code() == 403 -> tr("Deze API-sleutel mag dit niet (rol operator nodig).", "This API key may not do this (operator role needed).")
+            code() == 404 -> tr("Deze MediaGuard-versie kent deze functie nog niet.", "This MediaGuard version does not have this feature yet.")
+            else -> tr("MediaGuard gaf fout ${code()}.", "MediaGuard returned error ${code()}.")
         }
     }
-    is CleartextBlocked -> "Onversleuteld (http://) naar een adres buiten je thuisnetwerk is geblokkeerd. " +
-        "Gebruik het https-adres, bijvoorbeeld je Cloudflare-tunnel."
-    is IOException -> "MediaGuard is niet bereikbaar. Controleer het adres en je verbinding."
-    else -> message ?: "Onbekende fout"
+    is CleartextBlocked -> tr("Onversleuteld (http://) naar een adres buiten je thuisnetwerk is geblokkeerd. ", "Unencrypted (http://) to an address outside your home network is blocked. ") +
+        tr("Gebruik het https-adres, bijvoorbeeld je Cloudflare-tunnel.", "Use the https address, for example your Cloudflare tunnel.")
+    is IOException -> tr("MediaGuard is niet bereikbaar. Controleer het adres en je verbinding.", "MediaGuard cannot be reached. Check the address and your connection.")
+    else -> message ?: tr("Onbekende fout", "Unknown error")
 }

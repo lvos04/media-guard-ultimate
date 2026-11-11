@@ -28,6 +28,7 @@ import nl.mediaguard.app.data.LibraryItem
 import nl.mediaguard.app.data.LibraryPage
 import nl.mediaguard.app.data.formatBytes
 import nl.mediaguard.app.data.formatTime
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.ui.CardHeader
 import nl.mediaguard.app.ui.EmptyState
 import nl.mediaguard.app.ui.ErrorState
@@ -78,19 +79,19 @@ fun LibraryContent(
     ScreenList(refreshing = state.refreshing, onRefresh = onRefresh) {
         item {
             val total = (state as? UiState.Data)?.value?.total
-            if (missingOnly) PageHeader("Ontbrekend", total?.let { "$it ${if (it == 1) "titel mist" else "titels missen"} afleveringen of films" }
-                ?: "Titels die nog niet compleet zijn")
-            else PageHeader("Bibliotheek", total?.let { "$it ${kind.label.lowercase()}" } ?: "Kwaliteit, seizoenen en upgrades")
+            if (missingOnly) PageHeader(tr("Ontbrekend", "Missing"), total?.let { tr("$it ${if (it == 1) "titel mist" else "titels missen"} afleveringen of films", "$it ${if (it == 1) "title is" else "titles are"} missing episodes or movies") }
+                ?: tr("Titels die nog niet compleet zijn", "Titles that are not complete yet"))
+            else PageHeader(tr("Bibliotheek", "Library"), total?.let { "$it ${kind.label.lowercase()}" } ?: tr("Kwaliteit, seizoenen en upgrades", "Quality, seasons and upgrades"))
         }
         if (missingOnly) item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                PeilLabel(Beschikbaarheid.ontbreekt("Alleen ontbrekend"))
+                PeilLabel(Beschikbaarheid.ontbreekt(tr("Alleen ontbrekend", "Missing only")))
                 Spacer(Modifier.width(MgSpace.s2))
-                MgButton("Alles tonen", onShowAll, kind = ButtonKind.Secondary, small = true)
+                MgButton(tr("Alles tonen", "Show everything"), onShowAll, kind = ButtonKind.Secondary, small = true)
             }
         }
         else item { Segmented(LibraryKind.entries.map { it.label }, kind.ordinal, { onKind(LibraryKind.entries[it]) }) }
-        item { MgSearchField(query, onQuery, if (missingOnly) "Zoek in ontbrekend" else "Zoek in ${kind.label.lowercase()}", onSearch) }
+        item { MgSearchField(query, onQuery, if (missingOnly) tr("Zoek in ontbrekend", "Search missing") else tr("Zoek in ${kind.label.lowercase()}", "Search ${kind.label.lowercase()}"), onSearch) }
         when (state) {
             UiState.Loading -> item { LoadingState(3) }
             is UiState.Error -> item { ErrorState(state.message, onRefresh) }
@@ -98,10 +99,10 @@ fun LibraryContent(
                 val items = state.value.items
                 if (items.isEmpty()) item {
                     MgCard { EmptyState(when {
-                        query.isNotBlank() -> "Niets gevonden"
-                        missingOnly -> "Niets ontbreekt"
-                        else -> "Nog niets in deze bibliotheek"
-                    }, if (query.isBlank()) null else "Probeer een andere titel.", icon = R.drawable.lucide_search_x) }
+                        query.isNotBlank() -> tr("Niets gevonden", "Nothing found")
+                        missingOnly -> tr("Niets ontbreekt", "Nothing is missing")
+                        else -> tr("Nog niets in deze bibliotheek", "Nothing in this library yet")
+                    }, if (query.isBlank()) null else tr("Probeer een andere titel.", "Try another title."), icon = R.drawable.lucide_search_x) }
                 }
                 else item {
                     MgCard(padding = androidx.compose.foundation.layout.PaddingValues(horizontal = MgSpace.s3, vertical = MgSpace.s1)) {
@@ -125,7 +126,7 @@ private fun LibraryRow(item: LibraryItem, divider: Boolean, onClick: () -> Unit)
                 Text(item.title + (item.year?.let { " ($it)" } ?: ""), style = Mg.type.body.copy(fontWeight = FontWeight.Medium),
                     color = Mg.colors.text)
                 Text(listOfNotNull(item.instanceName, item.sizeOnDisk.takeIf { it > 0 }?.let { formatBytes(it) },
-                    item.stats?.takeIf { item.kind == "series" && it.total > 0 }?.let { "${it.available} van ${it.total} afl." })
+                    item.stats?.takeIf { item.kind == "series" && it.total > 0 }?.let { tr("${it.available} van ${it.total} afl.", "${it.available} of ${it.total} ep.") })
                     .joinToString(" · "), style = Mg.type.meta, color = Mg.colors.muted)
                 LabelRow(qualityChips(item))
             }
@@ -142,7 +143,7 @@ fun qualityChips(item: LibraryItem): List<Kenmerk> {
     val out = mutableListOf<Kenmerk>()
     when {
         item.monitored == false -> out += Beschikbaarheid.nietGevolgd()
-        s.missing > 0 -> out += Beschikbaarheid.ontbreekt(if (item.kind == "movie") "Ontbreekt" else "${s.missing} ontbreken")
+        s.missing > 0 -> out += Beschikbaarheid.ontbreekt(if (item.kind == "movie") tr("Ontbreekt", "Missing") else tr("${s.missing} ontbreken", "${s.missing} missing"))
         s.total > 0 && s.available >= s.total - s.upcoming - s.unmonitored -> out += Beschikbaarheid.compleet()
     }
     if (s.cutoffUnmet > 0) out += Beschikbaarheid.kanBeter()
@@ -172,27 +173,27 @@ fun LibraryItemContent(title: String?, state: UiState<ItemDetail>, onSeason: (In
             is UiState.Data -> {
                 val d = state.value
                 item {
-                    PageHeader(d.seasons?.title ?: title ?: "Titel",
-                        listOfNotNull(if (d.files.kind == "series") "Serie" else "Film", d.files.profile.name).joinToString(" · "))
+                    PageHeader(d.seasons?.title ?: title ?: tr("Titel", "Title"),
+                        listOfNotNull(if (d.files.kind == "series") tr("Serie", "Series") else tr("Film", "Movie"), d.files.profile.name).joinToString(" · "))
                 }
                 d.seasons?.takeIf { it.seasons.isNotEmpty() }?.let { m ->
                     item {
                         MgCard {
-                            CardHeader("Seizoenen", R.drawable.lucide_list, count = m.seasons.size)
+                            CardHeader(tr("Seizoenen", "Seasons"), R.drawable.lucide_list, count = m.seasons.size)
                             m.seasons.forEachIndexed { i, season ->
                                 if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Mg.colors.lineSoft))
                                 val have = season.episodes.count { it.hasFile }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Column(Modifier.weight(1f)) {
-                                        Text(if (season.seasonNumber == 0) "Specials" else "Seizoen ${season.seasonNumber}",
+                                        Text(if (season.seasonNumber == 0) "Specials" else tr("Seizoen ${season.seasonNumber}", "Season ${season.seasonNumber}"),
                                             style = Mg.type.body.copy(fontWeight = FontWeight.Medium), color = Mg.colors.text)
-                                        Text("$have van ${season.episodes.size} aanwezig" + if (season.monitored) " · gevolgd" else "",
+                                        Text(tr("$have van ${season.episodes.size} aanwezig", "$have of ${season.episodes.size} present") + if (season.monitored) tr(" · gevolgd", " · monitored") else "",
                                             style = Mg.type.meta, color = Mg.colors.muted)
                                     }
                                     MgSwitch(season.monitored, { onSeason(season.seasonNumber, it) })
                                 }
                             }
-                            Text("Aanzetten vraagt of MediaGuard meteen moet zoeken.", style = Mg.type.meta, color = Mg.colors.muted)
+                            Text(tr("Aanzetten vraagt of MediaGuard meteen moet zoeken.", "Turning it on asks whether MediaGuard should search right away."), style = Mg.type.meta, color = Mg.colors.muted)
                         }
                     }
                 }
@@ -200,7 +201,7 @@ fun LibraryItemContent(title: String?, state: UiState<ItemDetail>, onSeason: (In
                 item {
                     MgCard {
                         CardHeader("Upgrades", R.drawable.lucide_trending_up, count = d.upgrades.upgrades.size)
-                        if (d.upgrades.upgrades.isEmpty()) EmptyState("Geen upgrades in de laatste 90 dagen")
+                        if (d.upgrades.upgrades.isEmpty()) EmptyState(tr("Geen upgrades in de laatste 90 dagen", "No upgrades in the last 90 days"))
                         else Timeline(d.upgrades.upgrades.map { u ->
                             TimelineEntry(
                                 u.reason.ifBlank { "Upgrade" },
@@ -208,7 +209,7 @@ fun LibraryItemContent(title: String?, state: UiState<ItemDetail>, onSeason: (In
                                     u.label,
                                     "${u.old.quality ?: "?"} (${u.old.score ?: "?"}) → ${u.new.quality ?: "?"} (${u.new.score ?: "?"})",
                                     u.source?.let { "via $it" },
-                                    if (u.old.av1ByMediaGuard) "verving een AV1-versie" else null,
+                                    if (u.old.av1ByMediaGuard) tr("verving een AV1-versie", "replaced an AV1 version") else null,
                                 ).joinToString(" · "),
                                 formatTime(u.at),
                             )
@@ -223,28 +224,28 @@ fun LibraryItemContent(title: String?, state: UiState<ItemDetail>, onSeason: (In
 @Composable
 private fun QualityPanel(d: ItemDetail) {
     MgCard {
-        CardHeader("Kwaliteit", R.drawable.lucide_gauge, count = d.files.files.size.takeIf { it > 1 })
+        CardHeader(tr("Kwaliteit", "Quality"), R.drawable.lucide_gauge, count = d.files.files.size.takeIf { it > 1 })
         val p = d.files.profile
         val files = d.files.files
-        if (files.isEmpty()) { EmptyState("Nog geen bestanden"); return@MgCard }
+        if (files.isEmpty()) { EmptyState(tr("Nog geen bestanden", "No files yet")); return@MgCard }
         if (files.size == 1) {
             val f = files.first()
-            KeyValue("Kwaliteit", f.quality.name ?: "—")
-            KeyValue("Beeld", listOfNotNull(f.media.videoCodec, f.media.dynamicRange, f.size?.let { formatBytes(it) }).joinToString(" · ").ifBlank { "—" })
+            KeyValue(tr("Kwaliteit", "Quality"), f.quality.name ?: "—")
+            KeyValue(tr("Beeld", "Picture"), listOfNotNull(f.media.videoCodec, f.media.dynamicRange, f.size?.let { formatBytes(it) }).joinToString(" · ").ifBlank { "—" })
             KeyValue("Audio", f.media.audioLanguages.joinToString(", ").ifBlank { "—" })
-            KeyValue("Ondertitels", f.media.subtitleLanguages.joinToString(", ").ifBlank { "—" })
+            KeyValue(tr("Ondertitels", "Subtitles"), f.media.subtitleLanguages.joinToString(", ").ifBlank { "—" })
             KeyValue("Custom formats", f.customFormats.joinToString(", ") { "${it.name.removePrefix("MediaGuard · ")} (${it.score})" }.ifBlank { "—" })
-            KeyValue("Score", listOfNotNull(f.score?.toString(), p.cutoffScore?.let { "doel $it" }).joinToString(" · ").ifBlank { "—" })
+            KeyValue("Score", listOfNotNull(f.score?.toString(), p.cutoffScore?.let { tr("doel $it", "goal $it") }).joinToString(" · ").ifBlank { "—" })
             LabelRow(fileChips(f))
         } else {
-            KeyValue("Profiel", p.name ?: "—")
-            KeyValue("Doel", listOfNotNull(p.cutoff, p.cutoffScore?.let { "score $it" }).joinToString(" · ").ifBlank { "—" })
+            KeyValue(tr("Profiel", "Profile"), p.name ?: "—")
+            KeyValue(tr("Doel", "Goal"), listOfNotNull(p.cutoff, p.cutoffScore?.let { "score $it" }).joinToString(" · ").ifBlank { "—" })
             val met = files.count { it.cutoffMet == true }
-            PeilLabel(if (met == files.size) Beschikbaarheid.doelBereikt() else Kenmerk("$met van ${files.size} op doel", R.drawable.lucide_trending_up))
+            PeilLabel(if (met == files.size) Beschikbaarheid.doelBereikt() else Kenmerk(tr("$met van ${files.size} op doel", "$met of ${files.size} on goal"), R.drawable.lucide_trending_up))
             files.take(150).forEachIndexed { i, f ->
                 if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Mg.colors.lineSoft))
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(f.label ?: "Bestand", style = Mg.type.small.copy(fontWeight = FontWeight.SemiBold), color = Mg.colors.text)
+                    Text(f.label ?: tr("Bestand", "File"), style = Mg.type.small.copy(fontWeight = FontWeight.SemiBold), color = Mg.colors.text)
                     LabelRow(fileChips(f))
                     Text(f.summary ?: listOfNotNull(f.quality.name, f.media.videoCodec, f.media.dynamicRange,
                         f.size?.let { formatBytes(it) }).joinToString(" · "), style = Mg.type.meta, color = Mg.colors.muted)
@@ -256,6 +257,6 @@ private fun QualityPanel(d: ItemDetail) {
 
 /** Labels per bestand: AV1 door MediaGuard (neutraal, kwaliteit is geen status) en of het doel bereikt is. */
 fun fileChips(f: LibraryFile): List<Kenmerk> = buildList {
-    if (f.av1ByMediaGuard) add(Kenmerk("AV1 door MediaGuard", R.drawable.lucide_zap))
+    if (f.av1ByMediaGuard) add(Kenmerk(tr("AV1 door MediaGuard", "AV1 by MediaGuard"), R.drawable.lucide_zap))
     f.cutoffMet?.let { met -> add(if (met) Beschikbaarheid.doelBereikt() else Beschikbaarheid.kanBeter()) }
 }

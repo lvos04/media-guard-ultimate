@@ -49,6 +49,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import nl.mediaguard.app.data.AttentionAction
 import nl.mediaguard.app.data.Staleness
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.ui.RecentViewModel
 import nl.mediaguard.app.ui.screens.OverviewExtras
 import nl.mediaguard.app.ui.screens.PairingReason
@@ -92,6 +93,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        volgAppTaal()
         enableEdgeToEdge()
         openTarget.value = intent?.getStringExtra(EXTRA_OPEN)
         setContent { MediaGuardTheme { Root(openTarget.value) { openTarget.value = null } } }
@@ -298,11 +300,11 @@ private fun MainUi(app: MediaGuardApp, repo: Repository, generation: Int, openTa
                 LibraryItemContent(title, state, { season, on -> if (on) seasonOn = season else vm.setSeason(season, false) }, { vm.refresh() })
                 seasonOn?.let { season ->
                     ConfirmDialog(
-                        title = if (season == 0) "Specials volgen?" else "Seizoen $season volgen?",
-                        text = "MediaGuard houdt dit seizoen bij en haalt ontbrekende afleveringen op volgens je eisen.",
-                        confirmLabel = "Volgen en meteen zoeken",
+                        title = if (season == 0) tr("Specials volgen?", "Monitor specials?") else tr("Seizoen $season volgen?", "Monitor season $season?"),
+                        text = tr("MediaGuard houdt dit seizoen bij en haalt ontbrekende afleveringen op volgens je eisen.", "MediaGuard tracks this season and fetches missing episodes according to your requirements."),
+                        confirmLabel = tr("Volgen en meteen zoeken", "Monitor and search now"),
                         onConfirm = { vm.setSeason(season, true, search = true); seasonOn = null },
-                        secondaryLabel = "Alleen volgen",
+                        secondaryLabel = tr("Alleen volgen", "Monitor only"),
                         onSecondary = { vm.setSeason(season, true, search = false); seasonOn = null },
                         onDismiss = { seasonOn = null },
                     )
@@ -353,21 +355,21 @@ private fun MainUi(app: MediaGuardApp, repo: Repository, generation: Int, openTa
     stopDialog?.let { turnOn ->
         var reason by remember { mutableStateOf("") }
         ConfirmDialog(
-            title = if (turnOn) "Noodstop aanzetten?" else "Noodstop opheffen?",
-            text = if (turnOn) "Nieuwe grabs, encodes en vervangingen stoppen. Lopende encodes pauzeren."
-            else "Alles gaat verder: gepauzeerde encodes hervatten, downloads komen rustig op gang.",
-            confirmLabel = if (turnOn) "Noodstop aanzetten" else "Noodstop opheffen",
+            title = if (turnOn) tr("Noodstop aanzetten?", "Turn on emergency stop?") else tr("Noodstop opheffen?", "Release emergency stop?"),
+            text = if (turnOn) tr("Nieuwe grabs, encodes en vervangingen stoppen. Lopende encodes pauzeren.", "New grabs, encodes and replacements stop. Running encodes pause.")
+            else tr("Alles gaat verder: gepauzeerde encodes hervatten, downloads komen rustig op gang.", "Everything continues: paused encodes resume, downloads pick up gradually."),
+            confirmLabel = if (turnOn) tr("Noodstop aanzetten", "Turn on emergency stop") else tr("Noodstop opheffen", "Release emergency stop"),
             danger = turnOn,
             onConfirm = { statusVm.emergency(turnOn, reason); stopDialog = null },
             onDismiss = { stopDialog = null },
-            extra = if (turnOn) ({ OutlinedTextField(reason, { reason = it }, label = { Text("Reden (komt in de audit)") }) }) else null,
+            extra = if (turnOn) ({ OutlinedTextField(reason, { reason = it }, label = { Text(tr("Reden (komt in de audit)", "Reason (goes into the audit log)")) }) }) else null,
         )
     }
     laneDialog?.let { lane ->
         ConfirmDialog(
-            title = "${lane.uppercase()}-baan pauzeren?",
-            text = "Er starten geen nieuwe encodes op deze baan tot je hem hervat. Lopende encodes maken hun werk af.",
-            confirmLabel = "Baan pauzeren",
+            title = tr("${lane.uppercase()}-baan pauzeren?", "Pause ${lane.uppercase()} lane?"),
+            text = tr("Er starten geen nieuwe encodes op deze baan tot je hem hervat. Lopende encodes maken hun werk af.", "No new encodes start on this lane until you resume it. Running encodes finish their work."),
+            confirmLabel = tr("Baan pauzeren", "Pause lane"),
             onConfirm = { statusVm.lane(lane, pause = true); laneDialog = null },
             onDismiss = { laneDialog = null },
         )
@@ -375,7 +377,7 @@ private fun MainUi(app: MediaGuardApp, repo: Repository, generation: Int, openTa
     actionDialog?.let { act ->
         ConfirmDialog(
             title = "${act.label}?",
-            text = act.confirm?.ifBlank { null } ?: "MediaGuard voert ‘${act.label}’ nu uit, net als de knop in de web. Twijfel je, bekijk het dan eerst in de web.",
+            text = act.confirm?.ifBlank { null } ?: tr("MediaGuard voert ‘${act.label}’ nu uit, net als de knop in de web. Twijfel je, bekijk het dan eerst in de web.", "MediaGuard runs ‘${act.label}’ now, just like the button in the web UI. If in doubt, check it in the web UI first."),
             confirmLabel = act.label,
             onConfirm = { statusVm.runAction(act); actionDialog = null },
             onDismiss = { actionDialog = null },
@@ -385,7 +387,7 @@ private fun MainUi(app: MediaGuardApp, repo: Repository, generation: Int, openTa
 
 /** Subpagina's tonen alleen een terugknop; de titel staat als paginakop in de inhoud (zoals `.back-link` in de web). */
 private fun titleFor(route: String): String = when {
-    route.startsWith("library/") -> "Bibliotheek"
+    route.startsWith("library/") -> tr("Bibliotheek", "Library")
     else -> ""
 }
 

@@ -33,6 +33,7 @@ import nl.mediaguard.app.data.SeerrDetail
 import nl.mediaguard.app.data.SeerrPage
 import nl.mediaguard.app.data.SeerrResult
 import nl.mediaguard.app.data.formatTime
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.ui.ButtonKind
 import nl.mediaguard.app.ui.CardHeader
 import nl.mediaguard.app.ui.EmptyState
@@ -63,19 +64,26 @@ import nl.mediaguard.app.ui.refreshing
 import nl.mediaguard.app.ui.theme.Mg
 import nl.mediaguard.app.ui.theme.MgSpace
 
-enum class RequestsTab(val label: String) { Ontdekken("Ontdekken"), Mijn("Mijn aanvragen") }
+enum class RequestsTab(private val nl: String, private val en: String) {
+    Ontdekken("Ontdekken", "Discover"), Mijn("Mijn aanvragen", "My requests");
+
+    val label: String get() = tr(nl, en)
+}
 
 /**
  * Seerr-status → label. Beschikbaar of aangevraagd is geen gezondheid: neutrale labels met een eigen icoon,
  * gedeeltelijk = neutraal-sterk (er ontbreekt iets). Zonder bekende status geen label.
+ *
+ * MediaGuard geeft de tekst alleen in het Nederlands (`status_nl`). In het Engels kiest de app daarom zelf het
+ * woord bij een bekende status; een onbekende status toont de tekst van de server ongewijzigd (ADR-0023).
  */
 fun seerrLabel(status: String?, text: String?): Kenmerk? {
     val t = text?.ifBlank { null } ?: status?.ifBlank { null } ?: return null
     return when (status) {
-        "beschikbaar" -> Kenmerk(t, R.drawable.lucide_check)
-        "aangevraagd" -> Kenmerk(t, R.drawable.lucide_inbox)
-        "verwerken" -> Kenmerk(t, R.drawable.lucide_loader_circle)
-        "gedeeltelijk" -> Kenmerk(t, R.drawable.lucide_file_x, Tone.Strong)
+        "beschikbaar" -> Kenmerk(tr(t, "Available"), R.drawable.lucide_check)
+        "aangevraagd" -> Kenmerk(tr(t, "Requested"), R.drawable.lucide_inbox)
+        "verwerken" -> Kenmerk(tr(t, "Processing"), R.drawable.lucide_loader_circle)
+        "gedeeltelijk" -> Kenmerk(tr(t, "Partially available"), R.drawable.lucide_file_x, Tone.Strong)
         else -> Kenmerk(t, R.drawable.lucide_info)
     }
 }
@@ -92,16 +100,16 @@ class RequestsActions(
 fun RequestsContent(tab: RequestsTab, q: String, results: UiState<SeerrPage>, mine: UiState<MyRequests>, a: RequestsActions) {
     ScreenList(refreshing = if (tab == RequestsTab.Mijn) mine.refreshing else results.refreshing,
         onRefresh = if (tab == RequestsTab.Mijn) a.refreshMine else a.search) {
-        item { PageHeader("Aanvragen", "Vraag films en series aan via Seerr; MediaGuard levert ze volgens je eisen.") }
+        item { PageHeader(tr("Aanvragen", "Requests"), tr("Vraag films en series aan via Seerr; MediaGuard levert ze volgens je eisen.", "Request movies and series through Seerr; MediaGuard delivers them according to your requirements.")) }
         item { FilterChips(RequestsTab.entries.map { it to it.label }, tab, a.selectTab) }
         if (tab == RequestsTab.Ontdekken) {
-            item { MgSearchField(q, a.query, "Film of serie zoeken", a.search) }
+            item { MgSearchField(q, a.query, tr("Film of serie zoeken", "Search movie or series"), a.search) }
             when (results) {
                 UiState.Loading -> item { LoadingState(2) }
                 is UiState.Error -> item { ErrorState(results.message, a.search) }
                 is UiState.Data -> {
-                    item { SectionLabel(if (q.isBlank()) "Populair nu" else "Resultaten") }
-                    if (results.value.results.isEmpty()) item { MgCard { EmptyState("Niets gevonden", "Probeer een andere titel.") } }
+                    item { SectionLabel(if (q.isBlank()) tr("Populair nu", "Trending") else tr("Resultaten", "Results")) }
+                    if (results.value.results.isEmpty()) item { MgCard { EmptyState(tr("Niets gevonden", "Nothing found"), tr("Probeer een andere titel.", "Try another title.")) } }
                     results.value.results.chunked(2).forEach { row ->
                         item(key = row.joinToString { "${it.mediaType}-${it.tmdbId}" }) {
                             Row(Modifier.height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(MgSpace.s3)) {
@@ -119,7 +127,7 @@ fun RequestsContent(tab: RequestsTab, q: String, results: UiState<SeerrPage>, mi
                 is UiState.Data -> item {
                     MgCard {
                         CardHeader("Mijn aanvragen", R.drawable.lucide_inbox, count = mine.value.results.size)
-                        if (mine.value.results.isEmpty()) EmptyState("Nog geen aanvragen", "Zoek bij Ontdekken een film of serie.")
+                        if (mine.value.results.isEmpty()) EmptyState(tr("Nog geen aanvragen", "No requests yet"), tr("Zoek bij Ontdekken een film of serie.", "Find a movie or series under Discover."))
                         mine.value.results.forEachIndexed { i, r -> MyRequestRow(r, i > 0) { a.open(r.mediaType, r.tmdbId) } }
                     }
                 }
@@ -143,10 +151,10 @@ private fun PosterCard(r: SeerrResult, modifier: Modifier, onClick: () -> Unit) 
             }
             Column(Modifier.weight(1f).padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(r.title, style = Mg.type.small.copy(fontWeight = FontWeight.SemiBold), color = Mg.colors.text)
-                Text(listOfNotNull(r.year?.toString(), if (r.mediaType == "tv") "Serie" else "Film").joinToString(" · "),
+                Text(listOfNotNull(r.year?.toString(), if (r.mediaType == "tv") tr("Serie", "Series") else tr("Film", "Movie")).joinToString(" · "),
                     style = Mg.type.meta, color = Mg.colors.muted)
                 Spacer(Modifier.weight(1f))
-                MgButton(if (r.status == null || r.status == "niet" || r.status == "gedeeltelijk") "Aanvragen" else "Bekijken", onClick,
+                MgButton(if (r.status == null || r.status == "niet" || r.status == "gedeeltelijk") tr("Aanvragen", "Request") else tr("Bekijken", "View"), onClick,
                     kind = if (r.status == null || r.status == "niet") ButtonKind.Primary else ButtonKind.Secondary,
                     small = true, modifier = Modifier.fillMaxWidth())
             }
@@ -170,8 +178,8 @@ private fun MyRequestRow(r: MyRequest, divider: Boolean, onClick: () -> Unit) {
                     PeilLabel(deliveryLabel(d.state, d.stateNl ?: d.state ?: ""))
                     d.progress?.takeIf { it.total > 0 }?.let { p ->
                         MgProgress(p.present.toFloat() / p.total, color = Mg.peil.chart1, height = 6.dp,
-                            description = "${p.present} van ${p.total} aanwezig")
-                        Text("${p.present} van ${p.total} aanwezig", style = Mg.type.meta, color = Mg.colors.muted)
+                            description = tr("${p.present} van ${p.total} aanwezig", "${p.present} of ${p.total} present"))
+                        Text(tr("${p.present} van ${p.total} aanwezig", "${p.present} of ${p.total} present"), style = Mg.type.meta, color = Mg.colors.muted)
                     }
                     d.nextStep?.let { Text(it, style = Mg.type.meta, color = Mg.colors.text) }
                 }
@@ -200,7 +208,7 @@ fun RequestSheetContent(state: UiState<SeerrDetail>, chosen: SnapshotStateList<I
                     Spacer(Modifier.width(MgSpace.s3))
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(d.title, style = Mg.type.section, color = Mg.colors.text)
-                        Text(listOfNotNull(d.year?.toString(), if (d.mediaType == "tv") "Serie" else "Film", d.runtime?.let { "$it min" },
+                        Text(listOfNotNull(d.year?.toString(), if (d.mediaType == "tv") tr("Serie", "Series") else tr("Film", "Movie"), d.runtime?.let { "$it min" },
                             d.rating?.let { "★ %.1f".format(it) }).joinToString(" · "), style = Mg.type.meta, color = Mg.colors.muted)
                         d.statusNl?.let { seerrLabel(d.status, it)?.let { k -> PeilLabel(k) } }
                         if (d.genres.isNotEmpty()) Text(d.genres.joinToString(", "), style = Mg.type.meta, color = Mg.colors.muted)
@@ -209,14 +217,14 @@ fun RequestSheetContent(state: UiState<SeerrDetail>, chosen: SnapshotStateList<I
                 d.overview?.let { Text(it, style = Mg.type.body, color = Mg.colors.text) }
                 if (d.mediaType == "tv" && d.seasons.isNotEmpty()) {
                     MgCard {
-                        CardHeader("Seizoenen", trailing = { Text(if (chosen.isEmpty()) "alles" else "${chosen.size} gekozen",
+                        CardHeader(tr("Seizoenen", "Seasons"), trailing = { Text(if (chosen.isEmpty()) tr("alles", "all") else tr("${chosen.size} gekozen", "${chosen.size} selected"),
                             style = Mg.type.meta, color = Mg.colors.muted) })
                         d.seasons.forEachIndexed { i, season ->
                             val available = season.status == "beschikbaar"
                             if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Mg.colors.lineSoft))
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
-                                    Text("Seizoen ${season.seasonNumber}" + (season.episodes?.let { " · $it afl." } ?: ""),
+                                    Text(tr("Seizoen ${season.seasonNumber}", "Season ${season.seasonNumber}") + (season.episodes?.let { tr(" · $it afl.", " · $it ep.") } ?: ""),
                                         style = Mg.type.body.copy(fontWeight = FontWeight.Medium), color = Mg.colors.text)
                                     season.statusNl?.let { Text(it, style = Mg.type.meta, color = Mg.colors.muted) }
                                 }
@@ -229,13 +237,13 @@ fun RequestSheetContent(state: UiState<SeerrDetail>, chosen: SnapshotStateList<I
                 }
                 val canRequest = d.status !in setOf("beschikbaar", "aangevraagd", "verwerken") || d.mediaType == "tv"
                 MgButton(when {
-                    d.mediaType != "tv" -> "Aanvragen"
-                    chosen.isEmpty() -> "Alle seizoenen aanvragen"
-                    chosen.size == 1 -> "1 seizoen aanvragen"
-                    else -> "${chosen.size} seizoenen aanvragen"
+                    d.mediaType != "tv" -> tr("Aanvragen", "Request")
+                    chosen.isEmpty() -> tr("Alle seizoenen aanvragen", "Request all seasons")
+                    chosen.size == 1 -> tr("1 seizoen aanvragen", "Request 1 season")
+                    else -> tr("${chosen.size} seizoenen aanvragen", "Request ${chosen.size} seasons")
                 }, { onRequest(if (d.mediaType == "tv") chosen.toList().ifEmpty { null } else null) },
                     kind = ButtonKind.Primary, enabled = canRequest, modifier = Modifier.fillMaxWidth())
-                Text("MediaGuard levert het daarna vanzelf volgens je eisen.", style = Mg.type.meta, color = Mg.colors.muted)
+                Text(tr("MediaGuard levert het daarna vanzelf volgens je eisen.", "MediaGuard then delivers it by itself according to your requirements."), style = Mg.type.meta, color = Mg.colors.muted)
             }
         }
     }

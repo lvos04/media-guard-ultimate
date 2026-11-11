@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Talen van de app voor de taalkeuze per app (Android 13 en hoger). Nederlands is de standaardtaal. -->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="nl" />
+    <locale android:name="en" />
+</locale-config>

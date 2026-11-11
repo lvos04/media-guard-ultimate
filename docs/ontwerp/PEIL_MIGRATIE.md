@@ -73,7 +73,7 @@ rollen blijven, poorten en installatie veranderen niet.
 | `data-testid`'s en rollen blijven | O.a. `profile-button`, `profile-menu`, `theme-choice`, `estop-button`, `estop-confirm`, `estop-banner`, `status-pill`, `bell`, `bell-badge`, `notif-panel`, `mobile-search`, `help-link`, `sidebar-health`, `library-lock-banner`, `library-unlock`, `quarantine-*`, `q-item-*`, `bulk-delete`, `purge-button`, `settings-save`, `error-boundary`, `worker-gpu-*`/`worker-cpu-*`; de rollen/namen uit de e2e (navigatie "Mobiele navigatie", knop "Profiel", groep "Thema", dialoog "Sneltoetsen", `alertdialog`, kop "Overzicht"). |
 | Integriteit, rollback, monitoring niet aanraken | Integriteitsslot (`integrity.*`), vrijgavecontrole, quarantaine, herstelbundel, noodstop, back-up/herstel en gezondheidscontroles houden hun gedrag; alleen hun uiterlijk wordt Peil. |
 | Toegestane toevoegingen (besluiten gebruiker, 9 nov 2026) | O-11 **"Terug naar de Hub"** (adres uit de configuratie, verborgen als onbekend) en **tabelweergave + toetsenbordbediening bij de grafieken**; **de native Android-app krijgt ook de Peil-stijl**. Verder niets. De themaknop (O-09) is voor my_house; MediaGuard heeft al Systeem/Licht/Donker in het profielmenu. |
-| Taal | Web: NL + **en-US** (`lib/i18n/messages/*` en `messages/en/*`). Elke nieuwe of gewijzigde tekst krijgt beide talen (§6.7). Android is nu alleen NL (teksten in Kotlin); nieuwe Android-teksten staan hier in NL én en-US, maar de app krijgt in deze omzetting geen meertaligheid (ADR-0016 punt 4). |
+| Taal | Web: NL + **en-US** (`lib/i18n/messages/*` en `messages/en/*`). Elke nieuwe of gewijzigde tekst krijgt beide talen (§6.7). Android: NL + **en-US** sinds ADR-0023 (teksten naast elkaar in Kotlin, `tr("Nederlands", "English")`; de taal volgt Android). In de Peil-omzetting zelf was de app nog alleen NL (ADR-0016 punt 4, vervangen). |
 | Geen versie-ophoging | Geen tag of release; CHANGELOG onder "Unreleased". Geen nieuwe Excel-ID's; deze ontwerpstap wijzigt geen Excel-status. |
 | Contractgegevens D01–D18 | Nergens een voorbeeld-IP, poolnaam of poort als echte waarde (ook niet als placeholder van het Hub-adres). |
 
@@ -899,7 +899,8 @@ Elke status `semantics { contentDescription = "<woord>, <reden>" }`; voortgang `
   (ADR-0016 punt 7).
 - **Geen R-klassen verzonnen.** MediaGuard-acties hebben geen risicoklasse uit een beleid; de UI toont geen RisicoBadge
   zonder bron (ADR-0016 punt 8). De gevaarstijl (destructive + getypte bevestiging) blijft.
-- **Android en-US** bestaat niet; nieuwe Android-teksten zijn alleen NL (ADR-0016 punt 4).
+- **Android en-US** bestond in deze omzetting niet (ADR-0016 punt 4). Sinds ADR-0023 heeft de app Nederlands en en-US;
+  teksten die de server aanlevert, blijven Nederlands (ADR-0016 punt 7).
 - **Niet gevalideerd:** echte telefoon, schermlezer (NVDA/TalkBack), 200 %-zoom, forced colors op MediaGuard zelf (Peil
   heeft die op de prototypes gemeten), tv/speler, echte NAS (Excel B04-*: blijft "NIET GEVALIDEERD (echte NAS)"). Deze
   ontwerpstap verandert geen Excel-status.
@@ -942,11 +943,12 @@ Gebouwd in `apps/android` (commits "Android: Peil-tokens …", "Android: thema, 
 | §10.2 status icoon + tekst + vorm | gebouwd: `StatusBadge` (pil, 2 dp, gestippeld/gearceerd), `PeilLabel` (neutraal/sterk), `Melding`, `StatusPanel`; lucide als vector drawables (55, `material-icons-extended` weg); noodstop = Gepauzeerd, uit = neutraal "Uit"; banen `microchip`/`cpu` in `domain-lane-*`; "Wat actie nodig heeft" per soort; tellers in inkt |
 | §10.3 per scherm | gebouwd voor Overzicht, Activiteit, Bibliotheek (+ detail, ontbrekend), Ruimte, Aanvragen (+ venster), Instellingen en Koppelen; systeemmeldingen ongewijzigd. **Afwijking:** bij verouderde gegevens blijft de bediening aan (ADR-0018 punt 8); het Foutpaneel heeft geen code/trace-ID (punt 9). Episodekaart: de app heeft er geen (seizoenen als lijst), dus niets om om te zetten |
 | §10.4 toegankelijkheid | gebouwd: koppen (`heading`), status met toegankelijke naam (woord + reden), voortgang met `progressBarRangeInfo`, icoonknoppen met naam ("Vorige dag", "Volgende dag", tijdstip wijzigen), tekst schaalt mee (afdrukken met letterschaal 1,3), geen ellips op inhoud. **NIET GEVALIDEERD:** TalkBack, echte telefoon, fel licht |
-| §11.2 tests | `DesignLogicTest`/`AppLogicTest` naar de Peil-woorden en -vormen; nieuw `PeilTokensTest`, `PeilContrastTest`, `PeilUiTest`; Paparazzi 18 schermen × licht/donker × 393/360 + grote letter (78 referentiebeelden), in CI `verifyPaparazziDebug` |
+| §11.2 tests | `DesignLogicTest`/`AppLogicTest` naar de Peil-woorden en -vormen; nieuw `PeilTokensTest`, `PeilContrastTest`, `PeilUiTest`; Paparazzi 18 schermen × licht/donker × 393/360 + grote letter (78 referentiebeelden), in CI `verifyPaparazziDebug`. Sinds ADR-0023 ook `TaalTest` en 6 Engelse referentiebeelden (`EnLightScreenShots`, licht, 393 dp): samen 84 |
 | Builds | debug-APK en niet-ondertekende release-APK (`MG_ANDROID_UNSIGNED=1`) lokaal gebouwd; ondertekening en update-keten ongewijzigd |
 | Rooktest emulator | **Geblokkeerd**: geen toegang tot `/dev/kvm` in de bouwomgeving (zie ADR-0018, Gevolgen) |
 
-**Nieuwe en gewijzigde Android-teksten** (de app is alleen NL, ADR-0016 punt 4; en-US hier vastgelegd):
+**Nieuwe en gewijzigde Android-teksten** (bij de omzetting was de app alleen NL en lag en-US alleen hier vast; sinds
+ADR-0023 gebruikt de Engelse app deze woorden):
 
 | NL (in de app) | en-US |
 |---|---|

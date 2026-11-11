@@ -49,9 +49,9 @@ class ApiRepository(private val api: MediaGuardApi) : Repository {
     }
     override suspend fun paired(ntfyTopic: String?, appVersion: String?) = api.paired(PairedBody(ntfyTopic, appVersion))
     override suspend fun runAction(action: AttentionAction): String {
-        val path = ActionPaths.safe(action.path) ?: throw IllegalArgumentException("Deze actie kan alleen in de web.")
+        val path = ActionPaths.safe(action.path) ?: throw IllegalArgumentException(tr("Deze actie kan alleen in de web.", "This action is only available in the web UI."))
         val body = api.action(path, action.body).use { it.string() }
-        return ActionPaths.message(body) ?: "${action.label}: gedaan"
+        return ActionPaths.message(body) ?: tr("${action.label}: gedaan", "${action.label}: done")
     }
     override suspend fun systemUpdate(): JsonElement? = try {
         api.systemUpdate().use { MgJson.parseToJsonElement(it.string()) }

@@ -10,13 +10,14 @@ import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
+import nl.mediaguard.app.data.tr
 
 /** Wat op deze telefoon meldingen kan tegenhouden, met de knop die het oplost. */
 data class PhoneState(val notificationsAllowed: Boolean = true, val batteryExempt: Boolean = true) {
     /** Korte waarschuwing voor Overzicht; null als alles goed staat. */
     fun warning(ntfyOn: Boolean): String? = when {
-        !notificationsAllowed -> "Meldingen staan uit voor MediaGuard op deze telefoon"
-        !batteryExempt && ntfyOn -> "Batterijbeperking kan meldingen uren vertragen"
+        !notificationsAllowed -> tr("Meldingen staan uit voor MediaGuard op deze telefoon", "Notifications are off for MediaGuard on this phone")
+        !batteryExempt && ntfyOn -> tr("Batterijbeperking kan meldingen uren vertragen", "Battery restriction can delay notifications for hours")
         else -> null
     }
 }

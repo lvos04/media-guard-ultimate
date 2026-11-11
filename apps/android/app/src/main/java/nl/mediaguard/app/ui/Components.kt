@@ -70,6 +70,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import nl.mediaguard.app.R
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.ui.theme.Mg
 import nl.mediaguard.app.ui.theme.MgShape
 import nl.mediaguard.app.ui.theme.MgSpace
@@ -384,9 +385,9 @@ fun KpiTile(
                 stale -> Column(
                     Modifier.clip(RoundedCornerShape(6.dp)).background(Mg.peil.staleBg).arcering(Mg.peil.staleHatch)
                         .stippelRand(Mg.peil.stale, width = 1.5.dp, radius = 6.dp).padding(horizontal = 8.dp, vertical = 4.dp)
-                        .clearAndSetSemantics { contentDescription = "Laatst bekend · $staleSince: $value (laatst bekende waarde, verouderd)" },
+                        .clearAndSetSemantics { contentDescription = tr("Laatst bekend · $staleSince: $value (laatst bekende waarde, verouderd)", "Last known · $staleSince: $value (last known value, stale)") },
                 ) {
-                    Text("Laatst bekend · $staleSince", style = Mg.type.meta, color = Mg.peil.staleInk)
+                    Text(tr("Laatst bekend · $staleSince", "Last known · $staleSince"), style = Mg.type.meta, color = Mg.peil.staleInk)
                     Text(value, style = Mg.type.kpi.copy(fontWeight = FontWeight.Normal), color = Mg.peil.staleInk)
                 }
                 else -> Text(value, style = Mg.type.kpi, color = Mg.colors.text)
@@ -723,7 +724,7 @@ fun StatusPanel(
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.semantics(mergeDescendants = true) {}) {
-            Text("Totaalstatus", style = Mg.type.meta, color = Mg.colors.muted)
+            Text(tr("Totaalstatus", "Overall status"), style = Mg.type.meta, color = Mg.colors.muted)
             Spacer(Modifier.width(MgSpace.s2))
             StatusBadge(status, label = statusLabel, reason = statusReason, large = true)
         }
@@ -752,7 +753,7 @@ fun EmptyState(title: String, sub: String? = null, @DrawableRes icon: Int = R.dr
 /** Laden: skeletkaarten in de vorm van de inhoud (geen draaiend wieltje); TalkBack hoort "Laden…". */
 @Composable
 fun LoadingState(cards: Int = 3) {
-    Column(Modifier.fillMaxWidth().semantics(mergeDescendants = true) { contentDescription = "Laden…" },
+    Column(Modifier.fillMaxWidth().semantics(mergeDescendants = true) { contentDescription = tr("Laden…", "Loading…") },
         verticalArrangement = Arrangement.spacedBy(MgSpace.s3)) {
         repeat(cards) { i ->
             MgCard {
@@ -775,8 +776,8 @@ fun SkeletonLine(width: Float, height: Dp = 12.dp) {
  */
 @Composable
 fun ErrorState(message: String, onRetry: () -> Unit) {
-    Melding(Tone.Bad, R.drawable.lucide_octagon_x, "Laden is mislukt", message, action = {
-        MgButton("Opnieuw proberen", onRetry, small = true, icon = R.drawable.lucide_rotate_ccw)
+    Melding(Tone.Bad, R.drawable.lucide_octagon_x, tr("Laden is mislukt", "Loading failed"), message, action = {
+        MgButton(tr("Opnieuw proberen", "Try again"), onRetry, small = true, icon = R.drawable.lucide_rotate_ccw)
     })
 }
 
@@ -853,7 +854,7 @@ fun ConfirmDialog(
                     modifier = Modifier.fillMaxWidth())
                 if (secondaryLabel != null && onSecondary != null)
                     MgButton(secondaryLabel, onSecondary, modifier = Modifier.fillMaxWidth())
-                MgButton("Annuleren", onDismiss, kind = ButtonKind.Ghost, modifier = Modifier.fillMaxWidth())
+                MgButton(tr("Annuleren", "Cancel"), onDismiss, kind = ButtonKind.Ghost, modifier = Modifier.fillMaxWidth())
             }
         },
     )

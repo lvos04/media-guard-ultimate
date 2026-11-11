@@ -29,6 +29,7 @@ import nl.mediaguard.app.data.SeerrDetail
 import nl.mediaguard.app.data.SeerrPage
 import nl.mediaguard.app.data.UpgradeHistory
 import nl.mediaguard.app.data.friendlyMessage
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.data.yesterday
 import java.time.LocalDate
 
@@ -148,7 +149,7 @@ class StatusViewModel(
     }
     fun emergency(on: Boolean, reason: String) = control(
         if (on) "emergency_stop_on" else "emergency_stop_off",
-        mapOf("reason" to JsonPrimitive(reason.ifBlank { "Via de Android-app" })), confirm = true)
+        mapOf("reason" to JsonPrimitive(reason.ifBlank { tr("Via de Android-app", "Via the Android app") })), confirm = true)
     fun autopilot() = control("run_autopilot")
     fun lane(lane: String, pause: Boolean) =
         control(if (pause) "pause_lane" else "resume_lane", mapOf("lane" to JsonPrimitive(lane)), confirm = true)
@@ -182,7 +183,7 @@ class SeerrDetailViewModel(private val repo: Repository, private val type: Strin
     fun refresh() = load { repo.seerrDetail(type, id) }
     fun request(seasons: List<Int>?) {
         viewModelScope.launch {
-            _message.value = runCatching { repo.seerrRequest(type, id, seasons).message.ifBlank { "Aangevraagd" } }
+            _message.value = runCatching { repo.seerrRequest(type, id, seasons).message.ifBlank { tr("Aangevraagd", "Requested") } }
                 .getOrElse { it.friendlyMessage() }
             refresh()
         }
@@ -191,10 +192,12 @@ class SeerrDetailViewModel(private val repo: Repository, private val type: Strin
 }
 
 /** Soort in de bibliotheek, zoals de segmented control in de web: Series · Anime · Films. */
-enum class LibraryKind(val label: String, val kind: String, val mediaType: String?) {
-    Series("Series", "series", "tv"),
-    Anime("Anime", "series", "anime"),
-    Films("Films", "movie", null),
+enum class LibraryKind(private val nl: String, private val en: String, val kind: String, val mediaType: String?) {
+    Series("Series", "Series", "series", "tv"),
+    Anime("Anime", "Anime", "series", "anime"),
+    Films("Films", "Movies", "movie", null);
+
+    val label: String get() = tr(nl, en)
 }
 
 class LibrarySearchViewModel(private val repo: Repository, missingOnly: Boolean = false) : LoadViewModel<LibraryPage>() {

@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import nl.mediaguard.app.R
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.ui.PeilIcon
 import nl.mediaguard.app.ui.theme.Mg
 import nl.mediaguard.app.ui.theme.MgShape
@@ -50,14 +51,17 @@ import nl.mediaguard.app.ui.theme.TouchTarget
 import nl.mediaguard.app.ui.theme.cijfers
 
 /** Onderste balk zoals de web op de telefoon: vijf onderdelen, dezelfde lucide-iconen als de web-navigatie. */
-data class MainTab(val route: String, val label: String, @DrawableRes val icon: Int)
+data class MainTab(val route: String, private val nl: String, private val en: String, @DrawableRes val icon: Int) {
+    /** Het woord in de taal van de app; de lijst hieronder wordt maar één keer gemaakt. */
+    val label: String get() = tr(nl, en)
+}
 
 val MAIN_TABS = listOf(
-    MainTab("overview", "Overzicht", R.drawable.lucide_layout_dashboard),
-    MainTab("activity", "Activiteit", R.drawable.lucide_radar),
-    MainTab("library", "Bibliotheek", R.drawable.lucide_library),
-    MainTab("space", "Ruimte", R.drawable.lucide_hard_drive_download),
-    MainTab("requests", "Aanvragen", R.drawable.lucide_inbox),
+    MainTab("overview", "Overzicht", "Overview", R.drawable.lucide_layout_dashboard),
+    MainTab("activity", "Activiteit", "Activity", R.drawable.lucide_radar),
+    MainTab("library", "Bibliotheek", "Library", R.drawable.lucide_library),
+    MainTab("space", "Ruimte", "Space", R.drawable.lucide_hard_drive_download),
+    MainTab("requests", "Aanvragen", "Requests", R.drawable.lucide_inbox),
 )
 
 private fun baseOf(route: String) = route.substringBefore('?').substringBefore('/')
@@ -138,7 +142,7 @@ fun TopBar(
         val pillStyle = Mg.type.meta.copy(fontWeight = FontWeight.SemiBold)
         fun w(dp: Dp) = with(density) { dp.roundToPx() }
         val brandText = measurer.measure("MediaGuard", brandStyle).size.width
-        val word = measurer.measure("Aandacht", pillStyle).size.width
+        val word = measurer.measure(tr("Aandacht", "Attention"), pillStyle).size.width
         val count = measurer.measure("$attentionCount", pillStyle).size.width
         val pillCore = w(2.dp + 20.dp + 18.dp + 6.dp + 6.dp + 14.dp + 2.dp) + count
         val fixed = w(8.dp + TouchTarget + TouchTarget) + (if (onBack != null) w(TouchTarget) else w(12.dp + 32.dp))
@@ -149,7 +153,7 @@ fun TopBar(
         val showBrand = onBack == null && fixed + (if (showWord) pillFull else pillShort) + w(8.dp) + brandText <= avail
         Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) {
-                BarIcon(R.drawable.lucide_arrow_left, "Terug", onBack)
+                BarIcon(R.drawable.lucide_arrow_left, tr("Terug", "Back"), onBack)
                 Text(title ?: "", style = Mg.type.h2, color = p.foreground, modifier = Modifier.weight(1f).semantics { heading() })
             } else {
                 Row(Modifier.weight(1f).padding(start = 12.dp).semantics(mergeDescendants = true) { contentDescription = "MediaGuard" },
@@ -163,14 +167,14 @@ fun TopBar(
                     }
                 }
             }
-            BarIcon(R.drawable.lucide_search, "Zoeken in de bibliotheek", onSearch)
+            BarIcon(R.drawable.lucide_search, tr("Zoeken in de bibliotheek", "Search the library"), onSearch)
             if (attentionCount > 0) {
-                val name = if (attentionCount == 1) "1 ding wacht op jou" else "$attentionCount dingen wachten op jou"
-                val errors = if (attentionErrors > 0) ", waarvan $attentionErrors met een fout" else ""
+                val name = if (attentionCount == 1) tr("1 ding wacht op jou", "1 thing is waiting for you") else tr("$attentionCount dingen wachten op jou", "$attentionCount things are waiting for you")
+                val errors = if (attentionErrors > 0) tr(", waarvan $attentionErrors met een fout", ", $attentionErrors with an error") else ""
                 Row(
                     Modifier.padding(horizontal = 2.dp).heightIn(min = TouchTarget)
                         .clickable(role = Role.Button, onClick = onAttention)
-                        .clearAndSetSemantics { contentDescription = "Aandacht $attentionCount: $name$errors"; role = Role.Button }
+                        .clearAndSetSemantics { contentDescription = tr("Aandacht $attentionCount: $name$errors", "Attention $attentionCount: $name$errors"); role = Role.Button }
                         .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -182,7 +186,7 @@ fun TopBar(
                         PeilIcon(R.drawable.lucide_list_checks, p.foreground, size = 18.dp)
                         if (showWord) {
                             Spacer(Modifier.width(6.dp))
-                            Text("Aandacht", style = pillStyle, color = p.foreground, softWrap = false)
+                            Text(tr("Aandacht", "Attention"), style = pillStyle, color = p.foreground, softWrap = false)
                         }
                         Spacer(Modifier.width(6.dp))
                         Box(Modifier.clip(MgShape.pill).background(p.foreground).padding(horizontal = 7.dp)) {
@@ -194,7 +198,7 @@ fun TopBar(
             }
             Box(
                 Modifier.size(TouchTarget).clip(CircleShape).clickable(role = Role.Button, onClick = onProfile)
-                    .clearAndSetSemantics { contentDescription = "$initials, profiel en instellingen"; role = Role.Button },
+                    .clearAndSetSemantics { contentDescription = tr("$initials, profiel en instellingen", "$initials, profile and settings"); role = Role.Button },
                 contentAlignment = Alignment.Center,
             ) {
                 Box(Modifier.size(40.dp).clip(CircleShape).background(p.secondary).border(1.dp, p.borderStrong, CircleShape),

@@ -47,6 +47,30 @@ Meldingen:
 - **Koppel opnieuw**: weigert MediaGuard de sleutel (ingetrokken of verlopen), dan stopt de app met
   pollen, meldt dat en toont het koppelscherm.
 
+## Taal
+
+De app is er in het **Nederlands** en in het **Engels (en-US)** (ADR-0023). De app heeft geen eigen taalknop: hij
+volgt de taal van Android. Staat je telefoon in het Engels, dan is de app Engels; in elke andere taal is de app
+Nederlands. Vanaf Android 13 kun je de taal ook alleen voor deze app kiezen: *Instellingen → Apps → MediaGuard →
+Taal*.
+
+- Getallen, datums en tijden volgen de taal (`96,0 GB` · `4 nov 13:01` tegenover `96.0 GB` · `Nov 4, 1:01 PM`). De
+  tijdzone verandert niet: tijden van MediaGuard blijven Nederlandse tijd.
+- De vaste statuswoorden zijn die van Peil: Gezond · Beperkt · Storing · Onbekend · Verouderd · Gepauzeerd · Niet
+  gekoppeld · Niet beschikbaar, in het Engels Healthy · Degraded · Down · Unknown · Stale · Paused · Not linked · Not
+  available.
+- **Teksten die MediaGuard zelf aanlevert, blijven Nederlands**, ook in de Engelse app: de kop en uitleg bij *Wat
+  actie nodig heeft* en de knoppen daaronder, de regel van *Laatste 24 uur*, fasen en redenen van encodes en teksten
+  als "vol over ± 300 dagen". De API voor de app kent daar (nog) geen Engelse tekst voor (`docs/APP_API.md`).
+- Meldingen (dagoverzicht, directe meldingen, "geen contact") staan in de taal die op dat moment geldt; een melding
+  die al getoond is, verandert niet meer.
+- Voor ontwikkelaars: teksten staan naast elkaar in Kotlin als `tr("Nederlands", "English")` (`data/Taal.kt`); alleen
+  de namen van de meldingskanalen en `app_taal` staan in `res/values/` en `res/values-en/`. `TaalTest` en de zes
+  Engelse schermafdrukken (`EnLightScreenShots`) bewaken het.
+
+Getest met unit-tests en schermafdrukken op de JVM (Sim-getest). **NIET GEVALIDEERD:** een echte telefoon of emulator,
+de taalkeuze per app in Android en TalkBack in het Engels.
+
 ## Installeren
 
 1. Open de nieuwste release op GitHub (`lvos04/media-guard-ultimate` → Releases) en download
@@ -114,13 +138,15 @@ koppeling bewust niet mee.
 cd apps/android
 ./gradlew :app:verifyPaparazziDebug :app:assembleDebug  # unit-tests + schermafdrukken vergelijken; APK: app/build/outputs/apk/debug/
 ./gradlew :app:recordPaparazziDebug                     # referentie-afdrukken opnieuw vastleggen (na een bewuste wijziging)
+./gradlew :app:recordPaparazziDebug --tests 'nl.mediaguard.app.shots.EnLightScreenShots'  # alleen één klasse opnieuw vastleggen
 MG_ANDROID_UNSIGNED=1 ./gradlew :app:assembleRelease    # niet-ondertekende release-build (app-release-unsigned.apk)
 python3 tools/peil_tokens.py [--check]                  # PeilTokens.kt uit design/ontwerptaal/tokens.json
 node tools/lucide_naar_vector.mjs                       # lucide-iconen → res/drawable (na npm ci in apps/web)
 ```
 Vereist JDK 17+ en de Android SDK (platform 35). De versie van de app is de MediaGuard-versie uit
 `deploy/release-manifest.json`. CI: `.github/workflows/android.yml` controleert bij elke push die de app raakt
-de Peil-tokens, draait de unit-tests en vergelijkt de schermafdrukken (`verifyPaparazziDebug`), bouwt debug en
+de Peil-tokens, draait de unit-tests en vergelijkt de schermafdrukken (`verifyPaparazziDebug`: 78 Nederlandse en 6
+Engelse referentiebeelden), bouwt debug en
 release (artifact) en hangt de APK aan de GitHub-release zodra de workflow *release* klaar is. Schermafdrukken
 voor de documentatie: `docs/screenshots/peil/android/README.md`. Zonder `MG_ANDROID_UNSIGNED` verandert de
 ondertekening niet (eigen sleutel via secrets, anders de vaste sideload-sleutel).

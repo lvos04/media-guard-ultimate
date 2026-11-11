@@ -31,9 +31,11 @@ import nl.mediaguard.app.data.SettingsStore
 import nl.mediaguard.app.data.Staleness
 import nl.mediaguard.app.data.StateStore
 import nl.mediaguard.app.data.formatBytes
+import nl.mediaguard.app.data.formatStampMillis
 import nl.mediaguard.app.data.friendlyMessage
 import nl.mediaguard.app.data.isUnauthorized
 import nl.mediaguard.app.data.summaryLine
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.data.yesterday
 import okhttp3.Request
 import java.time.Duration
@@ -42,7 +44,6 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
 
 object Schedules {
@@ -155,7 +156,6 @@ object Alerts {
     const val ID_KEY_REJECTED = 2001
     const val ID_NO_CONTACT = 2002
     const val ID_TEST = 2003
-    private val CLOCK = DateTimeFormatter.ofPattern("d MMM HH:mm", java.util.Locale.forLanguageTag("nl-NL"))
 
     private fun show(context: Context, id: Int, title: String, text: String, target: String) {
         if (!canNotify(context)) return
@@ -171,15 +171,15 @@ object Alerts {
 
     fun cancel(context: Context, id: Int) { runCatching { NotificationManagerCompat.from(context).cancel(id) } }
 
-    fun keyRejected(context: Context) = show(context, ID_KEY_REJECTED, "Koppel MediaGuard opnieuw",
-        "MediaGuard weigert de sleutel van deze app (ingetrokken of verlopen). Open de app en scan een nieuwe koppelcode.",
+    fun keyRejected(context: Context) = show(context, ID_KEY_REJECTED, tr("Koppel MediaGuard opnieuw", "Pair MediaGuard again"),
+        tr("MediaGuard weigert de sleutel van deze app (ingetrokken of verlopen). Open de app en scan een nieuwe koppelcode.", "MediaGuard rejects the key of this app (revoked or expired). Open the app and scan a new pairing code."),
         "status")
 
-    fun noContact(context: Context, lastContactAt: Long) = show(context, ID_NO_CONTACT, "MediaGuard reageert niet",
-        "Geen contact sinds ${CLOCK.format(Instant.ofEpochMilli(lastContactAt).atZone(ZoneId.systemDefault()))}. " +
-            "Controleer of de server en de tunnel draaien.", "status")
+    fun noContact(context: Context, lastContactAt: Long) = show(context, ID_NO_CONTACT, tr("MediaGuard reageert niet", "MediaGuard is not responding"),
+        tr("Geen contact sinds ${formatStampMillis(lastContactAt)}. ", "No contact since ${formatStampMillis(lastContactAt)}. ") +
+            tr("Controleer of de server en de tunnel draaien.", "Check that the server and the tunnel are running."), "status")
 
-    fun localTest(context: Context, text: String) = show(context, ID_TEST, "MediaGuard: testmelding", text, "settings")
+    fun localTest(context: Context, text: String) = show(context, ID_TEST, tr("MediaGuard: testmelding", "MediaGuard: test notification"), text, "settings")
 
     /** Na een mislukte poging: melden als MediaGuard al [Staleness.NO_CONTACT_ALERT_MS] niets liet horen. */
     fun checkContact(context: Context, st: StateStore, now: Long = System.currentTimeMillis()) {
@@ -218,7 +218,7 @@ class DailySummaryWorker(context: Context, params: WorkerParameters) : Coroutine
 
     private fun build(s: DailySummary) = NotificationCompat.Builder(applicationContext, MediaGuardApp.CHANNEL_DAILY)
         .setSmallIcon(R.drawable.ic_stat_mediaguard)
-        .setContentTitle("MediaGuard — gisteren")
+        .setContentTitle(tr("MediaGuard — gisteren", "MediaGuard — yesterday"))
         .setContentText(summaryLine(s))
         .setStyle(NotificationCompat.InboxStyle().also { st ->
             inboxLines(s).forEach { st.addLine(it) }
@@ -231,11 +231,11 @@ class DailySummaryWorker(context: Context, params: WorkerParameters) : Coroutine
     companion object {
         fun inboxLines(s: DailySummary): List<String> = buildList {
             if (s.headline.isNotBlank()) add(s.headline)
-            add("${s.replaced.size} vervangen door AV1 · ${formatBytes(s.storage.savedBytes)} bespaard")
-            add("${s.downloaded.size} gedownload (${s.downloaded.count { it.kind == "upgrade" }} upgrades)")
-            if (s.requests.isNotEmpty()) add("${s.requests.size} aangevraagd")
-            if (s.attention.isNotEmpty()) add("${s.attention.size} punt(en) vragen aandacht")
-            add("Opslag netto ${formatBytes(s.storage.netBytes, signed = true)}")
+            add(tr("${s.replaced.size} vervangen door AV1 · ${formatBytes(s.storage.savedBytes)} bespaard", "${s.replaced.size} replaced by AV1 · ${formatBytes(s.storage.savedBytes)} saved"))
+            add(tr("${s.downloaded.size} gedownload (${s.downloaded.count { it.kind == "upgrade" }} upgrades)", "${s.downloaded.size} downloaded (${s.downloaded.count { it.kind == "upgrade" }} upgrades)"))
+            if (s.requests.isNotEmpty()) add(tr("${s.requests.size} aangevraagd", "${s.requests.size} requested"))
+            if (s.attention.isNotEmpty()) add(tr("${s.attention.size} punt(en) vragen aandacht", "${s.attention.size} item(s) need attention"))
+            add(tr("Opslag netto ${formatBytes(s.storage.netBytes, signed = true)}", "Storage net ${formatBytes(s.storage.netBytes, signed = true)}"))
         }.take(6)
     }
 }
@@ -277,14 +277,14 @@ class NtfyPollWorker(context: Context, params: WorkerParameters) : CoroutineWork
         val body = try {
             ApiClient.guarded().newCall(Request.Builder().url("$server/$topic/json?poll=1&since=$since").build())
                 .execute().use { r ->
-                    if (!r.isSuccessful) throw java.io.IOException("ntfy gaf fout ${r.code}")
+                    if (!r.isSuccessful) throw java.io.IOException(tr("ntfy gaf fout ${r.code}", "ntfy returned error ${r.code}"))
                     r.body?.string().orEmpty()
                 }
         } catch (e: Exception) {
             st.ntfyLastError = when (e) {
                 is CleartextBlocked -> e.friendlyMessage()
-                is java.io.IOException -> e.message?.takeIf { it.startsWith("ntfy") } ?: "ntfy-server niet bereikbaar"
-                else -> e.message ?: "onbekende fout"
+                is java.io.IOException -> e.message?.takeIf { it.startsWith("ntfy") } ?: tr("ntfy-server niet bereikbaar", "ntfy server unreachable")
+                else -> e.message ?: tr("onbekende fout", "unknown error")
             }
             st.ntfyLastErrorAt = System.currentTimeMillis()
             return Result.retry()

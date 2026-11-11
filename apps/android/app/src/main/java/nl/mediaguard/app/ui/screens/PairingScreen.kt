@@ -42,6 +42,7 @@ import nl.mediaguard.app.data.CleartextBlocked
 import nl.mediaguard.app.data.Pairing
 import nl.mediaguard.app.data.PairingPayload
 import nl.mediaguard.app.data.friendlyMessage
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.ui.ButtonKind
 import nl.mediaguard.app.ui.Melding
 import nl.mediaguard.app.ui.MgButton
@@ -54,11 +55,11 @@ enum class PairingReason { New, KeyRejected, StorageReset }
 
 fun pairingReasonText(reason: PairingReason, volatileOnly: Boolean = false): String? = when (reason) {
     PairingReason.New -> null
-    PairingReason.KeyRejected -> "MediaGuard weigert de sleutel van deze app. Hij is ingetrokken of verlopen, bijvoorbeeld " +
-        "omdat er een nieuwe koppelcode is gemaakt. Scan de nieuwe koppelcode."
-    PairingReason.StorageReset -> "De opgeslagen koppeling op deze telefoon was beschadigd (bijvoorbeeld na een systeemupdate " +
-        "of het overzetten naar een nieuwe telefoon) en is gewist. Koppel de app opnieuw." +
-        if (volatileOnly) " Versleuteld opslaan lukt op dit toestel niet: de koppeling blijft alleen bewaard tot je de app sluit." else ""
+    PairingReason.KeyRejected -> tr("MediaGuard weigert de sleutel van deze app. Hij is ingetrokken of verlopen, bijvoorbeeld ", "MediaGuard rejects the key of this app. It was revoked or has expired, for example ") +
+        tr("omdat er een nieuwe koppelcode is gemaakt. Scan de nieuwe koppelcode.", "because a new pairing code was made. Scan the new pairing code.")
+    PairingReason.StorageReset -> tr("De opgeslagen koppeling op deze telefoon was beschadigd (bijvoorbeeld na een systeemupdate ", "The saved pairing on this phone was damaged (for example after a system update ") +
+        tr("of het overzetten naar een nieuwe telefoon) en is gewist. Koppel de app opnieuw.", "or a move to a new phone) and has been erased. Pair the app again.") +
+        if (volatileOnly) tr(" Versleuteld opslaan lukt op dit toestel niet: de koppeling blijft alleen bewaard tot je de app sluit.", " Encrypted storage does not work on this device: the pairing is only kept until you close the app.") else ""
 }
 
 /** "http://host" → "https://host" (zelfde poort), voor een koppelcode die per ongeluk http:// bevat. */
@@ -107,7 +108,7 @@ fun PairingScreen(reason: PairingReason = PairingReason.New, onPaired: () -> Uni
     val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
         val text = result.contents ?: return@rememberLauncherForActivityResult
         val p = Pairing.parse(text)
-        if (p == null) error = "Dit is geen koppelcode van MediaGuard." else { url = p.url; key = p.key; ntfy = p; connect(p) }
+        if (p == null) error = tr("Dit is geen koppelcode van MediaGuard.", "This is not a MediaGuard pairing code.") else { url = p.url; key = p.key; ntfy = p; connect(p) }
     }
 
     PairingContent(
@@ -115,11 +116,11 @@ fun PairingScreen(reason: PairingReason = PairingReason.New, onPaired: () -> Uni
         onKey = { key = it }, busy = busy, error = error,
         onScan = {
             scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                .setPrompt("Scan de koppelcode van MediaGuard").setBeepEnabled(false).setOrientationLocked(false))
+                .setPrompt(tr("Scan de koppelcode van MediaGuard", "Scan the MediaGuard pairing code")).setBeepEnabled(false).setOrientationLocked(false))
         },
         onConnect = {
             val u = Pairing.normalizeUrl(url)
-            if (u == null || key.isBlank()) error = "Vul een geldig adres en een API-sleutel in."
+            if (u == null || key.isBlank()) error = tr("Vul een geldig adres en een API-sleutel in.", "Enter a valid address and an API key.")
             else connect(PairingPayload(url = u, key = key.trim(), ntfy = ntfy?.ntfy))
         },
         onRetryStored = ::retryStored,
@@ -156,36 +157,36 @@ fun PairingContent(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = MgSpace.s4, vertical = MgSpace.s5),
         verticalArrangement = Arrangement.spacedBy(MgSpace.s4),
     ) {
-        Text("MediaGuard koppelen", style = Mg.type.title, color = p.foreground, modifier = Modifier.semantics { heading() })
+        Text(tr("MediaGuard koppelen", "Pair MediaGuard"), style = Mg.type.title, color = p.foreground, modifier = Modifier.semantics { heading() })
         pairingReasonText(reason, volatileOnly)?.let {
-            if (reason == PairingReason.KeyRejected) Melding(Tone.Bad, R.drawable.lucide_octagon_x, "De sleutel is geweigerd", it)
-            else Melding(Tone.Info, R.drawable.lucide_info, "Opnieuw koppelen", it)
+            if (reason == PairingReason.KeyRejected) Melding(Tone.Bad, R.drawable.lucide_octagon_x, tr("De sleutel is geweigerd", "The key was rejected"), it)
+            else Melding(Tone.Info, R.drawable.lucide_info, tr("Opnieuw koppelen", "Pair again"), it)
         }
         Text(
-            "Open MediaGuard in je browser → Instellingen → Koppelingen → Android-app koppelen, en scan de QR-code.",
+            tr("Open MediaGuard in je browser → Instellingen → Koppelingen → Android-app koppelen, en scan de QR-code.", "Open MediaGuard in your browser → Settings → Connections → Pair the Android app, and scan the QR code."),
             style = Mg.type.body, color = p.mutedForeground,
         )
-        MgButton("QR-code scannen", onScan, kind = ButtonKind.Primary, icon = R.drawable.lucide_scan_qr_code,
+        MgButton(tr("QR-code scannen", "Scan QR code"), onScan, kind = ButtonKind.Primary, icon = R.drawable.lucide_scan_qr_code,
             enabled = !busy, modifier = Modifier.fillMaxWidth())
-        Text("Of handmatig", style = Mg.type.h2, color = p.foreground, modifier = Modifier.semantics { heading() })
-        OutlinedTextField(url, onUrl, label = { Text("Adres van MediaGuard") },
+        Text(tr("Of handmatig", "Or manually"), style = Mg.type.h2, color = p.foreground, modifier = Modifier.semantics { heading() })
+        OutlinedTextField(url, onUrl, label = { Text(tr("Adres van MediaGuard", "MediaGuard address")) },
             placeholder = { Text("https://mediaguard.example.nl") }, singleLine = true, textStyle = Mg.type.body,
             colors = fieldColors, shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(key, onKey, label = { Text("API-sleutel (mgk_…)") }, singleLine = true, textStyle = Mg.type.body,
+        OutlinedTextField(key, onKey, label = { Text(tr("API-sleutel (mgk_…)", "API key (mgk_…)")) }, singleLine = true, textStyle = Mg.type.body,
             colors = fieldColors, shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
             visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-        MgButton("Verbinden", onConnect, enabled = !busy, modifier = Modifier.fillMaxWidth())
-        if (reason == PairingReason.KeyRejected) MgButton("Opgeslagen sleutel opnieuw proberen", onRetryStored, enabled = !busy,
+        MgButton(tr("Verbinden", "Connect"), onConnect, enabled = !busy, modifier = Modifier.fillMaxWidth())
+        if (reason == PairingReason.KeyRejected) MgButton(tr("Opgeslagen sleutel opnieuw proberen", "Try saved key again"), onRetryStored, enabled = !busy,
             modifier = Modifier.fillMaxWidth())
         if (busy) Row(verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(Modifier.size(24.dp), color = p.primary, strokeWidth = 3.dp)
             Spacer(Modifier.width(MgSpace.s2))
-            Text("Verbinden…", style = Mg.type.body, color = p.foreground)
+            Text(tr("Verbinden…", "Connecting…"), style = Mg.type.body, color = p.foreground)
         }
-        error?.let { Melding(Tone.Bad, R.drawable.lucide_octagon_x, "Koppelen is mislukt", it) }
+        error?.let { Melding(Tone.Bad, R.drawable.lucide_octagon_x, tr("Koppelen is mislukt", "Pairing failed"), it) }
         Text(
-            "De sleutel wordt versleuteld op dit toestel bewaard en alleen naar jouw MediaGuard gestuurd.",
+            tr("De sleutel wordt versleuteld op dit toestel bewaard en alleen naar jouw MediaGuard gestuurd.", "The key is stored encrypted on this device and only sent to your MediaGuard."),
             style = Mg.type.meta, color = p.mutedForeground,
         )
     }

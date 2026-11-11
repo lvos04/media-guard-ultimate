@@ -13,6 +13,8 @@ import app.cash.paparazzi.Paparazzi
 import com.android.resources.Density
 import com.android.resources.NightMode
 import nl.mediaguard.app.PhoneState
+import nl.mediaguard.app.data.AppTaal
+import nl.mediaguard.app.data.Taal
 import nl.mediaguard.app.data.UpdateInfo
 import nl.mediaguard.app.ui.LibraryKind
 import nl.mediaguard.app.ui.UiState
@@ -39,7 +41,9 @@ import nl.mediaguard.app.ui.screens.SpaceActions
 import nl.mediaguard.app.ui.screens.SpaceContent
 import nl.mediaguard.app.ui.theme.MediaGuardTheme
 import nl.mediaguard.app.ui.theme.Mg
+import org.junit.After
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import java.time.LocalDate
@@ -50,7 +54,8 @@ import java.time.LocalDate
  * API-antwoorden; geen NAS-, apparaat- of accountgegevens). Posters zijn leeg (geen netwerk).
  *
  * Referentieset (in de repo, `app/src/test/snapshots/images`): licht/donker × 393 dp (Pixel 5) en 360 dp, plus
- * grote letter (fontScale 1,3, licht, 393 dp) voor een deel van de schermen. CI vergelijkt met
+ * grote letter (fontScale 1,3, licht, 393 dp) voor een deel van de schermen, en datzelfde deel in het Engels
+ * (en-US, licht, 393 dp; ADR-0023). CI vergelijkt met
  * `:app:verifyPaparazziDebug`; na een bewuste wijziging opnieuw vastleggen met `:app:recordPaparazziDebug`.
  *
  * Met PEIL_AFDRUKKEN=1 komen er ook afdrukken op 2 px per dp (360, 393 en 393-volledig) voor
@@ -64,6 +69,8 @@ abstract class ScreenShots(
     private val subset: Boolean = false,
     /** Afdruk voor de documentatie (alleen met PEIL_AFDRUKKEN=1). */
     private val docs: Boolean = false,
+    /** Taal van de app-teksten; de voorbeeldgegevens (teksten van de server) blijven Nederlands. */
+    private val taal: AppTaal = AppTaal.Nl,
 ) {
     @get:Rule
     val paparazzi = Paparazzi(
@@ -72,6 +79,9 @@ abstract class ScreenShots(
         maxPercentDifference = 0.5,
         useDeviceResolution = docs,
     )
+
+    @Before fun kiesTaal() { Taal.huidig = taal }
+    @After fun terugNaarNederlands() { Taal.huidig = AppTaal.Nl }
 
     private val day = LocalDate.of(2026, 11, 7)
     private val today = LocalDate.of(2026, 11, 8)
@@ -213,6 +223,9 @@ class LightScreenShots : ScreenShots(dark = false, P393)
 class Dark360ScreenShots : ScreenShots(dark = true, P360)
 class Light360ScreenShots : ScreenShots(dark = false, P360)
 class LightGroteLetterScreenShots : ScreenShots(dark = false, P393.copy(fontScale = 1.3f), subset = true)
+
+/** De app in het Engels (en-US): hetzelfde deel van de schermen als de grote letter. */
+class EnLightScreenShots : ScreenShots(dark = false, P393, subset = true, taal = AppTaal.En)
 
 class DocsDark393 : ScreenShots(dark = true, D393, docs = true)
 class DocsLight393 : ScreenShots(dark = false, D393, docs = true)

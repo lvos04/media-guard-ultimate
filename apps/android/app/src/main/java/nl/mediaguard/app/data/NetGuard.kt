@@ -11,7 +11,7 @@ import java.net.Proxy
 
 /** Onversleuteld (http://) verkeer naar een adres buiten het eigen netwerk is geweigerd. */
 class CleartextBlocked(val host: String) :
-    IOException("Onversleuteld verkeer naar $host is geblokkeerd: gebruik https:// buiten je thuisnetwerk.")
+    IOException(tr("Onversleuteld verkeer naar $host is geblokkeerd: gebruik https:// buiten je thuisnetwerk.", "Unencrypted traffic to $host is blocked: use https:// outside your home network."))
 
 /**
  * http:// mag alleen naar adressen in het eigen netwerk (LAN, VPN, deze telefoon). De API-sleutel gaat

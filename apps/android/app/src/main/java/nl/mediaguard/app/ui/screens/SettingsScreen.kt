@@ -34,6 +34,7 @@ import nl.mediaguard.app.PhoneState
 import nl.mediaguard.app.data.UpdateInfo
 import nl.mediaguard.app.data.formatClockMillis
 import nl.mediaguard.app.data.friendlyMessage
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.ui.Banner
 import nl.mediaguard.app.ui.ButtonKind
 import nl.mediaguard.app.ui.CardHeader
@@ -117,7 +118,7 @@ fun SettingsScreen(user: String?, serverVersion: String?, update: UpdateInfo?, s
     }
 
     fun test() {
-        if (!phone.notificationsAllowed) { showMessage("Meldingen staan uit voor MediaGuard. Zet ze eerst aan."); return }
+        if (!phone.notificationsAllowed) { showMessage(tr("Meldingen staan uit voor MediaGuard. Zet ze eerst aan.", "Notifications are off for MediaGuard. Turn them on first.")); return }
         val repo = app.repository() ?: return
         testing = true
         scope.launch {
@@ -132,14 +133,14 @@ fun SettingsScreen(user: String?, serverVersion: String?, update: UpdateInfo?, s
                 if (r.ok && s.ntfyEnabled) {
                     Schedules.apply(context, s, st)
                     Schedules.pollNow(context)
-                    showMessage("${r.message}. Hij komt binnen een minuut op deze telefoon binnen.")
+                    showMessage(tr("${r.message}. Hij komt binnen een minuut op deze telefoon binnen.", "${r.message}. It arrives on this phone within a minute."))
                 } else {
-                    Alerts.localTest(context, "Meldingen op deze telefoon werken. ${r.message}")
-                    showMessage(r.message.ifBlank { "Testbericht niet verstuurd" })
+                    Alerts.localTest(context, tr("Meldingen op deze telefoon werken. ${r.message}", "Notifications on this phone work. ${r.message}"))
+                    showMessage(r.message.ifBlank { tr("Testbericht niet verstuurd", "Test message not sent") })
                 }
             }.onFailure { e ->
-                Alerts.localTest(context, "Meldingen op deze telefoon werken, maar MediaGuard kon geen testbericht sturen.")
-                showMessage("Testbericht via MediaGuard mislukt: ${e.friendlyMessage()}")
+                Alerts.localTest(context, tr("Meldingen op deze telefoon werken, maar MediaGuard kon geen testbericht sturen.", "Notifications on this phone work, but MediaGuard could not send a test message."))
+                showMessage(tr("Testbericht via MediaGuard mislukt: ${e.friendlyMessage()}", "Test message via MediaGuard failed: ${e.friendlyMessage()}"))
             }
             tick++
         }
@@ -178,9 +179,9 @@ fun SettingsScreen(user: String?, serverVersion: String?, update: UpdateInfo?, s
         ),
     )
     if (confirmUnpair) ConfirmDialog(
-        title = "Ontkoppelen?",
-        text = "De app vergeet de sleutel en het adres. Meldingen stoppen tot je opnieuw koppelt.",
-        confirmLabel = "Ontkoppelen", danger = true,
+        title = tr("Ontkoppelen?", "Unpair?"),
+        text = tr("De app vergeet de sleutel en het adres. Meldingen stoppen tot je opnieuw koppelt.", "The app forgets the key and the address. Notifications stop until you pair again."),
+        confirmLabel = tr("Ontkoppelen", "Unpair"), danger = true,
         onConfirm = { confirmUnpair = false; app.unpair(); onUnpaired() },
         onDismiss = { confirmUnpair = false },
     )
@@ -191,67 +192,67 @@ private const val RELEASES = "https://github.com/lvos04/media-guard-ultimate/rel
 @Composable
 fun SettingsContent(m: SettingsModel, a: SettingsActions) {
     ScreenList {
-        item { PageHeader("Instellingen", "Meldingen en koppeling van deze telefoon") }
+        item { PageHeader(tr("Instellingen", "Settings"), tr("Meldingen en koppeling van deze telefoon", "Notifications and pairing of this phone")) }
         item { PhoneCard(m, a) }
         item {
             MgCard {
-                CardHeader("Dagoverzicht", R.drawable.lucide_bell)
-                SwitchRow("Elke dag een melding", "Wat er gisteren vervangen, gedownload en aangevraagd is.", m.daily, a.setDaily)
+                CardHeader(tr("Dagoverzicht", "Daily summary"), R.drawable.lucide_bell)
+                SwitchRow(tr("Elke dag een melding", "A notification every day"), tr("Wat er gisteren vervangen, gedownload en aangevraagd is.", "What was replaced, downloaded and requested yesterday."), m.daily, a.setDaily)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Tijdstip", style = Mg.type.body.copy(fontWeight = FontWeight.Medium), color = Mg.colors.text)
-                        m.nextDailyAt?.let { Text("Volgende: ${formatClockMillis(it)}", style = Mg.type.meta, color = Mg.colors.muted) }
+                        Text(tr("Tijdstip", "Time"), style = Mg.type.body.copy(fontWeight = FontWeight.Medium), color = Mg.colors.text)
+                        m.nextDailyAt?.let { Text(tr("Volgende: ${formatClockMillis(it)}", "Next: ${formatClockMillis(it)}"), style = Mg.type.meta, color = Mg.colors.muted) }
                     }
                     MgButton("%02d:%02d".format(m.minutes / 60, m.minutes % 60), a.pickTime, small = true, enabled = m.daily,
-                        contentDescription = "Tijdstip %02d:%02d wijzigen".format(m.minutes / 60, m.minutes % 60))
+                        contentDescription = tr("Tijdstip %02d:%02d wijzigen", "Change time %02d:%02d").format(m.minutes / 60, m.minutes % 60))
                 }
             }
         }
         item {
             MgCard {
-                CardHeader("Directe meldingen (ntfy)", R.drawable.lucide_bell_ring)
-                Text(if (m.ntfyTopic.isNullOrBlank()) "Niet ingesteld. Tik op Aanzetten in MediaGuard, of koppel de app opnieuw: de koppelcode neemt het kanaal mee."
-                    else "Kanaal ${m.ntfyTopic} op ${m.ntfyServer ?: "https://ntfy.sh"}. De app kijkt elke 15 minuten naar nieuwe berichten.",
+                CardHeader(tr("Directe meldingen (ntfy)", "Instant notifications (ntfy)"), R.drawable.lucide_bell_ring)
+                Text(if (m.ntfyTopic.isNullOrBlank()) tr("Niet ingesteld. Tik op Aanzetten in MediaGuard, of koppel de app opnieuw: de koppelcode neemt het kanaal mee.", "Not set up. Tap Turn on in MediaGuard, or pair the app again: the pairing code carries the channel.")
+                    else tr("Kanaal ${m.ntfyTopic} op ${m.ntfyServer ?: "https://ntfy.sh"}. De app kijkt elke 15 minuten naar nieuwe berichten.", "Channel ${m.ntfyTopic} on ${m.ntfyServer ?: "https://ntfy.sh"}. The app checks for new messages every 15 minutes."),
                     style = Mg.type.small, color = Mg.colors.muted)
-                SwitchRow("Meldingen ophalen", null, m.ntfy, a.setNtfy, enabled = !m.ntfyTopic.isNullOrBlank())
+                SwitchRow(tr("Meldingen ophalen", "Fetch notifications"), null, m.ntfy, a.setNtfy, enabled = !m.ntfyTopic.isNullOrBlank())
                 if (!m.ntfyTopic.isNullOrBlank()) {
-                    KeyValue("Laatst opgehaald", m.ntfyLastOkAt?.let { formatClockMillis(it) } ?: "nog niet")
-                    m.ntfyLastError?.let { Melding(Tone.Bad, R.drawable.lucide_octagon_x, "Laatste poging mislukt", it) }
+                    KeyValue(tr("Laatst opgehaald", "Last fetched"), m.ntfyLastOkAt?.let { formatClockMillis(it) } ?: tr("nog niet", "not yet"))
+                    m.ntfyLastError?.let { Melding(Tone.Bad, R.drawable.lucide_octagon_x, tr("Laatste poging mislukt", "Last attempt failed"), it) }
                     KeyValue("In MediaGuard", when {
-                        m.pushOnServer -> "aan voor deze telefoon"
-                        m.pushPending -> "wordt aangezet zodra MediaGuard bereikbaar is"
-                        else -> "uit"
+                        m.pushOnServer -> tr("aan voor deze telefoon", "on for this phone")
+                        m.pushPending -> tr("wordt aangezet zodra MediaGuard bereikbaar is", "turns on as soon as MediaGuard can be reached")
+                        else -> tr("uit", "off")
                     })
                 }
-                if (!m.pushOnServer) MgButton("Aanzetten in MediaGuard", a.enablePush, kind = ButtonKind.Secondary, small = true)
-                MgButton(if (m.testing) "Testmelding wordt verstuurd…" else "Testmelding", a.testNotification,
+                if (!m.pushOnServer) MgButton(tr("Aanzetten in MediaGuard", "Turn on in MediaGuard"), a.enablePush, kind = ButtonKind.Secondary, small = true)
+                MgButton(if (m.testing) tr("Testmelding wordt verstuurd…", "Sending test notification…") else tr("Testmelding", "Test notification"), a.testNotification,
                     enabled = !m.testing, modifier = Modifier.fillMaxWidth())
             }
         }
         item {
             MgCard {
-                CardHeader("Koppeling", R.drawable.lucide_link_2)
+                CardHeader(tr("Koppeling", "Pairing"), R.drawable.lucide_link_2)
                 KeyValue("Server", m.serverUrl ?: "—")
-                KeyValue("Gebruiker", m.user ?: "—")
-                KeyValue("Laatste contact", m.lastContactAt?.let { formatClockMillis(it) } ?: "—")
-                MgButton("Ontkoppelen", a.unpair, kind = ButtonKind.Danger, modifier = Modifier.fillMaxWidth())
+                KeyValue(tr("Gebruiker", "User"), m.user ?: "—")
+                KeyValue(tr("Laatste contact", "Last contact"), m.lastContactAt?.let { formatClockMillis(it) } ?: "—")
+                MgButton(tr("Ontkoppelen", "Unpair"), a.unpair, kind = ButtonKind.Danger, modifier = Modifier.fillMaxWidth())
             }
         }
         item {
             MgCard {
-                CardHeader("Over", R.drawable.lucide_info)
+                CardHeader(tr("Over", "About"), R.drawable.lucide_info)
                 KeyValue("App", "MediaGuard Android ${m.appVersion}")
                 KeyValue("Server", m.serverVersion?.let { "MediaGuard $it" } ?: "—")
                 val u = m.update
-                u?.serverUpdate?.let { KeyValue("Nieuwste versie", it) }
+                u?.serverUpdate?.let { KeyValue(tr("Nieuwste versie", "Latest version"), it) }
                 u?.headline()?.let { line ->
                     Banner(line, Tone.Info, R.drawable.lucide_download,
-                        sub = if (u.appUpdate != null) "Nieuwe app: via Obtainium of de GitHub-release." else "Server bijwerken: in TrueNAS de app updaten.",
+                        sub = if (u.appUpdate != null) tr("Nieuwe app: via Obtainium of de GitHub-release.", "New app: via Obtainium or the GitHub release.") else tr("Server bijwerken: in TrueNAS de app updaten.", "Update the server: update the app in TrueNAS."),
                         action = { MgButton("Release", { a.openUrl(u.link ?: RELEASES) }, small = true) })
                 }
                 if (u != null && u.serverVersion != null && nl.mediaguard.app.data.Versions.newer(u.appVersion, u.serverVersion))
-                    Text("Deze app is nieuwer dan je server. Werk MediaGuard bij voor alle functies.", style = Mg.type.meta, color = Mg.colors.muted)
-                KeyValue("Iconen", "Lucide — ISC-licentie")
+                    Text(tr("Deze app is nieuwer dan je server. Werk MediaGuard bij voor alle functies.", "This app is newer than your server. Update MediaGuard for all features."), style = Mg.type.meta, color = Mg.colors.muted)
+                KeyValue(tr("Iconen", "Icons"), tr("Lucide — ISC-licentie", "Lucide — ISC licence"))
             }
         }
     }
@@ -261,13 +262,13 @@ fun SettingsContent(m: SettingsModel, a: SettingsActions) {
 private fun PhoneCard(m: SettingsModel, a: SettingsActions) {
     if (m.phone.notificationsAllowed && m.phone.batteryExempt) return
     MgCard {
-        CardHeader("Meldingen op deze telefoon", R.drawable.lucide_bell_off)
-        if (!m.phone.notificationsAllowed) Banner("Meldingen staan uit voor MediaGuard", Tone.Info, R.drawable.lucide_bell_off,
-            sub = "Je krijgt dan geen dagoverzicht en geen waarschuwingen.",
-            action = { MgButton("Aanzetten", a.fixNotifications, small = true) })
-        if (!m.phone.batteryExempt) Banner("Batterijbeperking staat aan", Tone.Info, R.drawable.lucide_battery_warning,
-            sub = "Android kan het ophalen van meldingen dan uren uitstellen.",
-            action = { MgButton("Uitzondering", a.fixBattery, small = true) })
+        CardHeader(tr("Meldingen op deze telefoon", "Notifications on this phone"), R.drawable.lucide_bell_off)
+        if (!m.phone.notificationsAllowed) Banner(tr("Meldingen staan uit voor MediaGuard", "Notifications are off for MediaGuard"), Tone.Info, R.drawable.lucide_bell_off,
+            sub = tr("Je krijgt dan geen dagoverzicht en geen waarschuwingen.", "You then get no daily summary and no warnings."),
+            action = { MgButton(tr("Aanzetten", "Turn on"), a.fixNotifications, small = true) })
+        if (!m.phone.batteryExempt) Banner(tr("Batterijbeperking staat aan", "Battery restriction is on"), Tone.Info, R.drawable.lucide_battery_warning,
+            sub = tr("Android kan het ophalen van meldingen dan uren uitstellen.", "Android can then delay fetching notifications for hours."),
+            action = { MgButton(tr("Uitzondering", "Exemption"), a.fixBattery, small = true) })
     }
 }
 

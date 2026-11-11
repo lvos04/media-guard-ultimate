@@ -35,6 +35,7 @@ blijven.
    De regel "nieuwe teksten in beide talen" wordt voor Android vervuld door elke nieuwe of gewijzigde tekst in het
    ontwerp in NL én en-US vast te leggen, zonder de app meertalig te maken (dat is een functionele toevoeging).
    *Contractpunt:* als Android ook en-US moet krijgen, is dat een apart besluit.
+   **Vervangen door ADR-0023:** de Android-app heeft nu Nederlands en en-US; de taal volgt Android.
 5. **Standaardthema wordt Systeem.** ONTWERPTAAL §13.3 schrijft het voor. De bestaande instelling `ui.theme` krijgt als
    standaard `system` (was `dark`); de keuze per gebruiker en de sleutel `mg.theme` blijven. Het themascript zet altijd
    het opgeloste `data-theme="dark|light"` (Peil kent geen `prefers-color-scheme`-terugval). De e2e-test die direct na

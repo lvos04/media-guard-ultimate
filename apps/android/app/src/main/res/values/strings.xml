@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">MediaGuard</string>
+    <string name="app_name" translatable="false">MediaGuard</string>
+    <!-- De taal van de app: Android kiest dit bestand (Nederlands) of values-en (Engels). Zie data/Taal.kt. -->
+    <string name="app_taal">nl</string>
     <string name="channel_daily">Dagoverzicht</string>
     <string name="channel_daily_desc">Elke dag een samenvatting van MediaGuard</string>
     <string name="channel_alerts">Meldingen</string>
