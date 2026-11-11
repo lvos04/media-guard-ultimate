@@ -256,7 +256,7 @@ for (const width of [1440, 390] as const) {
   });
 }
 
-test("ondertitels: wat ontbreekt is een neutraal label, een mislukte test is gemeten falen in de vaste live-regio", async ({ page }) => {
+test("ondertitels: wat ontbreekt is een neutraal label, een mislukte test is gemeten falen in de vaste live-regio, een geweigerd verzoek een melding", async ({ page }) => {
   // de e2e-core kent geen titels: het echte statusantwoord, alleen met een telling van ontbrekende ondertitels erin
   await page.route("**/api/v1/mediaserver/status", async (route) => {
     const r = await route.fetch();
@@ -284,8 +284,48 @@ test("ondertitels: wat ontbreekt is een neutraal label, een mislukte test is gem
   await expect(uitslag.locator(".inline-state")).toHaveAttribute("data-tone", "danger");
   await expect(uitslag.locator(".inline-state svg")).toHaveClass(/lucide-octagon-x/);
   await expect(uitslag).toContainText("Nog geen Bazarr-sleutel of OpenSubtitles-account.");
+  await expect(kaart.getByRole("alert")).toHaveCount(0);
+  // een verzoek dat de core weigert, is geen meting: de fout staat als melding (role=alert) onder de knoppen, er komt
+  // geen "mislukt" in de live-regio en de oudere uitslag gaat weg (R-TECH-6; de weigering is nagebootst, er wordt niets
+  // opgeslagen)
+  const weiger = "**/api/v1/mediaserver/subtitles/config";
+  await page.route(weiger, (route) => route.fulfill({ status: 422, json: { detail: "Ongeldig adres: geen spaties en geen gebruikersnaam in het adres." } }));
+  await kaart.getByRole("button", { name: "Opslaan en testen" }).click();
+  await expect(kaart.getByRole("alert")).toContainText("Ongeldig adres");
+  await expect(kaart.getByRole("alert")).toHaveAttribute("data-tone", "danger");
+  await expect(uitslag).toBeEmpty();
+  await page.unroute(weiger);
+  // een nieuw verzoek wist de oude fout en geeft weer een echte uitslag
+  await kaart.getByRole("button", { name: "Opslaan en testen" }).click();
+  await expect(kaart.getByRole("alert")).toHaveCount(0);
+  await expect(uitslag).toContainText("Nog geen Bazarr-sleutel of OpenSubtitles-account.");
   // opslaan zonder wijziging laat de instellingen zoals ze waren
   expect((await status(page) as unknown as typeof voor).subtitles).toMatchObject(voor.subtitles);
+});
+
+test("een mislukt verzoek na een geslaagde test: de oude uitslag gaat weg, de fout is een melding", async ({ page }) => {
+  // R-TECH-6: eerst een geslaagde "Verbinding testen", daarna faalt hetzelfde verzoek (500). De live-regio van het
+  // TestResultaat toont dan geen oude "geslaagd" meer naast de fout, en ook geen "mislukt": de fout staat als role=alert.
+  // Beide antwoorden zijn nagebootst; de core en server 1 blijven ongemoeid.
+  let keer = 0;
+  await page.route("**/api/v1/mediaserver/test*", (route) => {
+    keer += 1;
+    return keer === 1
+      ? route.fulfill({ status: 200, json: { ok: true, message_nl: "Verbonden met Emby 4.10.2.0 (nagebootst)" } })
+      : route.fulfill({ status: 500, json: { detail: "Interne fout bij het testen (nagebootst)." } });
+  });
+  await login(page);
+  await page.goto("/inrichten?tab=mediaserver");
+  const tab = page.getByTestId("mediaserver-tab");
+  const eerste = tab.getByTestId("ms-server-1");
+  const uitslag = tab.getByTestId("ms-result-1");
+  await eerste.getByRole("button", { name: /^Verbinding testen/ }).click();
+  await expect(uitslag).toContainText("Verbonden met Emby 4.10.2.0 (nagebootst)");
+  await expect(eerste.getByRole("alert")).toHaveCount(0);
+  await eerste.getByRole("button", { name: /^Verbinding testen/ }).click();
+  await expect(eerste.getByRole("alert")).toContainText("Interne fout bij het testen (nagebootst).");
+  await expect(uitslag).toBeEmpty();
+  expect(keer).toBe(2);
 });
 
 test("kijker en operator: de reden staat erbij, het beheerformulier niet", async ({ browser, page }) => {

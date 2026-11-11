@@ -246,9 +246,10 @@ function ServerItem({ s, status, result, reload, onResult }: {
   const target = s.legacy ? {} : { server_id: s.server_id };
   // Een verzoek dat mislukt (geweigerde invoer, geen rechten, core onbereikbaar) is geen meting: de fout staat als
   // melding (role=alert) bij de server of in de open dialoog, nooit als "mislukt" in de live-regio van het TestResultaat.
+  // Een oudere uitslag gaat dan wel weg: die hoort niet bij dit verzoek en zou naast de fout blijven staan (R-TECH-6).
   const run = async (name: string, fn: () => Promise<unknown>) => {
     setBusy(name); setError(null);
-    try { await fn(); reload(); return true; } catch (e) { setError(e instanceof Error ? e.message : String(e)); return false; } finally { setBusy(null); }
+    try { await fn(); reload(); return true; } catch (e) { onResult(s.server_id, null); setError(e instanceof Error ? e.message : String(e)); return false; } finally { setBusy(null); }
   };
   const save = () => run("save", async () => {
     const r = await api.post<ConfigAnswer>("/mediaserver/config", {
@@ -487,9 +488,13 @@ function SubtitlesCard({ s, reload }: { s: MsStatus; reload: () => void }) {
   const [os, setOs] = useState({ key: "", user: "", pass: "" });
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<TestResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Zoals bij een server (ServerItem): een verzoek dat mislukt (geweigerde invoer, geen rechten, core onbereikbaar) is
+  // geen meting. De fout staat als melding (role=alert) onder de knoppen, nooit als "mislukt" in de live-regio; een
+  // oudere uitslag gaat weg (R-TECH-6).
   const run = async (name: string, fn: () => Promise<unknown>) => {
-    setBusy(name);
-    try { await fn(); reload(); } catch (e) { setResult({ ok: false, message_nl: e instanceof Error ? e.message : String(e) }); } finally { setBusy(null); }
+    setBusy(name); setError(null);
+    try { await fn(); reload(); } catch (e) { setResult(null); setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(null); }
   };
   const save = (extra: Record<string, unknown> = {}) => run("save", async () => {
     const r = await api.post<{ test: TestResult }>("/mediaserver/subtitles/config", {
@@ -556,6 +561,7 @@ function SubtitlesCard({ s, reload }: { s: MsStatus; reload: () => void }) {
           <div role="status" className="[&:not(:empty)]:mt-3" data-testid="subs-result">
             {result ? <InlineState tone={result.ok ? "success" : "danger"}>{result.message_nl}</InlineState> : null}
           </div>
+          {error ? <div className="mt-3"><InlineState tone="danger" role="alert">{error}</InlineState></div> : null}
         </div>
       </div>
     </Card>
