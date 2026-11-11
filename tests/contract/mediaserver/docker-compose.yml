@@ -1,0 +1,51 @@
+# Contracttest mediaservers (Δ-MG-AUTH, Δ-MG-DUAL): een echte Emby en een echte Jellyfin 12.x naast elkaar.
+#
+# ALLEEN voor ontwikkeling en CI. Dit is geen installatiemethode: MediaGuard installeer je als standaard TrueNAS
+# Custom App (formulier), zie deploy/truenas/CUSTOM_APP.md.
+#
+# Gestart door tests/contract/mediaserver/run.sh. De MediaGuard-container zelf (eerst de vorige release, daarna de
+# kandidaat op dezelfde datamap) start de test met `docker run` op dit netwerk.
+#
+# - srv-emby en srv-jellyfin zijn de echte servers (images op digest, dezelfde als in het B03-plan). De test richt
+#   ze in via de hostpoorten (alleen 127.0.0.1).
+# - emby en jellyfin zijn doorgeefluiken (logproxy.py) vóór die servers. MediaGuard kent alleen deze namen
+#   (http://emby:8096, http://jellyfin:8096; ook "Zoek automatisch" probeert ze). Elk verzoek in hun log komt dus
+#   van MediaGuard, en de test leest daar welke aanmeldkop er werkelijk over de lijn ging.
+name: mgms
+
+x-log: &log
+  image: ${MGMS_VORIGE:?zet MGMS_VORIGE (run.sh doet dat)}
+  entrypoint: ["/opt/venv/bin/python", "-u", "/proxy/logproxy.py"]
+  user: "${MGMS_UID:-1000}:${MGMS_GID:-1000}"
+  healthcheck: {disable: true}
+  networks: [mgnet]
+  volumes: ["./logproxy.py:/proxy/logproxy.py:ro", "./.run/proxylog:/log"]
+
+services:
+  srv-emby:
+    image: ${EMBY_IMAGE:-emby/embyserver:4.10.2.0@sha256:7082c63b10a2fcb3805a7eaebba407d5723bc57c085c9f0b29b7d0a702765cc1}
+    networks: [mgnet]
+    volumes: ["emby-config:/config", "./.run/media:/media:ro"]
+    ports: ["127.0.0.1:${MGMS_EMBY_PORT:-38096}:8096"]
+
+  srv-jellyfin:
+    image: ${JELLYFIN_IMAGE:-jellyfin/jellyfin:12.4@sha256:fea863d0cd9ec445985d9c75fc6ed64e38a1d2766cf0c250a33d553f4fc1b771}
+    networks: [mgnet]
+    volumes: ["jellyfin-config:/config", "jellyfin-cache:/cache", "./.run/media:/media:ro"]
+    ports: ["127.0.0.1:${MGMS_JELLYFIN_PORT:-38097}:8096"]
+
+  emby:
+    <<: *log
+    command: ["--upstream", "srv-emby:8096", "--log", "/log/emby.jsonl"]
+
+  jellyfin:
+    <<: *log
+    command: ["--upstream", "srv-jellyfin:8096", "--log", "/log/jellyfin.jsonl"]
+
+volumes:
+  emby-config:
+  jellyfin-config:
+  jellyfin-cache:
+
+networks:
+  mgnet:

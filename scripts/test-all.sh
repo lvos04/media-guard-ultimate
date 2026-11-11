@@ -12,6 +12,7 @@
 #   stack       tests/integration/stack/run.sh (alle images vereist)
 #   faults      tests/fault-injection/run.sh (core-image vereist)
 #   seerr       tests/contract/seerr/run.sh (fork-images + Seerr/Jellyfin-images vereist)
+#   mediaserver tests/contract/mediaserver/run.sh (echte Emby + Jellyfin 12.x, vorige release → kandidaat)
 # --fast = alleen core, web (lint/typecheck/build).
 #
 # Env:
@@ -22,7 +23,7 @@
 #   LOG_DIR            logs per suite (default: mktemp -d)
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ALL="core,encoder,web,web-e2e,forks,stack,faults,seerr"
+ALL="core,encoder,web,web-e2e,forks,stack,faults,seerr,mediaserver"
 ONLY="$ALL"; SKIP=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -96,6 +97,7 @@ suite forks "$ROOT/tests/integration/forks/run.sh"
 suite stack "$ROOT/tests/integration/stack/run.sh"
 suite faults "$ROOT/tests/fault-injection/run.sh"
 suite seerr env MG_CORE_PYTHON="$PY" "$ROOT/tests/contract/seerr/run.sh"
+suite mediaserver env MG_CORE_PYTHON="$PY" "$ROOT/tests/contract/mediaserver/run.sh"
 
 echo
 echo "| suite | resultaat | duur | samenvatting |"

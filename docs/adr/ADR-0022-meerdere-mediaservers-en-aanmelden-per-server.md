@@ -12,7 +12,11 @@
 
 ## Gemeten tegen de echte servers
 
-Basis voor de keuzes hieronder; herhaalbaar met `tests/contract/mediaserver/run.sh` (images op digest).
+Basis voor de keuzes hieronder, gemeten tegen de echte containers (images op digest). De contracttest
+`tests/contract/mediaserver/run.sh` herhaalt bij elke run: de openbare info van beide servers, `/emby` op Jellyfin,
+alle regels van de kolom Jellyfin behalve de laatste, en voor Emby `X-Emby-Token` en "zonder sleutel". De overige
+cellen van de kolom Emby (`api_key=`, `X-Emby-Authorization`, `Authorization: MediaBrowser`) en de regel "tijdens het
+opstarten" zijn eenmalig met de hand gemeten tijdens de bouw; MediaGuard leunt daar niet op.
 
 | | `emby/embyserver:4.10.2.0` | `jellyfin/jellyfin:12.4` |
 |---|---|---|
@@ -27,6 +31,10 @@ Basis voor de keuzes hieronder; herhaalbaar met `tests/contract/mediaserver/run.
 
 Jellyfin 12.4 neemt een sleutel ook nog aan als `?ApiKey=` in de URL. MediaGuard gebruikt dat niet: een sleutel
 staat nooit in een URL of in een logregel.
+
+Jellyfin 12.4 slaat de scan over van een bibliotheek die tijdens de scan van de startwizard is toegevoegd
+(`refreshLibrary=true` heeft dan geen effect). Dat raakt alleen de opstelling van de contracttest (die vraagt de scan
+opnieuw aan tot de films er staan), niet MediaGuard: die vraagt bij een import een gerichte verversing van het pad.
 
 ## Besluiten
 
@@ -109,6 +117,11 @@ staat nooit in een URL of in een logregel.
 - Sim-getest: `apps/core/tests/test_mediaserver.py`, `test_mediaserver_dual.py` en
   `services/encoder/tests/test_integraties.py` met nagebouwde servers die de metingen hierboven volgen.
 - Contracttest met echte containers (Emby 4.10.2.0, Jellyfin 12.4, MediaGuard 1.2.2 en de kandidaat):
-  `tests/contract/mediaserver/`; uitkomst in `RESULTS.md` aldaar.
+  `tests/contract/mediaserver/`; uitkomst in `RESULTS.md` aldaar (24 tests, 113 controles). In CI draait hij in de
+  zware run (`ci`, job `mediaservers`: nachtelijk en via `workflow_dispatch` met `heavy=true`), lokaal via
+  `scripts/test-all.sh --only mediaserver`.
+- De afspeeltest en de controle op Nederlandse ondertitels zijn tegen de echte servers bewezen op clientniveau
+  (deel A); de hele keten in de achtergrondlus en de regel "kijkpauze van een server zonder contact vervalt na
+  10 minuten" zijn Sim-getest.
 - **NIET GEVALIDEERD (echte NAS):** de echte Emby van de gebruiker met zijn bibliotheek en kijkgeschiedenis, een echte
   Jelly Leon-image, en echte spelers. Sessies in de contracttest zijn nagebootst met de sessie-API van de servers.
