@@ -8,6 +8,10 @@ set -euo pipefail
 REPO=${MGP_REPO:?zet MGP_REPO op de repo-root}
 S=${MGP_WERK:?zet MGP_WERK op een werkmap buiten de repo}
 PY=${MGP_PY:?zet MGP_PY op de python van een venv met apps/core[test]}
+# MGP_WERK krijgt de testdatabase, logs en pid-bestanden en "$MGP_WERK/data" wordt hieronder gewist: net als PEIL_UIT
+# bij meet.mjs moet die map buiten de repo liggen (ook niet gelijk aan de repo-root).
+REPO_ABS=$(realpath -m -- "$REPO"); WERK_ABS=$(realpath -m -- "$S")
+case "$WERK_ABS/" in "$REPO_ABS/"*) echo "MGP_WERK ligt in de repo ($WERK_ABS): kies een map erbuiten" >&2; exit 1;; esac
 KEY=nep-sleutel-peil-0000000000000000
 HULP="$REPO/docs/screenshots/peil"
 rm -rf "$S/data" && mkdir -p "$S/data" "$S/logs"
