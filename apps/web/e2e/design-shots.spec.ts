@@ -9,7 +9,7 @@ const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 const PAGES: Array<[string, string]> = [
   ["overzicht", "/"], ["activiteit", "/activiteit"], ["bibliotheek", "/bibliotheek"], ["ontbrekend", "/ontbrekend"],
   ["ruimte", "/av1"], ["wachtrij", "/av1/wachtrij"], ["terugzetten", "/quarantaine"], ["av1-instellingen", "/av1/instellingen"],
-  ["instellingen", "/instellingen"], ["koppelingen", "/inrichten"], ["kwaliteit", "/kwaliteit"], ["systeem", "/systeem"],
+  ["instellingen", "/instellingen"], ["koppelingen", "/inrichten"], ["mediaservers", "/inrichten?tab=mediaserver"], ["kwaliteit", "/kwaliteit"], ["systeem", "/systeem"],
   ["aanvragen", "/aanvragen"], ["hoe-werkt-het", "/hoe-werkt-het"],
 ];
 
