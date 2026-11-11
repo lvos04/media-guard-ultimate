@@ -48,6 +48,9 @@
    de knoppen bij "Wat actie nodig heeft". In de Engelse app staan die dus in het Nederlands tussen Engelse
    app-teksten. Eén uitzondering: bij een Seerr-status met een bekende code (`beschikbaar`, `aangevraagd`,
    `verwerken`, `gedeeltelijk`) kiest de app zelf het Engelse woord; een onbekende code toont de tekst van de server.
+   Dezelfde regel geldt voor de titel van de kaart "Laatste 24 uur" op Overzicht: bij het bekende venster `24h` kiest
+   de Engelse app zelf "Last 24 hours" (`recentTitle`; ontwerpreview van het mediaserver-tabblad, 2026-11-11). In het
+   Nederlands blijft de titel de tekst van de server; een ander venster toont "Gisteren"/"Yesterday" zoals voorheen.
    Een volledig Engelse app vraagt dat de core naast `*_nl` ook een Engelse tekst of een sleutel levert; dat is een
    wijziging van het API-contract en valt buiten dit besluit.
 9. **Meldingen.** Het dagoverzicht en de directe meldingen worden opgemaakt in de taal die op dat moment geldt. De

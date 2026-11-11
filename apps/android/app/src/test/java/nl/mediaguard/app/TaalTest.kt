@@ -28,6 +28,7 @@ import nl.mediaguard.app.ui.nav.MAIN_TABS
 import nl.mediaguard.app.ui.screens.ActivityTab
 import nl.mediaguard.app.ui.screens.RequestsTab
 import nl.mediaguard.app.ui.screens.laneSummary
+import nl.mediaguard.app.ui.screens.recentTitle
 import nl.mediaguard.app.ui.screens.seerrLabel
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -166,6 +167,19 @@ class TaalTest {
         assertEquals("Partially available", engels { seerrLabel("gedeeltelijk", "Gedeeltelijk beschikbaar")?.tekst })
         assertEquals("Afgewezen", engels { seerrLabel("afgewezen", "Afgewezen")?.tekst })
         assertEquals(null, engels { seerrLabel(null, null) })
+    }
+
+    /**
+     * De kaart "Laatste 24 uur": het venster "24h" is een bekende code, dus in het Engels kiest de app zelf de titel.
+     * In het Nederlands blijft de tekst van de server staan.
+     */
+    @Test fun titelVanHetRollendeVensterInBeideTalen() {
+        val venster = DailySummary(window = "24h", label = "Laatste 24 uur")
+        assertEquals("Laatste 24 uur", recentTitle(venster))
+        assertEquals("Last 24 hours", engels { recentTitle(venster) })
+        assertEquals("Last 24 hours", engels { recentTitle(DailySummary(window = "24h")) })
+        assertEquals("Last 24 hours", engels { recentTitle(null) })
+        assertEquals("Yesterday", engels { recentTitle(DailySummary(date = "2026-11-07")) })
     }
 
     @Test fun waarschuwingEnInitialen() {

@@ -194,10 +194,16 @@ private fun Kpis(s: AppStatus, missing: Int?, a: OverviewActions, stale: String?
     }
 }
 
-/** Titel van de kaart: rollend venster of (oudere server) het overzicht van gisteren. */
+/**
+ * Titel van de kaart: rollend venster of (oudere server) het overzicht van gisteren.
+ *
+ * Het venster "24h" is een bekende code. In het Nederlands toont de app de tekst van de server; in het Engels kiest
+ * de app zelf de titel, net als bij een bekende Seerr-status (ADR-0023 punt 8). Zo staat er geen Nederlandse
+ * kaarttitel tussen Engelse app-teksten.
+ */
 fun recentTitle(d: DailySummary?): String = when {
     d == null -> tr("Laatste 24 uur", "Last 24 hours")
-    d.window == "24h" -> d.label ?: tr("Laatste 24 uur", "Last 24 hours")
+    d.window == "24h" -> tr(d.label ?: "Laatste 24 uur", "Last 24 hours")
     else -> tr("Gisteren", "Yesterday")
 }
 
