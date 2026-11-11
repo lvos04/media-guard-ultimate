@@ -10,7 +10,12 @@ draait als 568) op een GEVULDE database van een eerdere versie en controleert:
    en ``/api/v1/admin/version`` noemt precies de migraties uit het release-manifest;
 4. na een nette stop (exitcode 0) is de database intact, zijn alle migraties toegepast,
    staan de oude gegevens er nog en is er een back-up van vóór de migratie (als er iets
-   te migreren viel).
+   te migreren viel);
+5. HARDE EIS (contract 1.3 §2.3 regel 7b): **per tabel** is niets verloren. De fixture vult elk
+   domein van de voortgang (encodes, wachtrij, quarantaine, herstel, wanted, geschiedenis,
+   instellingen, mediaserver …); de meting van vóór de start wordt met de meting na de stop
+   vergeleken met dezelfde regels als het upgradebewijs (``scripts/upgradebewijs.py``: elk
+   verschil in een kolom van vóór is een fout, behalve de uitzonderingen met reden).
 
 Alleen standaardbibliotheek; draait op de GitHub-runner als root (``sudo``) omdat de
 mappen eigendom van 568 moeten zijn, net als op TrueNAS.
@@ -23,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.util
 import json
 import os
 import shutil
@@ -42,6 +48,39 @@ APP_UID = APP_GID = 568
 # hookguard: wachter tussen de forks en core (houdt de noodstop vast als core herstart)
 SERVICES = ("core", "recovery", "encode", "web", "hookguard", "sonarr-series", "sonarr-anime",
             "radarr-films", "radarr-animefilms")
+
+
+def upgradebewijs() -> Any:
+    """Meten en vergelijken van het upgradebewijs (``scripts/upgradebewijs.py``, zelfde map):
+    één set regels voor 'niets verloren', in de poort én in deze rooktest."""
+    naam = "upgradebewijs"
+    if naam in sys.modules:
+        return sys.modules[naam]
+    spec = importlib.util.spec_from_file_location(naam, Path(__file__).with_name(f"{naam}.py"))
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[naam] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def measure(config: Path, fixture: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Meting per tabel vóór de start, en problemen als de fixture niet gevuld is zoals zijn
+    metadata zegt (een lege meting bewijst niets: dan is de rooktest rood)."""
+    ub = upgradebewijs()
+    voor = ub.meet(config)
+    problems = [f"per tabel: {f}" for f in ub.dekking(voor, fixture,
+                                                      verplicht=("core/mediaguard.db",))]
+    return voor, problems
+
+
+def compare(config: Path, voor: dict[str, Any], exceptions: Path,
+            title: str) -> tuple[list[str], str]:
+    """Meting na de stop tegen de meting van vóór: (problemen, rapport per tabel)."""
+    ub = upgradebewijs()
+    uitz = json.loads(exceptions.read_text("utf-8")) if exceptions.is_file() else {}
+    fouten, toegepast, overzicht = ub.vergelijk(voor, ub.meet(config), uitz)
+    return [f"per tabel: {f}" for f in fouten], ub.rapport(title, fouten, toegepast, overzicht)
 
 
 def version_tuple(text: str) -> tuple[int, ...]:
@@ -205,7 +244,7 @@ def check_api(base: str, fixture: dict[str, Any], version: str,
     return problems
 
 
-def run(args: argparse.Namespace) -> list[str]:
+def run(args: argparse.Namespace) -> tuple[list[str], str]:
     manifest = json.loads(Path(args.manifest).read_text("utf-8"))
     expected = manifest["schema_versions"]["core"]
     sql, fixture = pick_fixture(Path(args.fixtures), args.version)
@@ -217,12 +256,12 @@ def run(args: argparse.Namespace) -> list[str]:
     for d in (config, work, data / "media", data / "downloads"):
         d.mkdir(parents=True, exist_ok=True)
     restore(sql, config / "core" / "mediaguard.db")
+    voor, problems = measure(config, fixture)
     if os.geteuid() == 0:  # zoals de TrueNAS-ACL: alles van 'apps' (568)
         for path in (tmp, *tmp.rglob("*")):
             os.chown(path, APP_UID, APP_GID)
     name = f"mg-aio-smoke-{os.getpid()}"
     base = f"http://127.0.0.1:{args.port}"
-    problems: list[str] = []
     docker("run", "-d", "--name", name, "-p", f"127.0.0.1:{args.port}:30080",
            "-e", "TZ=UTC", "-e", "MG_HOST=127.0.0.1",
            "-v", f"{config}:/config", "-v", f"{work}:/work", "-v", f"{data}:/data", args.image)
@@ -247,13 +286,19 @@ def run(args: argparse.Namespace) -> list[str]:
     if exit_code != "0":
         problems.append(f"geen nette stop binnen {args.stop_timeout} s (exitcode {exit_code})")
     problems += verify_db(config / "core" / "mediaguard.db", fixture, expected)
+    try:
+        lost, report = compare(config, voor, Path(args.exceptions),
+                               f"Per tabel: fixture {fixture['version']} → {args.version}")
+    except (OSError, sqlite3.DatabaseError, KeyError) as exc:
+        lost, report = [f"per tabel: meting na de stop mislukt ({exc})"], ""
+    problems += lost
     if problems:
         print("---- supervisor.json ----\n" + snapshot_text, flush=True)
         print("---- docker logs (laatste 200 regels) ----", flush=True)
         print(logs.stdout + logs.stderr, flush=True)
     if not args.keep:
         shutil.rmtree(tmp, ignore_errors=True)
-    return problems
+    return problems, report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -262,16 +307,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--version", required=True)
     p.add_argument("--manifest", default=str(ROOT / "deploy" / "release-manifest.json"))
     p.add_argument("--fixtures", default=str(ROOT / "tests" / "fixtures" / "aio"))
+    p.add_argument("--exceptions", help="uitzonderingen voor de vergelijking per tabel",
+                   default=str(ROOT / "tests" / "fixtures" / "aio"
+                               / "upgradebewijs-uitzonderingen.json"))
     p.add_argument("--port", type=int, default=30080)
     p.add_argument("--timeout", type=float, default=600)
     p.add_argument("--stop-timeout", type=int, default=90)
     p.add_argument("--keep", action="store_true", help="tijdelijke mappen laten staan")
     args = p.parse_args(argv)
-    problems = run(args)
+    problems, report = run(args)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     lines = [f"## AIO-rooktest {args.version}", ""]
     lines += [f"- ❌ {p}" for p in problems] or ["- ✅ start, health, versie, inloggen, "
-                                                  "migratie en nette stop in orde"]
+                                                  "migratie, nette stop en per tabel niets "
+                                                  "verloren"]
+    lines += ["", report]
     if summary:
         with open(summary, "a", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")

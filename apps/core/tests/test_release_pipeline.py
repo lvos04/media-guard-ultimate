@@ -393,6 +393,7 @@ def test_android_version_code_uses_build_number():
 
 # -- AIO-rooktest -----------------------------------------------------------------------------
 FIXTURES = ROOT / "tests" / "fixtures" / "aio"
+UITZONDERINGEN = FIXTURES / "upgradebewijs-uitzonderingen.json"
 
 
 def test_smoke_picks_newest_fixture_not_newer_than_release(tmp_path):
@@ -421,6 +422,10 @@ def test_fixture_database_migrates_and_stays_usable(tmp_path, monkeypatch):
     sql, fixture = smoke.pick_fixture(FIXTURES, current)
     data = tmp_path / "config" / "core"
     smoke.restore(sql, data / "mediaguard.db")
+    # HARDE EIS: de meting per tabel van vóór de start (elke tabel van de fixture is gevuld)
+    voor, niet_gevuld = smoke.measure(tmp_path / "config", fixture)
+    assert niet_gevuld == []
+    assert len(voor["databases"]["core/mediaguard.db"]["tabellen"]) >= 100
     settings = load_settings(data_dir=data, staging_dir=tmp_path / "staging",
                              quarantine_dir=tmp_path / "quarantine", start_background=False,
                              internal_token="t")
@@ -469,6 +474,55 @@ def test_fixture_database_migrates_and_stays_usable(tmp_path, monkeypatch):
     finally:
         app.state.ctx.db.close()
     assert smoke.verify_db(data / "mediaguard.db", fixture, expected) == []
+    # … en na de migratie en de start: per tabel niets verloren (zelfde regels als de poort)
+    verloren, rapport = smoke.compare(tmp_path / "config", voor, UITZONDERINGEN, "Per tabel")
+    assert verloren == [], verloren
+    assert "✅ niets verloren" in rapport and "| core/mediaguard.db | encoding_jobs |" in rapport
+    for domein in ("jobs", "quarantine_items", "replacement_transactions", "wanted_items",
+                   "audit_events", "settings_values", "mediaserver_actions",
+                   "mediaserver_pending", "mediaserver_watch"):
+        assert f"| core/mediaguard.db | {domein} |" in rapport, domein
+
+
+def test_smoke_per_tabel_ziet_elk_verlies(tmp_path):
+    """De rooktest is rood bij één verloren rij, één gewijzigde waarde of een fixture die niet
+    gevuld is zoals zijn metadata zegt; nieuwe rijen, kolommen en tabellen mogen."""
+    smoke = _smoke()
+    sql, fixture = smoke.pick_fixture(FIXTURES, "99.0.0")
+    config = tmp_path / "config"
+    db = config / "core" / "mediaguard.db"
+    smoke.restore(sql, db)
+    voor, niet_gevuld = smoke.measure(config, fixture)
+    assert niet_gevuld == []
+    assert smoke.compare(config, voor, UITZONDERINGEN, "x")[0] == []
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE nieuw_in_deze_versie(id INTEGER PRIMARY KEY, x TEXT)")
+    conn.execute("ALTER TABLE mediaserver_actions ADD COLUMN nieuwe_kolom INTEGER")
+    conn.execute("INSERT INTO mediaserver_watch(path,title,user_name,last_seen) "
+                 "VALUES ('/data/nieuw.mkv','t','u','2026-11-11T00:00:00+00:00')")
+    conn.commit()
+    assert smoke.compare(config, voor, UITZONDERINGEN, "x")[0] == []      # alleen erbij: goed
+    conn.execute("DELETE FROM quarantine_items WHERE id=(SELECT MIN(id) FROM quarantine_items)")
+    conn.execute("UPDATE encoding_jobs SET status='queued' WHERE id=(SELECT MIN(id) FROM "
+                 "encoding_jobs)")
+    conn.execute("DELETE FROM settings_values WHERE key='ui.theme'")
+    conn.commit()
+    conn.close()
+    problemen, rapport = smoke.compare(config, voor, UITZONDERINGEN, "x")
+    tekst = "\n".join(problemen)
+    assert "quarantine_items: 1 rij(en) verloren" in tekst
+    assert "encoding_jobs: 1 rij(en) gewijzigd" in tekst and "status" in tekst
+    assert "settings_values: 1 rij(en) verloren" in tekst
+    assert "❌ verlies of fout" in rapport
+    # een fixture die minder bevat dan zijn metadata zegt: niets bewezen, dus rood
+    leeg = tmp_path / "leeg"
+    smoke.restore(sql, leeg / "core" / "mediaguard.db")
+    conn = sqlite3.connect(leeg / "core" / "mediaguard.db")
+    conn.execute("DELETE FROM wanted_items")
+    conn.commit()
+    conn.close()
+    assert any("wanted_items" in p for p in smoke.measure(leeg, fixture)[1])
+    assert any("ontbreekt" in p for p in smoke.measure(tmp_path / "bestaat-niet", fixture)[1])
 
 
 def test_smoke_db_check_catches_problems(tmp_path):
