@@ -12,7 +12,8 @@
 // Toestanden van de serverlijst: zes servers (echt, uit hulp/vul.py: gezond, storing/zonder contact, ontkoppeld, zonder
 // sleutel, verouderd), en daarnaast nagebootst in de browser (GET /mediaserver/status ingekort of aangepast, de rest is
 // het echte antwoord van de core; in review.json staat dan "nagebootst"): één server, twee servers en een ontkoppelde
-// server 1. Rollen: beheerder, operator, kijker en een beheerder met en-US.
+// server 1. Rollen: beheerder, operator, kijker en een beheerder met en-US. Foutmeldingen (ronde 3, R-ONTWERP): een
+// adres dat de core weigert bij een server (echt 422, niets opgeslagen) en bij de ondertitelkaart (422 nagebootst).
 //
 // Gebruik (app gestart met hulp/start.sh en gevuld met hulp/vul.py):
 //   MG_PEIL_BASE_URL=http://127.0.0.1:18400 MG_PEIL_CORE_URL=http://127.0.0.1:18390 MG_PEIL_PASSWORD=… \
@@ -226,6 +227,22 @@ async function mockGevuld(page) {
 // [slug, gebruiker, handeling, opties]; een handeling doet wat een gebruiker doet (klikken, typen), maar bevestigt
 // nooit een dialoog en slaat niets op.
 const rij = (page, id) => page.getByTestId(`ms-server-${id}`);
+async function foutOpslaan(page, wijzig, opslaan) {
+  await rij(page, 2).getByRole("button", { name: wijzig }).click();
+  await page.locator("#ms-url-2").fill("http://127.0.0.1 9");
+  await rij(page, 2).getByRole("button", { name: opslaan }).click();
+  await rij(page, 2).getByRole("alert").waitFor();
+  await rij(page, 2).getByRole("alert").scrollIntoViewIfNeeded();
+}
+async function ondertitelsFout(page, opslaan) {
+  await page.route("**/api/v1/mediaserver/subtitles/config", (route) => (route.request().method() === "POST"
+    ? route.fulfill(json(422, { detail: "Ongeldig adres: geen spaties en geen gebruikersnaam in het adres.", code: "validation_error" }))
+    : route.continue()));
+  const kaart = page.getByTestId("subtitles-card");
+  await kaart.getByRole("button", { name: opslaan }).click();
+  await kaart.locator('.inline-state[data-tone="danger"]').waitFor();
+  await kaart.locator('.inline-state[data-tone="danger"]').scrollIntoViewIfNeeded();
+}
 const STATES = [
   ["lijst", "beheerder", null, { shot: true }],
   ["toevoegen", "beheerder", async (page) => { await page.getByTestId("ms-add-open").click(); await page.getByTestId("ms-add-form").waitFor(); await page.getByTestId("ms-add-form").scrollIntoViewIfNeeded(); }, { shot: true }],
@@ -242,7 +259,14 @@ const STATES = [
   ["kijker", "kijker", null, { shot: true, widths: [390, 1440] }],
   ["operator", "operator", null, { shot: true, widths: [390, 1440] }],
   ["operator-test-mislukt", "operator", async (page) => { await rij(page, 3).getByRole("button", { name: /^verbinding testen/i }).click(); await page.locator('[data-testid="ms-result-3"] .inline-state').waitFor(); await page.waitForTimeout(500); }, { shot: true, widths: [390, 1440] }],
+  // Een verzoek dat de core weigert (adres met een spatie: 422, er wordt niets opgeslagen) is geen meting: de fout staat
+  // als melding (role=alert) bij de server, de live-regio van het TestResultaat blijft leeg (R-TECH-4).
+  ["fout-opslaan", "beheerder", async (page) => { await foutOpslaan(page, /^wijzigen/i, /^opslaan en testen/i); }, { shot: true, widths: [320, 390, 1440] }],
+  // Hetzelfde voor de ondertitelkaart; de weigering wordt in de browser nagebootst, zodat er niets wordt opgeslagen.
+  ["ondertitels-fout", "beheerder", async (page) => { await ondertitelsFout(page, /^opslaan en testen$/i); }, { shot: true, widths: [320, 390, 1440], nagebootst: "POST /mediaserver/subtitles/config in de browser geweigerd met 422 (de foutvorm van de core)" }],
   ["en-us-lijst", "engels", null, { shot: true }],
+  ["en-us-fout-opslaan", "engels", async (page) => { await foutOpslaan(page, /^edit/i, /^save and test/i); }, { shot: true, widths: [390, 1440] }],
+  ["en-us-ondertitels-fout", "engels", async (page) => { await ondertitelsFout(page, /^save and test$/i); }, { shot: true, widths: [390, 1440], nagebootst: "als ondertitels-fout" }],
   ["en-us-een-server", "engels", null, { shot: true, mock: alleenServer1, widths: [390, 1440], nagebootst: "als een-server" }],
   ["en-us-server1-ontkoppeld", "engels", null, { shot: true, mock: server1Ontkoppeld, widths: [390, 1440], nagebootst: "als server1-ontkoppeld" }],
   ["en-us-toevoegen", "engels", async (page) => { await page.getByTestId("ms-add-open").click(); await page.getByTestId("ms-add-form").waitFor(); await page.getByTestId("ms-add-form").scrollIntoViewIfNeeded(); }, { shot: true, widths: [320, 390, 1440] }],

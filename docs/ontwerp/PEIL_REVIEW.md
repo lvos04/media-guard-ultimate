@@ -264,3 +264,146 @@ de OpenAPI-hash en `:app:verifyPaparazziDebug`.
 | Overzicht periodiek verversen | codebouwer | zodat Verouderd (gestippeld, "Laatst bekend") ook op Overzicht kan verschijnen (Peil §9, O-03). |
 | SysteemStatusPaneel met rijen per onderdeel | codebouwer/ontwerp | zoals `home.html`: rij per onderdeel met reden; acceptatie: totaal = slechtste onderdeel. |
 | Echte toestellen | tester | NVDA/TalkBack, 200 %-zoom, forced colors, emulator-rooktest (KVM), echte NAS. |
+
+## 11. Ontwerpreview mediaserver-tabblad (meerdere mediaservers, S-P2-590)
+
+**Datum:** 11 november 2026 · **Rol:** R-ONTWERP (ontwerpreview na de bouw) · **Onderwerp:** Instellingen → Koppelingen →
+Mediaservers & ondertitels (`apps/web/components/mediaserver/mediaserver-tab.tsx`: serverlijst met koppelstatus per server,
+formulieren, dialogen, ondertitelkaart, rollen, en-US) na het herstel van de afgebroken ronde 3 (A-BOUW e92a7f1…e5fdb56,
+A-HERSTEL 9032f75, d3b4d2e, 25135cb). **Getoetst aan:** Peil 1.1.1 (gepinde kopie `0a7143b`; ONTWERPTAAL §4, §11, §12,
+§13.3; COMPONENTEN C-03, C-14, §20, §29) en ADR-0022. **Gemeten op:** de gepushte commit `25135cb` ("vóór") en op het
+herstel van deze review, commit `785174d` ("na"). **Oordeel:** goedgekeurd na herstel van één belangrijke en één kleine
+bevinding; vijf kleine punten blijven open (§11.5).
+
+### 11.1 Werkwijze
+
+- **Echte dienst, testdata, Sim-getest.** Echte core (`python -m mediaguard`, verse datamap, `MG_START_BACKGROUND=0`) en
+  de echte productiebuild van de web-UI (`npm run build` → `node server.mjs`), alleen op 127.0.0.1, met de nep-Sonarr/Radarr
+  en twee nep-mediaservers (een Emby en een Jellyfin 12.x die alleen "Verbinding testen" beantwoorden):
+  `hulp/start.sh` + `hulp/vul.py` met een nieuwe werkmap buiten de repo (`MGP_WERK`; de oude metingen van ronde 3 en van
+  A-BOUW zijn blijven staan). `vul.py` maakt zes servers: 1 Emby en 2 Jelly Leon gezond (echt gemeten tegen de nep),
+  3 zonder contact (adres waar niets luistert), 4 ontkoppeld, 5 zonder sleutel, 6 met een meting van drie uur oud.
+- **Meting:** `docs/screenshots/peil/review-mediaserver/meet.mjs alles` met Playwright 1.65 (Chromium) en axe-core 4.14 uit
+  `ai-server-manager/design/ontwerptaal/bouw`, `nl-NL`/`en-US`, `Europe/Amsterdam`, reduced motion, schaal 1, de
+  systeemlettertypes van de ontwikkelmachine. Per afdruk: axe (`wcag2a, wcag2aa, wcag21a, wcag21aa, wcag22aa`, elk
+  impactniveau), contrast in de gerenderde pagina (met opacity, alfa en arcering), randen van bediening, overloop van de
+  pagina en binnen kaart of dialoog, afgekapte en geknepen tekst, doelen ≥ 44 px, groen buiten gemeten gezondheid,
+  statusvorm (icoon + woord + vorm), reden naast elke Onbekend/Verouderd/Ontkoppeld, labels zonder veld, voorbeeldwaarden
+  in plaatshouders, uitgeschakeld zonder zichtbare reden, zichtbare knoptekst in de toegankelijke naam (WCAG 2.5.3),
+  live-regio's en hun rol. Daarnaast Tab-doorlopen (ring ≥ 3:1, niet bedekt) en de dialogen met het toetsenbord (start
+  op Annuleren, Tab blijft binnen, Escape sluit, focus terug naar de opener). De afdrukken zijn bekeken (lijst, één en
+  twee servers, ontkoppelde server 1, foutmeldingen, en-US; licht en donker; 390 en 1440). Meetuitvoer en afdrukken staan
+  buiten de repo (`PEIL_UIT`, V-023).
+- **Nieuw in deze ronde (meet.mjs):** de toestanden `fout-opslaan` (server 2 met een adres met een spatie: de core weigert
+  met 422, er wordt niets opgeslagen) en `ondertitels-fout` (dezelfde weigering bij de ondertitelkaart, in de browser
+  nagebootst), elk ook in en-US. Eén server, twee servers en een ontkoppelde server 1 worden in de browser nagebootst
+  door `GET /mediaserver/status` in te korten of aan te passen (rest = echt antwoord van de core; in `review.json` veld
+  `nagebootst`).
+- **Skills:** `design:accessibility-review` en `design:design-critique`.
+
+### 11.2 Matrix en uitkomst in cijfers
+
+25 toestanden, 192 schermmetingen, 8 Tab-doorlopen en 8 dialoogdoorlopen = 208 metingen, vóór en na elk 208 van 208
+zonder fout (`meet.mjs` faalt bij een ontbrekende meting, V-005).
+
+| Toestand (stap) | Waar in de meting | Breedtes × thema |
+|---|---|---|
+| Eén server | `een-server` (nl), `en-us-een-server` | 320/360/390/768/1024/1440 × licht/donker; en-US 390/1440 × licht/donker |
+| Twee servers | `twee-servers` (nl); en-US: `en-us-server1-ontkoppeld` (server 1 en 2) | als boven |
+| Server zonder contact | server 3 in `lijst`, `en-us-lijst`, `test-mislukt`, `operator-test-mislukt`, `fout-opslaan` | 6 breedtes × 2 thema's (nl en en-US) |
+| Losgemaakte server 1 | `server1-ontkoppeld`, `en-us-server1-ontkoppeld` | 6 breedtes × 2 thema's; en-US 390/1440 × 2 |
+| Overige | lijst met zes servers, toevoegen, wijzigen, twee dialogen, test geslaagd/mislukt, gevuld (lange namen, kijkers, afspeeltests), kijker, operator, foutmeldingen | zie `meet.mjs`, `STATES` |
+
+| Meting | Vóór (`25135cb`) | Na |
+|---|---|---|
+| axe-overtredingen (alle impactniveaus) | 0 | 0 |
+| Tekst < 4,5:1 · randen van bediening < 3:1 | 0 · 0 | 0 · 0 |
+| Laagste tekstcontrast in de pagina | 7,61:1 (witte tekst op de knop "Server verwijderen") | 7,61:1 |
+| Horizontale overloop · buiten kaart of dialoog · afgekapt · geknepen | 0 · 0 · 0 · 0 | 0 · 0 · 0 · 0 |
+| Doelen < 44 px · tekst < 14 px · ellips | 0 · 0 · 0 | 0 · 0 · 0 |
+| Groen bij iets anders dan Gezond/Healthy | 0 | 0 |
+| Statuspil zonder icoon, woord of juiste vorm | 0 | 0 |
+| Onbekend/Verouderd/Ontkoppeld zonder reden | 0 | 0 |
+| Labels zonder veld · velden zonder naam · plaatshouders | 0 · 0 · 0 | 0 · 0 · 0 |
+| Uitgeschakeld zonder zichtbare reden · knoptekst niet in de naam | 0 · 0 | 0 · 0 |
+| Eén h1 · kopsprongen · dubbele id's · JS-fouten | overal · 0 · 0 · 0 | overal · 0 · 0 · 0 |
+| Geweigerd verzoek als "mislukt"-uitslag in een live-regio (`role=status`) | **10** (ondertitelkaart, nl en en-US) | **0** (nu `role=alert`) |
+| Tab-doorlopen: stops · zonder ring · ring < 3:1 · bedekt | 42 (lijst) / 48 (toevoegen) · 0 · 0 · 0; laagste ring 7,55:1 | gelijk |
+| Dialogen: rol · start · Tab binnen · Escape · focus terug | alertdialog · Annuleren · ja · ja · opener (ontkoppelen zonder gevaarvorm, verwijderen met gevaarvorm) | gelijk |
+
+Statusvormen (alle afdrukken): Gezond/Healthy `circle-check` zonder vlak; Storing/Down `octagon-x` met vlak en rand;
+Verouderd/Stale `clock-alert`, stippel + arcering; Ontkoppeld/Unlinked en Niet gekoppeld/Not linked `link-2-off`,
+gestippeld; Gekoppeld/Linked `link-2`, neutraal. axe "onvolledig" (niet beslist door axe; 184 meldingen, vóór en na
+gelijk) is beoordeeld: `color-contrast` (axe kan de achtergrond niet bepalen, o.a. bij arcering en overlappende lagen;
+de eigen contrastmeting in de pagina dekt die tekst en vond niets onder 7,61:1) en `aria-hidden-focus` alleen in de
+dialoogtoestanden (Radix zet de achtergrond op `aria-hidden` en houdt de focus in de dialoog; de dialoogdoorloop toont
+dat Tab binnen de dialoog blijft).
+
+### 11.3 De vier toestanden van de stap
+
+- **Eén server:** kop "Wat MediaGuard met Emby doet" (de server bij naam), telling "1 gekoppeld" als neutrale pil,
+  Emby met Gekoppeld · Gezond en de tijd van het laatste contact; feiten als `dl`; geen Verwijderen bij server 1.
+- **Twee servers:** "Wat MediaGuard met je mediaservers doet" en hints per gekoppelde server; elke server een eigen
+  `article` met h3, pillen, reden, feiten en korte knoppen met de servernaam in de toegankelijke naam.
+- **Server zonder contact:** Gekoppeld · **Storing** (`octagon-x`, woord) met de reden "Geen contact: niet bereikbaar
+  (ConnectError)" en "Laatste goede contact gisteren. MediaGuard probeert het vanzelf opnieuw."; nergens groen. Een
+  mislukte "Verbinding testen" staat als gemeten falen (danger) in de vaste live-regio van die server.
+- **Losgemaakte server 1:** de rij blijft staan met alleen **Ontkoppeld** (gestippeld, `link-2-off`), de reden
+  "MediaGuard volgt deze server niet. Adres en sleutel zijn bewaard." en één primaire knop **Weer koppelen**
+  (en-US: Unlinked, "Link again"). De telling bovenaan telt hem niet mee.
+
+### 11.4 Bevindingen en herstel
+
+| Nr | Ernst | Bevinding | Herstel en controle |
+|---|---|---|---|
+| R-ONTWERP-1 | belangrijk | `SubtitlesCard.run` zette elk mislukt verzoek (geweigerde invoer, geen rechten, core onbereikbaar; ook een schakelaar) als TestResultaat "mislukt" (danger) in de live-regio `subs-result` (`role=status`). Gemeten in `ondertitels-fout`: 10 van 10 afdrukken `status: Ongeldig adres…`. Een invoerfout zag er zo uit als een gemeten storing van Bazarr, en de kaart deed het anders dan de servers erboven (WCAG 3.2.4, Peil C-14: `role=alert` voor de fout van dít verzoek). Vervolgpunt van A-HERSTEL. | Zoals bij `ServerItem`: de fout staat als `InlineState` danger met `role=alert` onder de knoppen; `subs-result` krijgt alleen een echte testuitslag. Na: 10 van 10 `alert`, 0 `status`. e2e `werk-mediaserver.spec.ts` "ondertitels: … een geweigerd verzoek een melding" (mutatieproef met de oude code: rood op de alert). |
+| R-ONTWERP-2 (= R-TECH-6) | klein | Na een geslaagde uitslag bleef die oude uitslag in `ms-result-<id>` staan als een volgend verzoek mislukte, naast de nieuwe melding. Hetzelfde gold na het herstel hierboven voor `subs-result`. | In beide `run`-functies maakt een mislukt verzoek de live-regio leeg (geen "mislukt", wel weg met de oude uitslag); de fout blijft `role=alert`. Nieuwe e2e "een mislukt verzoek na een geslaagde test: de oude uitslag gaat weg, de fout is een melding" (eerst 200, dan 500 op "Verbinding testen"; nagebootst) en een extra stap in de ondertiteltest; met de oude code beide rood. |
+
+**Beoordeling van de nieuwe foutmelding bij een server** (A-HERSTEL, `InlineState` danger `role=alert` onder de
+knoppen): in orde. Rood met `octagon-x` en volle tekst (Peil §4.1 regel 12: een veldfout ná een verzendpoging is rood),
+de live-regio van het TestResultaat blijft leeg (gemeten in `fout-opslaan`, nl en en-US, licht en donker: alleen
+`alert: Ongeldig adres…`), contrast ≥ 7,61:1, geen overloop op 320 px, en met een open dialoog staat de fout alleen in
+de dialoog. Op 390 px staat de melding direct onder de knoppen in beeld (gemeten: y 694–758 bij een venster van 800).
+
+### 11.5 Open (klein, buiten deze stap of buiten "uiterlijk")
+
+1. **Focus na een knop met `pending`.** `Button` (`components/mg/primitives.tsx`) zet tijdens een verzoek `disabled`;
+   de focus valt dan naar `body` (gemeten na Enter op "Opslaan en testen"). Chromium houdt het startpunt vast: de
+   volgende Tab gaat naar "Verbinding testen". Geldt voor de hele app (gedeelde primitive), daarom hier niet gewijzigd;
+   voorstel: `aria-disabled` + klik negeren tijdens `pending`, met de test van V-065.
+2. **Melding onderaan de pagina half onder de ondernavigatie.** Op 390 px valt de melding of uitslag van de
+   ondertitelkaart (laatste kaart) direct na de klik voor de helft achter de ondernavigatie; scrollen maakt hem helemaal
+   zichtbaar en hij wordt voorgelezen (`role=alert`/`status`). Voorstel: de melding bij verschijnen met
+   `scrollIntoView({ block: "nearest" })` in beeld brengen (de scroll-padding van Peil houdt dan de ondernavigatie vrij).
+3. **Veldfout niet bij het veld.** De core antwoordt met een algemene 422-tekst zonder veld; de UI kan "Ongeldig adres"
+   daarom niet bij het adresveld zetten met `aria-invalid` (Peil §20). Hoort bij een API-wijziging (S-P2-600).
+4. **Knoppen "Jellyfin http://… invullen"** (gevonden servers) lopen met het adres om tot 76 px hoog (gevuld-toevoegen);
+   ze blijven binnen de kaart en ≥ 44 px. Al bekend uit ronde 3 (B4).
+5. **Serverteksten in en-US** (foutmeldingen en redenen van de core zoals "Ongeldig adres…", "niet bereikbaar") blijven
+   Nederlands: vervolgpunt "en-US voor serverteksten" uit §10.
+
+Buiten het tabblad, niet beoordeeld: de pil "Beperkt" in de zijbalk (totaalstatus van de app in de testopstelling).
+
+### 11.6 NIET GEVALIDEERD
+
+Echte schermlezer (NVDA, TalkBack), echte telefoon in fel licht, 200 %-zoom en forced colors op dit tabblad, en een echte
+Emby/Jelly Leon op de NAS: niet gedaan. Alles hierboven is Sim-getest (nep-mediaservers, nagebootste toestanden).
+
+### 11.7 Opnieuw uitvoeren
+
+```bash
+# vanuit <WERKMAP>; MGP_WERK en PEIL_UIT buiten de repo, het wachtwoord alleen in de omgeving
+(cd media-guard-ultimate/apps/web && npm run build)
+MGP_REPO=<WERKMAP>/media-guard-ultimate MGP_WERK=<werkmap> MGP_PY=<WERKMAP>/media-guard-ultimate/.venv/bin/python \
+  media-guard-ultimate/docs/screenshots/peil/review-mediaserver/hulp/start.sh
+MGP_PW=<wachtwoord> MGP_DATA=<werkmap>/data media-guard-ultimate/.venv/bin/python -I \
+  media-guard-ultimate/docs/screenshots/peil/review-mediaserver/hulp/vul.py
+MG_PEIL_PASSWORD=<wachtwoord> PEIL_PLAYWRIGHT=<WERKMAP>/ai-server-manager/design/ontwerptaal/bouw/node_modules/playwright/index.mjs \
+  PEIL_AXE=<WERKMAP>/ai-server-manager/design/ontwerptaal/bouw/node_modules/axe-core/axe.min.js PEIL_UIT=<map buiten de repo> \
+  node media-guard-ultimate/docs/screenshots/peil/review-mediaserver/meet.mjs alles
+MGP_WERK=<werkmap> media-guard-ultimate/docs/screenshots/peil/review-mediaserver/hulp/stop.sh
+```
+
+Daarnaast gedraaid op het herstel: `npm run check:peil`, `npm run lint`, `npm run typecheck`, `npm run test:unit`,
+`npm run build` en de volledige Playwright-run (`npm run e2e`); uitkomsten in het rapport van deze stap en in EVIDENCE
+C1.3-MGU-04.
