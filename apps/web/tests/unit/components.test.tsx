@@ -5,7 +5,7 @@ import { dayRange } from "@/components/av1/system";
 import { DataTable } from "@/components/mg/chart-frame";
 import { LineChart } from "@/components/mg/charts";
 import { KpiCard } from "@/components/mg/domain";
-import { Button, InlineState, StatusChip, TONE_ICON, type Tone } from "@/components/mg/primitives";
+import { Button, InlineState, Segmented, StatusChip, Switch, TONE_ICON, type Tone } from "@/components/mg/primitives";
 import { buttonVariants } from "@/components/ui/button";
 import { I18nProvider } from "@/lib/i18n";
 import { Zap } from "lucide-react";
@@ -41,6 +41,41 @@ describe("StatusChip (Peil StatusBadge)", () => {
   it("Storing = octagon-x, Gepauzeerd = circle-pause", () => {
     expect(html(<StatusChip tone="danger">Storing</StatusChip>)).toContain("lucide-octagon-x");
     expect(html(<StatusChip tone="paused">Gepauzeerd</StatusChip>)).toContain("lucide-circle-pause");
+  });
+});
+
+describe("Verouderd (Peil §4.4)", () => {
+  it("is gestippeld en gearceerd met een klok, nooit groen en nooit de vorm van Onbekend", () => {
+    const out = html(<StatusChip tone="stale">Verouderd</StatusChip>);
+    expect(out).toContain('data-status="stale"');
+    expect(out).toContain("chip--stale");
+    expect(out).toContain("border-dashed");
+    expect(out).toContain("arcering");
+    expect(out).toContain("lucide-clock-alert");
+    expect(out).not.toContain("chip--healthy");
+    expect(out).not.toContain("lucide-circle-question-mark");
+    expect(html(<StatusChip tone="stale" icon={null}>Verouderd</StatusChip>)).toContain("lucide-clock-alert");
+  });
+});
+
+describe("Switch en Segmented: de reden bij wat uit staat", () => {
+  it("Switch zet aria-describedby alleen als er een reden is", () => {
+    expect(html(<Switch label="Afspeeltest" checked={false} disabled describedBy="ms-role-note" />)).toContain('aria-describedby="ms-role-note"');
+    expect(html(<Switch label="Afspeeltest" checked={false} />)).not.toContain("aria-describedby");
+  });
+  const opties = [{ value: "a", label: "Aan" }, { value: "b", label: "Uit", disabled: true }];
+  it("Segmented: een zichtbaar label benoemt de groep; anders blijft het aria-label", () => {
+    const met = html(<Segmented label="Soort server" labelledBy="ms-kind-new" value="a" onChange={() => undefined} options={opties} />);
+    expect(met).toContain('aria-labelledby="ms-kind-new"');
+    expect(met).not.toContain('aria-label="Soort server"');
+    const zonder = html(<Segmented label="Soort server" value="a" onChange={() => undefined} options={opties} />);
+    expect(zonder).toContain('aria-label="Soort server"');
+    expect(zonder).not.toContain("aria-labelledby");
+  });
+  it("Segmented: alleen een uitgeschakelde keuze wijst naar de reden", () => {
+    const out = html(<Segmented label="Keuze" describedBy="ms-role-note" value="a" onChange={() => undefined} options={opties} />);
+    expect(out.match(/aria-describedby="ms-role-note"/g)).toHaveLength(1);
+    expect(out).toMatch(/<button[^>]*disabled=""[^>]*aria-describedby="ms-role-note"/);
   });
 });
 

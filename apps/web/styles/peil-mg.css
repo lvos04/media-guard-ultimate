@@ -358,3 +358,9 @@ a.chip, button.chip, .settings-toc .chip { min-height: var(--touch); padding-inl
   .prov-grid td[data-label]::before { content: attr(data-label); color: var(--muted-foreground); font-weight: 600; }
   .prov-grid td.cell-primary { padding-bottom: 0.375rem; }
 }
+
+/* (ms) Mediaservers & ondertitels (Peil-review ronde 2): de kaart heeft al 1 rem binnenmarge; de rijen erin beginnen
+   op dezelfde lijn als de kaarttitel (geen dubbele inspringing) en een schakelaar of keuzegroep die op een telefoon
+   onder zijn tekst valt, begint links (de 42 px is bedoeld voor rijen met een icoon ervoor; die zijn hier niet). */
+.ms-tab .list-row { padding-inline: 0; }
+.ms-tab .list-row--wrap .list-aside { margin-left: 0; }

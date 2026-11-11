@@ -28,7 +28,7 @@ describe("serverState: koppeling is ingesteld, gezondheid is gemeten", () => {
   it("gekoppeld en gemeten goed = gezond", () => {
     expect(serverState(server())).toEqual({ link: "linked", health: "healthy", why: null });
   });
-  it("losgemaakt, zonder adres of zonder sleutel heeft geen gezondheid", () => {
+  it("ontkoppeld, zonder adres of zonder sleutel heeft geen gezondheid", () => {
     expect(serverState(server({ enabled: false, followed: false, connected: false }))).toEqual({ link: "detached", health: null, why: null });
     expect(serverState(server({ url: "", key_set: false, followed: false, connected: false, contact: null }))).toEqual({ link: "noAddress", health: null, why: null });
     expect(serverState(server({ key_set: false, followed: false, connected: false, contact: null }))).toEqual({ link: "noKey", health: null, why: null });
@@ -75,6 +75,31 @@ describe("ServerChips en ServerFacts", () => {
     expect(feiten).toContain("Nog niet gemeten");
     expect(feiten).toContain("Verbinding testen");
   });
+  it("een te oude goede meting is Verouderd: stippel, arcering en klok, nooit groen en nooit zomaar Onbekend", () => {
+    const s = server({ connected: false, contact: { at: geleden(45), ok: true, last_ok_at: geleden(45), error: null } });
+    const chips = html(<ServerChips s={s} />);
+    expect(chips).toContain("Gekoppeld");
+    expect(chips).toContain("Verouderd");
+    expect(chips).toContain("lucide-clock-alert");
+    expect(chips).toContain("border-dashed");
+    expect(chips).toContain("arcering");
+    expect(chips).toContain('data-status="stale"');
+    expect(chips).not.toContain("Onbekend");
+    expect(chips).not.toContain("Gezond");
+    const feiten = html(<ServerFacts s={s} />);
+    expect(feiten).toContain("Laatst bekend");
+    expect(feiten).toContain("te oud om op te vertrouwen");
+    expect(feiten).toContain("Verbinding testen");
+  });
+  it("de feiten staan als term en waarde (dl), het adres in vaste breedte met de herkomst erbij", () => {
+    const feiten = html(<ServerFacts s={jelly({ path_map: [["/media", "/mnt/media"]] })} />);
+    expect(feiten).toContain("<dl");
+    expect(feiten).toMatch(/<dt[^>]*>Adres<\/dt>/);
+    expect(feiten).toMatch(/<dt[^>]*>Aanmelden met<\/dt>/);
+    expect(feiten).toMatch(/<dt[^>]*>Gekoppelde mappen<\/dt>/);
+    expect(feiten).toContain("http://jellyfin:8096");
+    expect(feiten).toContain("ingesteld");
+  });
   it("een storing toont de fout van de server en het laatste goede contact", () => {
     const s = jelly({ connected: false, contact: { at: geleden(1), ok: false, last_ok_at: geleden(30), error: "HTTP 401" } });
     const chips = html(<ServerChips s={s} />);
@@ -85,7 +110,7 @@ describe("ServerChips en ServerFacts", () => {
     expect(feiten).toContain("Laatste goede contact");
     expect(feiten).toContain("Authorization: MediaBrowser");
   });
-  it("losgemaakt is Ontkoppeld en zegt dat adres en sleutel bewaard zijn", () => {
+  it("een ontkoppelde server is Ontkoppeld en zegt dat adres en sleutel bewaard zijn", () => {
     const s = server({ enabled: false, followed: false, connected: false });
     expect(html(<ServerChips s={s} />)).toContain("Ontkoppeld");
     expect(html(<ServerFacts s={s} />)).toContain("Adres en sleutel zijn bewaard");
@@ -142,5 +167,37 @@ describe("teksten nl en en-US", () => {
     expect([nl["ms.link.linked"], en["ms.link.linked"]]).toEqual(["Gekoppeld", "Linked"]);
     expect([nl["ms.status.none"], en["ms.status.none"]]).toEqual(["Niet gekoppeld", "Not linked"]);
     expect([nl["ms.link.detached"], en["ms.link.detached"]]).toEqual(["Ontkoppeld", "Unlinked"]);
+  });
+  it("zegt ontkoppelen (nooit losmaken) en noemt nergens een voorbeeldadres", () => {
+    expect([nl["ms.detach"], en["ms.detach"]]).toEqual(["Ontkoppelen…", "Unlink…"]);
+    expect([nl["ms.detach.confirm"], en["ms.detach.confirm"]]).toEqual(["Server ontkoppelen", "Unlink server"]);
+    expect([nl["ms.remove.confirm"], en["ms.remove.confirm"]]).toEqual(["Server verwijderen", "Remove server"]);
+    const eigen = (Object.keys(nl) as Array<keyof typeof nl>).filter((k) => k.startsWith("ms.") || k.startsWith("subs."));
+    for (const key of eigen) {
+      expect(nl[key], key).not.toMatch(/losma|losgem/i);
+      // Peil §20: een plaatshouder of hulptekst is nooit een voorbeeldwaarde van een adres
+      expect(`${nl[key]} ${en[key]}`, key).not.toMatch(/nas\.lan|\d+\.\d+\.\d+\.\d+/);
+    }
+  });
+  it("de zichtbare knoptekst staat vooraan in de toegankelijke naam (WCAG 2.5.3)", () => {
+    for (const taal of [nl, en]) expect(taal["ms.actionFor"].startsWith("{action}")).toBe(true);
+  });
+  it("Verouderd heet in en-US Stale (Peil §11.1) en noemt net als in het Nederlands de reden en wat je kunt doen", () => {
+    expect([nl["state.staleShort"], en["state.staleShort"]]).toEqual(["Verouderd", "Stale"]);
+    expect(nl["ms.why.stale"]).toMatch(/^Laatst bekend \{when\}.*Verbinding testen/);
+    expect(en["ms.why.stale"]).toMatch(/^Last known \{when\}.*Test connection/);
+    // de knop waar de reden naar verwijst, heet in beide talen precies zo
+    expect([nl["ms.test"], en["ms.test"]]).toEqual(["Verbinding testen", "Test connection"]);
+  });
+  it("de termen van de feitenlijst (dl) en de hulpteksten bij het formulier bestaan in beide talen", () => {
+    expect([nl["ms.url"], en["ms.url"]]).toEqual(["Adres", "Address"]);
+    expect([nl["ms.fact.auth"], en["ms.fact.auth"]]).toEqual(["Aanmelden met", "Signs in with"]);
+    expect([nl["ms.fact.tests"], en["ms.fact.tests"]]).toEqual(["Afspeeltests", "Playback tests"]);
+    expect([nl["ms.fact.nl"], en["ms.fact.nl"]]).toEqual(["NL-ondertitels", "Dutch subtitles"]);
+    expect([nl["ms.required"], en["ms.required"]]).toEqual(["(verplicht)", "(required)"]);
+    // een term is geen zin: geen dubbele punt of variabele erin (de waarde staat in de dd)
+    for (const key of ["ms.url", "ms.fact.auth", "ms.fact.tests", "ms.fact.nl", "ms.paths"] as const) {
+      for (const taal of [nl, en]) expect(taal[key], key).not.toMatch(/[:{]/);
+    }
   });
 });

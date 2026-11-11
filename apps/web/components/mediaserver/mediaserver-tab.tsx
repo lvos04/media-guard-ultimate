@@ -1,10 +1,10 @@
 "use client";
 
-import { Captions, Link2, MonitorPlay, Pencil, Plus, RefreshCw, Search, Trash2, Unlink } from "lucide-react";
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { Captions, Eye, Link2, MonitorPlay, Pencil, Plus, RefreshCw, Search, Trash2, Unlink } from "lucide-react";
+import { useState, type ReactNode } from "react";
 
 import { DangerDialog } from "@/components/mg/domain";
-import { Button, Card, Field, InlineState, Segmented, StatusChip, Switch } from "@/components/mg/primitives";
+import { Button, Card, Field, InlineState, Modal, Segmented, StatusChip, Switch } from "@/components/mg/primitives";
 import { ErrorState, StateView } from "@/components/mg/states";
 import { useToast } from "@/components/mg/toast";
 import { api } from "@/lib/api/client";
@@ -53,28 +53,41 @@ function Row({ title, hint, children }: { title: ReactNode; hint?: ReactNode; ch
   );
 }
 
-const ACTIONS: CSSProperties = { display: "flex", gap: 8, flexWrap: "wrap" };
-// Eén server = één rij met twee lagen: bovenaan feiten en status naast elkaar (onder elkaar als het smal wordt),
-// daaronder het formulier en de handelingen over de volle breedte.
-const ITEM: CSSProperties = { flexDirection: "column", alignItems: "stretch" };
-const ITEM_HEAD: CSSProperties = { display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: "8px 12px", minWidth: 0 };
-// De reden bij een status moet je helemaal kunnen lezen: nooit afkappen met een beletselteken.
-const FULL: CSSProperties = { whiteSpace: "normal" };
+// Peil C-41a (DienstKaart): handelingen onder elkaar over de volle breedte op een telefoon, naast elkaar vanaf sm.
+const ACTIONS = "flex flex-col gap-2 sm:flex-row sm:flex-wrap";
+const ACTION = "w-full sm:w-auto";
+// Tussenkop binnen een kaart (h3 onder de h2 van de kaart).
+const SUBHEAD = "text-base font-semibold leading-snug text-foreground";
+// Zichtbaar label boven een keuzegroep: dezelfde vorm als het label van een Veld (Peil §20).
+const GROUP_LABEL = "label mb-1.5 block text-base font-semibold text-foreground";
+// De RolMelding (C-49) is ook de reden bij elke uitgeschakelde schakelaar of keuze (aria-describedby).
+const ROLE_NOTE = "ms-role-note";
 
 /** Instellingen → Koppelingen → Mediaservers & ondertitels. Alles in de app in te stellen. */
 export function MediaServerTab() {
+  const { t } = useI18n();
+  const { can } = useSession();
   const status = useResource<MsStatus>("/mediaserver/status", undefined, 30_000);
   if (status.error && !status.data) return <Card><ErrorState error={status.error} onRetry={() => void status.reload()} endpoint="GET /api/v1/mediaserver/status" /></Card>;
   if (!status.data) return <Card><StateView kind="loading" /></Card>;
   return (
-    <div className="stack" data-testid="mediaserver-tab">
+    <div className="stack ms-tab" data-testid="mediaserver-tab">
+      {can("admin") ? null : (
+        <div id={ROLE_NOTE} data-testid="ms-role-note">
+          <InlineState tone="info">{can("operator") ? t("ms.adminOnly") : t("state.readOnly")}</InlineState>
+        </div>
+      )}
       <ServersCard s={status.data} reload={() => void status.reload()} />
       <SubtitlesCard s={status.data} reload={() => void status.reload()} />
     </div>
   );
 }
 
-/** Koppeling (ingesteld) en gezondheid (gemeten) van één server: vorm + icoon + woord, en bij Onbekend de reden. */
+/**
+ * Koppeling (ingesteld) en gezondheid (gemeten) van één server: vorm + icoon + woord. Een laatst bekend Gezond dat te
+ * oud is, is Verouderd (stippel + arcering, Peil §4.4) en nooit groen; zonder meting is het Onbekend. De reden staat
+ * er altijd bij (ServerFacts).
+ */
 export function ServerChips({ s }: { s: MsServer }) {
   const { t } = useI18n();
   const st = serverState(s);
@@ -85,18 +98,21 @@ export function ServerChips({ s }: { s: MsServer }) {
       <StatusChip tone="linked">{t("ms.link.linked")}</StatusChip>
       {st.health === "healthy" ? <StatusChip tone="healthy">{t("status.healthy")}</StatusChip>
         : st.health === "down" ? <StatusChip tone="danger">{t("status.offline")}</StatusChip>
-          : <StatusChip tone="unknown">{t("status.unknown")}</StatusChip>}
+          : st.why === "stale" ? <StatusChip tone="stale">{t("state.staleShort")}</StatusChip>
+            : <StatusChip tone="unknown">{t("status.unknown")}</StatusChip>}
     </>
   );
 }
 
-/** Wat er over één server te zeggen valt: eerst wat, dan waarom, dan wat je kunt doen. */
+/**
+ * Wat er over één server te zeggen valt, onder de naam en de pillen: eerst waarom de status zo is en wat je kunt doen,
+ * dan de feiten als lijst van term en waarde (Peil C-41a: dl met vaste termkolom, onder elkaar als het smal is).
+ */
 export function ServerFacts({ s }: { s: MsServer }) {
   const { t, relative, num } = useI18n();
   const st = serverState(s);
   const r = s.results;
   const tested = r.ok + r.transcode + r.failed + r.not_found + r.open;
-  const kind = s.kind === "auto" ? t("ms.kind.autoShort") : t(`ms.kind.${s.kind}` as MessageKey);
   const why = st.link === "detached" ? t("ms.why.detached")
     : st.link === "noAddress" ? t("ms.why.noAddress")
       : st.link === "noKey" ? t("ms.why.noKey", { label: s.label })
@@ -104,73 +120,111 @@ export function ServerFacts({ s }: { s: MsServer }) {
           : st.health === "down" ? t("ms.why.down", { error: s.contact?.error || t("ms.why.noAnswer") })
             : st.why === "stale" ? t("ms.why.stale", { when: relative(s.contact?.at ?? null) })
               : t("ms.why.notMeasured");
+  const term = "font-semibold text-muted-foreground";
+  const pair = "min-w-0 @md:contents";
   return (
     <>
-      <div className="list-title" style={FULL}>{s.label}{kind !== s.label ? <span className="list-sub"> · {kind}</span> : null}</div>
-      <div className="list-sub mono" style={{ ...FULL, wordBreak: "break-all" }}>{s.url ? `${s.url} · ${t(sourceKey(s.url_source))}` : t("ms.srv.noAddress")}</div>
-      <div className="list-sub" style={FULL} data-testid={`ms-why-${s.server_id}`}>{why}</div>
-      {st.health === "down" && s.contact?.last_ok_at ? <div className="list-sub" style={FULL}>{t("ms.why.lastOk", { when: relative(s.contact.last_ok_at) })}</div> : null}
-      {s.auth ? <div className="list-sub" style={FULL}>{t("ms.srv.auth", { auth: s.auth })}</div> : null}
-      {s.hold.active ? <div className="list-sub" style={FULL}>{t("ms.srv.watching")}</div> : null}
-      {s.path_map.length ? (
-        <div className="list-sub" style={FULL}>{t("ms.paths")}: {s.path_map.map(([a, b]) => <span className="mono" key={a} style={{ display: "block", wordBreak: "break-all" }}>{a} → {b}</span>)}</div>
-      ) : s.followed ? <div className="list-sub" style={FULL}>{t("ms.pathsNone")}</div> : null}
-      {tested ? (
-        <div className="list-sub" style={FULL}>
-          {t("ms.srv.results", { ok: num(r.ok), transcode: num(r.transcode), failed: num(r.failed + r.not_found), open: num(r.open) })}
-          {r.nl_visible + r.nl_missing ? ` · ${t("ms.srv.nl", { visible: num(r.nl_visible), missing: num(r.nl_missing) })}` : ""}
-        </div>
-      ) : null}
+      <div className="flex min-w-0 flex-col gap-1 text-sm text-foreground">
+        <p data-testid={`ms-why-${s.server_id}`}>{why}</p>
+        {st.health === "down" && s.contact?.last_ok_at ? <p className="text-muted-foreground">{t("ms.why.lastOk", { when: relative(s.contact.last_ok_at) })}</p> : null}
+        {s.hold.active ? <p className="flex items-start gap-1.5"><Eye className="ico mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />{t("ms.srv.watching")}</p> : null}
+      </div>
+      {/* grid-cols-1 is nodig: de bestaande klasse .grid (mg.css) geeft twaalf kolommen, en dan breekt elke regel per letter */}
+      <dl className="grid min-w-0 grid-cols-1 gap-x-3 gap-y-2 text-sm text-foreground @md:grid-cols-[minmax(0,11rem)_minmax(0,1fr)] @md:gap-y-1" data-testid={`ms-facts-${s.server_id}`}>
+        {/* zonder adres zegt de reden hierboven al "Nog geen adres": geen lege regel in de lijst */}
+        {s.url ? (
+          <div className={pair}>
+            <dt className={term}>{t("ms.url")}</dt>
+            <dd className="min-w-0"><span className="font-mono break-all">{s.url}</span> <span className="text-muted-foreground">· {t(sourceKey(s.url_source))}</span></dd>
+          </div>
+        ) : null}
+        {s.auth ? <div className={pair}><dt className={term}>{t("ms.fact.auth")}</dt><dd className="min-w-0 font-mono break-all">{s.auth}</dd></div> : null}
+        {s.path_map.length || s.followed ? (
+          <div className={pair}>
+            <dt className={term}>{t("ms.paths")}</dt>
+            <dd className="min-w-0">
+              {s.path_map.length
+                ? s.path_map.map(([a, b]) => <span className="block font-mono break-all" key={a}>{a} → {b}</span>)
+                : t("ms.pathsNone")}
+            </dd>
+          </div>
+        ) : null}
+        {tested ? (
+          <div className={pair}>
+            <dt className={term}>{t("ms.fact.tests")}</dt>
+            <dd className="min-w-0">{t("ms.srv.results", { ok: num(r.ok), transcode: num(r.transcode), failed: num(r.failed + r.not_found), open: num(r.open) })}</dd>
+          </div>
+        ) : null}
+        {tested && r.nl_visible + r.nl_missing ? (
+          <div className={pair}>
+            <dt className={term}>{t("ms.fact.nl")}</dt>
+            <dd className="min-w-0">{t("ms.srv.nl", { visible: num(r.nl_visible), missing: num(r.nl_missing) })}</dd>
+          </div>
+        ) : null}
+      </dl>
     </>
   );
 }
 
 type Draft = { kind: ServerKind; url: string; key: string; label: string };
 
-/** Soort, naam, adres en sleutel van één server (bestaand of nieuw). De sleutel wordt nooit teruggelezen. */
-function ServerForm({ id, legacy, draft, setDraft, keySet, urlHint, admin, found }: {
-  id: string; legacy: boolean; draft: Draft; setDraft: (d: Draft) => void; keySet: boolean; urlHint: ReactNode; admin: boolean; found?: Found[];
+/**
+ * Soort, naam, adres en sleutel van één server (bestaand of nieuw). De sleutel wordt nooit teruggelezen en het veld
+ * start leeg; een veld heeft nooit een voorbeeldwaarde als plaatshouder (Peil §20): de uitleg staat eronder.
+ */
+function ServerForm({ id, legacy, draft, setDraft, keySet, urlHint, urlRequired, found }: {
+  id: string; legacy: boolean; draft: Draft; setDraft: (d: Draft) => void; keySet: boolean; urlHint: ReactNode; urlRequired?: boolean; found?: Found[];
 }) {
   const { t } = useI18n();
   const kinds: ServerKind[] = legacy ? ["auto", "emby", "jellyfin", "plex"] : ["emby", "jellyfin", "plex"];
   const helpKind = draft.kind === "jellyfin" ? "jellyfin" : draft.kind === "plex" ? "plex" : "emby";
+  const kindId = `ms-kind-${id}`;
   return (
     <div className="stack">
-      <Field label={t("ms.kind")} htmlFor={`ms-kind-${id}`}>
-        <Segmented<ServerKind> label={t("ms.kind")} value={draft.kind} onChange={(kind) => setDraft({ ...draft, kind })}
-          options={kinds.map((k) => ({ value: k, label: t((legacy || k !== "jellyfin" ? `ms.kind.${k}` : "ms.kind.jellyfinLeon") as MessageKey), disabled: !admin }))} />
-      </Field>
+      <div>
+        <div className={GROUP_LABEL} id={kindId}>{t("ms.kind")}</div>
+        <Segmented<ServerKind> label={t("ms.kind")} labelledBy={kindId} value={draft.kind} onChange={(kind) => setDraft({ ...draft, kind })}
+          options={kinds.map((k) => ({ value: k, label: t((legacy || k !== "jellyfin" ? `ms.kind.${k}` : "ms.kind.jellyfinLeon") as MessageKey) }))} />
+      </div>
       {found?.length ? (
-        <div className="list-sub">
-          {t("ms.add.found")}
-          <span style={{ ...ACTIONS, marginTop: 6 }}>
+        <div className="text-sm text-foreground">
+          <p>{t("ms.add.found")}</p>
+          <div className={`${ACTIONS} mt-1.5`}>
             {found.map((f) => (
-              <Button key={`${f.kind}-${f.url}`} size="sm" disabled={!admin}
+              <Button key={`${f.kind}-${f.url}`} size="sm" className={ACTION}
                 onClick={() => setDraft({ ...draft, kind: f.kind === "jellyfin" || f.kind === "plex" ? f.kind : "emby", url: f.url })}>
                 {t("ms.add.use", { label: f.label, url: f.url })}
               </Button>
             ))}
-          </span>
+          </div>
         </div>
       ) : null}
       {legacy ? null : (
         <Field label={t("ms.name")} htmlFor={`ms-name-${id}`} hint={t("ms.nameHint")}>
-          <input id={`ms-name-${id}`} className="input" value={draft.label} maxLength={60} disabled={!admin} onChange={(e) => setDraft({ ...draft, label: e.target.value })} />
+          <input id={`ms-name-${id}`} className="input" value={draft.label} maxLength={60} onChange={(e) => setDraft({ ...draft, label: e.target.value })} />
         </Field>
       )}
-      <Field label={t("ms.url")} htmlFor={`ms-url-${id}`} hint={urlHint}>
-        <input id={`ms-url-${id}`} className="input" value={draft.url} placeholder="http://nas.lan:8096" disabled={!admin} onChange={(e) => setDraft({ ...draft, url: e.target.value })} />
+      <Field htmlFor={`ms-url-${id}`} hint={urlHint}
+        label={urlRequired ? <>{t("ms.url")} <span className="font-normal text-muted-foreground">{t("ms.required")}</span></> : t("ms.url")}>
+        <input id={`ms-url-${id}`} className="input" inputMode="url" autoCapitalize="none" spellCheck={false} required={urlRequired}
+          value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })} />
       </Field>
-      <Field label={t("ms.key")} htmlFor={`ms-key-${id}`} hint={keySet ? t("ms.keySet") : undefined}>
-        <input id={`ms-key-${id}`} className="input" type="password" autoComplete="off" value={draft.key} placeholder={t("ms.keyPlaceholder")} disabled={!admin} onChange={(e) => setDraft({ ...draft, key: e.target.value })} />
+      <Field label={t("ms.key")} htmlFor={`ms-key-${id}`} hint={keySet ? t("ms.keySet") : t("ms.keyHint")}>
+        <input id={`ms-key-${id}`} className="input" type="password" autoComplete="off" value={draft.key} onChange={(e) => setDraft({ ...draft, key: e.target.value })} />
       </Field>
       <InlineState tone="info"><strong>{t("ms.keyHelpTitle")}</strong> {t(`ms.keyHelp.${helpKind}` as MessageKey)}</InlineState>
     </div>
   );
 }
 
-/** Eén mediaserver in de lijst: status, feiten en de handelingen voor die server. */
-function ServerItem({ s, status, reload, onResult }: { s: MsServer; status: MsStatus; reload: () => void; onResult: (id: number, r: TestResult | null) => void }) {
+/**
+ * Eén mediaserver in de lijst (Peil C-41a, DienstKaart): naam als kop, de pillen eronder, dan de reden en de feiten,
+ * dan de handelingen. De knoppen zijn kort; de servernaam staat in hun toegankelijke naam ("Wijzigen: Jelly Leon").
+ * Ontkoppelen is omkeerbaar en dus geen gevaar (C-65): gewone bevestiging. Verwijderen wist gegevens: gevaardialoog.
+ */
+function ServerItem({ s, status, result, reload, onResult }: {
+  s: MsServer; status: MsStatus; result: TestResult | null | undefined; reload: () => void; onResult: (id: number, r: TestResult | null) => void;
+}) {
   const { t } = useI18n();
   const { can } = useSession();
   const toast = useToast();
@@ -178,7 +232,8 @@ function ServerItem({ s, status, reload, onResult }: { s: MsServer; status: MsSt
   const st = serverState(s);
   const needsSetup = s.enabled && !s.key_set;
   const [editing, setEditing] = useState(false);
-  const open = s.enabled && (editing || needsSetup);
+  // het formulier is er alleen voor wie het mag opslaan; een kijker of operator leest de reden in de RolMelding
+  const open = admin && s.enabled && (editing || needsSetup);
   const initial = (): Draft => ({
     kind: s.legacy && status.setting_kind !== "off" ? status.setting_kind : s.kind,
     url: s.legacy ? status.setting_url || "" : s.url, key: "", label: s.label,
@@ -202,45 +257,64 @@ function ServerItem({ s, status, reload, onResult }: { s: MsServer; status: MsSt
   });
   const post = (name: string, body: Record<string, unknown>, done: string) => run(name, async () => {
     const r = await api.post<ConfigAnswer>("/mediaserver/config", { ...(s.legacy ? { server_id: 1 } : target), ...body });
-    onResult(s.server_id, r.test ?? null);
+    // Ontkoppelen is een keuze, geen meting. De core test server 1 daarna toch ("koppeling staat uit"); die uitslag is
+    // geen gemeten falen en hoort dus niet als "mislukt" in de live-regio. De toast zegt wat er gebeurde.
+    onResult(s.server_id, name === "detach" ? null : r.test ?? null);
     setConfirm(null);
     toast.push("success", done);
   });
+  const ask = (which: "detach" | "remove") => { setError(null); setConfirm(which); };
   const found = status.discovery?.servers ?? [];
   const urlHint = s.legacy
     ? (found.length ? t("ms.found", { list: found.map((x) => `${x.label} ${x.url}`).join(", ") }) : t("ms.urlHint"))
-    : undefined;
+    : t("ms.add.urlHint");
+  const kind = s.kind === "auto" ? t("ms.kind.autoShort") : t(`ms.kind.${s.kind}` as MessageKey);
+  const nameId = `ms-server-name-${s.server_id}`;
+  // zichtbaar kort, in de toegankelijke naam met de server erbij (de zichtbare tekst staat vooraan: WCAG 2.5.3)
+  const named = (action: string) => t("ms.actionFor", { action, label: s.label });
   return (
-    <div className="list-row" style={ITEM} data-testid={`ms-server-${s.server_id}`}>
-      <div style={ITEM_HEAD}>
-        <div className="list-main" style={{ flex: "1 1 18rem" }}><ServerFacts s={s} /></div>
-        <span className="list-aside" style={{ flexWrap: "wrap" }}><ServerChips s={s} /></span>
+    <article className="flex min-w-0 flex-col gap-3 border-t border-border py-4 first:border-t-0 first:pt-1" aria-labelledby={nameId} data-testid={`ms-server-${s.server_id}`}>
+      <div className="flex min-w-0 flex-col gap-2">
+        <h3 id={nameId} className={`${SUBHEAD} [overflow-wrap:anywhere]`}>
+          {s.label}{kind !== s.label ? <span className="font-normal text-muted-foreground"> · {kind}</span> : null}
+        </h3>
+        <div className="flex flex-wrap gap-2"><ServerChips s={s} /></div>
       </div>
-      <div className="stack" style={{ minWidth: 0 }}>
-        {open ? <ServerForm id={String(s.server_id)} legacy={s.legacy} draft={draft} setDraft={setDraft} keySet={s.key_set} urlHint={urlHint} admin={admin} /> : null}
-        <div style={ACTIONS}>
-          {open && admin ? <Button variant="primary" pending={busy === "save"} onClick={() => void save()}>{t("ms.save")}</Button> : null}
+      <ServerFacts s={s} />
+      {open ? <ServerForm id={String(s.server_id)} legacy={s.legacy} draft={draft} setDraft={setDraft} keySet={s.key_set} urlHint={urlHint} /> : null}
+      <div>
+        <div className={ACTIONS}>
+          {open ? <Button variant="primary" className={ACTION} pending={busy === "save"} aria-label={named(t("ms.save"))} onClick={() => void save()}>{t("ms.save")}</Button> : null}
           {s.enabled && can("operator") ? (
-            <Button icon={RefreshCw} pending={busy === "test"}
+            <Button icon={RefreshCw} className={ACTION} pending={busy === "test"} aria-label={named(t("ms.test"))}
               onClick={() => void run("test", async () => onResult(s.server_id, await api.post<TestResult>(s.legacy ? "/mediaserver/test" : `/mediaserver/test?server_id=${s.server_id}`)))}>
               {t("ms.test")}
             </Button>
           ) : null}
-          {s.enabled && admin && !open ? <Button icon={Pencil} onClick={() => { setDraft(initial()); setEditing(true); }}>{t("ms.edit", { label: s.label })}</Button> : null}
-          {open && editing && !needsSetup ? <Button variant="ghost" onClick={() => setEditing(false)}>{t("action.cancel")}</Button> : null}
-          {open && admin && s.key_set ? <Button variant="ghost" pending={busy === "clear"} onClick={() => void post("clear", { clear_key: true }, t("ms.keyRemoved", { label: s.label }))}>{t("ms.removeKey")}</Button> : null}
-          {admin && s.enabled && st.link !== "noAddress" ? <Button variant="ghost" icon={Unlink} onClick={() => setConfirm("detach")}>{t("ms.detach", { label: s.label })}</Button> : null}
-          {admin && !s.enabled ? <Button variant="primary" icon={Link2} pending={busy === "attach"} onClick={() => void post("attach", { enabled: true }, t("ms.attached", { label: s.label }))}>{t("ms.attach", { label: s.label })}</Button> : null}
-          {admin && !s.legacy ? <Button variant="ghost" icon={Trash2} onClick={() => setConfirm("remove")}>{t("ms.remove", { label: s.label })}</Button> : null}
+          {s.enabled && admin && !open ? <Button icon={Pencil} className={ACTION} aria-label={named(t("ms.edit"))} onClick={() => { setDraft(initial()); setEditing(true); }}>{t("ms.edit")}</Button> : null}
+          {open && editing && !needsSetup ? <Button variant="ghost" className={ACTION} aria-label={named(t("action.cancel"))} onClick={() => setEditing(false)}>{t("action.cancel")}</Button> : null}
+          {open && s.key_set ? <Button variant="ghost" className={ACTION} pending={busy === "clear"} aria-label={named(t("ms.removeKey"))} onClick={() => void post("clear", { clear_key: true }, t("ms.keyRemoved", { label: s.label }))}>{t("ms.removeKey")}</Button> : null}
+          {admin && s.enabled && st.link !== "noAddress" ? <Button variant="ghost" className={ACTION} icon={Unlink} aria-label={named(t("ms.detach"))} onClick={() => ask("detach")}>{t("ms.detach")}</Button> : null}
+          {admin && !s.enabled ? <Button variant="primary" className={ACTION} icon={Link2} pending={busy === "attach"} aria-label={named(t("ms.attach"))} onClick={() => void post("attach", { enabled: true }, t("ms.attached", { label: s.label }))}>{t("ms.attach")}</Button> : null}
+          {admin && !s.legacy ? <Button variant="ghost" className={ACTION} icon={Trash2} aria-label={named(t("ms.remove"))} onClick={() => ask("remove")}>{t("ms.remove")}</Button> : null}
+        </div>
+        {/* TestResultaat (C-58): één zin in een vaste live-regio; geslaagd is neutraal, mislukt is gemeten falen */}
+        <div role="status" className="[&:not(:empty)]:mt-3" data-testid={`ms-result-${s.server_id}`}>
+          {result ? <InlineState tone={result.ok ? "success" : "danger"}>{result.message_nl}</InlineState> : null}
         </div>
       </div>
-      <DangerDialog open={confirm === "detach"} onClose={() => setConfirm(null)} icon={Unlink} pending={busy === "detach"} error={error}
-        title={t("ms.detach.title", { label: s.label })} description={t("ms.detach.body", { label: s.label })} confirmLabel={t("ms.detach", { label: s.label })}
-        onConfirm={() => void post("detach", { enabled: false }, t("ms.detached", { label: s.label }))} />
+      <Modal open={confirm === "detach"} onClose={() => setConfirm(null)} role="alertdialog" icon={Unlink}
+        title={t("ms.detach.title", { label: s.label })} description={t("ms.detach.body", { label: s.label })}
+        footer={<>
+          <Button onClick={() => setConfirm(null)} data-autofocus>{t("action.cancel")}</Button>
+          <Button variant="primary" pending={busy === "detach"} onClick={() => void post("detach", { enabled: false }, t("ms.detached", { label: s.label }))}>{t("ms.detach.confirm")}</Button>
+        </>}>
+        {error ? <InlineState tone="danger" role="alert">{error}</InlineState> : null}
+      </Modal>
       <DangerDialog open={confirm === "remove"} onClose={() => setConfirm(null)} icon={Trash2} pending={busy === "remove"} error={error}
-        title={t("ms.remove.title", { label: s.label })} description={t("ms.remove.body", { label: s.label })} confirmLabel={t("ms.remove", { label: s.label })}
+        title={t("ms.remove.title", { label: s.label })} description={t("ms.remove.body", { label: s.label })} confirmLabel={t("ms.remove.confirm")}
         onConfirm={() => void post("remove", { remove: true }, t("ms.removed", { label: s.label }))} />
-    </div>
+    </article>
   );
 }
 
@@ -269,27 +343,33 @@ function AddServer({ status, servers, reload, onResult }: { status: MsStatus; se
       reload();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   };
+  // "Toevoegen en testen" kan pas met een adres: de reden staat zichtbaar onder de knop en hangt eraan (aria-describedby)
+  const needUrl = !first && !draft.url.trim();
   if (!shown) {
     return (
       <div className="list-row list-row--wrap">
-        <div className="list-main"><div className="list-sub" style={FULL}>{full ? t("ms.add.full", { max: MAX_EXTRA_SERVERS }) : t("ms.add.hint")}</div></div>
+        <div className="list-main"><p className="text-sm text-muted-foreground">{full ? t("ms.add.full", { max: MAX_EXTRA_SERVERS }) : t("ms.add.hint")}</p></div>
         <span className="list-aside"><Button icon={Plus} disabled={full} onClick={() => setOpen(true)} data-testid="ms-add-open">{t("ms.add")}</Button></span>
       </div>
     );
   }
   return (
-    <div className="list-row list-row--wrap" data-testid="ms-add-form">
-      <div className="stack" style={{ flex: "1 1 100%", minWidth: 0 }}>
-        <div className="list-title">{first ? t("ms.add.firstTitle") : t("ms.add.title")}</div>
-        {first ? null : <div className="list-sub" style={FULL}>{t("ms.add.keepsFirst")}</div>}
-        <ServerForm id="new" legacy={first} draft={draft} setDraft={setDraft} keySet={false} urlHint={first ? t("ms.urlHint") : t("ms.add.urlHint")} admin found={found} />
-        <div style={ACTIONS}>
-          <Button variant="primary" pending={busy} disabled={!first && !draft.url.trim()} onClick={() => void add()} data-testid="ms-add-save">{first ? t("ms.save") : t("ms.add.save")}</Button>
-          {servers.length ? <Button variant="ghost" onClick={() => { setOpen(false); setDraft(empty()); setError(null); }}>{t("action.cancel")}</Button> : null}
-        </div>
-        {error ? <InlineState tone="warning" role="alert">{error}</InlineState> : null}
+    <section className="flex min-w-0 flex-col gap-4 border-t border-border py-4 first:border-t-0 first:pt-1" aria-labelledby="ms-add-title" data-testid="ms-add-form">
+      <div className="flex min-w-0 flex-col gap-1">
+        <h3 id="ms-add-title" className={SUBHEAD}>{first ? t("ms.add.firstTitle") : t("ms.add.title")}</h3>
+        {first ? null : <p className="text-sm text-muted-foreground">{t("ms.add.keepsFirst")}</p>}
       </div>
-    </div>
+      <ServerForm id="new" legacy={first} draft={draft} setDraft={setDraft} keySet={false} urlHint={first ? t("ms.urlHint") : t("ms.add.urlHint")} urlRequired={!first} found={found} />
+      <div className="flex min-w-0 flex-col gap-2">
+        <div className={ACTIONS}>
+          <Button variant="primary" className={ACTION} pending={busy} disabled={needUrl} aria-describedby={needUrl ? "ms-add-need-url" : undefined}
+            onClick={() => void add()} data-testid="ms-add-save">{first ? t("ms.save") : t("ms.add.save")}</Button>
+          {servers.length ? <Button variant="ghost" className={ACTION} onClick={() => { setOpen(false); setDraft(empty()); setError(null); }}>{t("action.cancel")}</Button> : null}
+        </div>
+        {needUrl ? <p id="ms-add-need-url" className="text-sm text-muted-foreground">{t("ms.add.needUrl")}</p> : null}
+        {error ? <InlineState tone="danger" role="alert">{error}</InlineState> : null}
+      </div>
+    </section>
   );
 }
 
@@ -298,6 +378,7 @@ function ServersCard({ s, reload }: { s: MsStatus; reload: () => void }) {
   const { can } = useSession();
   const toast = useToast();
   const admin = can("admin");
+  const why = admin ? undefined : ROLE_NOTE;
   const servers = s.servers ?? [];
   const [busy, setBusy] = useState<string | null>(null);
   const [results, setResults] = useState<Record<number, TestResult | null>>({});
@@ -323,68 +404,67 @@ function ServersCard({ s, reload }: { s: MsStatus; reload: () => void }) {
     : <StatusChip tone="unlinked">{t("ms.status.none")}</StatusChip>;
   return (
     <Card title={t("ms.title")} icon={MonitorPlay} sub={t("ms.sub")} actions={state}>
-      <div className="list" data-testid="ms-servers">
-        {servers.map((x) => (
-          <div key={x.server_id}>
-            <ServerItem s={x} status={s} reload={reload} onResult={onResult} />
-            {results[x.server_id] ? (
-              <div className="list-row"><div className="list-main">
-                <InlineState tone={results[x.server_id]?.ok ? "success" : "warning"} role="status">{results[x.server_id]?.message_nl}</InlineState>
-              </div></div>
-            ) : null}
-          </div>
-        ))}
+      <div className="flex min-w-0 flex-col" data-testid="ms-servers">
+        {servers.map((x) => <ServerItem key={x.server_id} s={x} status={s} result={results[x.server_id]} reload={reload} onResult={onResult} />)}
         {admin ? <AddServer status={s} servers={servers} reload={reload} onResult={onResult} /> : null}
-        {!admin && !servers.length ? <div className="list-row"><div className="list-main"><div className="list-sub">{t("ms.noneViewer")}</div></div></div> : null}
+        {!admin && !servers.length ? <p className="py-2 text-sm text-muted-foreground">{t("ms.noneViewer")}</p> : null}
       </div>
-      <div className="stack" style={{ marginTop: 12 }}>
-        <div style={ACTIONS}>
-          {can("operator") ? <Button icon={Search} pending={busy === "discover"} onClick={() => void run("discover", () => api.post("/mediaserver/discover"))}>{t("ms.search")}</Button> : null}
-        </div>
-        {error ? <InlineState tone="warning" role="alert">{error}</InlineState> : null}
+      <div className="stack mt-3">
+        {can("operator") ? (
+          <div className={ACTIONS}>
+            <Button icon={Search} className={ACTION} pending={busy === "discover"} onClick={() => void run("discover", () => api.post("/mediaserver/discover"))}>{t("ms.search")}</Button>
+          </div>
+        ) : null}
+        {error ? <InlineState tone="danger" role="alert">{error}</InlineState> : null}
         {!found.length && !servers.some((x) => x.url) ? <InlineState tone="neutral">{t("ms.notFound")}</InlineState> : null}
         {s.hold.active && s.hold.reason ? <InlineState tone="info">{t("ms.hold", { reason: s.hold.reason })}</InlineState> : null}
-        {s.sessions?.watching?.length ? <div className="list-sub">{t("ms.watching", { list: s.sessions.watching.map((w) => `${w.user}: ${w.title}`).join(" · ") })}</div> : null}
+        {s.sessions?.watching?.length ? <p className="text-sm text-muted-foreground">{t("ms.watching", { list: s.sessions.watching.map((w) => `${w.user}: ${w.title}`).join(" · ") })}</p> : null}
       </div>
-      <div className="list" style={{ marginTop: 12 }}>
-        <div className="list-row"><div className="list-main"><div className="list-title">{many ? t("ms.featuresAll") : t("ms.features", { label })}</div></div></div>
-        <Row title={t("ms.f.refresh")} hint={many ? t("ms.f.refreshHintAll") : t("ms.f.refreshHint", { label })}><Switch label={t("ms.f.refresh")} checked={f.refresh_after_handoff} disabled={!admin} onChange={(v) => void feature("refresh_after_handoff", v)} /></Row>
-        <Row title={t("ms.f.test")} hint={many ? t("ms.f.testHintAll") : t("ms.f.testHint")}><Switch label={t("ms.f.test")} checked={f.playback_test} disabled={!admin} onChange={(v) => void feature("playback_test", v)} /></Row>
-        {f.playback_test ? (
-          <Row title={t("ms.f.fail")}>
-            <Segmented label={t("ms.f.fail")} value={f.playback_fail_action} onChange={(v) => void feature("playback_fail_action", v)}
-              options={(["notify", "rollback"] as const).map((v) => ({ value: v, label: t(`ms.f.fail.${v}` as MessageKey), disabled: !admin }))} />
+      <section className="mt-4 border-t border-border pt-4" aria-labelledby="ms-features-title">
+        <h3 id="ms-features-title" className={SUBHEAD}>{many ? t("ms.featuresAll") : t("ms.features", { label })}</h3>
+        <div className="list mt-1">
+          <Row title={t("ms.f.refresh")} hint={many ? t("ms.f.refreshHintAll") : t("ms.f.refreshHint", { label })}><Switch label={t("ms.f.refresh")} checked={f.refresh_after_handoff} disabled={!admin} describedBy={why} onChange={(v) => void feature("refresh_after_handoff", v)} /></Row>
+          <Row title={t("ms.f.test")} hint={many ? t("ms.f.testHintAll") : t("ms.f.testHint")}><Switch label={t("ms.f.test")} checked={f.playback_test} disabled={!admin} describedBy={why} onChange={(v) => void feature("playback_test", v)} /></Row>
+          {f.playback_test ? (
+            <Row title={t("ms.f.fail")}>
+              <Segmented label={t("ms.f.fail")} describedBy={why} value={f.playback_fail_action} onChange={(v) => void feature("playback_fail_action", v)}
+                options={(["notify", "rollback"] as const).map((v) => ({ value: v, label: t(`ms.f.fail.${v}` as MessageKey), disabled: !admin }))} />
+            </Row>
+          ) : null}
+          <Row title={t("ms.f.pause")} hint={many ? t("ms.f.pauseHintAll") : t("ms.f.pauseHint")}>
+            <Segmented label={t("ms.f.pause")} describedBy={why} value={f.pause_while_watching} onChange={(v) => void feature("pause_while_watching", v)}
+              options={(["both", "gpu", "off"] as const).map((v) => ({ value: v, label: t(`ms.f.pause.${v}` as MessageKey), disabled: !admin }))} />
           </Row>
-        ) : null}
-        <Row title={t("ms.f.pause")} hint={many ? t("ms.f.pauseHintAll") : t("ms.f.pauseHint")}>
-          <Segmented label={t("ms.f.pause")} value={f.pause_while_watching} onChange={(v) => void feature("pause_while_watching", v)}
-            options={(["both", "gpu", "off"] as const).map((v) => ({ value: v, label: t(`ms.f.pause.${v}` as MessageKey), disabled: !admin }))} />
-        </Row>
-        <Row title={t("ms.f.recent")} hint={t("ms.f.recentHint", { hours: f.recent_watch_hours })}><Switch label={t("ms.f.recent")} checked={f.skip_recent_watch} disabled={!admin} onChange={(v) => void feature("skip_recent_watch", v)} /></Row>
-        {s.tests.length ? (
-          <div className="list-row list-row--wrap"><div className="list-main">
-            <div className="list-title">{t("ms.tests")}</div>
+          <Row title={t("ms.f.recent")} hint={t("ms.f.recentHint", { hours: f.recent_watch_hours })}><Switch label={t("ms.f.recent")} checked={f.skip_recent_watch} disabled={!admin} describedBy={why} onChange={(v) => void feature("skip_recent_watch", v)} /></Row>
+        </div>
+      </section>
+      {s.tests.length ? (
+        <section className="mt-4 border-t border-border pt-4" aria-labelledby="ms-tests-title">
+          <h3 id="ms-tests-title" className={SUBHEAD}>{t("ms.tests")}</h3>
+          <ul className="mt-2 flex flex-col gap-2 text-sm text-foreground">
             {s.tests.slice(0, 5).map((x) => (
-              <div className="list-sub" key={`${x.path}-${x.done_at}`} style={{ wordBreak: "break-word" }}>
+              <li key={`${x.path}-${x.done_at}`} className="min-w-0 [overflow-wrap:anywhere]">
                 <StatusChip tone={x.result === "ok" ? "success" : x.result === "failed" ? "danger" : "neutral"}>{isResultKey(x.result) ? t(`ms.result.${x.result}` as MessageKey) : x.result}</StatusChip>{" "}
-                {x.path.split("/").pop()} · {relative(x.done_at)}
+                {x.path.split("/").pop()} <span className="text-muted-foreground">· {relative(x.done_at)}</span>
                 {(x.servers?.length ?? 0) > 1 ? x.servers?.map((r) => (
-                  <span key={r.server_id} style={{ display: "block" }}>
+                  <span key={r.server_id} className="block text-muted-foreground">
                     {r.label}: {isResultKey(r.result) ? t(`ms.result.${r.result}` as MessageKey) : r.result}
                     {r.nl_subtitles === "visible" ? ` · ${t("ms.nl.visible")}` : r.nl_subtitles === "missing" ? ` · ${t("ms.nl.missing")}` : ""}
                   </span>
                 )) : null}
-              </div>
+              </li>
             ))}
-          </div></div>
-        ) : null}
-        {s.actions.length ? (
-          <div className="list-row list-row--wrap"><div className="list-main">
-            <div className="list-title">{t("ms.recent")}</div>
-            {s.actions.slice(0, 6).map((a, i) => <div className="list-sub" key={i} style={{ wordBreak: "break-word" }}>{relative(a.ts)} · {a.detail_nl}</div>)}
-          </div></div>
-        ) : null}
-      </div>
+          </ul>
+        </section>
+      ) : null}
+      {s.actions.length ? (
+        <section className="mt-4 border-t border-border pt-4" aria-labelledby="ms-actions-title">
+          <h3 id="ms-actions-title" className={SUBHEAD}>{t("ms.recent")}</h3>
+          <ul className="mt-2 flex flex-col gap-1 text-sm text-foreground">
+            {s.actions.slice(0, 6).map((a, i) => <li key={i} className="min-w-0 [overflow-wrap:anywhere]"><span className="text-muted-foreground">{relative(a.ts)} ·</span> {a.detail_nl}</li>)}
+          </ul>
+        </section>
+      ) : null}
     </Card>
   );
 }
@@ -394,6 +474,9 @@ function SubtitlesCard({ s, reload }: { s: MsStatus; reload: () => void }) {
   const { can } = useSession();
   const toast = useToast();
   const admin = can("admin");
+  const why = admin ? undefined : ROLE_NOTE;
+  // een veld dat uit staat voor wie geen beheerder is, noemt naast zijn eigen hulptekst ook de reden (RolMelding)
+  const off = (hintId?: string) => (why ? [hintId, why].filter(Boolean).join(" ") : undefined);
   const sub = s.subtitles;
   const [bazarrUrl, setBazarrUrl] = useState(sub.bazarr_url || "");
   const [bazarrKey, setBazarrKey] = useState("");
@@ -420,45 +503,56 @@ function SubtitlesCard({ s, reload }: { s: MsStatus; reload: () => void }) {
   const source = sub.source === "bazarr" ? t("subs.source.bazarr")
     : sub.source === "opensubtitles" ? t("subs.source.opensubtitles", { n: num(sub.downloads_today), max: num(sub.opensubtitles_daily) })
       : t("subs.source.none");
+  const bazarrHint = s.discovery?.bazarr?.length ? t("ms.found", { list: s.discovery.bazarr.map((b) => b.url).join(", ") })
+    : admin ? t("subs.bazarrUrlHint") : undefined;
   return (
     <Card title={t("subs.title")} icon={Captions} sub={t("subs.sub")}
-      actions={<StatusChip tone={sub.missing ? "warning" : "success"}>{sub.missing ? t("subs.missing", { n: num(sub.missing) }) : t("subs.missingNone")}</StatusChip>}>
+      // een telling van wat ontbreekt is een feit, geen gezondheid: neutraal label met sterke rand, nooit amber of groen
+      actions={<StatusChip tone={sub.missing ? "strong" : "success"}>{sub.missing ? t("subs.missing", { n: num(sub.missing) }) : t("subs.missingNone")}</StatusChip>}>
       <div className="stack" data-testid="subtitles-card">
         {!sub.nl_wanted ? <InlineState tone="neutral">{t("subs.notWanted")}</InlineState> : null}
         <div className="list">
-          <Row title={t("subs.auto")} hint={t("subs.autoHint")}><Switch label={t("subs.auto")} checked={sub.nl_auto} disabled={!admin} onChange={(v) => void feature("nl_auto", v)} /></Row>
+          <Row title={t("subs.auto")} hint={t("subs.autoHint")}><Switch label={t("subs.auto")} checked={sub.nl_auto} disabled={!admin} describedBy={why} onChange={(v) => void feature("nl_auto", v)} /></Row>
         </div>
-        <div className="list-sub">{source}</div>
-        <div className="list-title">{t("subs.bazarr")}</div>
-        <Field label={t("subs.bazarrUrl")} htmlFor="subs-bazarr-url" hint={s.discovery?.bazarr?.length ? t("ms.found", { list: s.discovery.bazarr.map((b) => b.url).join(", ") }) : undefined}>
-          <input id="subs-bazarr-url" className="input" value={bazarrUrl} placeholder="http://nas.lan:6767" disabled={!admin} onChange={(e) => setBazarrUrl(e.target.value)} />
+        <p className="text-sm text-muted-foreground">{source}</p>
+        <h3 className={SUBHEAD}>{t("subs.bazarr")}</h3>
+        <Field label={t("subs.bazarrUrl")} htmlFor="subs-bazarr-url" hint={bazarrHint}>
+          <input id="subs-bazarr-url" className="input" inputMode="url" autoCapitalize="none" spellCheck={false} value={bazarrUrl} disabled={!admin}
+            aria-describedby={off(bazarrHint ? "subs-bazarr-url-hint" : undefined)} onChange={(e) => setBazarrUrl(e.target.value)} />
         </Field>
         <Field label={t("subs.bazarrKey")} htmlFor="subs-bazarr-key" hint={sub.bazarr_key_set ? t("ms.keySet") : t("subs.bazarrHelp")}>
-          <input id="subs-bazarr-key" className="input" type="password" autoComplete="off" value={bazarrKey} disabled={!admin} onChange={(e) => setBazarrKey(e.target.value)} />
+          <input id="subs-bazarr-key" className="input" type="password" autoComplete="off" value={bazarrKey} disabled={!admin}
+            aria-describedby={off("subs-bazarr-key-hint")} onChange={(e) => setBazarrKey(e.target.value)} />
         </Field>
-        <div className="list-title">{t("subs.os")}</div>
+        <h3 className={SUBHEAD}>{t("subs.os")}</h3>
         <div className="list">
-          <Row title={t("subs.osEnabled")} hint={t("subs.osHint")}><Switch label={t("subs.osEnabled")} checked={sub.opensubtitles_enabled} disabled={!admin} onChange={(v) => void feature("opensubtitles_enabled", v)} /></Row>
+          <Row title={t("subs.osEnabled")} hint={t("subs.osHint")}><Switch label={t("subs.osEnabled")} checked={sub.opensubtitles_enabled} disabled={!admin} describedBy={why} onChange={(v) => void feature("opensubtitles_enabled", v)} /></Row>
         </div>
         {sub.opensubtitles_enabled ? (
           <>
             <Field label={t("subs.osKey")} htmlFor="subs-os-key" hint={sub.opensubtitles_key_set ? t("ms.keySet") : undefined}>
-              <input id="subs-os-key" className="input" type="password" autoComplete="off" value={os.key} disabled={!admin} onChange={(e) => setOs({ ...os, key: e.target.value })} />
+              <input id="subs-os-key" className="input" type="password" autoComplete="off" value={os.key} disabled={!admin}
+                aria-describedby={off(sub.opensubtitles_key_set ? "subs-os-key-hint" : undefined)} onChange={(e) => setOs({ ...os, key: e.target.value })} />
             </Field>
             <Field label={t("subs.osUser")} htmlFor="subs-os-user">
-              <input id="subs-os-user" className="input" autoComplete="off" value={os.user} disabled={!admin} onChange={(e) => setOs({ ...os, user: e.target.value })} />
+              <input id="subs-os-user" className="input" autoComplete="off" value={os.user} disabled={!admin} aria-describedby={off()} onChange={(e) => setOs({ ...os, user: e.target.value })} />
             </Field>
             <Field label={t("subs.osPass")} htmlFor="subs-os-pass">
-              <input id="subs-os-pass" className="input" type="password" autoComplete="new-password" value={os.pass} disabled={!admin} onChange={(e) => setOs({ ...os, pass: e.target.value })} />
+              <input id="subs-os-pass" className="input" type="password" autoComplete="new-password" value={os.pass} disabled={!admin} aria-describedby={off()} onChange={(e) => setOs({ ...os, pass: e.target.value })} />
             </Field>
           </>
         ) : null}
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {admin ? <Button variant="primary" pending={busy === "save"} onClick={() => void save()}>{t("subs.save")}</Button> : null}
-          {can("operator") && sub.source ? <Button pending={busy === "runs"} onClick={() => void run("runs", () => api.post("/mediaserver/subtitles/run"))}>{t("subs.runNow")}</Button> : null}
-          {admin && sub.opensubtitles_key_set ? <Button variant="ghost" pending={busy === "clearos"} onClick={() => void save({ clear_opensubtitles: true })}>{t("subs.removeOs")}</Button> : null}
+        <div>
+          <div className={ACTIONS}>
+            {admin ? <Button variant="primary" className={ACTION} pending={busy === "save"} onClick={() => void save()}>{t("subs.save")}</Button> : null}
+            {can("operator") && sub.source ? <Button className={ACTION} pending={busy === "runs"} onClick={() => void run("runs", () => api.post("/mediaserver/subtitles/run"))}>{t("subs.runNow")}</Button> : null}
+            {admin && sub.opensubtitles_key_set ? <Button variant="ghost" className={ACTION} pending={busy === "clearos"} onClick={() => void save({ clear_opensubtitles: true })}>{t("subs.removeOs")}</Button> : null}
+          </div>
+          {/* TestResultaat (C-58): vaste live-regio; geslaagd is neutraal, mislukt is gemeten falen */}
+          <div role="status" className="[&:not(:empty)]:mt-3" data-testid="subs-result">
+            {result ? <InlineState tone={result.ok ? "success" : "danger"}>{result.message_nl}</InlineState> : null}
+          </div>
         </div>
-        {result ? <InlineState tone={result.ok ? "success" : "warning"} role="status">{result.message_nl}</InlineState> : null}
       </div>
     </Card>
   );

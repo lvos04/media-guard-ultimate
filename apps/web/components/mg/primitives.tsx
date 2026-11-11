@@ -6,7 +6,8 @@
 // toegankelijke namen veranderen niet.
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
-  Check, ChevronRight, CircleCheck, CircleHelp, CirclePause, Copy, Info, Link2, Link2Off, Loader, LoaderCircle, Lock, OctagonX, TriangleAlert,
+  Check, ChevronRight, CircleCheck, CircleHelp, CirclePause, ClockAlert, Copy, Info, Link2, Link2Off, Loader, LoaderCircle, Lock, OctagonX,
+  TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -28,10 +29,11 @@ import { cn } from "@/lib/utils";
  *   healthy  → Gezond      (pil zonder vlak, circle-check)      warning → Beperkt (vlak + 2 px rand, triangle-alert)
  *   danger   → Storing     (octagon-x)                           unknown → Onbekend (stippelrand, circle-help)
  *   paused   → Gepauzeerd  (circle-pause, info-tokens)           linked / unlinked → Gekoppeld / Niet gekoppeld
+ *   stale    → Verouderd   (stippelrand + arcering, clock-alert): het laatst bekende Gezond is te oud (§4.4)
  *   strong   → neutraal label met sterke rand (bv. "Ontbreekt")  success / neutral / accent / info → neutrale labels
  * `neutral` heeft geen standaardicoon: nooit het pauze-icoon voor "onbekend/uit/rustig" (Peil §7).
  */
-export type Tone = "healthy" | "success" | "warning" | "danger" | "info" | "accent" | "neutral" | "strong" | "unknown" | "paused" | "linked" | "unlinked";
+export type Tone = "healthy" | "success" | "warning" | "danger" | "info" | "accent" | "neutral" | "strong" | "unknown" | "stale" | "paused" | "linked" | "unlinked";
 
 export const TONE_ICON: Record<Tone, LucideIcon | null> = {
   healthy: CircleCheck,
@@ -43,13 +45,16 @@ export const TONE_ICON: Record<Tone, LucideIcon | null> = {
   neutral: null,
   strong: null,
   unknown: CircleHelp,
+  stale: ClockAlert,
   paused: CirclePause,
   linked: Link2,
   unlinked: Link2Off,
 };
 
 /** Gezondheidsas voor forced-colors en tests (`[data-status]`); andere assen krijgen geen data-status. */
-const TONE_STATUS: Partial<Record<Tone, string>> = { healthy: "healthy", warning: "degraded", danger: "down", unknown: "unknown", unlinked: "unknown", paused: "paused" };
+const TONE_STATUS: Partial<Record<Tone, string>> = {
+  healthy: "healthy", warning: "degraded", danger: "down", unknown: "unknown", unlinked: "unknown", stale: "stale", paused: "paused",
+};
 
 /** StatusBadge / Label (C-03): status = vorm + icoon + woord (nooit alleen kleur). */
 export function StatusChip({ tone, children, icon, pending = false, size, outline = false, title }: {
@@ -163,9 +168,13 @@ export function LinkButton({ href, variant = "secondary", size, icon: Icon, chil
 }
 
 /** Switch (role=switch): 44 px raakvlak rond een spoor van 2,75 × 1,5 rem; uit = rand, aan = primary. */
-export function Switch({ checked, onChange, label, disabled, id }: { checked: boolean; onChange?: (v: boolean) => void; label: string; disabled?: boolean; id?: string }) {
+export function Switch({ checked, onChange, label, disabled, id, describedBy }: {
+  checked: boolean; onChange?: (v: boolean) => void; label: string; disabled?: boolean; id?: string;
+  /** id van de tekst die zegt waarom de schakelaar uit staat of wat hij doet (aria-describedby) */
+  describedBy?: string;
+}) {
   return (
-    <button id={id} type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={() => onChange?.(!checked)}
+    <button id={id} type="button" role="switch" aria-checked={checked} aria-label={label} aria-describedby={describedBy} disabled={disabled} onClick={() => onChange?.(!checked)}
       className="switch group focus-ring inline-flex min-h-touch min-w-touch shrink-0 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 disabled:cursor-not-allowed">
       <span aria-hidden="true" className={cn(
         "relative inline-flex h-6 w-11 items-center rounded-full border-2 transition-colors",
@@ -180,13 +189,19 @@ export function Switch({ checked, onChange, label, disabled, id }: { checked: bo
 }
 
 /** ToggleGroup-vorm (shadcn) met aria-pressed-knoppen in role=group; loopt om op smalle schermen, 44 px per knop. */
-export function Segmented<T extends string>({ value, options, onChange, label }: {
+export function Segmented<T extends string>({ value, options, onChange, label, labelledBy, describedBy }: {
   value: T; options: Array<{ value: T; label: ReactNode; count?: number | string; disabled?: boolean; title?: string }>; onChange: (v: T) => void; label: string;
+  /** id van een zichtbaar label: dan benoemt dat de groep (anders `label` als aria-label) */
+  labelledBy?: string;
+  /** id van de tekst die zegt waarom een uitgeschakelde keuze uit staat (aria-describedby op die knoppen) */
+  describedBy?: string;
 }) {
   return (
-    <div className="segmented inline-flex max-w-full flex-wrap gap-1 rounded-lg border border-border bg-muted p-1" role="group" aria-label={label}>
+    <div className="segmented inline-flex max-w-full flex-wrap gap-1 rounded-lg border border-border bg-muted p-1" role="group"
+      {...(labelledBy ? { "aria-labelledby": labelledBy } : { "aria-label": label })}>
       {options.map((o) => (
         <button key={o.value} type="button" aria-pressed={o.value === value} disabled={o.disabled} title={o.title} onClick={() => onChange(o.value)}
+          aria-describedby={o.disabled ? describedBy : undefined}
           className={SEGMENT_CLASS}>
           {o.label}{o.count !== undefined ? <span className="cijfers font-normal">{o.count}</span> : null}
         </button>
