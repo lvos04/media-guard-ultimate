@@ -253,6 +253,24 @@ def _key(raw: str | None) -> str | None:
     return key or None
 
 
+def _check(key: str, value: Any) -> None:
+    """Een instelling controleren zonder iets op te slaan (zelfde regels als ``_set``)."""
+    try:
+        d = REGISTRY.get_def(key)
+        if "global" not in d.scopes:
+            raise ValueError(f"{key} kan niet op scope 'global' worden ingesteld")
+        d.validate(value)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+def _features_check(features: dict[str, Any] | None) -> None:
+    for key, value in (features or {}).items():
+        if key not in FEATURE_KEYS:
+            raise HTTPException(422, f"Onbekende instelling: {key}")
+        _check(f"mediaserver.{key}", value)
+
+
 def _features_set(ctx: AppContext, features: dict[str, Any] | None, actor: str) -> None:
     for key, value in (features or {}).items():
         if key not in FEATURE_KEYS:
@@ -261,7 +279,9 @@ def _features_set(ctx: AppContext, features: dict[str, Any] | None, actor: str) 
 
 
 def _legacy_config(ctx: AppContext, body: ServerConfig, actor: str) -> bool:
-    """De bestaande koppeling (server 1), zoals in 1.2.2. Geeft terug of er getest moet worden."""
+    """De bestaande koppeling (server 1), zoals in 1.2.2. Geeft terug of er getest moet worden.
+    Eerst wordt alles gecontroleerd en pas daarna iets opgeslagen: een verzoek dat 422 krijgt,
+    laat de Emby-koppeling byte-gelijk (S-P2-600, R-TECH-1)."""
     if body.remove:
         raise HTTPException(422, "De bestaande koppeling verwijder je niet: maak hem los (Uit). "
                                  "Adres en sleutel blijven dan bewaard.")
@@ -270,6 +290,13 @@ def _legacy_config(ctx: AppContext, body: ServerConfig, actor: str) -> bool:
         kind = "off"
     elif body.enabled is True and kind is None and ctx.config.value("mediaserver.kind") == "off":
         kind = ctx.state_get("mediaserver_kind_before_off") or "auto"
+    url = _url(body.url) if body.url is not None else None
+    key = _key(body.api_key)
+    if kind is not None:
+        _check("mediaserver.kind", kind)
+    if url is not None:
+        _check("mediaserver.url", url)
+    # vanaf hier alleen nog opslaan
     if kind is not None:
         before = ctx.config.value("mediaserver.kind")
         if kind == "off" and before != "off":
@@ -277,10 +304,9 @@ def _legacy_config(ctx: AppContext, body: ServerConfig, actor: str) -> bool:
         _set(ctx, "mediaserver.kind", kind, actor)
         if kind == "off":
             M.drop_open_work(ctx, M.LEGACY_ID, "losgemaakt")
-    if body.url is not None:
-        _set(ctx, "mediaserver.url", _url(body.url), actor)
+    if url is not None:
+        _set(ctx, "mediaserver.url", url, actor)
         ctx.state_set("mediaserver_path_map", {})
-    key = _key(body.api_key)
     if body.clear_key:
         ctx.secrets.delete(S.SECRET_KEY)
     elif key:
@@ -332,6 +358,7 @@ async def set_config(body: ServerConfig, principal: Principal = Depends(require_
                      ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
     legacy = not body.add and body.server_id in (None, M.LEGACY_ID)
     target: int | None = M.LEGACY_ID
+    _features_check(body.features)            # vóór elke wijziging (S-P2-600, R-TECH-1)
     if legacy:
         do_test = _legacy_config(ctx, body, principal.actor)
     else:

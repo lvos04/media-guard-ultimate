@@ -44,6 +44,17 @@ LEGACY_STATE = {"path_map": "mediaserver_path_map", "connected": "mediaserver_co
 #: zonder geslaagd contact binnen deze tijd telt een server als niet verbonden
 CONNECTED_FRESH_MIN = 10
 MAX_EXTRA = 8
+#: hoogste id dat ooit is uitgedeeld (ook na verwijderen nooit opnieuw)
+LAST_ID_STATE = "mediaserver_last_server_id"
+
+
+def _not_legacy(server_id: int) -> None:
+    """Server 1 is de bestaande koppeling (instellingen ``mediaserver.*``, geheim
+    ``mediaserver.api_key``): die wijzigt of verwijdert deze module nooit, ook niet buiten de
+    API om (S-P2-600, R-HARDE-EIS-2)."""
+    if server_id == LEGACY_ID:
+        raise ValueError("server 1 is de bestaande koppeling: die wijzig je via de instellingen "
+                         "en verwijder je niet (maak hem los)")
 
 
 @dataclass(frozen=True)
@@ -188,12 +199,20 @@ def add(ctx: AppContext, kind: str, url: str, label: str | None, actor: str) -> 
         raise ValueError(f"onbekende soort: {kind}")
     if not url:
         raise ValueError("adres ontbreekt")
-    n = ctx.db.fetch_one("SELECT COUNT(*) AS n, COALESCE(MAX(id),1) AS m, "
-                         "COALESCE(MAX(position),0) AS p FROM mediaserver_servers")
+    # Een id wordt nooit opnieuw uitgedeeld: een nieuwe server erft geen uitkomsten of
+    # actiegeschiedenis van een verwijderde (S-P2-600, R-TECH-3)
+    n = ctx.db.fetch_one(
+        "SELECT (SELECT COUNT(*) FROM mediaserver_servers) AS n, "
+        "MAX(COALESCE((SELECT MAX(id) FROM mediaserver_servers),1), "
+        "COALESCE((SELECT MAX(server_id) FROM mediaserver_server_results),1), "
+        "COALESCE((SELECT MAX(server_id) FROM mediaserver_actions),1)) AS m, "
+        "COALESCE((SELECT MAX(position) FROM mediaserver_servers),0) AS p")
     if n and int(n["n"]) >= MAX_EXTRA:
         raise ValueError(f"hooguit {MAX_EXTRA} extra mediaservers")
-    new_id = max(LEGACY_ID, int(n["m"]) if n else LEGACY_ID) + 1
+    highest = int(ctx.state_get(LAST_ID_STATE) or LEGACY_ID)
+    new_id = max(LEGACY_ID, int(n["m"]) if n else LEGACY_ID, highest) + 1
     position = (int(n["p"]) if n else 0) + 1
+    ctx.state_set(LAST_ID_STATE, new_id)
     now = utcnow()
     ctx.db.execute(
         "INSERT INTO mediaserver_servers(id,kind,label,url,enabled,position,created_at,"
@@ -205,6 +224,7 @@ def add(ctx: AppContext, kind: str, url: str, label: str | None, actor: str) -> 
 
 def update(ctx: AppContext, server_id: int, *, kind: str | None = None, url: str | None = None,
            label: str | None = None, enabled: bool | None = None) -> None:
+    _not_legacy(server_id)
     sets: list[str] = []
     args: list[Any] = []
     if kind is not None:
@@ -234,6 +254,7 @@ def update(ctx: AppContext, server_id: int, *, kind: str | None = None, url: str
 def remove(ctx: AppContext, server_id: int) -> None:
     """Een extra server verwijderen: geheim en statussleutels weg, de actiegeschiedenis blijft
     (binnen de bewaarregel); open taken voor deze server vervallen ('skipped')."""
+    _not_legacy(server_id)
     ctx.db.execute("DELETE FROM mediaserver_servers WHERE id=?", (server_id,))
     ctx.secrets.delete(secret_name(server_id))
     ctx.db.execute("DELETE FROM system_state WHERE key LIKE ?", (f"mediaserver:{server_id}:%",))

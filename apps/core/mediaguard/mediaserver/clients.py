@@ -14,13 +14,17 @@ daar een ``httpx.MockTransport``). Fouten worden ``MediaServerError`` met een Ne
 
 from __future__ import annotations
 
+import html
+import json as jsonlib
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote, quote_plus
 
 import httpx
 
 from mediaguard import __version__
+from mediaguard.secrets_store import redact
 
 TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
@@ -45,18 +49,30 @@ def valid_key(key: str) -> bool:
     return bool(_KEY_OK.fullmatch(key)) and not (_KEY_BAD & set(key)) and len(key) <= 300
 
 
+#: wat 1.2.2 als ``X-Emby-Token`` kon versturen: zichtbare ASCII, met spaties of tabs alleen
+#: binnenin. Nooit CR, LF, NUL of een ander stuurteken (kopinjectie) en geen niet-ASCII (dat kon
+#: 1.2.2 ook niet versturen).
+_KEY_HEADER_SAFE = re.compile(r"[\x21-\x7e](?:[\x20-\x7e\t]*[\x21-\x7e])?")
+
+
+def header_safe(key: str) -> bool:
+    return bool(_KEY_HEADER_SAFE.fullmatch(key))
+
+
 def auth_headers(kind: str, key: str) -> dict[str, str]:
     """Aanmeldkop per soort server (Δ-MG-AUTH).
 
-    - ``emby``: ``X-Emby-Token`` (ongewijzigd sinds 1.2.2; de Emby-koppeling onderbreekt nooit);
+    - ``emby``: ``X-Emby-Token`` (ongewijzigd sinds 1.2.2; de Emby-koppeling onderbreekt nooit).
+      Een sleutel die 1.2.2 opsloeg (zonder tekencontrole) blijft werken; alleen tekens die een
+      kop kunnen toevoegen of breken worden geweigerd (``header_safe``);
     - ``jellyfin``: ``Authorization: MediaBrowser Client=…, Device=…, DeviceId=…, Version=…,
       Token="…"``. Jellyfin 12.x weigert ``X-Emby-Token``, ``api_key=`` en
       ``X-Emby-Authorization`` zodra ``EnableLegacyAuthorization`` uit staat (12.x-standaard);
-      deze kop werkt ook op 10.x.
+      deze kop werkt ook op 10.x. ``"``, ``,`` en ``\\`` zouden die kop breken (``valid_key``).
     """
     if not key:
         return {}
-    if not valid_key(key):
+    if not (valid_key(key) if kind == "jellyfin" else header_safe(key)):
         raise MediaServerError("ongeldige API-sleutel (onverwachte tekens)")
     if kind == "jellyfin":
         return {"Authorization": (
@@ -69,13 +85,78 @@ def _transport(services: dict[str, Any]) -> httpx.AsyncBaseTransport | None:
     return services.get("mediaserver_transport")
 
 
+#: koppen die een sleutel dragen: ze gaan nooit naar een ander adres en hun waarde komt nooit in
+#: een foutmelding
+_SECRET_HEADERS = ("x-emby-token", "x-plex-token", "authorization", "x-api-key", "api-key")
+_TOKEN_IN_HEADER = re.compile(r'(?i)token="([^"]+)"')
+
+
+def _secrets(headers: dict[str, str]) -> set[str]:
+    found: set[str] = set()
+    for name, value in headers.items():
+        if name.lower() not in _SECRET_HEADERS or not value:
+            continue
+        found.add(value)
+        found.update(_TOKEN_IN_HEADER.findall(value))
+        scheme, _, rest = value.partition(" ")
+        if scheme.lower() == "bearer" and rest.strip():
+            found.add(rest.strip())
+    return {s for s in found if s}
+
+
+def _clean(text: str, headers: dict[str, str]) -> str:
+    """Tekst uit een foutpagina zonder de meegestuurde sleutels, ook als de server ze
+    terugkaatst (letterlijk, JSON-, URL- of HTML-gecodeerd); daarna de vaste maskerregels."""
+    for secret in sorted(_secrets(headers), key=len, reverse=True):
+        for form in {secret, jsonlib.dumps(secret)[1:-1], quote(secret, safe=""),
+                     quote_plus(secret), html.escape(secret), html.escape(secret, quote=False)}:
+            if form:
+                text = text.replace(form, "***")
+    return redact(text)
+
+
+def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
+    return url.scheme, url.host.lower(), url.port or {"http": 80, "https": 443}.get(url.scheme)
+
+
+def _same_server(start: httpx.URL, target: httpx.URL) -> bool:
+    """Zelfde server: zelfde schema, host en poort; of http -> https op dezelfde host met de
+    standaardpoorten (80 -> 443). Besluit van de gebruiker 2026-11-12 ("alleen zelfde server")."""
+    a, b = _origin(start), _origin(target)
+    return a == b or (a[1] == b[1] and a[0] == "http" and a[2] == 80
+                      and b[0] == "https" and b[2] == 443)
+
+
+def _where(url: httpx.URL) -> str:
+    """Het adres van een omleiding zonder pad, query of gebruikersdeel (geen sleutel)."""
+    host = f"[{url.host}]" if ":" in url.host else url.host
+    return f"{url.scheme}://{host}" + (f":{url.port}" if url.port else "")
+
+
 async def _call(services: dict[str, Any], method: str, url: str, *,
                 headers: dict[str, str], params: Any = None, json: Any = None,
-                timeout: httpx.Timeout | float = TIMEOUT, raw: bool = False) -> Any:
+                timeout: httpx.Timeout | float = TIMEOUT, raw: bool = False,
+                any_host: bool = False) -> Any:
+    """Eén verzoek. Een omleiding wordt alleen gevolgd op dezelfde server (``_same_server``);
+    wijst ze naar een ander adres, dan een ``MediaServerError`` en gaat er geen verzoek (en dus
+    geen sleutel) daarheen. ``any_host`` is alleen voor een verzoek zonder sleutel (de
+    downloadlink van OpenSubtitles, zoals in 1.2.2); met een sleutelkop telt het niet."""
+    foreign_ok = any_host and not _secrets(headers)
     try:
         async with httpx.AsyncClient(transport=_transport(services), timeout=timeout,
-                                     follow_redirects=True) as client:
+                                     follow_redirects=False) as client:
             resp = await client.request(method, url, headers=headers, params=params, json=json)
+            start, hops = resp.request.url, 0
+            while resp.next_request is not None:
+                target = resp.next_request
+                if not foreign_ok and not _same_server(start, target.url):
+                    raise MediaServerError(
+                        f"server stuurt door naar een ander adres: {_where(target.url)}",
+                        resp.status_code)
+                hops += 1
+                if hops > client.max_redirects:
+                    raise httpx.TooManyRedirects("te veel omleidingen", request=target)
+                resp = await client.send(target)
     except httpx.HTTPError as exc:
         raise MediaServerError(f"niet bereikbaar ({type(exc).__name__})") from exc
     if resp.status_code in (401, 403):
@@ -84,7 +165,9 @@ async def _call(services: dict[str, Any], method: str, url: str, *,
         # Jellyfin 12.x antwoordt zo op elke route zolang hij opstart of migreert (gemeten)
         raise MediaServerError("start nog op of is even niet beschikbaar (fout 503)", 503)
     if resp.status_code >= 400:
-        raise MediaServerError(f"fout {resp.status_code}: {resp.text[:200]}", resp.status_code)
+        # eerst de sleutels eruit, dan pas inkorten (anders blijft een halve sleutel staan)
+        raise MediaServerError(f"fout {resp.status_code}: {_clean(resp.text, headers)[:200]}",
+                               resp.status_code)
     if raw:
         return resp.content
     if not resp.content:
@@ -499,5 +582,7 @@ class OpenSubtitlesClient:
         link = (data or {}).get("link")
         if not link:
             raise MediaServerError("OpenSubtitles gaf geen downloadlink (dagquotum op?)")
-        content = await _call(self.services, "GET", link, headers={}, raw=True)
+        # de downloadlink draagt geen sleutel; een omleiding naar een ander adres (zoals 1.2.2
+        # die volgde) blijft toegestaan
+        content = await _call(self.services, "GET", link, headers={}, raw=True, any_host=True)
         return bytes(content)

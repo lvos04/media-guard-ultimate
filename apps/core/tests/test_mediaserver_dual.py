@@ -61,6 +61,8 @@ class Server:
         self.sessions: list[dict[str, Any]] = []
         self.subs = True
         self.film = FILM.replace(MG_ROOT, root)
+        #: foutpagina die de ontvangen aanmeldkoppen terugkaatst (letterlijk, kaal en als JSON)
+        self.echo: int | None = None
 
     def authorized(self, request: httpx.Request) -> bool:
         if "api_key" in str(request.url).lower():
@@ -97,6 +99,13 @@ class Server:
                 "StartupWizardCompleted": True})
         if self.starting:
             return httpx.Response(503, text="<html>Server is starting</html>")
+        if self.echo:
+            auth = request.headers.get("Authorization", "")
+            token = request.headers.get("X-Emby-Token", "")
+            bare = (JF_AUTH.match(auth).group(1) if JF_AUTH.match(auth) else "") or token
+            return httpx.Response(self.echo, text=(
+                f"fout; verzoek was: {auth} | X-Emby-Token: {token} | sleutel {bare} | "
+                + json.dumps({"headers": dict(request.headers)})))
         if not self.authorized(request):
             return httpx.Response(401)
         if path == "/System/Info":
@@ -219,7 +228,7 @@ def test_jellyfin_12_weigert_x_emby_token_en_mediaguard_stuurt_het_niet(ctx, net
     assert not any("api_key" in str(r.url).lower() for r in emby.requests + jf.requests)
 
 
-def test_sleutel_nooit_in_log_of_foutmelding(ctx, net, caplog) -> None:  # type: ignore[no-untyped-def]
+def test_sleutel_nooit_in_log_of_foutmelding(client, ctx, net, caplog) -> None:  # type: ignore[no-untyped-def]
     from mediaguard.secrets_store import install_log_redaction
 
     install_log_redaction()
@@ -228,6 +237,41 @@ def test_sleutel_nooit_in_log_of_foutmelding(ctx, net, caplog) -> None:  # type:
     header = auth_headers("jellyfin", "zeer-geheim-123")["Authorization"]
     logging.getLogger("mediaguard.test").warning("kop %s / X-Emby-Token: %s", header, "ook-geheim")
     assert "zeer-geheim-123" not in caplog.text and "ook-geheim" not in caplog.text
+
+    # Foutmelding (S-P2-600, R-VEILIG-3/R-TECH-2): een server die bij een fout de ontvangen
+    # aanmeldkop terugkaatst (letterlijk, als kale sleutel en JSON-geëscapet). De sleutel komt
+    # nergens terecht: niet in MediaServerError, niet in servers[].contact.error van /status,
+    # niet in het antwoord van /test of /config en niet in mediaserver_actions.
+    emby, jf = net
+    keys = ("emby-sleutel", "jl-sleutel")
+    sid = _add_jelly_leon(ctx)
+    tick(ctx, sessions=False)                 # cursor
+    _txn(ctx)
+    emby.echo = jf.echo = 500
+    for url, key, kind in (("http://emby:8096", "emby-sleutel", "emby"),
+                           ("http://jellyleon:8096", "jl-sleutel", "jellyfin")):
+        with pytest.raises(MediaServerError) as exc:
+            asyncio.run(EmbyClient(ctx.services, url, key, kind).check_key())
+        assert exc.value.status == 500 and str(exc.value).startswith("fout 500: fout;")
+        assert key not in str(exc.value), str(exc.value)
+    tick(ctx)                                 # verversen en sessies: beide 500 met de echo
+    st = client.get("/api/v1/mediaserver/status").json()
+    errors = [x["contact"]["error"] for x in st["servers"]]
+    assert all(e and e.startswith("fout 500") for e in errors), errors
+    texts = [json.dumps(st)]
+    texts.append(client.post("/api/v1/mediaserver/test").text)
+    texts.append(client.post(f"/api/v1/mediaserver/test?server_id={sid}").text)
+    r = client.post("/api/v1/mediaserver/config", json={
+        "add": True, "kind": "jellyfin", "url": "jellyleon:8096", "api_key": "jl-sleutel"})
+    assert r.status_code == 200 and not r.json()["test"]["ok"], r.text
+    texts.append(r.text)
+    acts = ctx.db.fetch_dicts("SELECT detail_nl FROM mediaserver_actions")
+    assert any("verversen mislukt" in str(a["detail_nl"]) for a in acts), acts
+    texts += [str(a["detail_nl"]) for a in acts]
+    texts.append(caplog.text)
+    for text in texts:
+        for key in keys:
+            assert key not in text, (key, text)
 
 
 # -- soort herkennen: alleen wie zich als Jellyfin meldt, krijgt de nieuwe kop ---------------
@@ -623,13 +667,228 @@ def test_alleen_een_beheerder_beheert_servers(app, ctx, net) -> None:  # type: i
         assert r.status_code == 403, r.text
 
 
+MIGRATIE_150 = Path(S.__file__).parents[1] / "migrations" / "150_mediaserver_servers.sql"
+#: witte lijst (S-P2-600, R-TECH-5/R-HARDE-EIS-3): een migratie die alleen toevoegt bevat alleen
+#: CREATE TABLE (met kolommen, geen AS SELECT), CREATE INDEX en ALTER TABLE … ADD COLUMN
+_ALLEEN_TOEVOEGEN = (re.compile(r"(?is)^CREATE\s+TABLE\s+\w+\s*\((?!.*\bAS\s+SELECT\b).*\)$"),
+                     re.compile(r"(?is)^CREATE\s+(?:UNIQUE\s+)?INDEX\s+\w+\s+ON\s+\w+\s*\([^;]*\)$"),
+                     re.compile(r"(?is)^ALTER\s+TABLE\s+\w+\s+ADD\s+COLUMN\s+[^;]+$"))
+
+
+def _alleen_toevoegen(sql: str) -> list[str]:
+    """Alle opdrachten van een migratie; faalt op elke opdracht buiten de witte lijst."""
+    body = "\n".join(line.split("--", 1)[0] for line in sql.splitlines())
+    statements = [s.strip() for s in body.split(";") if s.strip()]
+    assert statements, "lege migratie"
+    for st in statements:
+        assert any(p.match(st) for p in _ALLEEN_TOEVOEGEN), f"niet alleen toevoegen: {st}"
+    return statements
+
+
 def test_migratie_150_voegt_alleen_toe(ctx) -> None:  # type: ignore[no-untyped-def]
-    sql = (Path(S.__file__).parents[1] / "migrations" / "150_mediaserver_servers.sql").read_text()
-    statements = [s.strip().split()[0:2] for s in re.split(r";\s*\n", sql)
-                  if s.strip() and not s.strip().startswith("--")]
-    for st in sql.splitlines():
-        upper = st.upper()
-        assert not any(w in upper for w in ("DROP ", "DELETE ", "UPDATE ", "RENAME ")), st
-    assert statements
+    statements = _alleen_toevoegen(MIGRATIE_150.read_text())
+    assert [" ".join(s.split()[:2]).upper() for s in statements] == [
+        "CREATE TABLE", "CREATE TABLE", "CREATE INDEX", "ALTER TABLE"]
     cols = [r["name"] for r in ctx.db.fetch_all("PRAGMA table_info(mediaserver_actions)")]
     assert cols[-1] == "server_id"
+
+
+@pytest.mark.parametrize("extra", [
+    "INSERT OR REPLACE INTO settings_values(scope_type, scope_id, key) VALUES ('g', '', 'x');",
+    "REPLACE INTO system_state(key, value_json) VALUES ('x', '1');",
+    "INSERT INTO mediaserver_servers(id, kind) SELECT 1, 'emby';",
+    "CREATE TABLE kopie AS SELECT * FROM mediaserver_actions;",
+    "CREATE TRIGGER t AFTER INSERT ON lib_items BEGIN DELETE FROM lib_files; END;",
+    "UPDATE settings_values SET value_json = '1';",
+    "DELETE FROM mediaserver_pending;",
+    "DROP TABLE mediaserver_watch;",
+    "ALTER TABLE mediaserver_actions RENAME TO oud;",
+])
+def test_migratiecontrole_wordt_rood_bij_alles_behalve_toevoegen(extra: str) -> None:
+    """Mutatieproef (V-003): dezelfde migratie met één opdracht die niet alleen toevoegt."""
+    with pytest.raises(AssertionError, match="niet alleen toevoegen"):
+        _alleen_toevoegen(MIGRATIE_150.read_text() + "\n" + extra + "\n")
+
+
+# -- herstel na de technische review (S-P2-600) -----------------------------------------------
+def _redirect_net(ctx, location: str) -> list[httpx.Request]:  # type: ignore[no-untyped-def]
+    """Elke route buiten /doel antwoordt met een omleiding naar ``location``; /doel geeft 200."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.startswith("/doel"):
+            return httpx.Response(200, json={"Id": "x", "MediaContainer": {}})
+        return httpx.Response(307, headers={"Location": location})
+
+    ctx.services["mediaserver_transport"] = httpx.MockTransport(handler)
+    return seen
+
+
+def _met_sleutel(request: httpx.Request, key: str) -> bool:
+    return any(key in v for v in request.headers.values()) or key in str(request.url)
+
+
+@pytest.mark.parametrize("kind", ["emby", "jellyfin", "plex"])
+@pytest.mark.parametrize(("start", "location", "toegestaan", "adres"), [
+    ("http://ms:8096", "http://ander-adres:9999/doel?token=geheim-pad", False,
+     "http://ander-adres:9999"),
+    ("http://ms:8096", "http://ms:9999/doel", False, "http://ms:9999"),
+    ("http://ms:8096", "https://ms:8096/doel", False, "https://ms:8096"),
+    ("https://ms", "http://ms/doel", False, "http://ms"),
+    ("http://ms:8096", "/doel/info", True, ""),
+    ("http://ms", "https://ms/doel", True, ""),
+])
+def test_omleiding_alleen_binnen_dezelfde_server(ctx, kind: str, start: str, location: str,  # type: ignore[no-untyped-def]
+                                                 toegestaan: bool, adres: str) -> None:
+    """Besluit van de gebruiker 2026-11-12 (R-VEILIG-2): een omleiding wordt alleen gevolgd op
+    dezelfde server (zelfde host en poort; http->https op dezelfde host met de standaardpoorten).
+    Naar een ander adres: een duidelijke melding en geen enkel verzoek met de sleutel daarheen."""
+    from mediaguard.mediaserver.clients import make_server
+
+    key = "ms-sleutel"
+    seen = _redirect_net(ctx, location)
+    srv = make_server(kind, ctx.services, start, key)
+    if toegestaan:
+        asyncio.run(srv.check_key())
+        assert seen[-1].url.path.startswith("/doel") and _met_sleutel(seen[-1], key)
+        assert seen[-1].url.host == "ms"
+        return
+    with pytest.raises(MediaServerError) as exc:
+        asyncio.run(srv.check_key())
+    assert str(exc.value) == f"server stuurt door naar een ander adres: {adres}"
+    assert key not in str(exc.value) and "geheim-pad" not in str(exc.value)
+    assert len(seen) == 1 and not seen[0].url.path.startswith("/doel")
+    if kind != "plex":                        # ook een POST (verversen) gaat niet mee
+        with pytest.raises(MediaServerError, match="ander adres"):
+            asyncio.run(srv.refresh_paths(["/media/x.mkv"]))
+    assert not any(r.url.path.startswith("/doel") for r in seen)
+    assert not any(_met_sleutel(r, key) for r in seen if r.url.host != "ms"
+                   or r.url.port not in (None, 8096))
+
+
+def test_omleiding_zonder_sleutel_alleen_voor_de_ondertiteldownload(ctx) -> None:  # type: ignore[no-untyped-def]
+    """Alleen de downloadlink van OpenSubtitles (zonder sleutel, zoals 1.2.2) mag naar een ander
+    adres doorverwijzen; draagt het verzoek een sleutel, dan nooit."""
+    from mediaguard.mediaserver.clients import _call
+
+    seen = _redirect_net(ctx, "https://cdn.elders/doel/ondertitel.srt")
+    out = asyncio.run(_call(ctx.services, "GET", "https://dl.opensubtitles/x", headers={},
+                            raw=True, any_host=True))
+    assert out and seen[-1].url.host == "cdn.elders"
+    seen.clear()
+    for headers in ({"Api-Key": "os-sleutel"}, {"X-Emby-Token": "os-sleutel"}):
+        with pytest.raises(MediaServerError, match="ander adres: https://cdn.elders$"):
+            asyncio.run(_call(ctx.services, "GET", "https://dl.opensubtitles/x",
+                              headers=headers, any_host=True))
+    assert not any(r.url.host == "cdn.elders" for r in seen)
+    with pytest.raises(MediaServerError, match="ander adres"):
+        asyncio.run(_call(ctx.services, "GET", "https://dl.opensubtitles/x", headers={}))
+
+
+def _emby_stand(ctx) -> tuple[Any, ...]:  # type: ignore[no-untyped-def]
+    open_work = ctx.db.fetch_one("SELECT COUNT(*) AS n FROM mediaserver_server_results WHERE "
+                                 "server_id=1 AND done_at IS NULL")["n"]
+    return (ctx.config.value("mediaserver.kind"), ctx.config.value("mediaserver.url"),
+            ctx.secrets.get(S.SECRET_KEY), ctx.state_get("mediaserver_kind_before_off"),
+            json.dumps(ctx.state_get("mediaserver_path_map"), sort_keys=True), open_work,
+            {k: ctx.config.value(f"mediaserver.{k}") for k in
+             ("pause_while_watching", "recent_watch_hours")})
+
+
+@pytest.mark.parametrize("body", [
+    {"kind": "jellyfin", "api_key": 'a"b'},
+    {"kind": "off", "url": "http://a b"},
+    {"url": "http://elders:8096", "api_key": "a,b"},
+    {"enabled": False, "api_key": "a b"},
+    {"kind": "off", "features": {"onbekend": 1}},
+    {"url": "http://elders:8096", "features": {"recent_watch_hours": 0}},
+    {"kind": "emby", "remove": True},
+])
+def test_geweigerd_verzoek_voor_server_1_wijzigt_niets(client, ctx, net, body) -> None:  # type: ignore[no-untyped-def]
+    """S-P2-600, R-TECH-1: een verzoek dat 422 krijgt, laat de bestaande Emby-koppeling
+    byte-gelijk (soort, adres, sleutel, padvertaling, open werk, functies) en Emby verbonden."""
+    tick(ctx, sessions=False)                 # cursor
+    _txn(ctx)
+    tick(ctx)                                 # open werk voor server 1 en een padvertaling
+    assert ctx.state_get("mediaserver_path_map")
+    before = _emby_stand(ctx)
+    assert before[5] == 1, before
+    r = client.post("/api/v1/mediaserver/config", json=body)
+    assert r.status_code == 422, r.text
+    assert _emby_stand(ctx) == before
+    tick(ctx)
+    assert M.connected(ctx, M.legacy(ctx))
+
+
+def test_server_1_heeft_een_eigen_wacht_in_verwijderen_en_wijzigen(ctx, net) -> None:  # type: ignore[no-untyped-def]
+    """S-P2-600, R-HARDE-EIS-2: server 1 is de bestaande koppeling; ``servers.remove`` en
+    ``servers.update`` weigeren hem zelf, ook buiten de API om (geheim en padvertaling blijven)."""
+    tick(ctx)
+    path_map = json.dumps(ctx.state_get("mediaserver_path_map"), sort_keys=True)
+    for call in (lambda: M.remove(ctx, M.LEGACY_ID),
+                 lambda: M.update(ctx, M.LEGACY_ID, url="http://elders:8096"),
+                 lambda: M.update(ctx, M.LEGACY_ID, enabled=False)):
+        with pytest.raises(ValueError, match="server 1"):
+            call()
+    assert ctx.secrets.get(S.SECRET_KEY) == "emby-sleutel"
+    assert json.dumps(ctx.state_get("mediaserver_path_map"), sort_keys=True) == path_map
+    tick(ctx)
+    assert M.connected(ctx, M.legacy(ctx))
+
+
+def test_een_nieuwe_server_erft_niets_van_een_verwijderde(client, ctx, net) -> None:  # type: ignore[no-untyped-def]
+    """S-P2-600, R-TECH-3: een id wordt nooit opnieuw uitgedeeld; een nieuwe server begint
+    zonder uitkomsten en zonder actiegeschiedenis van een verwijderde server."""
+    sid = _add_jelly_leon(ctx)
+    tick(ctx, sessions=False)
+    _txn(ctx)
+    tick(ctx, sessions=False)
+    assert ctx.db.fetch_one("SELECT COUNT(*) AS n FROM mediaserver_actions WHERE server_id=?",
+                            (sid,))["n"] >= 1
+    r = client.post("/api/v1/mediaserver/config", json={"server_id": sid, "remove": True})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/v1/mediaserver/config", json={
+        "add": True, "kind": "plex", "url": "plex:32400", "label": "Plex"})
+    assert r.status_code == 200, r.text
+    new = r.json()["server_id"]
+    assert new != sid and new > sid
+    entry = next(x for x in r.json()["status"]["servers"] if x["server_id"] == new)
+    assert set(entry["results"].values()) == {0}
+    assert ctx.db.fetch_one("SELECT COUNT(*) AS n FROM mediaserver_actions WHERE server_id=?",
+                            (new,))["n"] == 0
+
+
+@pytest.mark.parametrize("key", ["emby sleutel", 'emby"sleutel', "emby,sleutel", "emby\\sleutel",
+                                 "emby\tsleutel"])
+def test_emby_sleutel_van_1_2_2_met_leestekens_blijft_werken(ctx, net, key: str) -> None:  # type: ignore[no-untyped-def]
+    """S-P2-600 (HARDE EIS, vervolgpunt R-VEILIG): 1.2.2 bewaarde de sleutel zonder tekencontrole
+    en stuurde hem als ``X-Emby-Token``. Zo'n sleutel blijft na de upgrade werken: spaties, ``"``,
+    komma en backslash kunnen in die kop geen kop toevoegen. Alleen de MediaBrowser-kop van
+    Jellyfin eist de strengere regel."""
+    emby, _jf = net
+    emby.key = key
+    ctx.secrets.set(S.SECRET_KEY, key, "1.2.2")   # zoals 1.2.2 hem opsloeg: zonder controle
+    tick(ctx)
+    assert M.connected(ctx, M.legacy(ctx))
+    sent = [r for r in emby.requests if not r.url.path.endswith("/System/Info/Public")]
+    assert sent and all(r.headers["X-Emby-Token"] == key and "authorization" not in r.headers
+                        for r in sent)
+    with pytest.raises(MediaServerError, match="ongeldige API-sleutel"):
+        auth_headers("jellyfin", key)
+
+
+@pytest.mark.parametrize("key", ["emby\r\nX-Kwaad: 1", "emby\nsleutel", "emby\x00", "emby\x01",
+                                 "emby\x7f", "embyé", " emby", "emby "])
+def test_emby_sleutel_met_stuurteken_wordt_nooit_verstuurd(ctx, net, key: str) -> None:  # type: ignore[no-untyped-def]
+    """CR, LF, NUL en andere stuurtekens (kopinjectie) en niet-ASCII gaan nooit de deur uit; dat
+    kon 1.2.2 ook niet versturen. De koppeling meldt het in woorden, zonder de sleutel."""
+    emby, _jf = net
+    ctx.secrets.set(S.SECRET_KEY, key, "1.2.2")
+    with pytest.raises(MediaServerError, match="ongeldige API-sleutel") as exc:
+        auth_headers("emby", key)
+    assert key not in str(exc.value)
+    n = len(emby.requests)
+    tick(ctx)
+    assert not M.connected(ctx, M.legacy(ctx))
+    assert all(r.url.path.endswith("/System/Info/Public") for r in emby.requests[n:])
