@@ -57,7 +57,7 @@ DANGEROUS = [("quarantine.mode", "immediate_after_check"), ("quarantine.retentio
              # zelfde effect als 'direct verwijderen': klein quotum zonder minimale bewaartijd
              ("quarantine.max_size_gb", 1), ("quarantine.min_age_hours", 0),
              ("quarantine.safety_net_gb", 0), ("quarantine.release_check_full_decode", False),
-             ("recovery.zfs_dataset", "tank/anders"),
+             ("recovery.zfs_dataset", "voorbeeldpool/anders"),
              ("security.require_2fa_admins", False), ("security.notify_new_login", False),
              ("seerr.url", "http://kwaadaardig.example:5055"),
              ("mediaserver.url", "http://kwaadaardig.example:8096"),

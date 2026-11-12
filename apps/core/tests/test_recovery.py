@@ -315,15 +315,15 @@ async def test_zfs_snapshot_with_fake_truenas(env, ctx):
         calls.append((request.url.path, request.headers.get("Authorization")))
         if request.url.path == "/api/v2.0/pool/snapshot":
             return httpx.Response(404)
-        return httpx.Response(200, json={"id": "tank/media@mediaguard-txn-1"})
+        return httpx.Response(200, json={"id": "voorbeeldpool/media@mediaguard-txn-1"})
 
     ctx.services["truenas_transport"] = httpx.MockTransport(truenas)
     ctx.config.set("global", "", "recovery.zfs_snapshot_enabled", True, "t")
     ctx.config.set("global", "", "recovery.truenas_url", "https://truenas.local", "t")
-    ctx.config.set("global", "", "recovery.zfs_dataset", "tank/media", "t")
+    ctx.config.set("global", "", "recovery.zfs_dataset", "voorbeeldpool/media", "t")
     ctx.secrets.set("truenas:apikey", "1-abcdef", "t")
     txn = await executor.run_transaction(ctx, env.txn())
-    assert txn["state"] == "committed" and txn["zfs_snapshot"].startswith("tank/media@")
+    assert txn["state"] == "committed" and txn["zfs_snapshot"].startswith("voorbeeldpool/media@")
     assert calls[-1] == ("/api/v2.0/zfs/snapshot", "Bearer 1-abcdef")
     ctx.services["truenas_transport"] = httpx.MockTransport(lambda r: httpx.Response(500))
     env.lib.write_bytes(ORIGINAL)
