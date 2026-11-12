@@ -59,7 +59,8 @@ opnieuw aan tot de films er staan), niet MediaGuard: die vraagt bij een import e
    backslash of komma wordt geweigerd (422): die tekens breken de MediaBrowser-kop. Een sleutel die 1.2.2 al
    opsloeg (zonder tekencontrole) blijft voor Emby werken als `X-Emby-Token`: die tekens kunnen in die kop geen kop
    toevoegen. CR, LF, NUL, andere stuurtekens en niet-ASCII gaan nooit de deur uit (kopinjectie; 1.2.2 kon ze ook
-   niet versturen). De logfilter maskeert nu ook `Token="…"` en `X-Emby-Token`. Dezelfde regels staan op de drie
+   niet versturen), behalve een tab binnenin de sleutel (een tab mag in een kopwaarde en voegt geen kop toe). De
+   logfilter maskeert nu ook `Token="…"` en `X-Emby-Token`. Dezelfde regels staan op de drie
    plekken uit het verzoek: `clients.py` (core), en `integraties.py` en `api.py` (encoder).
    - **Omleidingen alleen op dezelfde server** (besluit van de gebruiker, 2026-11-12): core volgt een omleiding
      alleen naar dezelfde host en poort, of van http naar https op dezelfde host met de standaardpoorten. Wijst
