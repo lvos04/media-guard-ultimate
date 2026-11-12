@@ -96,23 +96,56 @@ class TaalTest {
      * Geen vaste tekst in de schermen (ADR-0023 punt 4): een kop, knop of tekst met een letterlijke tekst in plaats van
      * `tr(…)` of een tweetalig woord staat in en-US in het Nederlands. Alleen woorden die in beide talen gelijk zijn,
      * mogen letterlijk blijven. Zo vond S-P2-620 de kop "Mijn aanvragen" op het scherm Aanvragen.
+     *
+     * Wat de scan ziet, in alle `.kt`-bestanden onder `ui/`:
+     * - de aanroepen [schermAanroepen] (CardHeader, SectionLabel, PageHeader, EmptyState, MgButton, Text, KeyValue,
+     *   KpiTile, TimelineEntry) met een letterlijke tekst als eerste argument;
+     * - in die aanroepen de benoemde argumenten `text =`, `title =` en `label =`, en bij EmptyState ook `sub =`;
+     * - bij een tekst met `$` alleen het letterlijke deel vóór de eerste `$` (dus "Bekijk $x" telt, "$x encodes" niet).
+     *
+     * Grenzen (wat de scan NIET ziet, dus niet bewezen is):
+     * - andere aanroepen, zoals StatusBadge(label = …), Icon(contentDescription = …) of eigen componenten die niet in
+     *   de lijst staan, en elk ander positioneel argument dan het eerste (zoals de tweede tekst van TimelineEntry of de
+     *   waarde van KeyValue);
+     * - andere benoemde argumenten, zoals `sub =` buiten EmptyState, `key =`, `countLabel =` of `actionLabel =`;
+     * - letterlijke tekst ná de eerste `$`, tekst die via een variabele, `if`/`when` of een functie binnenkomt, en
+     *   tekst buiten `ui/`;
+     * - de tekst na een escape (`\"`, `\n`): de scan leest tot de eerste `"`, `$` of backslash;
+     * - de scan is een tekstscan, geen Kotlin-parser: raw strings (`"""`) en tekenliterals worden niet apart behandeld
+     *   (op het moment van schrijven komen ze in `ui/` niet voor);
+     * - servertekst (bijvoorbeeld de dagregel van MediaGuard) blijft bewust Nederlands (ADR-0023 punt 8).
      */
     @Test fun geenVasteTekstInDeSchermen() {
         val map = listOf("src/main/java/nl/mediaguard/app/ui", "app/src/main/java/nl/mediaguard/app/ui").map(::File).first { it.isDirectory }
         val bestanden = map.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
         assertTrue("te weinig schermbestanden gevonden in $map", bestanden.size >= 10)
-        val aanroep = Regex("""\b(CardHeader|SectionLabel|PageHeader|EmptyState|MgButton|Text)\(\s*"([^"$]*)"""")
-        // in het Nederlands en het Engels hetzelfde woord (of geen tekst voor de lezer)
-        val inBeideTalenGelijk = setOf("Downloads", "Upgrades", "Details", "Release", "MediaGuard", "https://mediaguard.example.nl")
-        val gevonden = bestanden.flatMap { f ->
-            aanroep.findAll(f.readText()).map { it.groupValues[2] }
-                // opmaakpatronen ("%.0f %%", "%02d:%02d") zijn geen tekst; "%d van %d" wel
-                .filter { tekst -> tekst.replace(Regex("""%[-#+ 0,(]*\d*(\.\d+)?[a-zA-Z%]"""), "").any { it.isLetter() } }
-                .filter { it !in inBeideTalenGelijk }.map { "${f.name}: \"$it\"" }.toList()
-        }
+        val gevonden = bestanden.flatMap { f -> vasteTeksten(f.readText()).filter { it !in inBeideTalenGelijk }.map { "${f.name}: \"$it\"" } }
         assertEquals(emptyList<String>(), gevonden)
         // de kop van de kaart volgt het woord van het tabblad
         assertEquals("My requests", engels { RequestsTab.Mijn.label })
+    }
+
+    /** De scan zelf: wat hij moet vinden en wat niet (anders kan [geenVasteTekstInDeSchermen] stil te weinig zien). */
+    @Test fun scanOpVasteTekstVindtDeGaten() {
+        val bron = """
+            KeyValue("Serveradres", m.serverUrl ?: "—")
+            MgButton("Bekijk ${'$'}RELEASES", onClick = {})
+            MgButton(onClick = {}, text = "Opslaan")
+            CardHeader(icon = R.drawable.x, title = "Mijn kaart")
+            KpiTile("Wachtrij", "3", Modifier.weight(1f), sub = "niet gezien: sub buiten EmptyState")
+            KpiTile(label = "Klaar", value = null)
+            TimelineEntry("Vervangen", "tweede argument telt niet")
+            EmptyState(tr("Leeg", "Empty"), sub = "Niets te zien")
+            Text(text = if (a) "x" else "y")
+            Text("${'$'}count", style = s)
+            Text(tr("Goed", "Good"), modifier = Modifier.semantics { contentDescription = "(" })
+            Text("Na (haakjes)", color = c)
+            val f by animateFloatAsState(1f, tween(150), label = "progress")
+            Text("%.0f %%")
+            Text("Server")
+        """.trimIndent()
+        assertEquals(listOf("Serveradres", "Bekijk ", "Opslaan", "Mijn kaart", "Wachtrij", "Klaar", "Vervangen",
+            "Niets te zien", "Na (haakjes)"), vasteTeksten(bron).filter { it !in inBeideTalenGelijk })
     }
 
     @Test fun getallenVolgenDeTaal() {
@@ -219,5 +252,69 @@ class TaalTest {
         // initialen hangen niet van de taal af
         assertEquals("JV", engels { initials("Jan de Vries") })
         assertEquals("MG", engels { initials(null) })
+    }
+
+    private companion object {
+        /** De schermcomponenten met een zichtbare tekst als eerste argument (zie [geenVasteTekstInDeSchermen]). */
+        val schermAanroepen = listOf("CardHeader", "SectionLabel", "PageHeader", "EmptyState", "MgButton", "Text",
+            "KeyValue", "KpiTile", "TimelineEntry")
+
+        /** In het Nederlands en het Engels hetzelfde woord (of geen tekst voor de lezer). */
+        val inBeideTalenGelijk = setOf("Downloads", "Upgrades", "Details", "Release", "MediaGuard",
+            "https://mediaguard.example.nl", "Audio", "Score", "Server", "App", "In MediaGuard", "Custom formats", "Encodes")
+
+        private val aanroep = Regex("""\b(${schermAanroepen.joinToString("|")})\(""")
+        private val benoemd = Regex("""^(\w+)\s*=(?!=)\s*(.*)$""", RegexOption.DOT_MATCHES_ALL)
+        private val opmaak = Regex("""%[-#+ 0,(]*\d*(\.\d+)?[a-zA-Z%]""")
+
+        /** Alle letterlijke teksten die de scan in [bron] ziet; alleen met een letter (opmaakpatronen tellen niet). */
+        fun vasteTeksten(bron: String): List<String> = aanroep.findAll(bron).flatMap { m ->
+            val naam = m.groupValues[1]
+            val namen = if (naam == "EmptyState") setOf("text", "title", "label", "sub") else setOf("text", "title", "label")
+            argumenten(bron, m.range.last + 1).mapIndexedNotNull { i, arg ->
+                val b = benoemd.find(arg)
+                when {
+                    b != null -> if (b.groupValues[1] in namen) letterlijkBegin(b.groupValues[2]) else null
+                    i == 0 -> letterlijkBegin(arg)
+                    else -> null
+                }
+            }
+        }.filter { tekst -> tekst.replace(opmaak, "").any { it.isLetter() } }.toList()
+
+        /** Het letterlijke deel van een tekst vóór de eerste `$`, `"` of backslash; null als [arg] geen tekst is. */
+        private fun letterlijkBegin(arg: String): String? =
+            if (arg.startsWith("\"")) arg.drop(1).takeWhile { it != '"' && it != '$' && it != '\\' } else null
+
+        /**
+         * De argumenten op het hoogste niveau van een aanroep, vanaf de tekst direct na "(". Houdt rekening met haakjes,
+         * accolades, teksten (ook `${…}` in een tekst) en commentaar met `//`.
+         */
+        private fun argumenten(bron: String, start: Int): List<String> {
+            val args = mutableListOf<String>()
+            val stapel = ArrayDeque<Char>() // '(' '[' '{' = code, '"' = tekst, 'T' = `${` in een tekst
+            var begin = start
+            var i = start
+            while (i < bron.length) {
+                val c = bron[i]
+                if (stapel.lastOrNull() == '"') {
+                    when {
+                        c == '\\' -> i++
+                        c == '"' -> stapel.removeLast()
+                        c == '$' && bron.getOrNull(i + 1) == '{' -> { stapel.addLast('T'); i++ }
+                    }
+                } else when {
+                    c == '/' && bron.getOrNull(i + 1) == '/' -> while (i + 1 < bron.length && bron[i + 1] != '\n') i++
+                    c == '"' -> stapel.addLast('"')
+                    c == '(' || c == '[' || c == '{' -> stapel.addLast(c)
+                    c == ')' || c == ']' || c == '}' -> if (stapel.isEmpty()) {
+                        args += bron.substring(begin, i)
+                        return args.map { it.trim() }.filter { it.isNotEmpty() }
+                    } else stapel.removeLast()
+                    c == ',' && stapel.isEmpty() -> { args += bron.substring(begin, i); begin = i + 1 }
+                }
+                i++
+            }
+            return args.map { it.trim() }.filter { it.isNotEmpty() }
+        }
     }
 }
