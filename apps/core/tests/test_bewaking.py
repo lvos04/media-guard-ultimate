@@ -427,11 +427,11 @@ def test_degraded_pool_alerts_and_pauses_purge(client, ctx, monkeypatch):
 
     monkeypatch.setenv("MG_ATTENTION_SKIP_ENCODER", "1")
     _channel(ctx)
-    _truenas(ctx, [{"name": "tank", "status": "DEGRADED", "healthy": False, "scan": {}},
+    _truenas(ctx, [{"name": "voorbeeldpool", "status": "DEGRADED", "healthy": False, "scan": {}},
                    {"name": "boot", "status": "ONLINE", "healthy": True, "scan": {}}])
     asyncio.run(storage_forecast.refresh_pool(ctx))
     item = _keys(client)["storage.pool_degraded"]
-    assert item["severity"] == "error" and "tank (DEGRADED)" in item["title_nl"]
+    assert item["severity"] == "error" and "voorbeeldpool (DEGRADED)" in item["title_nl"]
     monitor.sync_alerts(ctx, monitor._alerts(list(_keys(client).values()), None))
     assert any("TrueNAS-pool" in o["title"] for o in _outbox(ctx))
     # opruimen pauzeert: geen enkel origineel weg
@@ -457,7 +457,7 @@ def test_degraded_pool_alerts_and_pauses_purge(client, ctx, monkeypatch):
     asyncio.run(storage_forecast.refresh_pool(ctx))
     assert storage_forecast.pool_degraded(ctx)
     # pool weer gezond: melding weg en opruimen gaat verder
-    _truenas(ctx, [{"name": "tank", "status": "ONLINE", "healthy": True, "scan": {}}])
+    _truenas(ctx, [{"name": "voorbeeldpool", "status": "ONLINE", "healthy": True, "scan": {}}])
     asyncio.run(storage_forecast.refresh_pool(ctx))
     assert "storage.pool_degraded" not in _keys(client)
     assert asyncio.run(recovery_api._job_purge(jc))["purged"] == 1 and deleted == [7]
@@ -561,7 +561,7 @@ def test_degraded_pool_full_quarantine_pauses_av1_instead_of_overfilling(ctx, mo
                         lambda _c, **_k: [{"id": 1, "size": 200}])
     assert release_check.quota_exceeded(ctx) is False  # gezond: opruimen maakt ruimte
     storage_forecast.record_pool(ctx, {"ok": False, "pools": [
-        {"name": "tank", "status": "DEGRADED", "healthy": False}]})
+        {"name": "voorbeeldpool", "status": "DEGRADED", "healthy": False}]})
     before = ctx.db.fetch_one("SELECT COUNT(*) AS n FROM jobs WHERE job_type='quarantine.purge'")
     assert release_check.quota_exceeded(ctx) is True
     after = ctx.db.fetch_one("SELECT COUNT(*) AS n FROM jobs WHERE job_type='quarantine.purge'")
@@ -574,6 +574,6 @@ def test_pool_is_measured_even_with_monitoring_off(ctx):
     from mediaguard import storage_forecast
 
     ctx.config.set("global", "", "monitor.enabled", False, "test")
-    _truenas(ctx, [{"name": "tank", "status": "DEGRADED", "healthy": False, "scan": {}}])
+    _truenas(ctx, [{"name": "voorbeeldpool", "status": "DEGRADED", "healthy": False, "scan": {}}])
     assert asyncio.run(monitor.run_once(ctx)) == {"skipped": "uit"}
-    assert [p["name"] for p in storage_forecast.pool_degraded(ctx)] == ["tank"]
+    assert [p["name"] for p in storage_forecast.pool_degraded(ctx)] == ["voorbeeldpool"]

@@ -747,7 +747,7 @@ async def test_full_quarantine_on_degraded_pool_leaves_wrong_file_in_place(env, 
     monkeypatch.setattr(recovery_service, "purge_candidates",
                         lambda _c, **_k: [{"id": 1, "size": 200}])
     storage_forecast.record_pool(ctx, {"ok": False, "pools": [
-        {"name": "tank", "status": "DEGRADED", "healthy": False}]})
+        {"name": "voorbeeldpool", "status": "DEGRADED", "healthy": False}]})
     await engine.run_once(ctx, force=True)
     assert path.exists() and not sonarr.calls_to("DELETE", "/api/v3/episodefile")
     assert not ctx.db.fetch_one("SELECT 1 FROM quarantine_items")
