@@ -149,7 +149,10 @@ fun TopBar(
         val avail = constraints.maxWidth
         val pillFull = if (attentionCount > 0) pillCore + word else 0
         val pillShort = if (attentionCount > 0) pillCore else 0
-        val showWord = attentionCount > 0 && fixed + pillFull <= avail
+        // Op een subpagina telt de titel mee: past hij niet naast het hele woord, dan valt het woord weg (niet de titel
+        // midden in een woord afbreken, zoals "Bibliothe|ek" op 360 dp of "Libra|ry" met grote letter).
+        val titleText = if (onBack != null && !title.isNullOrEmpty()) measurer.measure(title, Mg.type.h2).size.width + w(8.dp) else 0
+        val showWord = attentionCount > 0 && fixed + pillFull + titleText <= avail
         val showBrand = onBack == null && fixed + (if (showWord) pillFull else pillShort) + w(8.dp) + brandText <= avail
         Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) {

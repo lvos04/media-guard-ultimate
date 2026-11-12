@@ -67,6 +67,8 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import nl.mediaguard.app.R
@@ -438,12 +440,29 @@ fun ListRow(
     }
 }
 
-/** Sleutel-waarde-regel (feit): sleutel in de tweede tekstkleur, waarde in inkt; lange waarden lopen om. */
+/**
+ * Sleutel-waarde-regel (feit): sleutel in de tweede tekstkleur, waarde in inkt; lange waarden lopen om.
+ * De sleutel krijgt een kolom van 120 dp. Vult de sleutel die kolom bijna helemaal (grote letter: "In MediaGuard",
+ * "Latest version"), dan schuift de waarde op tot er minstens [MgSpace.s2] tussen zit, zodat de twee nooit aan elkaar
+ * plakken ("In MediaGuardoff"). Past de sleutel ruim, dan staat alles op dezelfde plek als voorheen.
+ */
 @Composable
 fun KeyValue(key: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-        Text(key, style = Mg.type.small, color = Mg.colors.muted, modifier = Modifier.width(120.dp))
-        Text(value, style = Mg.type.small, color = Mg.colors.text, modifier = Modifier.weight(1f))
+    Layout(
+        content = {
+            Text(key, style = Mg.type.small, color = Mg.colors.muted)
+            Text(value, style = Mg.type.small, color = Mg.colors.text)
+        },
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+    ) { measurables, constraints ->
+        val column = 120.dp.roundToPx()
+        val keyPlaceable = measurables[0].measure(Constraints(maxWidth = column))
+        val start = maxOf(column, keyPlaceable.width + MgSpace.s2.roundToPx())
+        val valuePlaceable = measurables[1].measure(Constraints(maxWidth = (constraints.maxWidth - start).coerceAtLeast(0)))
+        layout(constraints.maxWidth, maxOf(keyPlaceable.height, valuePlaceable.height)) {
+            keyPlaceable.place(0, 0)
+            valuePlaceable.place(start, 0)
+        }
     }
 }
 
