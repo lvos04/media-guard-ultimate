@@ -487,13 +487,18 @@ rood op `EnGrootLight360HoogScreenShots_bibliotheekDetail` (0,162623 %) en ook o
    `EnLightScreenShots_instellingenWaarschuwingen.png` opnieuw op te nemen en een woordkeuze (ADR-0023 punt 7); niet
    in deze stap.
 2. **"Partially available"** loopt op 360 dp in een kaart van "Discover" om op twee regels binnen het label (geen
-   afkapping, wel een hoger label dan de buren). Geen referentiebeeld van Aanvragen in het Engels.
-3. Bijgewerkt (KLEIN-16): de knop heet nu "Exempt" en het label "Partial"; Aanvragen in het Engels alleen in de taaltest.
+   afkapping, wel een hoger label dan de buren). Bijgewerkt (KLEIN-20): het label heet nu "Partial" (punt 3) en er is
+   een Engels referentiebeeld van Aanvragen op 360 dp, licht:
+   `EnGrootLight360HoogScreenShots_aanvragen.png` (in de bestaande Engelse 360-klasse, dus ook met grote letter,
+   fontScale 1,3, en op volle lengte; dezelfde voorbeeldgegevens als de andere Aanvragen-beelden). Daarin staat
+   "Partial" op één regel naast zijn icoon, even hoog als "Available" ernaast, en is niets afgekapt; verify bewaakt dat.
+3. Bijgewerkt (KLEIN-16): de knop heet nu "Exempt" en het label "Partial"; sinds KLEIN-20 staat Aanvragen in het
+   Engels ook in een referentiebeeld (punt 2).
    Ook het Nederlands is bijgewerkt (KLEIN-17): de knop heet nu "Uitzonderen" (werkwoord) in plaats van "Uitzondering".
 
-Niet in deze review (bekend, elders belegd): de bronscan van `TaalTest` (R-TECH-1). Opgelost: de Paparazzi-tolerantie
-van 0,5 % die een gewijzigde titel doorliet (R-TECH-3); sinds `63b4910` (KLEIN-18) 0,01 %, en verify vangt beide
-fouten van §12.3 nu (proef KLEIN-19).
+De bronscan van `TaalTest` (R-TECH-1) is verbreed in `7e714ff` (KLEIN-14); de grenzen staan in de KDoc van
+`TaalTest`. Opgelost: de Paparazzi-tolerantie van 0,5 % die een gewijzigde titel doorliet (R-TECH-3); sinds
+`63b4910` (KLEIN-18) 0,01 %, en verify vangt beide fouten van §12.3 nu (proef KLEIN-19).
 
 ### 12.5 NIET GEVALIDEERD
 

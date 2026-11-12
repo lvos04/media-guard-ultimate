@@ -93,7 +93,7 @@ abstract class ScreenShots(
     private fun gate(groot: Boolean, smalGroot: Boolean = false) {
         if (docs) assumeTrue("alleen met PEIL_AFDRUKKEN=1", System.getenv("PEIL_AFDRUKKEN") == "1")
         if (subset) assumeTrue("grote letter alleen voor een deel van de schermen", groot)
-        if (alleenSmalGroot) assumeTrue("grote letter op 360 dp alleen voor Instellingen en Bibliotheek-detail", smalGroot)
+        if (alleenSmalGroot) assumeTrue("grote letter op 360 dp alleen voor Instellingen, Bibliotheek-detail en Aanvragen", smalGroot)
     }
 
     private fun shot(
@@ -174,7 +174,7 @@ abstract class ScreenShots(
         SpaceContent(UiState.Data(Sample.status), UiState.Data(Sample.recent), SpaceActions())
     }
 
-    @Test fun aanvragen() = shot("requests") {
+    @Test fun aanvragen() = shot("requests", smalGroot = true) {
         RequestsContent(RequestsTab.Ontdekken, "", UiState.Data(Sample.seerr), UiState.Data(Sample.mine), RequestsActions())
     }
 
@@ -242,6 +242,7 @@ class EnLightScreenShots : ScreenShots(dark = false, P393, subset = true, taal =
  * Grote letter (fontScale 1,3) op 360 dp in het Engels, op volle lengte (2 618 dp) en 2 px per dp: Instellingen met
  * waarschuwingen (sleutel en waarde in `KeyValue` plakken niet aan elkaar, ook onderaan) en Bibliotheek-detail (de
  * titel "Library" breekt niet midden in een woord). Bewaakt het herstel van R-ONTWERP-1/-2 (PEIL_REVIEW §12.3).
+ * Ook Aanvragen (Discover): het label "Partial" in een kaart (PEIL_REVIEW §12.4, KLEIN-20).
  */
 class EnGrootLight360HoogScreenShots : ScreenShots(dark = false, D360.copy(screenHeight = 5236, fontScale = 1.3f),
     taal = AppTaal.En, alleenSmalGroot = true)
