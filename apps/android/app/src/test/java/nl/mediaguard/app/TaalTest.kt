@@ -221,7 +221,7 @@ class TaalTest {
         assertEquals("Available", engels { seerrLabel("beschikbaar", "Beschikbaar")?.tekst })
         assertEquals("Requested", engels { seerrLabel("aangevraagd", "Aangevraagd")?.tekst })
         assertEquals("Processing", engels { seerrLabel("verwerken", "Wordt verwerkt")?.tekst })
-        assertEquals("Partially available", engels { seerrLabel("gedeeltelijk", "Gedeeltelijk beschikbaar")?.tekst })
+        assertEquals("Partial", engels { seerrLabel("gedeeltelijk", "Gedeeltelijk beschikbaar")?.tekst })
         assertEquals("Afgewezen", engels { seerrLabel("afgewezen", "Afgewezen")?.tekst })
         assertEquals(null, engels { seerrLabel(null, null) })
     }

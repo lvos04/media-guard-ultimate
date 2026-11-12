@@ -268,7 +268,7 @@ private fun PhoneCard(m: SettingsModel, a: SettingsActions) {
             action = { MgButton(tr("Aanzetten", "Turn on"), a.fixNotifications, small = true) })
         if (!m.phone.batteryExempt) Banner(tr("Batterijbeperking staat aan", "Battery restriction is on"), Tone.Info, R.drawable.lucide_battery_warning,
             sub = tr("Android kan het ophalen van meldingen dan uren uitstellen.", "Android can then delay fetching notifications for hours."),
-            action = { MgButton(tr("Uitzondering", "Exemption"), a.fixBattery, small = true) })
+            action = { MgButton(tr("Uitzondering", "Exempt"), a.fixBattery, small = true) })
     }
 }
 

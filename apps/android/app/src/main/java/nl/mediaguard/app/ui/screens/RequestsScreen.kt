@@ -83,7 +83,7 @@ fun seerrLabel(status: String?, text: String?): Kenmerk? {
         "beschikbaar" -> Kenmerk(tr(t, "Available"), R.drawable.lucide_check)
         "aangevraagd" -> Kenmerk(tr(t, "Requested"), R.drawable.lucide_inbox)
         "verwerken" -> Kenmerk(tr(t, "Processing"), R.drawable.lucide_loader_circle)
-        "gedeeltelijk" -> Kenmerk(tr(t, "Partially available"), R.drawable.lucide_file_x, Tone.Strong)
+        "gedeeltelijk" -> Kenmerk(tr(t, "Partial"), R.drawable.lucide_file_x, Tone.Strong)
         else -> Kenmerk(t, R.drawable.lucide_info)
     }
 }
