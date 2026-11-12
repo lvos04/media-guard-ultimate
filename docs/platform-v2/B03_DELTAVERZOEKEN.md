@@ -146,7 +146,10 @@ Op de NAS: JLT-74 (*Geblokkeerd*, NIET GEVALIDEERD (echte NAS)).
 | 7 Emby nooit onderbroken | geen kopie van de bestaande koppeling; fouten bij een andere server raken Emby niet | contracttest b2, b3, b6 en b9 (over de hele run alleen 200 van Emby, geen 401/403) |
 
 De encoder houdt één eigen mediaserver voor de losse instelling "pauzeer bij kijken" en kreeg alleen de kop per server;
-in de alles-in-één-app stuurt core de kijkpauze voor alle servers (ADR-0022 besluit 6). Voor Jelly Leon: de
+in de alles-in-één-app stuurt core de kijkpauze voor alle servers (ADR-0022 besluit 6). Om de soort te kennen vraagt
+die instelling Emby één keer per adres `GET /System/Info/Public` (zonder sleutel); 1.2.2 vroeg in die lus alleen
+`/Sessions`. Contracttest b2 meet alleen het verkeer van core; dit leesverzoek is alleen Sim-getest
+(`tests/contract/mediaserver/RESULTS.md`, "Wat hier niet bewezen is"). Voor Jelly Leon: de
 koppelcontrole G8 kan nu `servers[]` lezen (werk in jelly-leon). **NIET GEVALIDEERD (echte NAS):** de echte Emby van
 de gebruiker, een echte Jelly Leon-image en echte spelers; sessies in de contracttest zijn nagebootst met de sessie-API
 van de servers.

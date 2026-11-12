@@ -1,7 +1,7 @@
 # Contracttest mediaservers (Δ-MG-AUTH, Δ-MG-DUAL): een echte Emby en een echte Jellyfin 12.x naast elkaar.
 #
 # ALLEEN voor ontwikkeling en CI. Dit is geen installatiemethode: MediaGuard installeer je als standaard TrueNAS
-# Custom App (formulier), zie deploy/truenas/CUSTOM_APP.md.
+# Custom App (formulier), zie docs/INSTALL_TRUENAS.md.
 #
 # Gestart door tests/contract/mediaserver/run.sh. De MediaGuard-container zelf (eerst de vorige release, daarna de
 # kandidaat op dezelfde datamap) start de test met `docker run` op dit netwerk.

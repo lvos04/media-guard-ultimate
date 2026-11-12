@@ -65,7 +65,7 @@ lokale run.
 | test | bewijst | uitkomst |
 |---|---|---|
 | `b1_vorige_release_volgt_emby` | 1.2.2 draait op de gevulde fixture, krijgt via zijn eigen API de Emby-koppeling, zet de kijkpauze zodra iemand op Emby kijkt en laat de banen van de encoder wachten | goed |
-| `b2_upgrade_emby_blijft_gevolgd_zonder_handeling` | na de upgrade is de bestaande koppeling server 1 zonder `POST /config` of `/test`; geheim en instellingen byte-gelijk; migratie 150 toegepast (35 → 36), geen extra server; de kijkpauze van vóór de upgrade staat er nog; de kandidaat vraagt Emby niets wat 1.2.2 niet vroeg; Jellyfin kreeg nog geen enkel verzoek met een sleutel | goed |
+| `b2_upgrade_emby_blijft_gevolgd_zonder_handeling` | na de upgrade is de bestaande koppeling server 1 zonder `POST /config` of `/test`; geheim en instellingen byte-gelijk; migratie 150 toegepast (35 → 36), geen extra server; de kijkpauze van vóór de upgrade staat er nog; de kandidaat (core) vraagt Emby niets wat 1.2.2 niet vroeg (de encoder-eigen instelling "pauzeer bij kijken" staat in deel B uit: zie "Wat hier niet bewezen is"); Jellyfin kreeg nog geen enkel verzoek met een sleutel | goed |
 | `b3_zoeken_vindt_beide_en_jellyfin_komt_erbij` | "Zoek automatisch" vindt beide en noemt de juiste soort; Jellyfin wordt server 2 met een eigen geheim; de Emby-koppeling blijft onaangeraakt; soort Emby op het Jellyfin-adres geeft een duidelijke melding; server 1 verwijderen bestaat niet (422) | goed |
 | `b4_kijken_op_emby_pauzeert` | kijken op Emby → kijkpauze met de naam van de server, per server zichtbaar, banen wachten; stoppen → weer vrij | goed |
 | `b5_kijken_op_jellyfin_pauzeert` | hetzelfde voor Jelly Leon | goed |
@@ -114,6 +114,18 @@ lokale run.
 - **De regel "een kijkpauze van een server zonder contact vervalt na 10 minuten"** is alleen Sim-getest; in b6
   stopte de kijker eerder.
 - **Plex** is niet gestart; die code is ongewijzigd.
+- **De encoder-eigen instelling "pauzeer bij kijken"** (één adres en één sleutel in de encoder, ADR-0022
+  besluit 6) staat in deel B uit: het doorgeefluik ziet dat verkeer niet, en de controle "de kandidaat vraagt Emby
+  niets wat 1.2.2 niet vroeg" gaat alleen over core. Sinds `f21f296` vraagt die instelling Emby ook
+  `GET /System/Info/Public` (zonder sleutel) om de soort te kennen; 1.2.2 vroeg in die lus alleen `/Sessions`.
+  Dat leesverzoek gaat één keer per adres (opnieuw na een adreswijziging of een fout), daarna per poll alleen
+  `/Sessions` zoals in 1.2.2. Gemeten: tegen de echte servers alleen de keuze van de kop (deel A, a8); het aantal
+  verzoeken per poll alleen Sim-getest
+  (`services/encoder/tests/test_integraties.py::test_monitor_vraagt_de_productnaam_eenmaal_per_adres`).
+- **Omleidingen en foutpagina's**: de echte servers gaven in deze run geen enkele 3xx en kaatsten geen sleutel
+  terug. Dat core een omleiding alleen op dezelfde server volgt (zelfde host en poort, of http naar https op de
+  standaardpoorten; besluit van de gebruiker 2026-11-12) en geen sleutel uit een foutpagina in een melding zet, is
+  alleen Sim-getest (`apps/core/tests/test_mediaserver_dual.py`).
 - De kandidaat is de nieuwe core op de runtime van 1.2.2, niet het release-image.
 
 ## Opnieuw draaien

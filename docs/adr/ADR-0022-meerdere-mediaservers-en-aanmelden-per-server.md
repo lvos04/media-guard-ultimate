@@ -55,10 +55,22 @@ opnieuw aan tot de films er staan), niet MediaGuard: die vraagt bij een import e
    150–159.
 3. **Aanmelden per server.** Soort `emby`: ongewijzigd `X-Emby-Token` en paden onder `/emby`. Soort `jellyfin`
    (Jelly Leon 12.x en stock 12.x): alleen `Authorization: MediaBrowser Client="MediaGuard", …, Token="…"`, zonder
-   `/emby`. Soort `plex`: ongewijzigd `X-Plex-Token`. Een sleutel met een spatie, aanhalingsteken, backslash of komma
-   wordt geweigerd (422): die tekens breken de kop. De logfilter maskeert nu ook `Token="…"` en `X-Emby-Token`.
-   Dezelfde regel staat op de drie plekken uit het verzoek: `clients.py` (core), en `integraties.py` en `api.py`
-   (encoder).
+   `/emby`. Soort `plex`: ongewijzigd `X-Plex-Token`. Een nieuw ingevoerde sleutel met een spatie, aanhalingsteken,
+   backslash of komma wordt geweigerd (422): die tekens breken de MediaBrowser-kop. Een sleutel die 1.2.2 al
+   opsloeg (zonder tekencontrole) blijft voor Emby werken als `X-Emby-Token`: die tekens kunnen in die kop geen kop
+   toevoegen. CR, LF, NUL, andere stuurtekens en niet-ASCII gaan nooit de deur uit (kopinjectie; 1.2.2 kon ze ook
+   niet versturen). De logfilter maskeert nu ook `Token="…"` en `X-Emby-Token`. Dezelfde regels staan op de drie
+   plekken uit het verzoek: `clients.py` (core), en `integraties.py` en `api.py` (encoder).
+   - **Omleidingen alleen op dezelfde server** (besluit van de gebruiker, 2026-11-12): core volgt een omleiding
+     alleen naar dezelfde host en poort, of van http naar https op dezelfde host met de standaardpoorten. Wijst
+     ze naar een ander adres, dan de melding "server stuurt door naar een ander adres: <adres>" en gaat er geen
+     verzoek (dus geen sleutel) daarheen. Alleen de downloadlink van OpenSubtitles, die geen sleutel draagt, mag
+     zoals in 1.2.2 naar een ander adres doorverwijzen.
+   - **Foutpagina's**: tekst uit het antwoord van een server komt alleen in een melding nadat de meegestuurde
+     sleutels eruit zijn gehaald (ook als de server ze terugkaatst) en de logfilter erover is gegaan.
+   - **Testknop van de encoder**: de opgeslagen sleutel gaat alleen naar het opgeslagen adres; een ander adres
+     test je met een eigen sleutel. Instellingen van de encoder-koppelingen wijzigen of testen via core mag alleen
+     een beheerder, net als `POST /api/v1/mediaserver/config`.
 4. **Herkennen: alleen een server die zich als Jellyfin meldt, krijgt de nieuwe kop.** Een server is Jellyfin als
    `ProductName` op de openbare info-route "jellyfin" bevat (hoofdletterongevoelig, ook in camelCase). Al het andere
    blijft Emby met `X-Emby-Token`. Reden: Emby 4.10.2.0 geeft geen `ProductName`; een regel "geen Emby in de naam,
@@ -81,7 +93,9 @@ opnieuw aan tot de films er staan), niet MediaGuard: die vraagt bij een import e
    een uitgezette Jelly Leon de AV1-wachtrij voor onbepaalde tijd tegenhouden, mét grens begint er hoogstens tien
    minuten te vroeg een encode. Opheffen blijft pas na twee stille metingen.
 6. **De encoder houdt één eigen mediaserver.** De losse encoder-instelling "pauzeer bij kijken"
-   (`jellyfin_is_playing`) blijft één adres met één sleutel en krijgt alleen de kop per server (besluit 3 en 4). In de
+   (`jellyfin_is_playing`) blijft één adres met één sleutel en krijgt alleen de kop per server (besluit 3 en 4). De
+   soort leest hij één keer per adres op de openbare info-route (zonder sleutel; opnieuw na een adreswijziging of
+   een fout), zodat Emby per poll alleen `/Sessions` krijgt, zoals in 1.2.2. In de
    alles-in-één-app stuurt core de kijkpauze voor alle servers via `set_playback_hold`; een tweede lijst met servers
    in de encoder zou dezelfde gegevens op twee plekken zetten.
 7. **Status-API blijft achterwaarts compatibel.** `GET /api/v1/mediaserver/status` krijgt `servers[]` erbij; de
