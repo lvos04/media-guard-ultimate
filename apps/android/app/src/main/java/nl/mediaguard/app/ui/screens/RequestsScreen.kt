@@ -126,7 +126,7 @@ fun RequestsContent(tab: RequestsTab, q: String, results: UiState<SeerrPage>, mi
                 is UiState.Error -> item { ErrorState(mine.message, a.refreshMine) }
                 is UiState.Data -> item {
                     MgCard {
-                        CardHeader("Mijn aanvragen", R.drawable.lucide_inbox, count = mine.value.results.size)
+                        CardHeader(RequestsTab.Mijn.label, R.drawable.lucide_inbox, count = mine.value.results.size)
                         if (mine.value.results.isEmpty()) EmptyState(tr("Nog geen aanvragen", "No requests yet"), tr("Zoek bij Ontdekken een film of serie.", "Find a movie or series under Discover."))
                         mine.value.results.forEachIndexed { i, r -> MyRequestRow(r, i > 0) { a.open(r.mediaType, r.tmdbId) } }
                     }

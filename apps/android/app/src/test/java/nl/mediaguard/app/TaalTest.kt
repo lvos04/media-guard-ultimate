@@ -34,6 +34,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
@@ -89,6 +90,29 @@ class TaalTest {
         assertEquals("Complete", engels { Beschikbaarheid.compleet().tekst })
         // de sleutels in routes en meldingen zijn geen tekst en blijven gelijk
         assertEquals(ActivityTab.Gebeurd, engels { ActivityTab.of("gebeurd") })
+    }
+
+    /**
+     * Geen vaste tekst in de schermen (ADR-0023 punt 4): een kop, knop of tekst met een letterlijke tekst in plaats van
+     * `tr(…)` of een tweetalig woord staat in en-US in het Nederlands. Alleen woorden die in beide talen gelijk zijn,
+     * mogen letterlijk blijven. Zo vond S-P2-620 de kop "Mijn aanvragen" op het scherm Aanvragen.
+     */
+    @Test fun geenVasteTekstInDeSchermen() {
+        val map = listOf("src/main/java/nl/mediaguard/app/ui", "app/src/main/java/nl/mediaguard/app/ui").map(::File).first { it.isDirectory }
+        val bestanden = map.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+        assertTrue("te weinig schermbestanden gevonden in $map", bestanden.size >= 10)
+        val aanroep = Regex("""\b(CardHeader|SectionLabel|PageHeader|EmptyState|MgButton|Text)\(\s*"([^"$]*)"""")
+        // in het Nederlands en het Engels hetzelfde woord (of geen tekst voor de lezer)
+        val inBeideTalenGelijk = setOf("Downloads", "Upgrades", "Details", "Release", "MediaGuard", "https://mediaguard.example.nl")
+        val gevonden = bestanden.flatMap { f ->
+            aanroep.findAll(f.readText()).map { it.groupValues[2] }
+                // opmaakpatronen ("%.0f %%", "%02d:%02d") zijn geen tekst; "%d van %d" wel
+                .filter { tekst -> tekst.replace(Regex("""%[-#+ 0,(]*\d*(\.\d+)?[a-zA-Z%]"""), "").any { it.isLetter() } }
+                .filter { it !in inBeideTalenGelijk }.map { "${f.name}: \"$it\"" }.toList()
+        }
+        assertEquals(emptyList<String>(), gevonden)
+        // de kop van de kaart volgt het woord van het tabblad
+        assertEquals("My requests", engels { RequestsTab.Mijn.label })
     }
 
     @Test fun getallenVolgenDeTaal() {
