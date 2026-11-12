@@ -317,7 +317,11 @@ def test_testknop_meldt_zich_aan_met_de_kop_van_de_eigen_server(
     _sleutel_nergens_in_de_url(seen, SLEUTEL)
 
 
-@pytest.mark.parametrize("sleutel", ['sleutel"1', "sleutel 1", "sleutel,1", "sleutel\\1"])
+@pytest.mark.parametrize(
+    "sleutel",
+    # niet-ASCII en stuurtekens (S-P2-600, R-TECH-4): 422, geen kale 500
+    ['sleutel"1', "sleutel 1", "sleutel,1", "sleutel\\1", "sleutelé", "sleutel\x01"],
+)
 @pytest.mark.parametrize("info", [EMBY_INFO, JELLYFIN_INFO], ids=["emby", "jellyfin"])
 def test_testknop_weigert_een_ongeldige_sleutel_met_422_en_verstuurt_hem_niet(
     mg_client: MgClient,
@@ -357,3 +361,154 @@ def test_testknop_geweigerde_sleutel_geeft_502_zonder_de_sleutel_in_de_melding(
     assert SLEUTEL not in response.text
     assert [(r.method, r.url.path) for r in seen][-1] == ("GET", "/System/Info")
     _sleutel_nergens_in_de_url(seen, SLEUTEL)
+
+
+# ── Herstel na de technische review (S-P2-600) ──────────────────────────────────────────────
+OPGESLAGEN = "opgeslagen-sleutel-42"
+
+
+@pytest.mark.parametrize(
+    ("kind", "info", "kop"),
+    [
+        ("jellyfin", EMBY_INFO, "x-emby-token"),
+        ("jellyfin", JELLYFIN_INFO, "authorization"),
+        ("radarr", EMBY_INFO, "x-api-key"),
+    ],
+    ids=["emby", "jellyfin", "radarr"],
+)
+def test_testknop_gebruikt_de_opgeslagen_sleutel_alleen_met_het_opgeslagen_adres(
+    mg_client: MgClient,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    info: dict[str, str],
+    kop: str,
+) -> None:
+    """R-VEILIG-1: de opgeslagen sleutel gaat alleen naar het opgeslagen adres. Een ander adres
+    zonder eigen sleutel geeft 422 zonder één verzoek; met een eigen sleutel gaat alleen die
+    sleutel mee."""
+    client, _database, _settings = mg_client
+    r = client.patch(
+        f"/api/integraties/{kind}",
+        headers=HEADERS,
+        json={"url": "http://emby:8096", "api_sleutel": OPGESLAGEN},
+    )
+    assert r.status_code == 200, r.text
+    seen = _nep_mediaserver(monkeypatch, info)
+
+    for anders in ("http://aanvaller:8096", "http://emby:9999", "https://emby:8096"):
+        r = client.post(f"/api/integraties/{kind}/test", headers=HEADERS, json={"url": anders})
+        assert r.status_code == 422, r.text
+        assert "opgeslagen" in r.json()["detail"] and OPGESLAGEN not in r.text
+    assert seen == []
+
+    for body in ({}, {"url": "http://emby:8096"}, {"url": "http://emby:8096/"}):
+        r = client.post(f"/api/integraties/{kind}/test", headers=HEADERS, json=body)
+        assert r.status_code == 200, (body, r.text)
+        assert seen[-1].url.host == "emby" and OPGESLAGEN in seen[-1].headers[kop]
+    seen.clear()
+
+    r = client.post(
+        f"/api/integraties/{kind}/test",
+        headers=HEADERS,
+        json={"url": "http://ander:8096", "api_sleutel": "eigen-sleutel-1"},
+    )
+    assert r.status_code == 200, r.text
+    assert {req.url.host for req in seen} == {"ander"}
+    assert all(OPGESLAGEN not in v for req in seen for v in req.headers.values())
+    assert "eigen-sleutel-1" in seen[-1].headers[kop]
+
+
+@pytest.mark.asyncio
+async def test_monitor_vraagt_de_productnaam_eenmaal_per_adres(tmp_path: Path) -> None:
+    """R-HARDE-EIS-1: de encoder-instelling "pauzeer bij kijken" vraagt Emby per poll alleen
+    /Sessions, zoals 1.2.2. De openbare info-route (zonder sleutel) gaat één keer per adres, en
+    opnieuw na een adreswijziging of een fout."""
+    database, configured = _case(tmp_path)
+    SecretStore(database, configured).set("jellyfin_api_sleutel", "emby-sleutel")
+    database.execute(
+        "UPDATE instelling SET jellyfin_url='http://emby:8096',pauzeer_cpu_bij_kijken=1 WHERE id=1"
+    )
+    database.execute("UPDATE functie SET ingeschakeld=1 WHERE sleutel='jellyfin_pauze'")
+    seen: list[httpx.Request] = []
+    fout = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/System/Info/Public":
+            assert "x-emby-token" not in request.headers
+            return httpx.Response(200, json=EMBY_INFO)
+        assert request.headers["X-Emby-Token"] == "emby-sleutel"
+        return httpx.Response(500) if fout else httpx.Response(200, json=[])
+
+    def paden() -> list[tuple[str, str]]:
+        return [(r.url.host, r.url.path) for r in seen]
+
+    monitor = IntegrationMonitor(database, configured)
+    for _ in range(3):
+        assert await monitor.tick(httpx.MockTransport(handler)) is False
+    assert paden() == [("emby", "/System/Info/Public")] + [("emby", "/Sessions")] * 3
+
+    seen.clear()
+    database.execute("UPDATE instelling SET jellyfin_url='http://emby2:8096' WHERE id=1")
+    await monitor.tick(httpx.MockTransport(handler))
+    await monitor.tick(httpx.MockTransport(handler))
+    assert paden() == [("emby2", "/System/Info/Public")] + [("emby2", "/Sessions")] * 2
+
+    seen.clear()
+    fout = True
+    assert await monitor.tick(httpx.MockTransport(handler)) is False
+    fout = False
+    await monitor.tick(httpx.MockTransport(handler))
+    assert paden() == [
+        ("emby2", "/Sessions"),
+        ("emby2", "/System/Info/Public"),
+        ("emby2", "/Sessions"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sleutel", ["emby sleutel", 'emby"sleutel', "emby,sleutel", "emby\\sleutel", "emby\tsleutel"]
+)
+async def test_emby_sleutel_van_1_2_2_blijft_werken_in_de_encoder(
+    tmp_path: Path, sleutel: str
+) -> None:
+    """HARDE EIS (vervolgpunt R-VEILIG): 1.2.2 stuurde de opgeslagen sleutel zonder controle als
+    X-Emby-Token. Leestekens en spaties kunnen in die kop geen kop toevoegen; zo'n sleutel blijft
+    werken. Alleen de MediaBrowser-kop van Jellyfin eist de strengere regel."""
+    from app.integraties import mediaserver_headers
+
+    database, configured = _case(tmp_path)
+    SecretStore(database, configured).set("jellyfin_api_sleutel", sleutel)
+    database.execute(
+        "UPDATE instelling SET jellyfin_url='http://emby:8096',pauzeer_cpu_bij_kijken=1 WHERE id=1"
+    )
+    database.execute("UPDATE functie SET ingeschakeld=1 WHERE sleutel='jellyfin_pauze'")
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/System/Info/Public":
+            return httpx.Response(200, json=EMBY_INFO)
+        sessions = [{"NowPlayingItem": {"Id": "1"}, "PlayState": {"IsPaused": False}}]
+        return httpx.Response(200, json=sessions)
+
+    assert await IntegrationMonitor(database, configured).tick(httpx.MockTransport(handler))
+    assert seen[-1].headers["X-Emby-Token"] == sleutel and "authorization" not in seen[-1].headers
+    assert mediaserver_headers("", sleutel) == {"X-Emby-Token": sleutel}
+    with pytest.raises(ValueError):
+        mediaserver_headers("Jellyfin Server", sleutel)
+
+
+@pytest.mark.parametrize(
+    "sleutel", ["emby\r\nX-Kwaad: 1", "emby\nx", "emby\x00", "emby\x01", "emby\x7f", "embyé"]
+)
+def test_emby_sleutel_met_stuurteken_gaat_nooit_de_deur_uit(sleutel: str) -> None:
+    """CR, LF, NUL, andere stuurtekens en niet-ASCII: nooit in een kop (kopinjectie; 1.2.2 kon ze
+    ook niet versturen). De melding noemt de sleutel niet."""
+    from app.integraties import mediaserver_headers
+
+    for product in ("", "Emby Server", "Jellyfin Server"):
+        with pytest.raises(ValueError, match="ongeldige API-sleutel") as exc:
+            mediaserver_headers(product, sleutel)
+        assert sleutel not in str(exc.value)

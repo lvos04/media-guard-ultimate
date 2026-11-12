@@ -41,7 +41,7 @@ from app.db import Database
 from app.geheimen import SecretError, SecretStore
 from app.health import cached_dependency_report
 from app.hostlimits import effective_memory
-from app.integraties import mediaserver_headers, mediaserver_product
+from app.integraties import mediaserver_headers, mediaserver_product, valid_key
 from app.jobstatus import (
     ACTIVE_STATUSES,
     DONE_SQL,
@@ -3179,7 +3179,20 @@ def create_api_router() -> APIRouter:
         }
         database = _database(request)
         setting = database.fetch_one(f"SELECT {kind}_url AS url FROM instelling WHERE id=1")
-        url = body.url or (str(setting["url"]) if setting and setting["url"] else "")
+        stored_url = str(setting["url"]) if setting and setting["url"] else ""
+        url = body.url or stored_url
+        if (
+            body.url
+            and not body.api_sleutel
+            and (not stored_url or body.url.strip().rstrip("/") != stored_url.strip().rstrip("/"))
+        ):
+            # de opgeslagen sleutel hoort alleen bij het opgeslagen adres: nooit naar een adres
+            # dat de aanvrager kiest (S-P2-600, R-VEILIG-1)
+            raise HTTPException(
+                422,
+                "Een ander adres test je met een eigen API-sleutel: de opgeslagen sleutel hoort "
+                "alleen bij het opgeslagen adres.",
+            )
         try:
             api_key = body.api_sleutel or SecretStore(database, _settings(request)).get(
                 f"{kind}_api_sleutel"
@@ -3197,6 +3210,10 @@ def create_api_router() -> APIRouter:
                     # de openbare info-route zegt welke het is, daarna een route mét sleutel
                     product = await mediaserver_product(client, url)
                     try:
+                        # een nieuw ingevoerde sleutel: altijd de strengste regel; een opgeslagen
+                        # sleutel van 1.2.2 houdt bij Emby zijn kop (mediaserver_headers)
+                        if body.api_sleutel and not valid_key(body.api_sleutel):
+                            raise ValueError("ongeldige API-sleutel (onverwachte tekens)")
                         headers = mediaserver_headers(product, api_key)
                     except ValueError as exc:
                         raise HTTPException(422, str(exc)) from exc

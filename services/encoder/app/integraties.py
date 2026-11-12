@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,18 @@ from app.geheimen import SecretError, SecretStore
 
 LOGGER = logging.getLogger(__name__)
 
+#: MediaBrowser-kop van Jellyfin: zichtbare ASCII zonder ``"``, ``,`` of ``\``, hooguit 300 tekens
+#: (dezelfde regel als ``valid_key`` in core)
+_KEY_STRICT = re.compile(r'[\x21\x23-\x2b\x2d-\x5b\x5d-\x7e]{1,300}')
+#: ``X-Emby-Token``: wat 1.2.2 kon versturen (zichtbare ASCII, spaties of tabs alleen binnenin);
+#: nooit CR, LF, NUL of een ander stuurteken (kopinjectie) en geen niet-ASCII
+_KEY_HEADER_SAFE = re.compile(r"[\x21-\x7e](?:[\x20-\x7e\t]*[\x21-\x7e])?")
+
+
+def valid_key(api_key: str) -> bool:
+    """Een sleutel die ook in de MediaBrowser-kop van Jellyfin past (strengste regel)."""
+    return bool(_KEY_STRICT.fullmatch(api_key))
+
 
 def mediaserver_headers(product: str, api_key: str) -> dict[str, str]:
     """Aanmeldkop per soort server (Δ-MG-AUTH, besluit BG-01, contract 1.3 §2.3 regel 2).
@@ -28,11 +41,14 @@ def mediaserver_headers(product: str, api_key: str) -> dict[str, str]:
     De Jellyfin-kop gaat alleen naar een server die zich als Jellyfin meldt. Elke andere
     server houdt de kop van 1.2.2: Emby 4.10.2.0 geeft op de openbare info-route geen
     ``ProductName`` (gemeten in ``tests/contract/mediaserver``), en een bestaande
-    Emby-koppeling mag door deze wijziging nooit een andere kop krijgen (ADR-0022).
+    Emby-koppeling mag door deze wijziging nooit een andere kop krijgen (ADR-0022). Een sleutel
+    die 1.2.2 opsloeg (zonder tekencontrole) blijft daarom als ``X-Emby-Token`` werken, tenzij
+    hij een kop zou kunnen toevoegen of breken.
     """
-    if any(c in api_key for c in '"\\,') or any(c.isspace() for c in api_key):
+    jellyfin = "jellyfin" in product.lower()
+    if not (valid_key(api_key) if jellyfin else _KEY_HEADER_SAFE.fullmatch(api_key)):
         raise ValueError("ongeldige API-sleutel (onverwachte tekens)")
-    if "jellyfin" in product.lower():
+    if jellyfin:
         return {
             "Authorization": (
                 'MediaBrowser Client="MediaGuard AV1", Device="MediaGuard", '
@@ -60,8 +76,13 @@ async def mediaserver_product(client: httpx.AsyncClient, url: str) -> str:
     return str(lower.get("productname") or "")
 
 
-async def jellyfin_is_playing(client: httpx.AsyncClient, url: str, api_key: str) -> bool:
-    product = await mediaserver_product(client, url)
+async def jellyfin_is_playing(
+    client: httpx.AsyncClient, url: str, api_key: str, product: str | None = None
+) -> bool:
+    """Kijkt iemand? ``product`` is de al bekende ``ProductName`` van dit adres; zonder die
+    waarde wordt hij eerst opgevraagd (de openbare info-route, zonder sleutel)."""
+    if product is None:
+        product = await mediaserver_product(client, url)
     response = await client.get(
         url.rstrip("/") + "/Sessions",
         headers=mediaserver_headers(product, api_key),
@@ -192,6 +213,9 @@ class IntegrationMonitor:
         self.database = database
         self.settings = settings
         self.stopping = False
+        #: ``ProductName`` per adres: Emby krijgt per poll alleen ``/Sessions``, zoals in 1.2.2;
+        #: de openbare info-route één keer per adres, opnieuw na een adreswijziging of een fout
+        self._product: dict[str, str] = {}
 
     async def tick(self, transport: httpx.AsyncBaseTransport | None = None) -> bool:
         feature = self.database.fetch_one(
@@ -214,8 +238,13 @@ class IntegrationMonitor:
             if not api_key:
                 self._release_automatic_pause()
                 return False
+            url = str(setting["jellyfin_url"])
             async with httpx.AsyncClient(timeout=10, transport=transport) as client:
-                playing = await jellyfin_is_playing(client, str(setting["jellyfin_url"]), api_key)
+                product = self._product.get(url)
+                if product is None:
+                    product = await mediaserver_product(client, url)
+                    self._product = {url: product}
+                playing = await jellyfin_is_playing(client, url, api_key, product)
             if playing:
                 row = self.database.fetch_one(
                     "SELECT gepauzeerd,pauze_reden FROM worker_config WHERE baan='cpu'"
@@ -232,6 +261,7 @@ class IntegrationMonitor:
             self._release_automatic_pause()
             return False
         except (httpx.HTTPError, SecretError, OSError, ValueError) as exc:
+            self._product.clear()  # na een fout de soort opnieuw bepalen
             LOGGER.warning("Jellyfin-monitor kon sessies niet lezen: %s", exc)
             return False
 
