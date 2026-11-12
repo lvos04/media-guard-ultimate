@@ -272,7 +272,8 @@ Mediaservers & ondertitels (`apps/web/components/mediaserver/mediaserver-tab.tsx
 formulieren, dialogen, ondertitelkaart, rollen, en-US) na het herstel van de afgebroken ronde 3 (A-BOUW e92a7f1…e5fdb56,
 A-HERSTEL 9032f75, d3b4d2e, 25135cb). **Getoetst aan:** Peil 1.1.1 (gepinde kopie `0a7143b`; ONTWERPTAAL §4, §11, §12,
 §13.3; COMPONENTEN C-03, C-14, §20, §29) en ADR-0022. **Gemeten op:** de gepushte commit `25135cb` ("vóór") en op het
-herstel van deze review, commit `785174d` ("na"). **Oordeel:** goedgekeurd na herstel van één belangrijke en één kleine
+herstel van deze review ("na": de code van commit `785174d` met `meet.mjs` van `8b453a5`; nagemeten op `8b453a5`,
+208 van 208; R-EERLIJK-1 van S-P2-590). **Oordeel:** goedgekeurd na herstel van één belangrijke en één kleine
 bevinding; vijf kleine punten blijven open (§11.5).
 
 ### 11.1 Werkwijze
@@ -376,7 +377,7 @@ de dialoog. Op 390 px staat de melding direct onder de knoppen in beeld (gemeten
    zichtbaar en hij wordt voorgelezen (`role=alert`/`status`). Voorstel: de melding bij verschijnen met
    `scrollIntoView({ block: "nearest" })` in beeld brengen (de scroll-padding van Peil houdt dan de ondernavigatie vrij).
 3. **Veldfout niet bij het veld.** De core antwoordt met een algemene 422-tekst zonder veld; de UI kan "Ongeldig adres"
-   daarom niet bij het adresveld zetten met `aria-invalid` (Peil §20). Hoort bij een API-wijziging (S-P2-600).
+   daarom niet bij het adresveld zetten met `aria-invalid` (Peil §20). Hoort bij een API-wijziging: open, nog niet gepland.
 4. **Knoppen "Jellyfin http://… invullen"** (gevonden servers) lopen met het adres om tot 76 px hoog (gevuld-toevoegen);
    ze blijven binnen de kaart en ≥ 44 px. Al bekend uit ronde 3 (B4).
 5. **Serverteksten in en-US** (foutmeldingen en redenen van de core zoals "Ongeldig adres…", "niet bereikbaar") blijven
