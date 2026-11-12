@@ -11,7 +11,9 @@ controleren dat er niets verloren gaat. Dit script maakt zo'n database met de co
 2. daarna **elke** overige tabel met herkenbare, inerte rijen (``upgradebewijs.vul``, profiel
    ``core``): bibliotheek en wanted, identity en policy, herstel, quarantaine en vervangingen,
    encodes en AV1-voortgang, storage ledger, mediaserver, migratiewizard, meldingen, audit en
-   AI-advies (B03_DELTAVERZOEKEN §1 punt 2);
+   AI-advies (B03_DELTAVERZOEKEN §1 punt 2); met afgerond én open werk (een overdracht naar de
+   mediaserver die nog loopt) en een voltooide overstap met bestaande bron en doel, waarvan de
+   nazorg al gedaan is (zoals de vorige release dat na 24 uur vastlegt);
 3. per leesroute van de voortgang de merktekens die na een upgrade via de API terug moeten komen
    (``readback``).
 
@@ -100,11 +102,13 @@ def build(target_dir: Path) -> dict[str, Any]:
     ctx.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     ctx.db.close()
 
-    # 2. elke overige tabel vullen (HARDE EIS: alle domeinen van de voortgang)
+    # 2. elke overige tabel vullen (HARDE EIS: alle domeinen van de voortgang, ook open werk)
     db_path = target_dir / "core" / "mediaguard.db"
-    gevuld = _upgradebewijs().vul(db_path, "core")
+    ub = _upgradebewijs()
+    gevuld = ub.vul(db_path, "core")
     if gevuld["niet_gevuld"]:
         raise SystemExit(f"niet alle tabellen gevuld: {gevuld['niet_gevuld']}")
+    nazorg_gedaan(db_path, ub.NU)
 
     # 3. readback: wat moet de API na een upgrade nog laten zien?
     app = create_app(settings())
@@ -129,6 +133,9 @@ def build(target_dir: Path) -> dict[str, Any]:
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' "
             "ORDER BY name")]
         rijen = {t: conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for t in tabellen}
+        # open werk dat de poort vóór de upgrade eist en daarna telt (upgradebewijs.dekking)
+        open_overdrachten = conn.execute("SELECT COUNT(*) FROM mediaserver_pending WHERE "
+                                         "done_at IS NULL").fetchone()[0]
     finally:
         conn.close()
     # min_rows (aio-smoke): alleen tabellen die nooit automatisch worden opgeruimd (meldingen,
@@ -137,8 +144,28 @@ def build(target_dir: Path) -> dict[str, Any]:
     min_rows = {t: rijen[t] for t in ("users", "settings_values", "api_keys")}
     return {"version": __version__, "schema_versions": versions, "user": USER,
             "password": PASSWORD, "settings": SETTINGS, "min_rows": min_rows,
-            "rows_per_table": rijen, "readback": readback,
+            "rows_per_table": rijen, "open_overdrachten": open_overdrachten,
+            "readback": readback,
             "filled_by": "scripts/make-aio-fixture.py (API + upgradebewijs.vul, profiel core)"}
+
+
+def nazorg_gedaan(db_path: Path, nu: str) -> None:
+    """Een voltooide overstap in de fixture is ouder dan 24 uur: de vorige release heeft de
+    nazorg (migration.aftercare) dan al gedaan en vastgelegd. Zonder die stand plant elke versie
+    op de fixture nazorg in, die de fictieve oude instanties via het netwerk zou controleren
+    (S-P2-610: in de contracttest faalde die nazorg en dat zei niets over de upgrade)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        for (cid,) in conn.execute("SELECT id FROM migration_cutovers WHERE status='completed' "
+                                   "AND kind='cutover'").fetchall():
+            staat = {"audit_verdict": "go", "audited": True, "pruned": True,
+                     "removed_indexers": []}
+            conn.execute("INSERT OR REPLACE INTO system_state(key,value_json,updated_at) VALUES "
+                         "(?,?,?)", (f"migration_aftercare:{cid}",
+                                     json.dumps(staat, ensure_ascii=False, sort_keys=True), nu))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def dump(db_path: Path) -> str:

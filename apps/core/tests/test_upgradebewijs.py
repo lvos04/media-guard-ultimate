@@ -141,8 +141,121 @@ def test_vul_vult_een_lege_database_inert(tmp_path: Path) -> None:
                                                                                   "ignored"}
         assert conn.execute("SELECT COUNT(*) FROM secrets").fetchone()[0] == 0
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        # verwijzingen zonder FOREIGN KEY kloppen ook (S-P2-610): een voltooide overstap wijst
+        # naar een bestaande bron en een bestaande instantie, zoals in een echte database
+        for kol, ouder in (("source_id", "source_instances"), ("target_instance_id", "instances")):
+            assert conn.execute(f"SELECT COUNT(*) FROM migration_cutovers WHERE {kol} NOT IN "
+                                f"(SELECT id FROM {ouder})").fetchone()[0] == 0, kol
+        # open werk (S-P2-610): één overdracht staat nog open (ververst, de afspeeltest nog
+        # niet aan de beurt); inert: geen proef bereikt de wachttijd, dus geen verzoek naar Emby
+        open_werk = conn.execute("SELECT refreshed_at, test_after, result FROM "
+                                 "mediaserver_pending WHERE done_at IS NULL").fetchall()
+        assert len(open_werk) >= 1, open_werk
+        assert all(r[0] and r[1] >= "2099" and r[2] is None for r in open_werk), open_werk
+        assert conn.execute("SELECT COUNT(*) FROM mediaserver_pending WHERE done_at IS NOT "
+                            "NULL").fetchone()[0] >= 1
     finally:
         conn.close()
+
+
+# -- de fixture van de vorige release is een database die zo echt kan bestaan (S-P2-610) ---------
+def _app_op_fixture(tmp_path: Path) -> Any:
+    from mediaguard.app import create_app
+    from mediaguard.config import load_settings
+
+    sql, _meta = _fixture()
+    ub.herstel(sql, tmp_path / "core" / "mediaguard.db")
+    settings = load_settings(data_dir=tmp_path / "core", staging_dir=tmp_path / "s",
+                             quarantine_dir=tmp_path / "q", start_background=False,
+                             internal_token="t")
+    return create_app(settings)
+
+
+def test_fixture_overstap_is_consistent_en_de_nazorg_is_al_gedaan(tmp_path: Path) -> None:
+    """Vervolgpunt S-P2-600 ('job 26 mislukt' in de contracttest): de nazorg na de overstap
+    faalde op de fixture met ``assert row is not None`` (migration/cutover.py, post_audit), omdat
+    de voltooide overstap naar een bron verwees die niet bestaat. Dat kan in een echte database
+    niet (bronnen worden alleen gearchiveerd). In de fixture verwijst de overstap nu naar een
+    bestaande bron en instantie, en is de nazorg van een overstap van een week oud gedaan, zoals
+    de vorige release hem na 24 uur vastlegt: er wordt op de fixture geen nazorg ingepland."""
+    from mediaguard.migration import aftercare
+    from mediaguard.migration import cutover as co
+
+    app = _app_op_fixture(tmp_path)
+    ctx = app.state.ctx
+    try:
+        voltooid = aftercare.completed_cutovers(ctx)
+        assert voltooid, "de fixture hoort een voltooide overstap te hebben (migratiewizard)"
+        for c in voltooid:
+            rij = co.cutover_row(ctx, int(c["id"]))
+            assert co.source_row(ctx, rij["source_id"]) is not None, rij["source_id"]
+            assert co.instance_row(ctx, rij["target_instance_id"]) is not None, rij
+            staat = ctx.state_get(f"migration_aftercare:{c['id']}", {}) or {}
+            assert staat.get("pruned") and staat.get("audited"), staat
+        assert aftercare.due(ctx) == []
+    finally:
+        ctx.db.close()
+
+
+def test_make_aio_fixture_maakt_dezelfde_soort_fixture(tmp_path: Path) -> None:
+    """Het gereedschap voor de volgende fixture (na een release) doet hetzelfde als de
+    aangevulde 1.2.2-fixture: open werk in de metadata en in de database, en een voltooide
+    overstap met bestaande bron en doel waarvan de nazorg al gedaan is."""
+    from mediaguard.app import create_app
+    from mediaguard.config import load_settings
+    from mediaguard.migration import aftercare
+    from mediaguard.migration import cutover as co
+
+    spec = importlib.util.spec_from_file_location("make_aio_fixture",
+                                                  ROOT / "scripts" / "make-aio-fixture.py")
+    assert spec and spec.loader
+    maker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(maker)
+    meta = maker.build(tmp_path)
+    db = tmp_path / "core" / "mediaguard.db"
+    conn = sqlite3.connect(db)
+    try:
+        n_open = conn.execute("SELECT COUNT(*) FROM mediaserver_pending WHERE done_at IS "
+                              "NULL").fetchone()[0]
+    finally:
+        conn.close()
+    assert meta["open_overdrachten"] == n_open >= 1
+    settings = load_settings(data_dir=tmp_path / "core", staging_dir=tmp_path / "s2",
+                             quarantine_dir=tmp_path / "q2", start_background=False,
+                             internal_token="t")
+    ctx = create_app(settings).state.ctx
+    try:
+        voltooid = aftercare.completed_cutovers(ctx)
+        assert voltooid
+        for c in voltooid:
+            rij = co.cutover_row(ctx, int(c["id"]))
+            assert co.source_row(ctx, rij["source_id"]) is not None
+            assert co.instance_row(ctx, rij["target_instance_id"]) is not None
+        assert aftercare.due(ctx) == []
+    finally:
+        ctx.db.close()
+
+
+def test_fixture_heeft_open_werk_dat_de_poort_meet() -> None:
+    """Vervolgpunt S-P2-600: de fixture had 0 open overdrachten (alle ``done_at`` gevuld). Nu
+    staat er open werk in, en de metadata zegt hoeveel: de poort eist dat aantal vóór de upgrade
+    (``dekking``) en meldt het na de upgrade en na het terugzetten."""
+    sql, meta = _fixture()
+    assert meta.get("open_overdrachten", 0) >= 1
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(sql.read_text("utf-8"))
+        open_rijen = conn.execute("SELECT transaction_id, refreshed_at, test_after, result FROM "
+                                  "mediaserver_pending WHERE done_at IS NULL").fetchall()
+        tids = {r[0] for r in open_rijen}
+        # het open werk hoort bij een afgeronde vervanging (zoals de overdracht ontstaat)
+        assert {r[0] for r in conn.execute(
+            "SELECT id FROM replacement_transactions WHERE state='committed'")} >= tids
+    finally:
+        conn.close()
+    assert len(open_rijen) == meta["open_overdrachten"], open_rijen
+    assert all(r[1] and r[2] >= "2099" and r[3] is None for r in open_rijen), open_rijen
+    assert meta["rows_per_table"]["mediaserver_pending"] == 3
 
 
 # -- de vergelijking ziet elk soort verlies (negatieve gevallen) ---------------------------------
@@ -264,19 +377,72 @@ def test_back_ups_tellen_niet_als_live_database(tmp_path: Path) -> None:
         "core/mediaguard.db", "encode/app.db"]
 
 
-def test_uitzonderingen_hebben_elk_een_reden_en_raken_de_voortgang_niet() -> None:
-    voortgang = {"lib_items", "lib_episodes", "lib_files", "wanted_items", "encoding_jobs",
-                 "quarantine_items", "replacement_transactions", "storage_ledger_events",
-                 "mediaserver_actions", "mediaserver_pending", "mediaserver_watch",
-                 "notifications", "audit_events", "job", "bestand", "besparing"}
-    for db, regel in UITZ["databases"].items():
+#: de inhoud van de voortgang (veld ``toelichting`` van het uitzonderingenbestand): daarop mag
+#: nooit een uitzondering staan. Per domein de tabellen van core (``core/mediaguard.db``) en van de
+#: AV1-engine (``encode/app.db``).
+VOORTGANG = {
+    # bibliotheek en wanted
+    "lib_items", "lib_seasons", "lib_episodes", "lib_files", "library_sync_runs",
+    "wanted_items", "wanted_overrides", "missing_diagnostics", "backfill_runs",
+    "backfill_attempts", "delivery_items", "delivery_events", "delivery_searches",
+    "seerr_requests",
+    # identity en policy
+    "identity_results", "identity_known_hashes", "policy_profiles", "policy_profile_history",
+    # encodes en AV1-jobs (ook optimalisatie en vrijgavecontroles)
+    "encoding_jobs", "encoding_plans", "encoding_benchmarks", "encoding_autopilot_skips",
+    "optimization_plans", "optimization_items", "av1_imports", "av1_provenance_map",
+    "release_provenance", "job", "job_poging", "bestand", "besparing", "besluit", "trial_run",
+    "encoding_trials", "scan_run", "verificatie", "kwaliteitsmeting", "quality_measurements",
+    # quarantaine en herstel
+    "quarantine_items", "quarantine_release_checks", "replacement_transactions",
+    "replacement_journal",
+    # ledger
+    "storage_ledger_events",
+    # mediaserver
+    "mediaserver_actions", "mediaserver_pending", "mediaserver_watch", "mediaserver_servers",
+    "mediaserver_server_results",
+    # migratie(wizard)
+    "migration_runs", "migration_steps", "migration_cutovers", "migration_reports",
+    "migration_mappings", "migration_mapping_items", "migration_shadow_states",
+    "source_instances", "source_backups", "instance_cutover_state",
+    "instance_migration_checkpoints",
+    # meldingen, audit en taken
+    "notifications", "notify_outbox", "notify_digests", "notify_digest_items", "audit_events",
+    "auditlog", "jobs", "job_logs",
+    # AI-advies
+    "ai_proposals", "ai_cases", "ai_feedback", "ai_evidence_index", "ai_policy_results",
+    "ai_analyse",
+}
+
+
+def _controleer_uitzonderingen(uitz: dict[str, Any]) -> None:
+    for db, regel in uitz["databases"].items():
         assert regel.get("reden") or regel.get("tabellen"), db
         if regel.get("hele_database"):
             assert db.endswith("logs.db"), db
         for tabel, t in regel.get("tabellen", {}).items():
             assert t.get("reden"), (db, tabel)
-            assert tabel not in voortgang, (db, tabel)
+            assert tabel not in VOORTGANG, (db, tabel)
             assert not t.get("tabel_mag_weg"), (db, tabel)
+
+
+def test_uitzonderingen_hebben_elk_een_reden_en_raken_de_voortgang_niet() -> None:
+    _controleer_uitzonderingen(UITZ)
+
+
+@pytest.mark.parametrize(("db", "tabel"), [
+    ("core/mediaguard.db", "migration_runs"), ("core/mediaguard.db", "ai_proposals"),
+    ("core/mediaguard.db", "jobs"), ("core/mediaguard.db", "identity_results"),
+    ("core/mediaguard.db", "mediaserver_pending"), ("encode/app.db", "job_poging"),
+])
+def test_een_uitzondering_op_de_voortgang_wordt_geweigerd(db: str, tabel: str) -> None:
+    """Mutatieproef (V-003): dezelfde uitzonderingen plus één regel op een voortgangstabel, met
+    een reden, is rood (S-P2-610: de lijst miste o.a. migratie, AI-advies, taken en identity)."""
+    uitz = copy.deepcopy(UITZ)
+    uitz["databases"].setdefault(db, {"tabellen": {}})["tabellen"][tabel] = {
+        "kolommen": ["status"], "reden": "proef"}
+    with pytest.raises(AssertionError):
+        _controleer_uitzonderingen(uitz)
 
 
 # -- de poort zit in de workflows ----------------------------------------------------------------
@@ -349,6 +515,133 @@ def test_poort_controleert_de_dekking_en_de_vulling() -> None:
     bron = (ROOT / "scripts" / "upgradebewijs.py").read_text("utf-8")
     assert "fouten += dekking(voor, fixture)" in bron
     assert "AV1-database niet gevuld" in bron
+
+
+def _met_open_overdracht_dicht(m: dict[str, Any]) -> None:
+    t = _tabel(m, "mediaserver_pending")
+    i = t["kolommen"].index("done_at")
+    for rij in t["per_sleutel"].values():
+        if rij[i] is None:
+            rij[i] = "2026-11-12T00:00:00+00:00"
+
+
+def test_dekking_eist_het_open_werk_van_de_fixture(meting: dict[str, Any]) -> None:
+    """Sloot de vorige release het open werk al vóór de meting (bv. een ronde zonder
+    mediaserver), dan bewijst de poort niets over open werk: rood, niet 'niets verloren'."""
+    _sql, meta = _fixture()
+    volledig = copy.deepcopy(meting)
+    volledig["databases"]["encode/app.db"] = _encode_gevuld()
+    assert ub.open_werk(volledig) == meta["open_overdrachten"] >= 1
+    assert ub.dekking(volledig, meta) == []
+    dicht = copy.deepcopy(volledig)
+    _met_open_overdracht_dicht(dicht)
+    assert ub.open_werk(dicht) == 0
+    assert any("open overdracht" in f for f in ub.dekking(dicht, meta)), ub.dekking(dicht, meta)
+    assert ub.open_werk({"databases": {}}) == 0
+
+
+class _NepPoort(ub.Poort):
+    """De poort zonder Docker: starten, stoppen en de hulpcontainer doen niets; meten leest de
+    mappen van de werkmap zelf (de fixture), met een gevulde AV1-database erbij. ``wijzig`` past
+    een meting aan (negatieve proeven)."""
+
+    def __init__(self, args: Any, wijzig: dict[str, Any] | None = None) -> None:
+        super().__init__(args)
+        self.wijzig = wijzig or {}
+
+    def start(self, image: str, config: str = "config") -> None:
+        self.stap(f"(nep) start {image} op {config}")
+
+    def stop(self) -> None:
+        pass
+
+    def readback(self, fixture: dict[str, Any], versie: str | None) -> list[str]:
+        return []
+
+    def hulp(self, *cmd: str, als: str = "0") -> str:
+        assert "vul" in cmd, cmd
+        return json.dumps({"profiel": "encode", "toegevoegd": {"job": 2}, "niet_gevuld": {}})
+
+    def shell(self, script: str) -> str:
+        import shutil
+
+        if "cp -a /mnt/config /mnt/config-snapshot" in script:
+            shutil.copytree(self.werk / "config", self.werk / "config-snapshot")
+        if "ls -1" in script:
+            return "voor-update-proef"
+        return ""
+
+    def meet(self, config: str, uit: str) -> dict[str, Any]:
+        m = ub.meet(self.werk / config)
+        m["databases"]["encode/app.db"] = {"integriteit": "ok", "tabellen": {"job": {
+            "kolommen": ["id", "status"], "sleutel": ["id"], "rijen": 2, "inhoud_sha256": "",
+            "per_sleutel": {"[1]": [1, "klaar"], "[2]": [2, "gecommit"]},
+            "zonder_sleutel": []}}}
+        if uit in self.wijzig:
+            self.wijzig[uit](m)
+        return m
+
+
+def _nep_poort(tmp_path: Path, wijzig: dict[str, Any] | None = None) -> tuple[list[str], str]:
+    import argparse
+
+    args = argparse.Namespace(
+        vorige="ghcr.io/x/y:1-aio@sha256:" + "a" * 64, vorige_versie=VORIGE["versie"],
+        nieuw="kandidaat", versie="9.9.9", fixtures=str(FIXTURES),
+        uitzonderingen=str(FIXTURES / "upgradebewijs-uitzonderingen.json"),
+        werkmap=str(tmp_path / "werk"), poort=1, timeout=1, stop_timeout=1, rapport=None,
+        bewaar=False)
+    # geen opruimen(): dat roept docker aan; de werkmap staat in tmp_path
+    return _NepPoort(args, wijzig).run()
+
+
+def _sectie(tekst: str, kop: str) -> str:
+    deel = tekst.split(f"## {kop}", 1)[1]
+    return deel.split("\n## ", 1)[0]
+
+
+def test_poort_toont_bij_terugzetten_de_vergelijking_per_tabel(tmp_path: Path) -> None:
+    """Vervolgpunt S-P2-600: de sectie 'Terugzetten' toonde een lege tabel ('Tabellen zonder
+    inhoud vóór de upgrade: 0.'), terwijl de vergelijking wel volledig rekende. Nu staat elke
+    gevulde tabel er met vóór en na, net als bij de upgrade, plus de toegepaste uitzonderingen."""
+    fouten, tekst = _nep_poort(tmp_path)
+    assert fouten == [], fouten
+    upgrade = _sectie(tekst, f"Upgradebewijs {VORIGE['versie']} → 9.9.9")
+    terug = _sectie(tekst, "Terugzetten (vorige image + snapshot)")
+    for sectie in (upgrade, terug):
+        assert "**Uitkomst:** ✅ niets verloren" in sectie
+    for domein in ("quarantine_items", "encoding_jobs", "mediaserver_pending", "migration_runs",
+                   "ai_proposals", "jobs", "identity_results"):
+        assert f"| core/mediaguard.db | {domein} |" in terug, domein
+    assert "| encode/app.db | job | 2 | 2 | 0 | 0 | 0 |" in terug
+    gevuld = [r for r in upgrade.splitlines() if r.startswith("| core/") or r.startswith("| enc")]
+    assert gevuld and all(r in terug for r in gevuld)
+    assert "### Uitzonderingen" in terug
+
+
+def test_poort_meldt_het_open_werk_na_upgrade_en_terugzetten(tmp_path: Path) -> None:
+    _sql, meta = _fixture()
+    n = meta["open_overdrachten"]
+    fouten, tekst = _nep_poort(tmp_path)
+    assert fouten == [], fouten
+    regel = f"Open overdrachten (mediaserver_pending zonder done_at): vóór {n}, na {n}."
+    assert regel in _sectie(tekst, f"Upgradebewijs {VORIGE['versie']} → 9.9.9")
+    assert regel in _sectie(tekst, "Terugzetten (vorige image + snapshot)")
+
+
+@pytest.mark.parametrize("uit", ["meting-na.json", "meting-terug.json"])
+def test_poort_is_rood_als_open_werk_dichtgaat(tmp_path: Path, uit: str) -> None:
+    fouten, tekst = _nep_poort(tmp_path, {uit: _met_open_overdracht_dicht})
+    soort = "upgrade" if uit == "meting-na.json" else "terugzetten"
+    assert any(f.startswith(f"{soort}: ") and "mediaserver_pending" in f and "gewijzigd" in f
+               for f in fouten), fouten
+    assert any(f.startswith(f"{soort}: ") and "open overdracht" in f for f in fouten), fouten
+    assert "❌ verlies of fout" in tekst
+
+
+def test_poort_is_rood_als_open_werk_voor_de_meting_al_dicht_was(tmp_path: Path) -> None:
+    fouten, _tekst = _nep_poort(tmp_path, {"meting-voor.json": _met_open_overdracht_dicht})
+    assert any("open overdracht" in f for f in fouten), fouten
 
 
 # -- vorige-release.json is de direct vorige gepubliceerde release --------------------------------

@@ -106,7 +106,7 @@
     "login_challenges": 0,
     "login_history": 4,
     "mediaserver_actions": 2,
-    "mediaserver_pending": 2,
+    "mediaserver_pending": 3,
     "mediaserver_watch": 2,
     "migration_cutovers": 2,
     "migration_mapping_items": 2,
@@ -138,7 +138,7 @@
     "quarantine_release_checks": 2,
     "release_provenance": 2,
     "replacement_journal": 2,
-    "replacement_transactions": 2,
+    "replacement_transactions": 3,
     "schema_migrations": 35,
     "secrets": 0,
     "seerr_requests": 2,
@@ -150,7 +150,7 @@
     "stuck_import_actions": 2,
     "subtitle_downloads": 2,
     "subtitle_status": 2,
-    "system_state": 8,
+    "system_state": 9,
     "trash_custom_formats": 2,
     "user_preferences": 2,
     "user_totp": 2,
@@ -158,6 +158,7 @@
     "wanted_items": 2,
     "wanted_overrides": 2
   },
+  "open_overdrachten": 1,
   "readback": {
     "/api/v1/quarantine": [
       "/data/media/fixture/quarantine_items/original_path-1.mkv",
@@ -226,5 +227,6 @@
       "fixture-offsite_copies-detail-2"
     ]
   },
-  "filled_by": "scripts/make-aio-fixture.py (API + upgradebewijs.vul, profiel core)"
+  "filled_by": "scripts/make-aio-fixture.py (API + upgradebewijs.vul, profiel core)",
+  "aanvullingen": "2026-11-12 (S-P2-610), gericht met de hand in deze dump; geen nieuwe dump, want die hoort op de releasecommit van 1.2.2 te worden gemaakt (deploy/upgradebewijs/vorige-release.json, veld herkomst) en zou alle andere waarden vernieuwen: (1) open werk: replacement_transactions 3 (afgerond, zoals vul een derde rij maakt) en mediaserver_pending 3 met done_at leeg (ververst, de afspeeltest wacht tot 2099: geen proef voert hem uit); (2) migration_cutovers 1 en 2 verwijzen naar een bestaande bron (source_instances) en instantie (instances), zoals vul dat nu doet (VERWIJST); (3) system_state migration_aftercare:1: de nazorg van de voltooide overstap van 2026-11-01 is gedaan, zoals de vorige release dat na 24 uur vastlegt. Bestaande rijen bleven staan; alleen source_id en target_instance_id van migration_cutovers zijn gewijzigd. Reden: vervolgpunten S-P2-600 (geen open overdracht in de fixture; 'job 26 mislukt' in de contracttest: de nazorg faalde op assert row is not None omdat de bron van de overstap niet bestond)."
 }

@@ -26,6 +26,9 @@ Opdrachten (alleen de standaardbibliotheek; draait ook in het image zelf, Python
     en opnieuw starten), meten, de nieuwe release starten op dezelfde mappen (health, versie,
     inloggen met de oude beheerder, readback via de API), meten en vergelijken, en terugzetten
     bewijzen: de vorige image op de snapshot van vóór de upgrade start en geeft alles terug.
+    Beide secties tonen de vergelijking per tabel. Open werk (een overdracht naar de mediaserver
+    die nog loopt) telt de poort apart: de fixture noemt het aantal (``open_overdrachten``); het
+    moet er vóór de upgrade zijn en na de upgrade en na het terugzetten nog open staan.
     Alleen ``docker``; geen root op de host nodig (bestanden van 568 regelt een hulpcontainer).
 
 Uitgang 0 = bewijs groen, 1 = verlies of fout, 2 = verkeerd gebruik.
@@ -56,6 +59,9 @@ FIXTURES = ROOT / "tests" / "fixtures" / "aio"
 UITZONDERINGEN = FIXTURES / "upgradebewijs-uitzonderingen.json"
 APP_UID = 568
 NU = "2026-11-08T12:00:00+00:00"  # vaste tijd in de fixture (geen echte tijd: reproduceerbaar)
+#: wachttijd van de afspeeltest bij open werk in de fixture: nooit bereikt, zodat geen proef (ook
+#: de contracttest met een echte Emby niet) die test uitvoert of iets bij de mediaserver opvraagt
+TOEKOMST = "2099-01-01T00:00:00+00:00"
 
 # ------------------------------------------------------------------------------------- vullen
 #: tabellen die nooit gevuld worden: geheimen (versleuteld met een sleutel buiten de fixture),
@@ -79,7 +85,10 @@ VAST: dict[tuple[str, str], dict[str, Any]] = {
     ("core", "optimization_plans"): {"status": ["completed", "cancelled"]},
     ("core", "quarantine_items"): {"status": ["restored", "discarded"], "pinned": 1},
     ("core", "replacement_transactions"): {"state": "committed"},
-    ("core", "mediaserver_pending"): {"result": "ok", "done_at": NU, "test_after": None},
+    # afgerond én open werk (HARDE EIS: ook een overdracht die nog loopt blijft bewaard): de open
+    # overdracht is al ververst en wacht op de afspeeltest (TOEKOMST: blijft inert)
+    ("core", "mediaserver_pending"): {"result": ["ok", None], "done_at": [NU, None],
+                                      "test_after": [None, TOEKOMST]},
     ("core", "notify_channels"): {"enabled": 0, "config_json": "{}"},
     ("core", "notify_outbox"): {"status": ["sent", "dropped"], "next_attempt_at": NU},
     ("core", "notify_digests"): {"kind": ["daily", "weekly"]},
@@ -109,6 +118,14 @@ VAST: dict[tuple[str, str], dict[str, Any]] = {
     ("encode", "vervang_transactie"): {"status": "vervangen"},
     ("encode", "ai_analyse"): {"modus": "schaduw", "uitgevoerd": 1},
     ("encode", "worker_config"): {"baan": ["cpu", "gpu"]},
+}
+#: verwijzingen zonder FOREIGN KEY in het schema, die de code wel volgt: (profiel, tabel) ->
+#: {kolom: (oudertabel, ouderkolom)}. Zonder deze lijst krijgt zo'n kolom een losse tekst en
+#: verwijst een voltooide overstap naar een bron die niet bestaat (S-P2-610: de nazorg faalde
+#: daarop met ``assert row is not None``); in een echte database kan dat niet.
+VERWIJST: dict[tuple[str, str], dict[str, tuple[str, str]]] = {
+    ("core", "migration_cutovers"): {"source_id": ("source_instances", "id"),
+                                     "target_instance_id": ("instances", "id")},
 }
 #: kolommen zonder "json" in de naam die de code wel als JSON leest
 JSON_NAMEN = {"payload", "result", "old_value", "new_value", "details", "data", "context",
@@ -141,9 +158,10 @@ def _tabellen(conn: sqlite3.Connection) -> list[str]:
     return [r[0] for r in rijen]
 
 
-def _volgorde(conn: sqlite3.Connection, tabellen: list[str]) -> list[str]:
-    """Ouders vóór kinderen (vreemde sleutels)."""
-    ouders = {t: {r[2] for r in conn.execute(f'PRAGMA foreign_key_list("{t}")')} - {t}
+def _volgorde(conn: sqlite3.Connection, tabellen: list[str], profiel: str = "") -> list[str]:
+    """Ouders vóór kinderen (vreemde sleutels en de verwijzingen uit ``VERWIJST``)."""
+    ouders = {t: ({r[2] for r in conn.execute(f'PRAGMA foreign_key_list("{t}")')}
+                  | {o for o, _k in VERWIJST.get((profiel, t), {}).values()}) - {t}
               for t in tabellen}
     uit: list[str] = []
     rest = list(tabellen)
@@ -193,13 +211,14 @@ def vul(db: Path, profiel: str, rijen: int = 2) -> dict[str, Any]:
     toegevoegd: dict[str, int] = {}
     mislukt: dict[str, str] = {}
     try:
-        for tabel in _volgorde(conn, _tabellen(conn)):
+        for tabel in _volgorde(conn, _tabellen(conn), profiel):
             if tabel in OVERSLAAN.get(profiel, set()):
                 continue
             sql = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (tabel,)).fetchone()[0]
             checks = _checks(sql)
             info = conn.execute(f'PRAGMA table_info("{tabel}")').fetchall()
             fks = {r[3]: (r[2], r[4]) for r in conn.execute(f'PRAGMA foreign_key_list("{tabel}")')}
+            fks.update(VERWIJST.get((profiel, tabel), {}))
             pk = [r[1] for r in info if r[5]]
             auto = len(pk) == 1 and next(r[2] for r in info if r[1] == pk[0]).upper() == "INTEGER"
             al = conn.execute(f'SELECT COUNT(*) FROM "{tabel}"').fetchone()[0]
@@ -337,7 +356,36 @@ def dekking(voor: dict[str, Any], fixture: dict[str, Any],
     if "encode/app.db" in dbs and not any(
             t.get("rijen", 0) for t in dbs["encode/app.db"].get("tabellen", {}).values()):
         fouten.append("meting vóór: encode/app.db is leeg (niet gevuld)")
+    verwacht = int(fixture.get("open_overdrachten") or 0)
+    if "core/mediaguard.db" in dbs and open_werk(voor) < verwacht:
+        fouten.append(f"meting vóór: {open_werk(voor)} open overdracht(en) in mediaserver_pending, "
+                      f"de fixture heeft er {verwacht}: de vorige release sloot ze al of de meting "
+                      "is onvolledig; zonder open werk vóór de upgrade is over open werk niets "
+                      "bewezen")
     return fouten
+
+
+#: open werk dat de poort apart telt: (database, tabel, kolom die leeg is zolang het werk loopt)
+OPEN_WERK = ("core/mediaguard.db", "mediaserver_pending", "done_at")
+
+
+def open_werk(meting: dict[str, Any]) -> int:
+    """Aantal open overdrachten naar de mediaserver (``done_at`` leeg) in een meting."""
+    db, tabel, kolom = OPEN_WERK
+    t = meting.get("databases", {}).get(db, {}).get("tabellen", {}).get(tabel)
+    if not t or kolom not in t["kolommen"]:
+        return 0
+    i = t["kolommen"].index(kolom)
+    return sum(1 for rij in [*t["per_sleutel"].values(), *t["zonder_sleutel"]] if rij[i] is None)
+
+
+def open_werk_regel(voor: dict[str, Any], na: dict[str, Any]) -> tuple[str, list[str]]:
+    """Regel voor het rapport en de fouten: open werk van vóór moet er na nog open staan (de
+    vergelijking per rij ziet elke wijziging ook; dit maakt het open werk zichtbaar)."""
+    a, b = open_werk(voor), open_werk(na)
+    regel = f"Open overdrachten (mediaserver_pending zonder done_at): vóór {a}, na {b}."
+    fout = f"open overdracht(en): vóór {a}, na {b}: open werk is dichtgezet of verdwenen"
+    return regel, ([] if b >= a else [fout])
 
 
 # ------------------------------------------------------------------------------------- vergelijken
@@ -441,7 +489,8 @@ def vergelijk(voor: dict[str, Any], na: dict[str, Any],
     return fouten, sorted(set(toegepast)), overzicht
 
 
-def rapport(titel: str, fouten: list[str], toegepast: list[str], overzicht: list[str]) -> str:
+def rapport(titel: str, fouten: list[str], toegepast: list[str], overzicht: list[str],
+            extra: list[str] | None = None) -> str:
     regels = [f"## {titel}", "", "**Uitkomst:** " + ("❌ verlies of fout" if fouten else
                                                       "✅ niets verloren"), ""]
     if fouten:
@@ -454,6 +503,8 @@ def rapport(titel: str, fouten: list[str], toegepast: list[str], overzicht: list
                "| database | tabel | vóór | na | verloren | gewijzigd | nieuw |",
                "|---|---|---|---|---|---|---|", *gevuld, "",
                f"Tabellen zonder inhoud vóór de upgrade: {len(overzicht) - len(gevuld)}.", ""]
+    for regel in extra or []:
+        regels += [regel, ""]
     return "\n".join(regels)
 
 
@@ -621,18 +672,25 @@ class Poort:
         self.stop()
         na = self.meet("config", "meting-na.json")
         f_upg, toegepast, overzicht = vergelijk(voor, na, uitz)
+        regel_upg, open_upg = open_werk_regel(voor, na)
+        f_upg += open_upg
         fouten += [f"upgrade: {f}" for f in f_upg]
         tekst = rapport(f"Upgradebewijs {fixture['version']} → {self.a.versie}", f_upg, toegepast,
-                        overzicht)
+                        overzicht, [regel_upg])
         # 4. terugzetten = vorige image + snapshot van vóór de update (contract §2.3 regel 7a)
         self.stap("terugzetten: vorige release op de snapshot van vóór de update")
         self.start(self.a.vorige, config="config-snapshot")
         fouten += [f"terugzetten: {p}" for p in self.readback(fixture, None)]
         self.stop()
         terug = self.meet("config-snapshot", "meting-terug.json")
-        f_terug, _t, _o = vergelijk(voor, terug, uitz)
+        # dezelfde vergelijking per tabel als bij de upgrade, en ook zo in het rapport (S-P2-610:
+        # het overzicht en de toegepaste uitzonderingen werden hier eerder weggegooid)
+        f_terug, t_terug, o_terug = vergelijk(voor, terug, uitz)
+        regel_terug, open_terug = open_werk_regel(voor, terug)
+        f_terug += open_terug
         fouten += [f"terugzetten: {f}" for f in f_terug]
-        tekst += "\n" + rapport("Terugzetten (vorige image + snapshot)", f_terug, [], [])
+        tekst += "\n" + rapport("Terugzetten (vorige image + snapshot)", f_terug, t_terug, o_terug,
+                                [regel_terug])
         backups = self.shell("ls -1 /mnt/config/core/backups/voor-update 2>/dev/null | head -5 "
                              "|| true")
         sets = backups or "geen (niets te migreren)"
