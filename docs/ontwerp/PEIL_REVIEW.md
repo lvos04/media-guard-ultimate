@@ -408,3 +408,88 @@ MGP_WERK=<werkmap> media-guard-ultimate/docs/screenshots/peil/review-mediaserver
 Daarnaast gedraaid op het herstel: `npm run check:peil`, `npm run lint`, `npm run typecheck`, `npm run test:unit`,
 `npm run build` en de volledige Playwright-run (`npm run e2e`); uitkomsten in het rapport van deze stap en in EVIDENCE
 C1.3-MGU-04.
+
+## 12. R-ONTWERP S-P2-620: de Android-app in en-US
+
+**Datum:** 12 november 2026 · **Rol:** R-ONTWERP (ontwerpreview na de bouw) · **Onderwerp:** de zes en-US-referentiebeelden
+van de Android-app (`EnLightScreenShots`: Overzicht, Activiteit → Problemen, Bibliotheek, Ruimte, Instellingen met
+waarschuwingen, Koppelen; licht, 393 dp) naast de Nederlandse, plus een eigen meting van alle 18 schermen in het Engels.
+**Getoetst aan:** Peil (ONTWERPTAAL §4, §11, §12, §13), ADR-0023 (vooral punt 7 woordkeuze en punt 8 servertekst) en
+§(5) hierboven. **Gemeten op:** commit `05ea62a` (eind van A-BOUW en R-TECH). **Oordeel:** goedgekeurd na herstel van
+twee belangrijke bevindingen (§12.3); twee kleine punten blijven open (§12.4).
+
+### 12.1 Werkwijze
+
+- **Echte schermen, voorbeeldgegevens, Sim-getest.** Op Android is de "dienst" de echte Compose-code van de app,
+  gerenderd door Paparazzi op de JVM met de voorbeeldgegevens uit `SampleData.kt` (teksten van de server, dus
+  Nederlands). Geen emulator of telefoon (V-021).
+- **De zes referentiebeelden** in `apps/android/app/src/test/snapshots/images/` (`…EnLightScreenShots_*.png`) zijn
+  bekeken naast `…LightScreenShots_*.png` met dezelfde naam.
+- **Eigen meting buiten de repo** (kopie van `apps/android` en `design` via `git archive`, met tijdelijke klassen in
+  `ScreenShots.kt`): alle 18 schermen in het Engels op volle lengte (2 px per dp) op 360 dp licht en donker, 393 dp
+  donker, 360 dp met grote letter (fontScale 1,3) licht, en ter vergelijking 360 dp licht in het Nederlands. Die
+  afdrukken staan niet in de repo. Breedtes 320, 768 en 1440 en axe gelden voor de web-UI; voor Android zijn 360 en
+  393 dp de afgesproken maten (§(5)).
+- **Skills:** `design:accessibility-review` en `design:design-critique`.
+
+### 12.2 Uitkomst per referentiebeeld
+
+| Beeld | Afgekapt of overlap | Nederlands in beeld | Status: woord + vorm + icoon |
+|---|---|---|---|
+| Overzicht | geen | "Laatste 24 uur: 9 afleveringen…" (`headline`) en "± 300 dagen" (`days_left_nl`) achter "full in": servertekst, ADR-0023 punt 8. Kaarttitel nu "Last 24 hours" (A-BOUW `6445743`) | "Degraded" met `triangle-alert`, warning-vlak en rand; nooit groen |
+| Activiteit → Problemen | geen; de vijf tabs lopen netjes om op twee regels | titel, uitleg, bestandsnaam en knop "Origineel houden" van "Wat actie nodig heeft": servertekst (`label_nl`, ADR-0023 punt 8). "This is not a fault; a condition is waiting." is app-tekst in het Engels | foutsoort `octagon-x` op vlak; voorwaarde `lock` neutraal |
+| Bibliotheek | geen ("Can improve", "Not monitored" passen) | alleen titels (namen) | labels met icoon + woord, neutraal (beschikbaarheid is geen gezondheid) |
+| Ruimte | geen; "Turn on emergency stop" past op één regel | "± 300 dagen" (servertekst) | noodstop "Off" met `power-off`, gevaarknop met rand + icoon |
+| Instellingen met waarschuwingen | geen | geen | info-banners met icoon, woord en rand |
+| Koppelen | geen | geen | n.v.t. |
+
+Statuswoorden in en-US zijn de Peil-woorden (Healthy, Degraded, Down, Unknown, Stale, Paused; `PeilStatus`,
+`TaalTest.statuswoordenVolgenPeil`). Op geen van de zes beelden staat Nederlandse app-tekst; al het Nederlands is
+servertekst en zo bedoeld (ADR-0023 punt 8).
+
+Uit de eigen meting (18 schermen, Engels): geen afgekapte tekst en geen overlap op 360 en 393 dp, licht en donker,
+behalve de twee punten van §12.3. Ook hier is elk Nederlands woord servertekst (`phase_nl` "Encoderen",
+`seerr_status_nl` "Goedgekeurd"/"Beschikbaar", `delivery_state_nl` "Wordt gezocht", seizoenstatus "6 van 8"). Drie
+plekken tonen in de meting Nederlands omdat de testopstelling een vaste Nederlandse tekst meegeeft, niet de app:
+`overzichtVerouderd` (`staleError`, `phoneWarning`, `update`) en `koppelenGeweigerd` (`error`) in `ScreenShots.kt`; de
+app maakt die teksten zelf met `tr(…)` (`ApiClient.kt`, `PhoneChecks.kt`, `Freshness.kt`). Er is van die schermen geen
+en-US-referentiebeeld, dus geen beeld is fout.
+
+### 12.3 Bevindingen en herstel
+
+| Nr | Ernst | Bevinding | Herstel en controle |
+|---|---|---|---|
+| R-ONTWERP-1 | belangrijk | Op een subpagina breekt de titel in de bovenbalk midden in een woord: "Bibliothe/ek" op 360 dp in het Nederlands (ook in de referentiebeelden `Light360`/`Dark360ScreenShots_bibliotheekDetail.png`, al vóór deze stap) en "Libra/ry" in het Engels met grote letter op 360 dp (eigen meting). `TopBar` liet het woord "Aandacht"/"Attention" alleen vallen als het merk niet paste; de titel van een subpagina telde niet mee. §(5) meldde eerder "niets breekt midden in een woord"; dat klopte niet voor dit beeld. | `ui/nav/Bars.kt`, `TopBar`: op een subpagina telt de gemeten breedte van de titel mee; past hij niet naast het hele woord, dan valt het woord weg (icoon en telling blijven, de volledige naam staat in de toegankelijke tekst; dezelfde terugval die het ontwerp al had). Opnieuw opgenomen: alleen `Light360ScreenShots_bibliotheekDetail.png` en `Dark360ScreenShots_bibliotheekDetail.png` (`git diff --stat` op de beeldenmap: precies die twee). Bekeken: "Bibliotheek" heel; in de eigen meting "Library" heel, ook met grote letter. |
+| R-ONTWERP-2 | belangrijk | Met grote letter (fontScale 1,3) plakken sleutel en waarde in `KeyValue` aan elkaar: "In MediaGuardoff" op Instellingen, en "Latest version" staat nagenoeg tegen "1.2.3" (eigen meting, Engels, 360 dp; de sleutel vult de vaste kolom van 120 dp en er zat geen tussenruimte). Taalonafhankelijk (de sleutel "In MediaGuard" is in beide talen gelijk); geen referentiebeeld toont dat deel. Tekstvergroting mag de indeling niet breken (WCAG 1.4.4, Peil §12). | `ui/Components.kt`, `KeyValue`: de waarde begint op 120 dp of, als de sleutel breder is dan 112 dp, op de breedte van de sleutel plus `MgSpace.s2`. Past de sleutel ruim, dan staat alles op dezelfde plek: na `recordPaparazziDebug` was geen enkel referentiebeeld door deze wijziging veranderd. Bekeken in de eigen meting: "In MediaGuard  off" met tussenruimte. |
+
+### 12.4 Open (klein)
+
+1. **"Exemption"** (knop bij "Battery restriction is on", Instellingen) is een zelfstandig naamwoord als knoptekst;
+   Peil §11 vraagt een werkwoord ("Allow", "Exempt MediaGuard"). Wijzigen vraagt het referentiebeeld
+   `EnLightScreenShots_instellingenWaarschuwingen.png` opnieuw op te nemen en een woordkeuze (ADR-0023 punt 7); niet
+   in deze stap.
+2. **"Partially available"** loopt op 360 dp in een kaart van "Discover" om op twee regels binnen het label (geen
+   afkapping, wel een hoger label dan de buren). Geen referentiebeeld van Aanvragen in het Engels.
+
+Niet in deze review (bekend, elders belegd): de Paparazzi-tolerantie van 0,5 % die een gewijzigde titel doorlaat
+(R-TECH-3) en de bronscan van `TaalTest` (R-TECH-1).
+
+### 12.5 NIET GEVALIDEERD
+
+Een echte telefoon of emulator met Engelse systeemtaal of taal per app (Android 13+), TalkBack in het Engels en fel
+licht: niet gedaan (geen emulator in de bouwomgeving, V-021). Alles hierboven is Sim-getest.
+
+### 12.6 Opnieuw uitvoeren
+
+```bash
+# vanuit <WERKMAP>/media-guard-ultimate/apps/android; Gradle onder de lock, TMPDIR op schijf
+python3 tools/peil_tokens.py --check
+ANDROID_HOME=$HOME/android-sdk JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+  flock <WERKMAP>/.lokaal/gradle.lock nice -n 10 ./gradlew --no-daemon --max-workers=4 \
+  -Dorg.gradle.jvmargs=-Xmx2g :app:verifyPaparazziDebug :app:assembleDebug
+```
+
+De eigen meting op volle lengte: in een kopie buiten de repo extra klassen in `ScreenShots.kt` zoals
+`class EnMeetLight360Hoog : ScreenShots(dark = false, D360.copy(screenHeight = 5236), docs = true, taal = AppTaal.En)`
+en daarna `PEIL_AFDRUKKEN=1 ./gradlew … :app:recordPaparazziDebug --tests 'nl.mediaguard.app.shots.EnMeet*'`.
+Nooit `recordPaparazziDebug` in de repo zonder ontwerpstap (P-PEIL).
