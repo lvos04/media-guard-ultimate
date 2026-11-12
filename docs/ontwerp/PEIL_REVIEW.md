@@ -447,8 +447,12 @@ Statuswoorden in en-US zijn de Peil-woorden (Healthy, Degraded, Down, Unknown, S
 `TaalTest.statuswoordenVolgenPeil`). Op geen van de zes beelden staat Nederlandse app-tekst; al het Nederlands is
 servertekst en zo bedoeld (ADR-0023 punt 8).
 
-Uit de eigen meting (18 schermen, Engels): geen afgekapte tekst en geen overlap op 360 en 393 dp, licht en donker,
-behalve de twee punten van §12.3. Ook hier is elk Nederlands woord servertekst (`phase_nl` "Encoderen",
+Uit de eigen meting (Engels) zijn bekeken: op 360 dp licht Overzicht, Overzicht noodstop, Overzicht verouderd,
+Activiteit (Nu en Wat is er gebeurd), Bibliotheek-detail, Ruimte, Aanvragen (Ontdekken en Mijn aanvragen) en
+Instellingen; op 360 dp donker Koppelen geweigerd en het aanvraagvenster; met grote letter op 360 dp Ruimte,
+Instellingen met waarschuwingen en de bovenbalk van Bibliotheek-detail en Overzicht. Daarin geen afgekapte tekst en
+geen overlap, behalve de twee punten van §12.3. De overige afdrukken van de meting (onder meer 393 dp donker en de
+rest van de grote letter) zijn gemaakt maar niet bekeken. Ook hier is elk Nederlands woord servertekst (`phase_nl` "Encoderen",
 `seerr_status_nl` "Goedgekeurd"/"Beschikbaar", `delivery_state_nl` "Wordt gezocht", seizoenstatus "6 van 8"). Drie
 plekken tonen in de meting Nederlands omdat de testopstelling een vaste Nederlandse tekst meegeeft, niet de app:
 `overzichtVerouderd` (`staleError`, `phoneWarning`, `update`) en `koppelenGeweigerd` (`error`) in `ScreenShots.kt`; de
