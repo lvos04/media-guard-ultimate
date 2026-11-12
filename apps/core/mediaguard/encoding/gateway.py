@@ -64,10 +64,18 @@ def _safe_path(path: str) -> str:
     return clean
 
 
-def _need(principal: Principal, method: str) -> None:
+#: adres en sleutel van de encoder-koppelingen (Emby/Jellyfin, Radarr, Sonarr) wijzigen of testen
+#: is beheer, net als POST /api/v1/mediaserver/config: alleen een beheerder (S-P2-600, R-VEILIG-1;
+#: V-064). Lezen blijft voor iedereen met een login.
+_ADMIN_WRITE = ("integraties",)
+
+
+def _need(principal: Principal, method: str, path: str = "") -> None:
     from fastapi import HTTPException
 
     role = "viewer" if method in _READ_METHODS else "operator"
+    if role == "operator" and path.strip("/").split("/", 1)[0].lower() in _ADMIN_WRITE:
+        role = "admin"
     if ROLE_RANK.get(principal.role, 0) < ROLE_RANK[role]:
         raise HTTPException(status_code=403, detail=f"Rol '{role}' vereist")
 
@@ -76,7 +84,7 @@ def _need(principal: Principal, method: str) -> None:
                   include_in_schema=False)
 async def forward(path: str, request: Request,
                   principal: Principal = Depends(current_principal)) -> Response:
-    _need(principal, request.method)
+    _need(principal, request.method, path)
     path = _safe_path(path)
     ctx = get_app_context(request)
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}

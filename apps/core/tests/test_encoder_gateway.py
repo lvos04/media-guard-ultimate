@@ -84,6 +84,46 @@ def test_gateway_keeps_last_known_statistics(client, ctx):
     assert "x-mediaguard-stale" in r.headers
 
 
+def test_koppelingen_van_de_encoder_wijzigen_en_testen_alleen_als_beheerder(app, client, ctx):
+    """S-P2-600, R-VEILIG-1: adres en sleutel van de encoder-koppelingen (Emby/Jellyfin, Radarr,
+    Sonarr) wijzigen en testen is beheer, net als POST /api/v1/mediaserver/config. Een operator
+    krijgt 403 en er gaat niets naar de engine; lezen blijft voor iedereen met een login."""
+    from fastapi.testclient import TestClient
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    ctx.services["encoder_transport"] = httpx.MockTransport(handler)
+    ctx.services.pop("encoder_gateway_client", None)
+    ctx.services.pop("encoder_gateway_cache", None)
+    keys = {role: client.post("/api/v1/auth/api-keys", json={"name": role, "role": role}).json()
+            for role in ("operator", "viewer")}
+    writes = [("POST", "integraties/jellyfin/test", {"url": "http://aanvaller:8096"}),
+              ("PATCH", "integraties/jellyfin", {"url": "http://aanvaller:8096"}),
+              ("POST", "integraties/radarr/test", {}),
+              ("PATCH", "Integraties/sonarr", {"api_sleutel": "x"})]
+    for role, key in keys.items():
+        with TestClient(app) as other:
+            other.headers["X-Api-Key"] = key.get("key") or key.get("api_key", "")
+            for method, path, body in writes:
+                r = other.request(method, f"/api/v1/encoder/{path}", json=body)
+                assert r.status_code == 403, (role, method, path, r.text)
+            assert other.get("/api/v1/encoder/integraties").status_code == 200
+            if role == "operator":                # ander werk van een operator blijft mogen
+                assert other.put("/api/v1/encoder/instellingen", json={}).status_code == 200
+    assert not [r for r in seen if r.method in ("POST", "PATCH")]
+    assert not any("integraties/" in r.url.path.lower() for r in seen)
+    for method, path, body in writes[:3]:
+        r = client.request(method, f"/api/v1/encoder/{path}", json=body)
+        assert r.status_code == 200, (method, path, r.text)
+    assert {r.url.path for r in seen if r.method != "GET"} >= {
+        "/api/integraties/jellyfin/test", "/api/integraties/jellyfin",
+        "/api/integraties/radarr/test"}
+
+
 def test_encoder_offline_only_after_consecutive_failures(ctx):
     from mediaguard.encoding.client import note_encoder_reachability
 
