@@ -20,10 +20,13 @@ jellyfin/jellyfin:12.4); dezelfde stappen tegen die containers: ``tests/contract
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, quote_plus
 
 import httpx
 import pytest
@@ -63,6 +66,8 @@ class Server:
         self.film = FILM.replace(MG_ROOT, root)
         #: foutpagina die de ontvangen aanmeldkoppen terugkaatst (letterlijk, kaal en als JSON)
         self.echo: int | None = None
+        #: eigen foutpagina bij ``echo``: krijgt de ontvangen sleutel en bepaalt vorm en plaats
+        self.echo_body: Callable[[str], str] | None = None
 
     def authorized(self, request: httpx.Request) -> bool:
         if "api_key" in str(request.url).lower():
@@ -103,6 +108,8 @@ class Server:
             auth = request.headers.get("Authorization", "")
             token = request.headers.get("X-Emby-Token", "")
             bare = (JF_AUTH.match(auth).group(1) if JF_AUTH.match(auth) else "") or token
+            if self.echo_body is not None:
+                return httpx.Response(self.echo, text=self.echo_body(bare))
             return httpx.Response(self.echo, text=(
                 f"fout; verzoek was: {auth} | X-Emby-Token: {token} | sleutel {bare} | "
                 + json.dumps({"headers": dict(request.headers)})))
@@ -272,6 +279,51 @@ def test_sleutel_nooit_in_log_of_foutmelding(client, ctx, net, caplog) -> None: 
     for text in texts:
         for key in keys:
             assert key not in text, (key, text)
+
+
+#: een sleutel zoals 1.2.2 hem zonder tekencontrole kon opslaan: met ``"`` en spaties, zodat
+#: JSON, URL-code en HTML hem anders schrijven dan letterlijk
+OUDE_SLEUTEL = 'oud "emby" sleutel 0123456789abcdef'
+
+
+def _stukken(key: str, n: int = 8) -> set[str]:
+    return {key[i:i + n] for i in range(len(key) - n + 1)}
+
+
+@pytest.mark.parametrize("vorm", [
+    pytest.param(lambda k: json.dumps({"ontvangen": k}), id="json"),
+    pytest.param(lambda k: "/pad?q=" + quote(k, safe=""), id="url"),
+    pytest.param(lambda k: "/pad?q=" + quote_plus(k), id="url-plus"),
+    pytest.param(lambda k: f"<p>ontvangen: {html.escape(k)}</p>", id="html"),
+    pytest.param(lambda k: "x" * 175 + k + "y" * 40, id="rond-positie-200"),
+    pytest.param(lambda k: "x" * 190 + k + "y" * 40, id="over-positie-200"),
+])
+def test_teruggekaatste_oude_emby_sleutel_in_elke_vorm_en_rond_positie_200(  # type: ignore[no-untyped-def]
+        client, ctx, net, vorm: Callable[[str], str]) -> None:
+    """S-P2-600, R-TECH-7 en R-VEILIG-4: een server kaatst bij een fout de 1.2.2-Emby-sleutel
+    terug als JSON, als URL-code of als HTML, of zo dat de sleutel over de grens van 200 tekens
+    valt. Geen stuk van 8 of meer tekens van de sleutel staat in de melding of in
+    ``servers[].contact.error``: eerst de sleutels eruit (in elke vorm), dan pas inkorten."""
+    emby, _jf = net
+    emby.key = OUDE_SLEUTEL
+    ctx.secrets.set(S.SECRET_KEY, OUDE_SLEUTEL, "1.2.2")  # zoals 1.2.2 hem opsloeg
+    tick(ctx, sessions=False)                 # cursor
+    _txn(ctx)
+    emby.echo, emby.echo_body = 500, vorm
+    # JSON, URL en HTML schrijven deze sleutel echt anders dan letterlijk
+    assert OUDE_SLEUTEL not in vorm(OUDE_SLEUTEL) or vorm(OUDE_SLEUTEL).startswith("x")
+    stukken = _stukken(OUDE_SLEUTEL)
+    with pytest.raises(MediaServerError) as exc:
+        asyncio.run(EmbyClient(ctx.services, "http://emby:8096", OUDE_SLEUTEL,
+                               "emby").check_key())
+    melding = str(exc.value)
+    assert not [s for s in stukken if s in melding], melding
+    assert exc.value.status == 500 and melding.startswith("fout 500: ") and "***" in melding
+    tick(ctx)                                 # verversen en sessies: 500 met de echo
+    st = client.get("/api/v1/mediaserver/status").json()
+    error = next(x for x in st["servers"] if x["server_id"] == 1)["contact"]["error"]
+    assert error and not [s for s in stukken if s in error], error
+    assert error.startswith("fout 500: ") and "***" in error, error
 
 
 # -- soort herkennen: alleen wie zich als Jellyfin meldt, krijgt de nieuwe kop ---------------
@@ -784,6 +836,44 @@ def test_omleiding_zonder_sleutel_alleen_voor_de_ondertiteldownload(ctx) -> None
     assert not any(r.url.host == "cdn.elders" for r in seen)
     with pytest.raises(MediaServerError, match="ander adres"):
         asyncio.run(_call(ctx.services, "GET", "https://dl.opensubtitles/x", headers={}))
+
+
+def test_ondertiteldownload_volgt_een_302_naar_een_andere_host_zonder_sleutel(ctx) -> None:  # type: ignore[no-untyped-def]
+    """S-P2-600, R-TECH-8 (keuze 1 van de regisseur, zoals 1.2.2): ``OpenSubtitlesClient.download``
+    volgt een downloadlink die met een 302 naar een andere host gaat. De inhoud komt binnen en
+    de verzoeken naar die host dragen geen Api-Key, geen Authorization en geen token."""
+    from mediaguard.mediaserver.clients import OpenSubtitlesClient
+
+    seen: list[httpx.Request] = []
+    inhoud = b"1\n00:00:01,000 --> 00:00:02,000\nHallo\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        host, path = request.url.host, request.url.path
+        if host == "api.opensubtitles.com" and path.endswith("/login"):
+            return httpx.Response(200, json={"token": "os-token-geheim"})
+        if host == "api.opensubtitles.com" and path.endswith("/download"):
+            return httpx.Response(200, json={"link": "https://dl.opensubtitles.com/f/x.srt"})
+        if host == "dl.opensubtitles.com":
+            return httpx.Response(302, headers={"Location": "https://cdn.elders.example/x.srt"})
+        if host == "cdn.elders.example":
+            return httpx.Response(200, content=inhoud)
+        return httpx.Response(404)
+
+    ctx.services["mediaserver_transport"] = httpx.MockTransport(handler)
+    os_client = OpenSubtitlesClient(ctx.services, "os-sleutel", "gebruiker", "wachtwoord")
+    assert asyncio.run(os_client.download("22")) == inhoud
+    elders = [r for r in seen if r.url.host == "cdn.elders.example"]
+    assert len(elders) == 1, [str(r.url) for r in seen]
+    api = [r for r in seen if r.url.host == "api.opensubtitles.com"]
+    assert api and all(r.headers.get("Api-Key") == "os-sleutel" for r in api)
+    for r in seen:
+        if r.url.host == "api.opensubtitles.com":
+            continue
+        assert not {"api-key", "authorization", "x-emby-token"} & set(r.headers), r.headers
+        for geheim in ("os-sleutel", "os-token-geheim", "wachtwoord"):
+            assert geheim not in str(r.url) and geheim not in r.content.decode()
+            assert not any(geheim in v for v in r.headers.values()), r.headers
 
 
 def _emby_stand(ctx) -> tuple[Any, ...]:  # type: ignore[no-untyped-def]
