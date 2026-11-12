@@ -36,7 +36,8 @@ from mediaguard.app import create_app
 
 def _evidence(ctx, *ids: str) -> list[str]:  # type: ignore[no-untyped-def]
     for eid in ids:
-        register_evidence(ctx, eid, "thexem_mapping", f"mapping {eid} van /mnt/tank/x/{eid}.json")
+        register_evidence(ctx, eid, "thexem_mapping",
+                          f"mapping {eid} van /mnt/voorbeeldpool/x/{eid}.json")
     return list(ids)
 
 
@@ -103,7 +104,7 @@ async def test_ambiguous_anime_gives_validated_advice_but_no_verdict(ctx):  # ty
     assert verdicts == []  # niets uitgevoerd zonder goedkeuring
     detail = service.case_detail(ctx, ticket["case_id"])
     # geen absolute paden opgeslagen
-    assert "/mnt/tank" not in json.dumps(detail)
+    assert "/mnt/voorbeeldpool" not in json.dumps(detail)
     assert detail["payload"]["file_path"].endswith("Voorbeeld - 13.mkv")
 
 

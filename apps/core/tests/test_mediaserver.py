@@ -18,7 +18,7 @@ from mediaguard.mediaserver.clients import EmbyClient, judge_playback
 
 EMBY = "http://nas:8096"
 MG_ROOT = "/data/Media/Films"
-EMBY_ROOT = "/mnt/tank/Media/Films"
+EMBY_ROOT = "/mnt/voorbeeldpool/Media/Films"
 MOVIE = f"{MG_ROOT}/Stormvogel (2017)/Stormvogel (2017).mkv"
 EMBY_MOVIE = f"{EMBY_ROOT}/Stormvogel (2017)/Stormvogel (2017).mkv"
 
@@ -112,7 +112,8 @@ def _due(ctx, txn: int) -> None:  # type: ignore[no-untyped-def]
 
 
 def test_paths_map_on_tail_and_both_ways() -> None:
-    m = P.build_map([MG_ROOT, "/data/Media/TV"], [EMBY_ROOT, "/mnt/tank/Media/TV", "/x/Muziek"])
+    m = P.build_map([MG_ROOT, "/data/Media/TV"],
+                    [EMBY_ROOT, "/mnt/voorbeeldpool/Media/TV", "/x/Muziek"])
     assert (MG_ROOT, EMBY_ROOT) in m and len(m) == 2
     assert P.to_server(MOVIE, m) == EMBY_MOVIE
     assert P.to_mediaguard(EMBY_MOVIE, m) == MOVIE

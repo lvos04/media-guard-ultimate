@@ -98,7 +98,7 @@ def configure(ctx: Any, mode: str = "advisory", *, provider: str = "anthropic",
 def anime_case() -> dict[str, Any]:
     return {
         "series": "Voorbeeld Anime",
-        "file_path": "/mnt/tank/media/anime/Voorbeeld Anime/Season 02/"
+        "file_path": "/mnt/voorbeeldpool/media/anime/Voorbeeld Anime/Season 02/"
                      "[SubsPlease] Voorbeeld - 13.mkv",
         "release_name": "[SubsPlease] Voorbeeld - 13 (1080p)",
         "candidates": {"scene": "S02E01", "tvdb": "S01E13", "absolute": 13},

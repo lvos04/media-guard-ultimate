@@ -85,7 +85,7 @@ def test_full_ui_flow(client, ctx):  # type: ignore[no-untyped-def]
     case_id = ticket["case_id"]
     pv = client.get(f"/api/v1/ai/preview/{case_id}")
     assert pv.status_code == 200
-    assert "/mnt/tank" not in pv.text and FAKE_KEY not in pv.text
+    assert "/mnt/voorbeeldpool" not in pv.text and FAKE_KEY not in pv.text
     assert pv.json()["headers"]["x-api-key"] == "***"
     assert pv.json()["url"] == ANTHROPIC_URL
     assert pv.json()["minimization"]["paths_shortened"] >= 1
@@ -106,10 +106,10 @@ def test_full_ui_flow(client, ctx):  # type: ignore[no-untyped-def]
 
     # 11. feedback + goedkeuren voert de geregistreerde, niet-destructieve actie uit
     fb = client.post(f"/api/v1/ai/cases/{case_id}/feedback",
-                     json={"verdict": "incorrect", "comment": "zie /mnt/tank/x.mkv"})
+                     json={"verdict": "incorrect", "comment": "zie /mnt/voorbeeldpool/x.mkv"})
     assert fb.status_code == 200
     stored = ctx.db.fetch_one("SELECT comment FROM ai_feedback")["comment"]
-    assert "/mnt/tank" not in stored
+    assert "/mnt/voorbeeldpool" not in stored
     done: list = []
     register_action(ctx, "inspect_mapping", lambda c, r: done.append(r) or {"refreshed": True})
     ap = client.post(f"/api/v1/ai/cases/{case_id}/approve")

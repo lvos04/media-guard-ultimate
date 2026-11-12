@@ -38,7 +38,7 @@ from mediaguard.mediaserver.clients import EmbyClient, MediaServerError, auth_he
 
 MG_ROOT = "/data/Media/Films"
 FILM = f"{MG_ROOT}/Stormvogel (2017)/Stormvogel (2017).mkv"
-EMBY_ROOT, JF_ROOT = "/mnt/tank/Media/Films", "/media/Films"
+EMBY_ROOT, JF_ROOT = "/mnt/voorbeeldpool/Media/Films", "/media/Films"
 EMBY_FILM = FILM.replace(MG_ROOT, EMBY_ROOT)
 JF_FILM = FILM.replace(MG_ROOT, JF_ROOT)
 JF_AUTH = re.compile(r'^MediaBrowser .*Token="([^"]+)"')

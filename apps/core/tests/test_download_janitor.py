@@ -398,7 +398,7 @@ def test_translate_view_end_to_end(ctx, tmp_path):
     for n in ("Show.S01E01", "Show.S01E02", "Show.S01E03"):
         _mk(tv / n)
     ctx.services["download_janitor_search_bases"] = [tmp_path / "data"]
-    remote = "/mnt/tank/apps/sab/complete/tv"
+    remote = "/mnt/voorbeeldpool/apps/sab/complete/tv"
 
     def view():
         v = ClientView("sab", "nzb", roots=[Root(remote, "sab", "complete", "tv"),
