@@ -78,8 +78,9 @@ abstract class ScreenShots(
     @get:Rule
     val paparazzi = Paparazzi(
         deviceConfig = device.copy(nightMode = if (dark) NightMode.NIGHT else NightMode.NOTNIGHT),
-        // ruimte voor anti-aliasverschillen tussen JDK-builds; een andere kleur of indeling is veel meer
-        maxPercentDifference = 0.5,
+        // gemeten (KLEIN-18): op HEAD lokaal groen met 0,0 %; 0,01 % geeft een kleine marge. Een andere
+        // titel of knoptekst (0,06 tot 0,47 %) maakt verify zo rood; 0,5 % liet die door (R-TECH-3)
+        maxPercentDifference = 0.01,
         useDeviceResolution = docs || alleenSmalGroot,
     )
 

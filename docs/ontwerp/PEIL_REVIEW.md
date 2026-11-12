@@ -472,7 +472,7 @@ repo. Nu staan twee beelden in de referentieset: `EnGrootLight360HoogScreenShots
 per dp). Bekeken: "In MediaGuard  off" en "Latest version  1.2.3" met tussenruimte, "Library" heel. Alle bestaande
 beelden bleven byte-gelijk. Proef met de oude code (vóór `0679551`): met de oude `KeyValue` toont het beeld
 "In MediaGuardoff" (2 090 van 3 769 920 pixels anders, 0,06 %), met de oude `TopBar` "Libra/ry" (17 579 pixels, 0,47 %);
-in beide gevallen bleef `:app:verifyPaparazziDebug` groen, want het verschil valt onder de tolerantie van 0,5 %
+in beide gevallen bleef `:app:verifyPaparazziDebug` groen, want het verschil viel onder de toenmalige tolerantie van 0,5 % (sinds KLEIN-18 0,01 %)
 (R-TECH-3). Het herstel van R-ONTWERP-1 (Engels, grote letter) en R-ONTWERP-2 is dus **alleen bekeken in het beeld**:
 de beelden leggen de goede stand vast, maar verify bewaakt deze twee fouten niet.
 
