@@ -71,6 +71,8 @@
     CI-runner) en de datum op Overzicht staat in de test vast, zodat de vergelijking niet van de machine of de dag
     afhangt. De documentatie-afdrukken (2 px per dp, ook "volledig") ontstaan alleen met `PEIL_AFDRUKKEN=1` en horen
     niet bij de referentieset.
+    *Aanvulling 2026-11-12:* de tolerantie is sinds `63b4910` 0,01 % (meting in KLEIN-18); het besluit hierboven is
+    niet herschreven.
 12. **Niet-ondertekende release-build alleen op verzoek.** Met `MG_ANDROID_UNSIGNED=1` geeft `assembleRelease`
     `app-release-unsigned.apk`; zonder die variabele verandert de ondertekening niet (eigen sleutel via secrets,
     anders de vaste sideload-sleutel). Zo is een niet-ondertekende build te controleren zonder de update-keten

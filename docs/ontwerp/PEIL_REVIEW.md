@@ -473,8 +473,12 @@ per dp). Bekeken: "In MediaGuard  off" en "Latest version  1.2.3" met tussenruim
 beelden bleven byte-gelijk. Proef met de oude code (vóór `0679551`): met de oude `KeyValue` toont het beeld
 "In MediaGuardoff" (2 090 van 3 769 920 pixels anders, 0,06 %), met de oude `TopBar` "Libra/ry" (17 579 pixels, 0,47 %);
 in beide gevallen bleef `:app:verifyPaparazziDebug` groen, want het verschil viel onder de toenmalige tolerantie van 0,5 % (sinds KLEIN-18 0,01 %)
-(R-TECH-3). Het herstel van R-ONTWERP-1 (Engels, grote letter) en R-ONTWERP-2 is dus **alleen bekeken in het beeld**:
-de beelden leggen de goede stand vast, maar verify bewaakt deze twee fouten niet.
+(R-TECH-3). Het herstel van R-ONTWERP-1 (Engels, grote letter) en R-ONTWERP-2 was toen dus **alleen bekeken in het
+beeld**. Sinds `63b4910` (KLEIN-18, tolerantie 0,01 %) bewaakt verify deze twee fouten wel. Proef KLEIN-19 (12 november
+2026, in een kopie buiten de repo: `63b4910` met de oude code van vóór `0679551`): met de oude `KeyValue` werd verify
+rood op `EnGrootLight360HoogScreenShots_instellingenWaarschuwingen` (Paparazzi: verschil 0,035186 %); met de oude `TopBar`
+rood op `EnGrootLight360HoogScreenShots_bibliotheekDetail` (0,162623 %) en ook op `Light360`/`Dark360ScreenShots_bibliotheekDetail`
+(0,520891 % en 0,545607 %). Paparazzi meet het verschil anders dan de pixeltelling hierboven.
 
 ### 12.4 Open (klein)
 
@@ -487,8 +491,9 @@ de beelden leggen de goede stand vast, maar verify bewaakt deze twee fouten niet
 3. Bijgewerkt (KLEIN-16): de knop heet nu "Exempt" en het label "Partial"; Aanvragen in het Engels alleen in de taaltest.
    Ook het Nederlands is bijgewerkt (KLEIN-17): de knop heet nu "Uitzonderen" (werkwoord) in plaats van "Uitzondering".
 
-Niet in deze review (bekend, elders belegd): de Paparazzi-tolerantie van 0,5 % die een gewijzigde titel doorlaat
-(R-TECH-3) en de bronscan van `TaalTest` (R-TECH-1).
+Niet in deze review (bekend, elders belegd): de bronscan van `TaalTest` (R-TECH-1). Opgelost: de Paparazzi-tolerantie
+van 0,5 % die een gewijzigde titel doorliet (R-TECH-3); sinds `63b4910` (KLEIN-18) 0,01 %, en verify vangt beide
+fouten van §12.3 nu (proef KLEIN-19).
 
 ### 12.5 NIET GEVALIDEERD
 
