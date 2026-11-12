@@ -15,6 +15,7 @@ import com.android.resources.NightMode
 import nl.mediaguard.app.PhoneState
 import nl.mediaguard.app.data.AppTaal
 import nl.mediaguard.app.data.Taal
+import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.data.UpdateInfo
 import nl.mediaguard.app.ui.LibraryKind
 import nl.mediaguard.app.ui.UiState
@@ -71,13 +72,15 @@ abstract class ScreenShots(
     private val docs: Boolean = false,
     /** Taal van de app-teksten; de voorbeeldgegevens (teksten van de server) blijven Nederlands. */
     private val taal: AppTaal = AppTaal.Nl,
+    /** Alleen de schermen met `smalGroot = true` (grote letter op 360 dp, volle lengte), op volle resolutie. */
+    private val alleenSmalGroot: Boolean = false,
 ) {
     @get:Rule
     val paparazzi = Paparazzi(
         deviceConfig = device.copy(nightMode = if (dark) NightMode.NIGHT else NightMode.NOTNIGHT),
         // ruimte voor anti-aliasverschillen tussen JDK-builds; een andere kleur of indeling is veel meer
         maxPercentDifference = 0.5,
-        useDeviceResolution = docs,
+        useDeviceResolution = docs || alleenSmalGroot,
     )
 
     @Before fun kiesTaal() { Taal.huidig = taal }
@@ -86,13 +89,20 @@ abstract class ScreenShots(
     private val day = LocalDate.of(2026, 11, 7)
     private val today = LocalDate.of(2026, 11, 8)
 
-    private fun gate(groot: Boolean) {
+    private fun gate(groot: Boolean, smalGroot: Boolean = false) {
         if (docs) assumeTrue("alleen met PEIL_AFDRUKKEN=1", System.getenv("PEIL_AFDRUKKEN") == "1")
         if (subset) assumeTrue("grote letter alleen voor een deel van de schermen", groot)
+        if (alleenSmalGroot) assumeTrue("grote letter op 360 dp alleen voor Instellingen en Bibliotheek-detail", smalGroot)
     }
 
-    private fun shot(route: String, title: String? = null, groot: Boolean = false, content: @Composable () -> Unit) {
-        gate(groot)
+    private fun shot(
+        route: String,
+        title: String? = null,
+        groot: Boolean = false,
+        smalGroot: Boolean = false,
+        content: @Composable () -> Unit,
+    ) {
+        gate(groot, smalGroot)
         paparazzi.snapshot {
             MediaGuardTheme(dark = dark) {
                 Column(Modifier.fillMaxSize().background(Mg.colors.bg)) {
@@ -155,7 +165,7 @@ abstract class ScreenShots(
         LibraryContent(LibraryKind.Series, UiState.Data(Sample.library), "", {}, {}, {}, {}, {})
     }
 
-    @Test fun bibliotheekDetail() = shot("library", title = "Bibliotheek") {
+    @Test fun bibliotheekDetail() = shot("library", title = tr("Bibliotheek", "Library"), smalGroot = true) {
         LibraryItemContent("Bergpas", UiState.Data(Sample.detail), { _, _ -> }, {})
     }
 
@@ -183,7 +193,7 @@ abstract class ScreenShots(
             ntfyLastOkAt = 1_762_600_000_000, pushOnServer = true, lastContactAt = 1_762_600_000_000), SettingsActions())
     }
 
-    @Test fun instellingenWaarschuwingen() = shot("settings", title = "", groot = true) {
+    @Test fun instellingenWaarschuwingen() = shot("settings", title = "", groot = true, smalGroot = true) {
         SettingsContent(SettingsModel(true, 8 * 60, true, "mediaguard-ab12", "https://ntfy.sh",
             "https://mediaguard.example.nl", "jan", "1.2.1", serverVersion = "1.2.1",
             phone = PhoneState(notificationsAllowed = false, batteryExempt = false),
@@ -226,6 +236,14 @@ class LightGroteLetterScreenShots : ScreenShots(dark = false, P393.copy(fontScal
 
 /** De app in het Engels (en-US): hetzelfde deel van de schermen als de grote letter. */
 class EnLightScreenShots : ScreenShots(dark = false, P393, subset = true, taal = AppTaal.En)
+
+/**
+ * Grote letter (fontScale 1,3) op 360 dp in het Engels, op volle lengte (2 618 dp) en 2 px per dp: Instellingen met
+ * waarschuwingen (sleutel en waarde in `KeyValue` plakken niet aan elkaar, ook onderaan) en Bibliotheek-detail (de
+ * titel "Library" breekt niet midden in een woord). Bewaakt het herstel van R-ONTWERP-1/-2 (PEIL_REVIEW §12.3).
+ */
+class EnGrootLight360HoogScreenShots : ScreenShots(dark = false, D360.copy(screenHeight = 5236, fontScale = 1.3f),
+    taal = AppTaal.En, alleenSmalGroot = true)
 
 class DocsDark393 : ScreenShots(dark = true, D393, docs = true)
 class DocsLight393 : ScreenShots(dark = false, D393, docs = true)
