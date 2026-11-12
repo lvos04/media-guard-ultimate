@@ -76,7 +76,11 @@
      elke start veranderen (gemeten: dezelfde verschillen bij het terugzetten, waar geen nieuwe versie draait):
      hartslagen en taakwacht in `system_state`, `last_login_at` door de readback, tijdstempels van de laatste controle in
      de AV1-engine, de pauzereden van een baan, logdatabases en de opdrachtgeschiedenis van de forks. Tabellen van de
-     voortgang staan er nooit in (test `test_uitzonderingen_hebben_elk_een_reden_en_raken_de_voortgang_niet`).
+     voortgang staan er nooit in, met precies één uitzondering (S-P2-610, besluit BN-610-1): `encode/app.db`,
+     `vervang_transactie`, alleen `gewijzigd_op` (tijdstip van de herstelcontrole van de AV1-engine bij elke start, ook
+     zonder upgrade gemeten; status, toelichting, paden, hashes en job worden vergeleken). De test
+     `test_uitzonderingen_hebben_elk_een_reden_en_raken_de_voortgang_niet` bewaakt dit met een toegestane lijst
+     (`TOEGESTAAN`): elke andere regel is rood.
    - *Waar het draait*: in-process op elke push (`apps/core/tests/test_upgradebewijs.py`: de fixture met de core van
      nu); met Docker op elke push als "core-kandidaat" (runtime van de vorige release + core en release-manifest van
      deze commit, `deploy/upgradebewijs/Dockerfile.kandidaat`; een volledige AIO-build duurt uren); en in `release.yml`

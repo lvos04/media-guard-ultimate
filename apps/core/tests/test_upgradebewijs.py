@@ -378,11 +378,11 @@ def test_back_ups_tellen_niet_als_live_database(tmp_path: Path) -> None:
 
 
 #: de inhoud van de voortgang (veld ``toelichting`` van het uitzonderingenbestand): daarop mag
-#: nooit een uitzondering staan. Per domein de tabellen van core (``core/mediaguard.db``) en van de
-#: AV1-engine (``encode/app.db``).
+#: geen uitzondering staan, behalve ``VOORTGANG_UITZONDERING`` hieronder. Per domein de tabellen
+#: van core (``core/mediaguard.db``) en van de AV1-engine (``encode/app.db``).
 VOORTGANG = {
-    # bibliotheek en wanted
-    "lib_items", "lib_seasons", "lib_episodes", "lib_files", "library_sync_runs",
+    # bibliotheek en wanted (``library``: de bibliotheek van de AV1-engine)
+    "library", "lib_items", "lib_seasons", "lib_episodes", "lib_files", "library_sync_runs",
     "wanted_items", "wanted_overrides", "missing_diagnostics", "backfill_runs",
     "backfill_attempts", "delivery_items", "delivery_events", "delivery_searches",
     "seerr_requests",
@@ -395,7 +395,7 @@ VOORTGANG = {
     "encoding_trials", "scan_run", "verificatie", "kwaliteitsmeting", "quality_measurements",
     # quarantaine en herstel
     "quarantine_items", "quarantine_release_checks", "replacement_transactions",
-    "replacement_journal",
+    "replacement_journal", "vervang_transactie", "download_janitor_trash",
     # ledger
     "storage_ledger_events",
     # mediaserver
@@ -415,15 +415,77 @@ VOORTGANG = {
 }
 
 
+_FORK_COMMANDS = {"kolommen": {"Status", "StartedAt", "EndedAt", "Duration", "Result",
+                                "Exception", "Message", "Body", "QueuedAt",
+                                "LastExecutionTime", "Trigger", "Priority"},
+                   "rijen_vluchtig": True}
+_FORK_PLANNER = {"kolommen": {"LastExecution", "LastStartTime"}}
+
+#: databases die als geheel niet vergeleken mogen worden (logregels van de forks)
+HELE_DATABASE_TOEGESTAAN = {"*/logs.db"}
+
+#: de TOEGESTANE lijst (S-P2-610, R-HARDE-EIS-2/R-TECH-2): alleen deze (database, tabel) mogen een
+#: uitzondering hebben, en alleen op deze kolommen (``rijen``: per sleutel van ``system_state``;
+#: ``rijen_vluchtig``: alleen de opdrachtgeschiedenis van de forks). Elke andere regel is rood. Een
+#: nieuwe regel vraagt dus een wijziging hier, en daarmee een lezing door R-HARDE-EIS.
+TOEGESTAAN: dict[tuple[str, str], dict[str, Any]] = {
+    ("*/sonarr.db", "ScheduledTasks"): _FORK_PLANNER,
+    ("*/sonarr.db", "Commands"): _FORK_COMMANDS,
+    ("*/radarr.db", "ScheduledTasks"): _FORK_PLANNER,
+    ("*/radarr.db", "Commands"): _FORK_COMMANDS,
+    ("core/mediaguard.db", "system_state"): {
+        "kolommen": {"updated_at"},
+        "rijen": {s: {"value_json"} for s in (
+            "taskwatch:*", "mediaserver_started_at", "encoder_emergency_pushed",
+            "quarantine_orphans", "recovery_heartbeat", "storage_probe")}},
+    ("core/mediaguard.db", "users"): {"kolommen": {"last_login_at"}},
+    ("encode/app.db", "functie"): {"kolommen": {"gewijzigd_op"}},
+    ("encode/app.db", "noodstop"): {"kolommen": {"bijgewerkt"}},
+    ("encode/app.db", "onderhoud_status"): {"kolommen": {"laatst_op"}},
+    ("encode/app.db", "worker_config"): {"kolommen": {"pauze_reden"}},
+    # de enige uitzondering op een voortgangstabel (besluit BN-610-1, optie a, strikt): het
+    # tijdstip van de herstelcontrole van de AV1-engine bij elke start (vervanging.py,
+    # recover_replacements/_set_status), ook zonder upgrade gemeten
+    ("encode/app.db", "vervang_transactie"): {"kolommen": {"gewijzigd_op"}},
+}
+
+#: (database, tabel) op een voortgangstabel die een uitzondering mag hebben, met de kolommen
+VOORTGANG_UITZONDERING = {("encode/app.db", "vervang_transactie"): {"gewijzigd_op"}}
+
+
 def _controleer_uitzonderingen(uitz: dict[str, Any]) -> None:
+    assert uitz.get("databases"), "geen databases in het uitzonderingenbestand"
     for db, regel in uitz["databases"].items():
-        assert regel.get("reden") or regel.get("tabellen"), db
+        assert set(regel) <= {"hele_database", "reden", "tabellen"}, (db, sorted(regel))
         if regel.get("hele_database"):
-            assert db.endswith("logs.db"), db
-        for tabel, t in regel.get("tabellen", {}).items():
+            assert db in HELE_DATABASE_TOEGESTAAN and regel.get("reden"), db
+            assert not regel.get("tabellen"), db
+            continue
+        assert regel.get("tabellen"), db
+        for tabel, t in regel["tabellen"].items():
+            mag = TOEGESTAAN.get((db, tabel))
+            assert mag is not None, f"geen toegestane uitzondering: {db} {tabel}"
             assert t.get("reden"), (db, tabel)
-            assert tabel not in VOORTGANG, (db, tabel)
-            assert not t.get("tabel_mag_weg"), (db, tabel)
+            assert set(t) <= {"kolommen", "reden", "rijen", "rijen_vluchtig"}, (db, tabel, set(t))
+            assert set(t.get("kolommen", [])) <= mag["kolommen"], (db, tabel, t.get("kolommen"))
+            assert not t.get("rijen_vluchtig") or mag.get("rijen_vluchtig"), (db, tabel)
+            for r in t.get("rijen", []):
+                kol = mag.get("rijen", {}).get(r.get("sleutel"))
+                assert kol is not None, (db, tabel, r.get("sleutel"))
+                assert set(r.get("kolommen", [])) <= kol, (db, tabel, r)
+            if tabel in VOORTGANG:
+                assert set(t.get("kolommen", [])) <= VOORTGANG_UITZONDERING.get(
+                    (db, tabel), set()), (db, tabel)
+                assert not t.get("rijen") and not t.get("rijen_vluchtig"), (db, tabel)
+
+
+def test_de_toegestane_lijst_raakt_de_voortgang_alleen_in_het_tijdstip_van_herstel() -> None:
+    """De toegestane lijst zelf: precies één (database, tabel) uit de voortgang, met één kolom."""
+    op_voortgang = {k: v["kolommen"] for k, v in TOEGESTAAN.items() if k[1] in VOORTGANG}
+    assert op_voortgang == VOORTGANG_UITZONDERING == {
+        ("encode/app.db", "vervang_transactie"): {"gewijzigd_op"}}
+    assert all(not v.get("rijen") and not v.get("rijen_vluchtig")
+               for k, v in TOEGESTAAN.items() if k[1] in VOORTGANG)
 
 
 def test_uitzonderingen_hebben_elk_een_reden_en_raken_de_voortgang_niet() -> None:
@@ -434,15 +496,80 @@ def test_uitzonderingen_hebben_elk_een_reden_en_raken_de_voortgang_niet() -> Non
     ("core/mediaguard.db", "migration_runs"), ("core/mediaguard.db", "ai_proposals"),
     ("core/mediaguard.db", "jobs"), ("core/mediaguard.db", "identity_results"),
     ("core/mediaguard.db", "mediaserver_pending"), ("encode/app.db", "job_poging"),
+    ("encode/app.db", "library"), ("core/mediaguard.db", "download_janitor_trash"),
 ])
 def test_een_uitzondering_op_de_voortgang_wordt_geweigerd(db: str, tabel: str) -> None:
     """Mutatieproef (V-003): dezelfde uitzonderingen plus één regel op een voortgangstabel, met
-    een reden, is rood (S-P2-610: de lijst miste o.a. migratie, AI-advies, taken en identity)."""
+    een reden, is rood (S-P2-610: de lijst miste o.a. migratie, AI-advies, taken en identity;
+    daarna ook de bibliotheek van de AV1-engine en de herstelbare prullenbak van core)."""
     uitz = copy.deepcopy(UITZ)
     uitz["databases"].setdefault(db, {"tabellen": {}})["tabellen"][tabel] = {
         "kolommen": ["status"], "reden": "proef"}
     with pytest.raises(AssertionError):
         _controleer_uitzonderingen(uitz)
+
+
+def _extra_kolom_herstel(uitz: dict[str, Any]) -> None:
+    regel = uitz["databases"]["encode/app.db"]["tabellen"]["vervang_transactie"]
+    regel["kolommen"] = [*regel["kolommen"], "status"]
+
+
+def _herstel_rijen_vluchtig(uitz: dict[str, Any]) -> None:
+    uitz["databases"]["encode/app.db"]["tabellen"]["vervang_transactie"]["rijen_vluchtig"] = True
+
+
+def _tabel_mag_weg(uitz: dict[str, Any]) -> None:
+    uitz["databases"]["encode/app.db"]["tabellen"]["functie"]["tabel_mag_weg"] = True
+
+
+def _hele_database_encode(uitz: dict[str, Any]) -> None:
+    uitz["databases"]["encode/app.db"]["hele_database"] = True
+
+
+def _ruimer_databasepatroon(uitz: dict[str, Any]) -> None:
+    uitz["databases"]["*/app.db"] = {"tabellen": {"vervang_transactie": {
+        "kolommen": ["gewijzigd_op"], "reden": "proef"}}}
+
+
+def _extra_kolom_buiten_voortgang(uitz: dict[str, Any]) -> None:
+    regel = uitz["databases"]["core/mediaguard.db"]["tabellen"]["users"]
+    regel["kolommen"] = [*regel["kolommen"], "password_hash"]
+
+
+def _tabel_buiten_de_lijst(uitz: dict[str, Any]) -> None:
+    # ook een tabel die (nog) niet in VOORTGANG is ingedeeld, valt buiten de toegestane lijst
+    uitz["databases"]["core/mediaguard.db"]["tabellen"]["dv_conversion_evidence"] = {
+        "kolommen": ["created_at"], "reden": "proef"}
+
+
+def _extra_sleutel_system_state(uitz: dict[str, Any]) -> None:
+    uitz["databases"]["core/mediaguard.db"]["tabellen"]["system_state"]["rijen"].append(
+        {"sleutel": "hook_key:*", "kolommen": ["value_json"]})
+
+
+@pytest.mark.parametrize("mutatie", [
+    _extra_kolom_herstel, _herstel_rijen_vluchtig, _tabel_mag_weg, _hele_database_encode,
+    _ruimer_databasepatroon, _extra_kolom_buiten_voortgang, _tabel_buiten_de_lijst,
+    _extra_sleutel_system_state,
+], ids=lambda f: f.__name__.lstrip("_"))
+def test_alleen_de_toegestane_uitzonderingen_zijn_groen(mutatie: Any) -> None:
+    """Mutatieproef (V-003, R-HARDE-EIS-1/-2 van S-P2-610): de bewaker is een toegestane lijst.
+    Een tweede kolom op ``vervang_transactie`` (bv. ``status``), vluchtige rijen, een ruimer
+    databasepatroon of een kolom of sleutel die er nu niet staat, is rood."""
+    uitz = copy.deepcopy(UITZ)
+    mutatie(uitz)
+    with pytest.raises(AssertionError):
+        _controleer_uitzonderingen(uitz)
+
+
+def test_de_enige_uitzondering_op_de_voortgang_staat_in_de_toelichting() -> None:
+    """R-HARDE-EIS-1 (S-P2-610, besluit BN-610-1 optie a, strikt): op een voortgangstabel staat
+    precies één uitzondering, en de toelichting van het bestand noemt haar letterlijk."""
+    op_voortgang = {(db, tabel): sorted(t.get("kolommen", []))
+                    for db, regel in UITZ["databases"].items()
+                    for tabel, t in regel.get("tabellen", {}).items() if tabel in VOORTGANG}
+    assert op_voortgang == {("encode/app.db", "vervang_transactie"): ["gewijzigd_op"]}
+    assert "encode/app.db, vervang_transactie, alleen gewijzigd_op" in UITZ["toelichting"]
 
 
 # -- de poort zit in de workflows ----------------------------------------------------------------
