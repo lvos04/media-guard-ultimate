@@ -466,6 +466,16 @@ en-US-referentiebeeld, dus geen beeld is fout.
 | R-ONTWERP-1 | belangrijk | Op een subpagina breekt de titel in de bovenbalk midden in een woord: "Bibliothe/ek" op 360 dp in het Nederlands (ook in de referentiebeelden `Light360`/`Dark360ScreenShots_bibliotheekDetail.png`, al vóór deze stap) en "Libra/ry" in het Engels met grote letter op 360 dp (eigen meting). `TopBar` liet het woord "Aandacht"/"Attention" alleen vallen als het merk niet paste; de titel van een subpagina telde niet mee. §(5) meldde eerder "niets breekt midden in een woord"; dat klopte niet voor dit beeld. | `ui/nav/Bars.kt`, `TopBar`: op een subpagina telt de gemeten breedte van de titel mee; past hij niet naast het hele woord, dan valt het woord weg (icoon en telling blijven, de volledige naam staat in de toegankelijke tekst; dezelfde terugval die het ontwerp al had). Opnieuw opgenomen: alleen `Light360ScreenShots_bibliotheekDetail.png` en `Dark360ScreenShots_bibliotheekDetail.png` (`git diff --stat` op de beeldenmap: precies die twee). Bekeken: "Bibliotheek" heel; in de eigen meting "Library" heel, ook met grote letter. |
 | R-ONTWERP-2 | belangrijk | Met grote letter (fontScale 1,3) plakken sleutel en waarde in `KeyValue` aan elkaar: "In MediaGuardoff" op Instellingen, en "Latest version" staat nagenoeg tegen "1.2.3" (eigen meting, Engels, 360 dp; de sleutel vult de vaste kolom van 120 dp en er zat geen tussenruimte). Taalonafhankelijk (de sleutel "In MediaGuard" is in beide talen gelijk); geen referentiebeeld toont dat deel. Tekstvergroting mag de indeling niet breken (WCAG 1.4.4, Peil §12). | `ui/Components.kt`, `KeyValue`: de waarde begint op 120 dp of, als de sleutel breder is dan 112 dp, op de breedte van de sleutel plus `MgSpace.s2`. Past de sleutel ruim, dan staat alles op dezelfde plek: na `recordPaparazziDebug` was geen enkel referentiebeeld door deze wijziging veranderd. Bekeken in de eigen meting: "In MediaGuard  off" met tussenruimte. |
 
+**Vaste referentiebeelden (A-HERSTEL S-P2-620, R-EERLIJK-2, commit `0025ec1`).** De meting hierboven stond buiten de
+repo. Nu staan twee beelden in de referentieset: `EnGrootLight360HoogScreenShots_instellingenWaarschuwingen.png` en
+`EnGrootLight360HoogScreenShots_bibliotheekDetail.png` (grote letter 1,3, 360 dp, en-US, licht, volle lengte op 2 px
+per dp). Bekeken: "In MediaGuard  off" en "Latest version  1.2.3" met tussenruimte, "Library" heel. Alle bestaande
+beelden bleven byte-gelijk. Proef met de oude code (vóór `0679551`): met de oude `KeyValue` toont het beeld
+"In MediaGuardoff" (2 090 van 3 769 920 pixels anders, 0,06 %), met de oude `TopBar` "Libra/ry" (17 579 pixels, 0,47 %);
+in beide gevallen bleef `:app:verifyPaparazziDebug` groen, want het verschil valt onder de tolerantie van 0,5 %
+(R-TECH-3). Het herstel van R-ONTWERP-1 (Engels, grote letter) en R-ONTWERP-2 is dus **alleen bekeken in het beeld**:
+de beelden leggen de goede stand vast, maar verify bewaakt deze twee fouten niet.
+
 ### 12.4 Open (klein)
 
 1. **"Exemption"** (knop bij "Battery restriction is on", Instellingen) is een zelfstandig naamwoord als knoptekst;
