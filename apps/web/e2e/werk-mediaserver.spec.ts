@@ -117,7 +117,12 @@ for (const width of [1440, 390] as const) {
     await form.locator("#ms-key-new").fill(sleutel);
     await expect(form.locator("#ms-key-new")).toHaveValue(sleutel);
     await opslaan.click();
-    const tweede = tab.getByTestId("ms-server-2");
+    // het id van de nieuwe server komt van de core; een id wordt nooit opnieuw uitgedeeld (S-P2-600, R-TECH-3), dus
+    // de tweede run van deze test in dezelfde core krijgt een hoger nummer dan 2
+    await expect.poll(async () => (await servers(page)).length).toBe(2);
+    const nieuw = (await servers(page))[1].server_id;
+    expect(nieuw).toBeGreaterThan(1);
+    const tweede = tab.getByTestId(`ms-server-${nieuw}`);
     await expect(tweede).toBeVisible();
     await expect(tweede).toContainText("Jelly Leon");
     await expect(tweede).toContainText("http://127.0.0.1:9");
@@ -126,10 +131,10 @@ for (const width of [1440, 390] as const) {
     // er is geen geslaagde meting: dus nooit "Gezond", wel de reden
     await expect(tweede.locator(".chip")).not.toContainText(["Gezond"]);
     await expect(tweede.locator(".chip").nth(1)).toContainText(/Storing|Onbekend/);
-    await expect(tab.getByTestId("ms-why-2")).toContainText(/Geen contact|Nog niet gemeten/);
+    await expect(tab.getByTestId(`ms-why-${nieuw}`)).toContainText(/Geen contact|Nog niet gemeten/);
     // TestResultaat (C-58): de mislukte test staat als gemeten falen (danger, nooit amber) in de vaste live-regio van
     // DEZE server, niet los onder de lijst
-    const uitslag = tab.getByTestId("ms-result-2");
+    const uitslag = tab.getByTestId(`ms-result-${nieuw}`);
     await expect(uitslag).toHaveAttribute("role", "status");
     await expect(uitslag.locator(".inline-state")).toHaveAttribute("data-tone", "danger");
     await expect(uitslag.locator(".inline-state svg")).toHaveClass(/lucide-octagon-x/);
@@ -148,7 +153,7 @@ for (const width of [1440, 390] as const) {
     await nergens();
     const na = await servers(page);
     expect(na.map((x) => [x.server_id, x.kind, x.label, x.enabled, x.key_set, x.legacy])).toEqual([
-      [1, voor[0].kind, voor[0].label, true, false, true], [2, "jellyfin", "Jelly Leon", true, true, false],
+      [1, voor[0].kind, voor[0].label, true, false, true], [nieuw, "jellyfin", "Jelly Leon", true, true, false],
     ]);
     expect(na[1].connected).toBe(false);
     // met twee servers gelden de schakelaars voor elke gekoppelde server
@@ -171,7 +176,7 @@ for (const width of [1440, 390] as const) {
     await dialoog.getByRole("button", { name: "Server ontkoppelen" }).click();
     await expect(dialoog).toHaveCount(0);
     await expect(tweede.locator(".chip")).toContainText("Ontkoppeld");
-    await expect(tab.getByTestId("ms-why-2")).toContainText("Adres en sleutel zijn bewaard");
+    await expect(tab.getByTestId(`ms-why-${nieuw}`)).toContainText("Adres en sleutel zijn bewaard");
     expect((await servers(page))[1]).toMatchObject({ enabled: false, followed: false, key_set: true });
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/mediaservers-ontkoppeld-${width}.png`, fullPage: true });
 
