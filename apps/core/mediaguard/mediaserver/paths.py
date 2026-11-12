@@ -1,5 +1,5 @@
 """Paden vertalen tussen MediaGuard (bv. ``/data/Media/Films``) en de mediaserver
-(bv. ``/mnt/tank/Media/Films`` of ``/media/Films``).
+(bv. ``/mnt/voorbeeldpool/Media/Films`` of ``/media/Films``).
 
 Koppeling op het langste gelijke staartstuk van de mapnaam (hoofdletterongevoelig als het
 anders niet eenduidig is). Een MediaGuard-map zonder eenduidige tegenhanger wordt niet

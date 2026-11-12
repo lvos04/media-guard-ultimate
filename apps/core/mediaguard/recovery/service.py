@@ -63,7 +63,7 @@ def setting_defs() -> list[SettingDef]:
         SettingDef("recovery.truenas_verify_tls", "bool", True, CATEGORY,
                    "TLS-certificaat TrueNAS controleren", "Verify TrueNAS TLS", advanced=True),
         SettingDef("recovery.zfs_dataset", "string", "", CATEGORY, "Dataset voor snapshots",
-                   "Dataset for snapshots", help_nl="Bijv. tank/media", advanced=True),
+                   "Dataset for snapshots", help_nl="Bijv. voorbeeldpool/media", advanced=True),
         SettingDef("quarantine.mode", "enum", "retain", CATEGORY,
                    "Originelen na vervanging", "Originals after replacement",
                    choices=("retain", "immediate_after_check"),
