@@ -485,6 +485,7 @@ de beelden leggen de goede stand vast, maar verify bewaakt deze twee fouten niet
 2. **"Partially available"** loopt op 360 dp in een kaart van "Discover" om op twee regels binnen het label (geen
    afkapping, wel een hoger label dan de buren). Geen referentiebeeld van Aanvragen in het Engels.
 3. Bijgewerkt (KLEIN-16): de knop heet nu "Exempt" en het label "Partial"; Aanvragen in het Engels alleen in de taaltest.
+   Ook het Nederlands is bijgewerkt (KLEIN-17): de knop heet nu "Uitzonderen" (werkwoord) in plaats van "Uitzondering".
 
 Niet in deze review (bekend, elders belegd): de Paparazzi-tolerantie van 0,5 % die een gewijzigde titel doorlaat
 (R-TECH-3) en de bronscan van `TaalTest` (R-TECH-1).
