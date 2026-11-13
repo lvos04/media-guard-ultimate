@@ -98,6 +98,9 @@ from app.wachtrijherstel import (
 )
 
 LOGGER = logging.getLogger(__name__)
+_URL_CONTROL_MESSAGE = (
+    "Integratie-URL bevat stuurtekens of witruimte aan het begin of eind (tab, regeleinde, spatie)"
+)
 LIBRARY_DELETE_CONFIRMATION = "BIBLIOTHEEK VERWIJDEREN"
 # Containermodus: MediaGuard core is de enige beslisser; de encoder voert uit.
 MEDIAGUARD_DECIDES = "MediaGuard beslist"
@@ -3169,6 +3172,12 @@ def create_api_router() -> APIRouter:
         except BackupError as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    def _check_integration_url(url: str) -> None:
+        """Geen stuurtekens en geen witruimte aan de randen: httpx weigert zo'n adres met
+        ``InvalidURL`` (geen ``httpx.HTTPError``, dus anders een kale 500; R-VEILIG-2)."""
+        if url != url.strip() or any(ord(char) < 0x20 or ord(char) == 0x7F for char in url):
+            raise HTTPException(422, _URL_CONTROL_MESSAGE)
+
     async def integration_test(
         kind: str, body: IntegrationTest, request: Request
     ) -> dict[str, Any]:
@@ -3181,6 +3190,8 @@ def create_api_router() -> APIRouter:
         setting = database.fetch_one(f"SELECT {kind}_url AS url FROM instelling WHERE id=1")
         stored_url = str(setting["url"]) if setting and setting["url"] else ""
         url = body.url or stored_url
+        if body.url:
+            _check_integration_url(body.url)
         if (
             body.url
             and not body.api_sleutel
@@ -3203,6 +3214,9 @@ def create_api_router() -> APIRouter:
             raise HTTPException(422, f"{kind} URL en API-sleutel zijn niet ingesteld")
         if not url.startswith(("http://", "https://")):
             raise HTTPException(422, "Integratie-URL moet met http:// of https:// beginnen")
+        if any(ord(char) < 0x20 or ord(char) == 0x7F for char in url):
+            # een opgeslagen adres van vóór de controle in PATCH
+            raise HTTPException(422, _URL_CONTROL_MESSAGE)
         try:
             async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
                 if kind == "jellyfin":
@@ -3221,6 +3235,8 @@ def create_api_router() -> APIRouter:
                 else:
                     headers, path = {"X-Api-Key": api_key}, paths[kind]
                 response = await client.get(url.rstrip("/") + path, headers=headers)
+        except httpx.InvalidURL as exc:
+            raise HTTPException(422, _URL_CONTROL_MESSAGE) from exc
         except httpx.HTTPError as exc:
             raise HTTPException(502, f"Verbinding mislukt: {exc}") from exc
         if response.status_code >= 400:
@@ -3264,6 +3280,12 @@ def create_api_router() -> APIRouter:
     ) -> dict[str, Any]:
         if body.url is not None and body.url and not body.url.startswith(("http://", "https://")):
             raise HTTPException(422, "Integratie-URL moet met http:// of https:// beginnen")
+        if body.url:
+            _check_integration_url(body.url)
+        # een nieuw ingevoerde sleutel: de strengste regel, zoals de testknop; een al opgeslagen
+        # sleutel (ook een van 1.2.2) blijft onaangeroerd. Niets opslaan vóór beide controles.
+        if body.api_sleutel and not body.verwijder_sleutel and not valid_key(body.api_sleutel):
+            raise HTTPException(422, "ongeldige API-sleutel (onverwachte tekens)")
         database = _database(request)
         if body.url is not None:
             database.execute(f"UPDATE instelling SET {kind}_url=? WHERE id=1", (body.url or None,))

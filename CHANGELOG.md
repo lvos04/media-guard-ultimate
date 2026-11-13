@@ -32,6 +32,7 @@ status-API krijgt er velden bij, geen veld verdwijnt. Geen release.
   loggend doorgeefluik. 24 tests, 113 controles; in CI in de zware run (job `mediaservers`). Uitkomst: `RESULTS.md`.
 - **OpenSubtitles-aanmelding:** kaatst `/login` bij een fout het wachtwoord of de gebruikersnaam terug, dan staan die
   in geen enkele vorm (letterlijk, JSON-, URL- of HTML-gecodeerd) in de foutmelding; net als de sleutels uit de koppen.
+- **Encoder-koppelingen:** `PATCH /api/integraties/<soort>` weigert een nieuwe sleutel met onverwachte tekens (422, zoals de testknop); een adres met stuurtekens of witruimte aan de rand geeft 422 in plaats van 500.
 - **Android-app ook in en-US** (ADR-0023): de taal volgt Android (systeemtaal, of vanaf Android 13 de taal per app);
   Nederlands blijft de standaard. Getallen, datums en tijden volgen de taal. Teksten die MediaGuard zelf aanlevert,
   blijven Nederlands. De Nederlandse app is ongewijzigd (78 referentiebeelden gelijk); 6 Engelse beelden erbij.

@@ -512,3 +512,128 @@ def test_emby_sleutel_met_stuurteken_gaat_nooit_de_deur_uit(sleutel: str) -> Non
         with pytest.raises(ValueError, match="ongeldige API-sleutel") as exc:
             mediaserver_headers(product, sleutel)
         assert sleutel not in str(exc.value)
+
+
+# ── Tekencontrole op sleutel en adres (KLEIN-51, S-P2-600 vervolgpunt, R-VEILIG-2) ─────────────
+ONGELDIGE_SLEUTELS = ["sleutelé", "sleutel\r\nX-Kwaad: 1", "sleutel\n1", "sleutel\r1"]
+ONGELDIGE_ADRESSEN = [
+    "http://emby:8096\t",
+    "http://emby:8096/\n",
+    "http://emby:8096\r\n",
+    "http://emby:8096 ",
+    "http://em\x01by:8096",
+    "http://emby:8096/a\x7fb",
+]
+
+
+def _opgeslagen(database: Database, configured: Settings, kind: str) -> tuple[str | None, str]:
+    row = database.fetch_one(f"SELECT {kind}_url AS url FROM instelling WHERE id=1")
+    assert row is not None
+    return row["url"], SecretStore(database, configured).get(f"{kind}_api_sleutel")
+
+
+@pytest.mark.parametrize("sleutel", ONGELDIGE_SLEUTELS, ids=["e-accent", "crlf", "lf", "cr"])
+@pytest.mark.parametrize("kind", ["jellyfin", "radarr", "sonarr"])
+def test_patch_weigert_een_nieuwe_sleutel_zonder_tekencontrole_met_422(
+    mg_client: MgClient, caplog: pytest.LogCaptureFixture, kind: str, sleutel: str
+) -> None:
+    """PATCH slaat een nieuwe sleutel alleen op als hij de strengste regel (``valid_key``)
+    doorstaat; anders 422 met de tekst van de testknop, zonder de sleutel in antwoord of log. Het
+    adres en de al opgeslagen sleutel blijven onaangeroerd."""
+    client, database, configured = mg_client
+    r = client.patch(
+        f"/api/integraties/{kind}",
+        headers=HEADERS,
+        json={"url": "http://emby:8096", "api_sleutel": OPGESLAGEN},
+    )
+    assert r.status_code == 200, r.text
+    caplog.set_level("DEBUG")
+
+    r = client.patch(
+        f"/api/integraties/{kind}",
+        headers=HEADERS,
+        json={"url": "http://ander:8096", "api_sleutel": sleutel},
+    )
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == "ongeldige API-sleutel (onverwachte tekens)"
+    assert sleutel not in r.text and sleutel not in caplog.text
+    assert _opgeslagen(database, configured, kind) == ("http://emby:8096", OPGESLAGEN)
+
+
+@pytest.mark.parametrize("adres", ONGELDIGE_ADRESSEN)
+@pytest.mark.parametrize("kind", ["jellyfin", "radarr"])
+def test_patch_weigert_een_adres_met_stuurtekens_of_witruimte_aan_de_rand(
+    mg_client: MgClient, kind: str, adres: str
+) -> None:
+    """Een adres met een stuurteken of met witruimte aan het begin of eind geeft 422 met een vaste
+    melding; het opgeslagen adres en de opgeslagen sleutel blijven staan."""
+    client, database, configured = mg_client
+    r = client.patch(
+        f"/api/integraties/{kind}",
+        headers=HEADERS,
+        json={"url": "http://emby:8096", "api_sleutel": OPGESLAGEN},
+    )
+    assert r.status_code == 200, r.text
+
+    for body in ({"url": adres}, {"url": adres, "api_sleutel": "nieuwe-sleutel-7"}):
+        r = client.patch(f"/api/integraties/{kind}", headers=HEADERS, json=body)
+        assert r.status_code == 422, (body, r.text)
+        assert "stuurtekens" in r.json()["detail"]
+        assert "nieuwe-sleutel-7" not in r.text and OPGESLAGEN not in r.text
+        assert _opgeslagen(database, configured, kind) == ("http://emby:8096", OPGESLAGEN)
+
+
+def test_patch_laat_een_opgeslagen_sleutel_van_1_2_2_onaangeroerd(mg_client: MgClient) -> None:
+    """HARDE EIS: een sleutel die 1.2.2 zonder controle opsloeg, blijft staan als PATCH alleen
+    het adres wijzigt; de tekencontrole geldt alleen voor een nieuw ingevoerde sleutel."""
+    client, database, configured = mg_client
+    oud = "emby sleutel,1"
+    SecretStore(database, configured).set("jellyfin_api_sleutel", oud)
+
+    r = client.patch(
+        "/api/integraties/jellyfin", headers=HEADERS, json={"url": "http://emby:8096"}
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["sleutel_ingesteld"] is True and oud not in r.text
+    assert _opgeslagen(database, configured, "jellyfin") == ("http://emby:8096", oud)
+
+
+@pytest.mark.parametrize("adres", ONGELDIGE_ADRESSEN)
+@pytest.mark.parametrize("kind", ["jellyfin", "radarr"])
+def test_testknop_weigert_een_adres_met_stuurtekens_met_422_zonder_verzoek(
+    mg_client: MgClient, monkeypatch: pytest.MonkeyPatch, kind: str, adres: str
+) -> None:
+    """R-VEILIG-2: een adres dat op een tab of regeleinde eindigt gaf httpx.InvalidURL, een kale
+    500. Nu 422 met een vaste melding, zonder één verzoek en zonder de sleutel in het antwoord."""
+    client, _database, _settings = mg_client
+    seen = _nep_mediaserver(monkeypatch, EMBY_INFO)
+
+    r = client.post(
+        f"/api/integraties/{kind}/test",
+        headers=HEADERS,
+        json={"url": adres, "api_sleutel": SLEUTEL},
+    )
+
+    assert r.status_code == 422, r.text
+    assert "stuurtekens" in r.json()["detail"] and SLEUTEL not in r.text
+    assert seen == []
+
+
+@pytest.mark.parametrize("adres", ["http://emby:8096\t", "http://emby:8096/\n", "http://e\x01:1"])
+def test_testknop_met_een_opgeslagen_adres_met_stuurteken_geeft_422(
+    mg_client: MgClient, monkeypatch: pytest.MonkeyPatch, adres: str
+) -> None:
+    """Een adres dat vóór deze controle is opgeslagen (PATCH controleerde het niet) geeft bij de
+    testknop ook 422 in plaats van 500; er gaat geen verzoek en de sleutel staat nergens."""
+    client, database, configured = mg_client
+    SecretStore(database, configured).set("jellyfin_api_sleutel", OPGESLAGEN)
+    database.execute("UPDATE instelling SET jellyfin_url=? WHERE id=1", (adres,))
+    seen = _nep_mediaserver(monkeypatch, EMBY_INFO)
+
+    r = client.post("/api/integraties/jellyfin/test", headers=HEADERS, json={})
+
+    assert r.status_code == 422, r.text
+    assert "stuurtekens" in r.json()["detail"] and OPGESLAGEN not in r.text
+    assert seen == []
