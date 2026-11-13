@@ -308,6 +308,48 @@ test("ondertitels: wat ontbreekt is een neutraal label, een mislukte test is gem
   expect((await status(page) as unknown as typeof voor).subtitles).toMatchObject(voor.subtitles);
 });
 
+test("390 px: uitslag en melding van de ondertitelkaart staan na de klik helemaal in beeld, niet onder de ondernavigatie", async ({ page }) => {
+  // PEIL_REVIEW §11.5 punt 2: de ondertitelkaart is de laatste kaart; wie tot onderaan scrolt en "Opslaan en testen"
+  // kiest, kreeg de uitslag of melding half achter de ondernavigatie. Die komt nu bij verschijnen in beeld
+  // (scrollIntoView, block "nearest"; de scroll-padding van Peil houdt kop en ondernavigatie vrij).
+  await page.setViewportSize({ width: 390, height: 800 });
+  await login(page);
+  await page.goto("/inrichten?tab=mediaserver");
+  const kaart = page.locator("section.card", { has: page.getByTestId("subtitles-card") });
+  const knop = kaart.getByRole("button", { name: "Opslaan en testen" });
+  await expect(knop).toBeVisible();
+  // helemaal in beeld = binnen het venster, onder de kopbalk en boven de ondernavigatie
+  const inBeeld = (loc: ReturnType<Page["locator"]>) => loc.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    const kop = document.querySelector("header.topbar")!.getBoundingClientRect().bottom;
+    const nav = document.querySelector("nav.bottomnav")!.getBoundingClientRect().top;
+    return r.height > 0 && r.top >= kop - 0.5 && r.bottom <= Math.min(nav, window.innerHeight) + 0.5;
+  });
+  const naarOnder = () => page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  // uitslag (vaste live-regio): de e2e-core heeft geen Bazarr-sleutel, dus een gemeten "mislukt"
+  await naarOnder();
+  await expect(knop).toBeInViewport();
+  await knop.click();
+  const uitslag = kaart.getByTestId("subs-result").locator(".inline-state");
+  await expect(uitslag).toContainText("Nog geen Bazarr-sleutel of OpenSubtitles-account.");
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/ondertitels-uitslag-390.png` });
+  await expect.poll(() => inBeeld(uitslag)).toBe(true);
+  // melding (role=alert) bij een geweigerd verzoek (nagebootst; er wordt niets opgeslagen), op een verse pagina: zonder
+  // eerdere uitslag is er onder de knoppen nog geen ruimte die de melding kan innemen
+  await page.route("**/api/v1/mediaserver/subtitles/config", (route) => route.fulfill({ status: 422, json: { detail: "Ongeldig adres: geen spaties en geen gebruikersnaam in het adres." } }));
+  await page.goto("/inrichten?tab=mediaserver");
+  await expect(knop).toBeVisible();
+  await naarOnder();
+  await expect(knop).toBeInViewport();
+  await knop.click();
+  const melding = kaart.getByRole("alert");
+  await expect(melding).toContainText("Ongeldig adres");
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/ondertitels-melding-390.png` });
+  await expect.poll(() => inBeeld(melding)).toBe(true);
+  // geen zijwaarts scrollen
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+});
+
 test("een mislukt verzoek na een geslaagde test: de oude uitslag gaat weg, de fout is een melding", async ({ page }) => {
   // R-TECH-6: eerst een geslaagde "Verbinding testen", daarna faalt hetzelfde verzoek (500). De live-regio van het
   // TestResultaat toont dan geen oude "geslaagd" meer naast de fout, en ook geen "mislukt": de fout staat als role=alert.

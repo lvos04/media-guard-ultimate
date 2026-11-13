@@ -1,7 +1,7 @@
 "use client";
 
 import { Captions, Eye, Link2, MonitorPlay, Pencil, Plus, RefreshCw, Search, Trash2, Unlink } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { DangerDialog } from "@/components/mg/domain";
 import { Button, Card, Field, InlineState, Modal, Segmented, StatusChip, Switch } from "@/components/mg/primitives";
@@ -489,6 +489,13 @@ function SubtitlesCard({ s, reload }: { s: MsStatus; reload: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<TestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Uitslag en melding staan onder de laatste kaart: bij verschijnen in beeld brengen, anders vallen ze op een smal
+  // scherm half achter de ondernavigatie (PEIL_REVIEW §11.5 punt 2). "nearest" scrolt alleen als het nodig is; de
+  // scroll-padding van Peil houdt kop en ondernavigatie vrij.
+  const resultRef = useRef<HTMLDivElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (result) resultRef.current?.scrollIntoView({ block: "nearest" }); }, [result]);
+  useEffect(() => { if (error) errorRef.current?.scrollIntoView({ block: "nearest" }); }, [error]);
   // Zoals bij een server (ServerItem): een verzoek dat mislukt (geweigerde invoer, geen rechten, core onbereikbaar) is
   // geen meting. De fout staat als melding (role=alert) onder de knoppen, nooit als "mislukt" in de live-regio; een
   // oudere uitslag gaat weg (R-TECH-6).
@@ -558,10 +565,10 @@ function SubtitlesCard({ s, reload }: { s: MsStatus; reload: () => void }) {
             {admin && sub.opensubtitles_key_set ? <Button variant="ghost" className={ACTION} pending={busy === "clearos"} onClick={() => void save({ clear_opensubtitles: true })}>{t("subs.removeOs")}</Button> : null}
           </div>
           {/* TestResultaat (C-58): vaste live-regio; geslaagd is neutraal, mislukt is gemeten falen */}
-          <div role="status" className="[&:not(:empty)]:mt-3" data-testid="subs-result">
+          <div ref={resultRef} role="status" className="[&:not(:empty)]:mt-3" data-testid="subs-result">
             {result ? <InlineState tone={result.ok ? "success" : "danger"}>{result.message_nl}</InlineState> : null}
           </div>
-          {error ? <div className="mt-3"><InlineState tone="danger" role="alert">{error}</InlineState></div> : null}
+          {error ? <div ref={errorRef} className="mt-3"><InlineState tone="danger" role="alert">{error}</InlineState></div> : null}
         </div>
       </div>
     </Card>
