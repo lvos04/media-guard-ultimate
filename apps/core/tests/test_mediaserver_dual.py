@@ -876,6 +876,58 @@ def test_ondertiteldownload_volgt_een_302_naar_een_andere_host_zonder_sleutel(ct
             assert not any(geheim in v for v in r.headers.values()), r.headers
 
 
+#: neppe aanmeldgegevens met tekens die JSON, URL-code en HTML anders schrijven dan letterlijk
+NEP_OS_WACHTWOORD = 'nep "wacht" woord <&> é+/ 0123456789'
+NEP_OS_GEBRUIKER = "nep gebruiker&co <x>"
+
+
+def _vormen(geheim: str) -> set[str]:
+    return {geheim, json.dumps(geheim)[1:-1], quote(geheim, safe=""), quote_plus(geheim),
+            html.escape(geheim), html.escape(geheim, quote=False)}
+
+
+@pytest.mark.parametrize("status", [400, 500])
+@pytest.mark.parametrize("vorm", [
+    pytest.param(lambda k: k, id="letterlijk"),
+    pytest.param(lambda k: json.dumps({"password": k, "ontvangen": k}), id="json"),
+    pytest.param(lambda k: "/login?q=" + quote(k, safe=""), id="url"),
+    pytest.param(lambda k: "/login?q=" + quote_plus(k), id="url-plus"),
+    pytest.param(lambda k: f"<p>ontvangen: {html.escape(k)}</p>", id="html"),
+    pytest.param(lambda k: "x" * 175 + k + "y" * 40, id="rond-positie-200"),
+])
+def test_opensubtitles_wachtwoord_nooit_in_de_foutmelding_van_login(  # type: ignore[no-untyped-def]
+        ctx, vorm: Callable[[str], str], status: int) -> None:
+    """KLEIN-49 (A-01, vervolgpunt S-P2-600 R-TECH-2): ``OpenSubtitlesClient.login`` stuurt het
+    wachtwoord (en de gebruikersnaam) in de JSON-body. Een nep-OpenSubtitles kaatst ze bij een
+    fout van ``/login`` terug (letterlijk, JSON-, URL- of HTML-gecodeerd, of rond positie 200).
+    De melding bevat ze in geen enkele vorm; de meegestuurde Api-Key evenmin."""
+    from mediaguard.mediaserver.clients import OpenSubtitlesClient
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "api.opensubtitles.com" and request.url.path.endswith("/login"):
+            body = json.loads(request.content)
+            return httpx.Response(status, text=vorm(body["password"]) + " | "
+                                  + vorm(body["username"]))
+        return httpx.Response(404)
+
+    ctx.services["mediaserver_transport"] = httpx.MockTransport(handler)
+    os_client = OpenSubtitlesClient(ctx.services, "nep-os-sleutel-0123456789",
+                                    NEP_OS_GEBRUIKER, NEP_OS_WACHTWOORD)
+    with pytest.raises(MediaServerError) as exc:
+        asyncio.run(os_client.login())
+    melding = str(exc.value)
+    # het wachtwoord ging echt in de body naar /login
+    assert len(seen) == 1 and json.loads(seen[0].content)["password"] == NEP_OS_WACHTWOORD
+    assert exc.value.status == status and melding.startswith(f"fout {status}: "), melding
+    assert "***" in melding, melding
+    for geheim in (NEP_OS_WACHTWOORD, NEP_OS_GEBRUIKER, "nep-os-sleutel-0123456789"):
+        assert not [v for v in _vormen(geheim) if v in melding], melding
+        assert not [s for s in _stukken(geheim) if s in melding], melding
+
+
 def _emby_stand(ctx) -> tuple[Any, ...]:  # type: ignore[no-untyped-def]
     open_work = ctx.db.fetch_one("SELECT COUNT(*) AS n FROM mediaserver_server_results WHERE "
                                  "server_id=1 AND done_at IS NULL")["n"]

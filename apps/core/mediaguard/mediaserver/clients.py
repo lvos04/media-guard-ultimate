@@ -17,6 +17,7 @@ from __future__ import annotations
 import html
 import json as jsonlib
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, quote_plus
@@ -104,10 +105,13 @@ def _secrets(headers: dict[str, str]) -> set[str]:
     return {s for s in found if s}
 
 
-def _clean(text: str, headers: dict[str, str]) -> str:
+def _clean(text: str, headers: dict[str, str], body_secrets: Iterable[str] = ()) -> str:
     """Tekst uit een foutpagina zonder de meegestuurde sleutels, ook als de server ze
-    terugkaatst (letterlijk, JSON-, URL- of HTML-gecodeerd); daarna de vaste maskerregels."""
-    for secret in sorted(_secrets(headers), key=len, reverse=True):
+    terugkaatst (letterlijk, JSON-, URL- of HTML-gecodeerd); daarna de vaste maskerregels.
+    ``body_secrets``: geheimen die in de body meegingen (zoals het wachtwoord van
+    OpenSubtitles); die gaan er op dezelfde manier uit."""
+    secrets = _secrets(headers) | {s for s in body_secrets if s}
+    for secret in sorted(secrets, key=len, reverse=True):
         for form in {secret, jsonlib.dumps(secret)[1:-1], quote(secret, safe=""),
                      quote_plus(secret), html.escape(secret), html.escape(secret, quote=False)}:
             if form:
@@ -136,11 +140,13 @@ def _where(url: httpx.URL) -> str:
 async def _call(services: dict[str, Any], method: str, url: str, *,
                 headers: dict[str, str], params: Any = None, json: Any = None,
                 timeout: httpx.Timeout | float = TIMEOUT, raw: bool = False,
-                any_host: bool = False) -> Any:
+                any_host: bool = False, body_secrets: Iterable[str] = ()) -> Any:
     """Eén verzoek. Een omleiding wordt alleen gevolgd op dezelfde server (``_same_server``);
     wijst ze naar een ander adres, dan een ``MediaServerError`` en gaat er geen verzoek (en dus
     geen sleutel) daarheen. ``any_host`` is alleen voor een verzoek zonder sleutel (de
-    downloadlink van OpenSubtitles, zoals in 1.2.2); met een sleutelkop telt het niet."""
+    downloadlink van OpenSubtitles, zoals in 1.2.2); met een sleutelkop telt het niet.
+    ``body_secrets``: geheimen in de body; ze komen net als de sleutels uit de koppen nooit in
+    een foutmelding."""
     foreign_ok = any_host and not _secrets(headers)
     try:
         async with httpx.AsyncClient(transport=_transport(services), timeout=timeout,
@@ -166,8 +172,8 @@ async def _call(services: dict[str, Any], method: str, url: str, *,
         raise MediaServerError("start nog op of is even niet beschikbaar (fout 503)", 503)
     if resp.status_code >= 400:
         # eerst de sleutels eruit, dan pas inkorten (anders blijft een halve sleutel staan)
-        raise MediaServerError(f"fout {resp.status_code}: {_clean(resp.text, headers)[:200]}",
-                               resp.status_code)
+        clean = _clean(resp.text, headers, body_secrets)
+        raise MediaServerError(f"fout {resp.status_code}: {clean[:200]}", resp.status_code)
     if raw:
         return resp.content
     if not resp.content:
@@ -537,8 +543,10 @@ class OpenSubtitlesClient:
         return h
 
     async def login(self) -> None:
+        # gebruikersnaam en wachtwoord staan als geheim opgeslagen: ook die nooit in een melding
         data = await _call(self.services, "POST", OS_API + "/login", headers=self.headers,
-                           json={"username": self.user, "password": self.pw})
+                           json={"username": self.user, "password": self.pw},
+                           body_secrets=(self.pw, self.user))
         self.token = (data or {}).get("token")
         if not self.token:
             raise MediaServerError("OpenSubtitles: inloggen mislukt")
