@@ -1024,7 +1024,9 @@ def test_emby_sleutel_van_1_2_2_met_leestekens_blijft_werken(ctx, net, key: str)
                                  "emby\x7f", "embyé", " emby", "emby "])
 def test_emby_sleutel_met_stuurteken_wordt_nooit_verstuurd(ctx, net, key: str) -> None:  # type: ignore[no-untyped-def]
     """CR, LF, NUL en andere stuurtekens (kopinjectie) en niet-ASCII gaan nooit de deur uit; dat
-    kon 1.2.2 ook niet versturen. De koppeling meldt het in woorden, zonder de sleutel."""
+    kon 1.2.2 ook niet versturen. Uitzondering (ADR-0022 besluit 3): een tab binnenin de sleutel
+    gaat wel mee, want een tab mag in een kopwaarde en voegt geen kop toe. De koppeling meldt het
+    in woorden, zonder de sleutel."""
     emby, _jf = net
     ctx.secrets.set(S.SECRET_KEY, key, "1.2.2")
     with pytest.raises(MediaServerError, match="ongeldige API-sleutel") as exc:

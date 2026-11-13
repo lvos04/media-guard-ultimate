@@ -505,7 +505,9 @@ async def test_emby_sleutel_van_1_2_2_blijft_werken_in_de_encoder(
 )
 def test_emby_sleutel_met_stuurteken_gaat_nooit_de_deur_uit(sleutel: str) -> None:
     """CR, LF, NUL, andere stuurtekens en niet-ASCII: nooit in een kop (kopinjectie; 1.2.2 kon ze
-    ook niet versturen). De melding noemt de sleutel niet."""
+    ook niet versturen). Uitzondering (ADR-0022 besluit 3): een tab binnenin de sleutel gaat wel
+    mee, want een tab mag in een kopwaarde en voegt geen kop toe. De melding noemt de sleutel
+    niet."""
     from app.integraties import mediaserver_headers
 
     for product in ("", "Emby Server", "Jellyfin Server"):

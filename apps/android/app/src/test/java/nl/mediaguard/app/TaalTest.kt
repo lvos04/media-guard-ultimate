@@ -99,17 +99,18 @@ class TaalTest {
      *
      * Wat de scan ziet, in alle `.kt`-bestanden onder `ui/`:
      * - de aanroepen [schermAanroepen] (CardHeader, SectionLabel, PageHeader, EmptyState, MgButton, Text, KeyValue,
-     *   KpiTile, TimelineEntry) met een letterlijke tekst als eerste argument;
-     * - in die aanroepen de benoemde argumenten `text =`, `title =` en `label =`, en bij EmptyState ook `sub =`;
+     *   KpiTile, TimelineEntry, StatusBadge) met een letterlijke tekst als eerste argument;
+     * - in die aanroepen de benoemde argumenten [benoemdeTeksten]: `text =`, `title =`, `label =`, `sub =`, `key =`,
+     *   `actionLabel =` en `countLabel =` (dus ook StatusBadge(label = …), KeyValue(key = …) en `sub =` van KpiTile);
      * - bij een tekst met `$` alleen het letterlijke deel vóór de eerste `$` (dus "Bekijk $x" telt, "$x encodes" niet).
      *
      * Grenzen (wat de scan NIET ziet, dus niet bewezen is):
-     * - andere aanroepen, zoals StatusBadge(label = …), Icon(contentDescription = …) of eigen componenten die niet in
+     * - andere aanroepen, zoals Icon(contentDescription = …), StatusPanel, Banner of eigen componenten die niet in
      *   de lijst staan, en elk ander positioneel argument dan het eerste (zoals de tweede tekst van TimelineEntry of de
      *   waarde van KeyValue);
-     * - andere benoemde argumenten, zoals `sub =` buiten EmptyState, `key =`, `countLabel =` of `actionLabel =`;
-     * - letterlijke tekst ná de eerste `$`, tekst die via een variabele, `if`/`when` of een functie binnenkomt, en
-     *   tekst buiten `ui/`;
+     * - andere benoemde argumenten, zoals `statusLabel =`, `reason =` of `value =`;
+     * - letterlijke tekst ná de eerste `$` (zoals " encodes · " in de `sub =` van de KpiTile "Nu bezig"), tekst die via
+     *   een variabele, `if`/`when` of een functie binnenkomt, en tekst buiten `ui/`;
      * - de tekst na een escape (`\"`, `\n`): de scan leest tot de eerste `"`, `$` of backslash;
      * - de scan is een tekstscan, geen Kotlin-parser: raw strings (`"""`) en tekenliterals worden niet apart behandeld
      *   (op het moment van schrijven komen ze in `ui/` niet voor);
@@ -132,7 +133,7 @@ class TaalTest {
             MgButton("Bekijk ${'$'}RELEASES", onClick = {})
             MgButton(onClick = {}, text = "Opslaan")
             CardHeader(icon = R.drawable.x, title = "Mijn kaart")
-            KpiTile("Wachtrij", "3", Modifier.weight(1f), sub = "niet gezien: sub buiten EmptyState")
+            KpiTile("Wachtrij", "3", Modifier.weight(1f))
             KpiTile(label = "Klaar", value = null)
             TimelineEntry("Vervangen", "tweede argument telt niet")
             EmptyState(tr("Leeg", "Empty"), sub = "Niets te zien")
@@ -143,9 +144,18 @@ class TaalTest {
             val f by animateFloatAsState(1f, tween(150), label = "progress")
             Text("%.0f %%")
             Text("Server")
+            StatusBadge(PeilStatus.Gepauzeerd, label = "Noodstop actief")
+            StatusBadge(status, label = k.tekst, reason = "niet gezien: reason")
+            KeyValue(key = "Versie", value = "niet gezien: waarde")
+            KpiTile(tr("Nu", "Now"), "2", sub = "kleiner, zelfde kwaliteit")
+            KpiTile(tr("Nu", "Now"), "2", sub = "${'$'}{n} encodes · ${'$'}{m} downloads")
+            EmptyState(tr("Leeg", "Empty"), actionLabel = "Opnieuw proberen", onAction = {})
+            CardHeader(icon = R.drawable.x, title = tr("Let op", "Attention"), count = 1, countLabel = "1 ding wacht")
+            item(key = "geen schermtekst")
         """.trimIndent()
         assertEquals(listOf("Serveradres", "Bekijk ", "Opslaan", "Mijn kaart", "Wachtrij", "Klaar", "Vervangen",
-            "Niets te zien", "Na (haakjes)"), vasteTeksten(bron).filter { it !in inBeideTalenGelijk })
+            "Niets te zien", "Na (haakjes)", "Noodstop actief", "Versie", "kleiner, zelfde kwaliteit", "Opnieuw proberen",
+            "1 ding wacht"), vasteTeksten(bron).filter { it !in inBeideTalenGelijk })
     }
 
     @Test fun getallenVolgenDeTaal() {
@@ -257,7 +267,10 @@ class TaalTest {
     private companion object {
         /** De schermcomponenten met een zichtbare tekst als eerste argument (zie [geenVasteTekstInDeSchermen]). */
         val schermAanroepen = listOf("CardHeader", "SectionLabel", "PageHeader", "EmptyState", "MgButton", "Text",
-            "KeyValue", "KpiTile", "TimelineEntry")
+            "KeyValue", "KpiTile", "TimelineEntry", "StatusBadge")
+
+        /** De benoemde argumenten met een zichtbare tekst, in elke aanroep uit [schermAanroepen]. */
+        val benoemdeTeksten = setOf("text", "title", "label", "sub", "key", "actionLabel", "countLabel")
 
         /** In het Nederlands en het Engels hetzelfde woord (of geen tekst voor de lezer). */
         val inBeideTalenGelijk = setOf("Downloads", "Upgrades", "Details", "Release", "MediaGuard",
@@ -269,12 +282,10 @@ class TaalTest {
 
         /** Alle letterlijke teksten die de scan in [bron] ziet; alleen met een letter (opmaakpatronen tellen niet). */
         fun vasteTeksten(bron: String): List<String> = aanroep.findAll(bron).flatMap { m ->
-            val naam = m.groupValues[1]
-            val namen = if (naam == "EmptyState") setOf("text", "title", "label", "sub") else setOf("text", "title", "label")
             argumenten(bron, m.range.last + 1).mapIndexedNotNull { i, arg ->
                 val b = benoemd.find(arg)
                 when {
-                    b != null -> if (b.groupValues[1] in namen) letterlijkBegin(b.groupValues[2]) else null
+                    b != null -> if (b.groupValues[1] in benoemdeTeksten) letterlijkBegin(b.groupValues[2]) else null
                     i == 0 -> letterlijkBegin(arg)
                     else -> null
                 }
