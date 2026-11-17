@@ -64,19 +64,22 @@ def flag_path(ctx: AppContext) -> Path:
 
 def write_flag(ctx: AppContext) -> bool:
     """Noodstopstatus naar ``noodstop.json`` (atomair). Nooit fataal."""
-    state = ctx.state_get("emergency_stop", {"active": False}) or {}
-    payload = {"active": bool(state.get("active")), "since": state.get("since"),
-               "reason": state.get("reason") or "", "written_at": time.time()}
-    path = flag_path(ctx)
-    tmp = path.with_suffix(".tmp")
-    try:
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
-        return False
-    return True
+    # De minuuttaak en beide API-processen mogen geen oudere vlag terugschrijven.
+    # Herlees na BEGIN IMMEDIATE; de toestandsovergang is vóór deze aanroep gecommit.
+    with ctx.db.transaction():
+        state = ctx.state_get("emergency_stop", {"active": False}) or {}
+        payload = {"active": bool(state.get("active")), "since": state.get("since"),
+                   "reason": state.get("reason") or "", "written_at": time.time()}
+        path = flag_path(ctx)
+        tmp = path.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            return False
+        return True
 
 
 async def startup(ctx: AppContext) -> None:

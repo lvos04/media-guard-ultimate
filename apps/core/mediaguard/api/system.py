@@ -122,32 +122,35 @@ def emergency_stop(body: EmergencyBody, principal: Principal = Depends(require_e
             raise HTTPException(status_code=403, detail="Rol 'operator' vereist")
         raise HTTPException(status_code=403, detail=ESTOP_OFF_DETAIL if not body.active
                             else SCOPE_DENIED_DETAIL)
-    old = ctx.state_get("emergency_stop", {"active": False})
-    if principal.scopes is not None and old.get("active"):
-        # reden, door en sinds van wie hem aanzette blijven staan (en dus de herinnering)
-        audit(ctx.db, actor=principal.actor, action="system.emergency_stop_repeated",
-              reason=body.reason, old_value=old)
-        return old  # type: ignore[no-any-return]
-    new: dict[str, Any] = {"active": body.active, "reason": body.reason,
-                           "by": principal.username, "since": utcnow()}
-    if old.get("active") and not body.active:
-        # rapport 6: na opheffen laten zien wat er weer gaat lopen
-        handoffs = ctx.db.fetch_one("SELECT COUNT(*) AS n FROM encoding_jobs WHERE "
-                                    "status='awaiting_activation'")
-        encodes = ctx.db.fetch_one("SELECT COUNT(*) AS n FROM encoding_jobs WHERE status IN "
-                                   "('submitted','queued')")
-        h, e = int(handoffs["n"] if handoffs else 0), int(encodes["n"] if encodes else 0)
-        new["resumed"] = {"handoffs": h, "encodes": e}
-        new["resumed_nl"] = (f"{h} overdracht{'en' if h != 1 else ''} en {e} "
-                             f"encode{'s' if e != 1 else ''} worden hervat; downloads komen "
-                             "de eerste 2 uur rustig op gang (max. 10 per 5 minuten per "
-                             "instantie)")
-    ctx.state_set("emergency_stop", new)
+    # Core én recovery hebben deze route; BEGIN IMMEDIATE beschermt ook tussen processen.
+    # Alleen lokale toestand en audit onder dit slot: publiceren en wekken volgen erna.
+    with ctx.db.transaction():
+        old = ctx.state_get("emergency_stop", {"active": False})
+        if principal.scopes is not None and old.get("active"):
+            # reden, door en sinds van wie hem aanzette blijven staan (en dus de herinnering)
+            audit(ctx.db, actor=principal.actor, action="system.emergency_stop_repeated",
+                  reason=body.reason, old_value=old)
+            return old  # type: ignore[no-any-return]
+        new: dict[str, Any] = {"active": body.active, "reason": body.reason,
+                               "by": principal.username, "since": utcnow()}
+        if old.get("active") and not body.active:
+            # rapport 6: na opheffen laten zien wat er weer gaat lopen
+            handoffs = ctx.db.fetch_one("SELECT COUNT(*) AS n FROM encoding_jobs WHERE "
+                                        "status='awaiting_activation'")
+            encodes = ctx.db.fetch_one("SELECT COUNT(*) AS n FROM encoding_jobs WHERE status IN "
+                                       "('submitted','queued')")
+            h, e = int(handoffs["n"] if handoffs else 0), int(encodes["n"] if encodes else 0)
+            new["resumed"] = {"handoffs": h, "encodes": e}
+            new["resumed_nl"] = (f"{h} overdracht{'en' if h != 1 else ''} en {e} "
+                                 f"encode{'s' if e != 1 else ''} worden hervat; downloads komen "
+                                 "de eerste 2 uur rustig op gang (max. 10 per 5 minuten per "
+                                 "instantie)")
+        ctx.state_set("emergency_stop", new)
+        audit(ctx.db, actor=principal.actor, action="system.emergency_stop", reason=body.reason,
+              old_value=old, new_value=new, undo_hint="Zet de noodstop weer uit")
     from mediaguard.hookguard import write_flag
 
-    write_flag(ctx)  # hookwacht: noodstop blijft gelden als core straks herstart
-    audit(ctx.db, actor=principal.actor, action="system.emergency_stop", reason=body.reason,
-          old_value=old, new_value=new, undo_hint="Zet de noodstop weer uit")
+    write_flag(ctx)  # leest opnieuw onder dezelfde databasevergrendeling als de ververser
     ctx.events.publish("system.emergency_stop", new)
     runner = ctx.services.get("jobs")
     if runner is not None:
