@@ -55,10 +55,35 @@ async function open(page: Page, route: string, theme: "light" | "dark" = "light"
 }
 
 async function axe(page: Page): Promise<string[]> {
+  // Meet de getekende kleuren. Een thematoepassing na navigatie kan nog een
+  // kleurtransitie starten nadat het menu al zichtbaar is (ook op de telefoon).
+  await page.evaluate(async () => {
+    for (;;) {
+      void document.body.getBoundingClientRect();
+      const moving = document.getAnimations().filter((a) => a.playState === "running" && a.effect?.getTiming().iterations !== Infinity);
+      if (!moving.length) break;
+      await Promise.allSettled(moving.map((a) => a.finished));
+    }
+  });
   const res = await new AxeBuilder({ page: page as unknown as ConstructorParameters<typeof AxeBuilder>[0]["page"] }).withTags(AXE_TAGS).analyze();
   // review stap 5: elke overtreding telt (ook moderate/minor), niet alleen serious/critical
   return res.violations.map((v) => `${v.id} (${v.impact}): ${v.nodes.length}× ${v.nodes[0]?.target.join(" ")}`);
 }
+
+test("peil contrastmeting wacht op eindige kleurtransities en blijft blijvend slecht contrast afkeuren", async ({ page }) => {
+  await open(page, "/", "dark");
+  await page.getByTestId("profile-button").click();
+  await expect(page.getByTestId("profile-menu")).toBeVisible();
+  const label = page.getByTestId("estop-button").locator(".estop-label");
+  await label.evaluate((el) => {
+    el.animate([{ color: "rgb(6, 16, 31)" }, { color: getComputedStyle(el).color }], {
+      duration: 3000, easing: "steps(1, end)",
+    });
+  });
+  expect(await axe(page), "contrast na de getekende transitie").toEqual([]);
+  await label.evaluate((el) => { (el as HTMLElement).style.color = "rgb(6, 16, 31)"; });
+  expect((await axe(page)).some((v) => v.startsWith("color-contrast")), "blijvend slecht contrast wordt nog afgekeurd").toBe(true);
+});
 
 /**
  * Meting zoals review.mjs (stap 5), in de pagina: tekst < 14 px, ellips op inhoud, kopsprongen en aanraakdoelen op de

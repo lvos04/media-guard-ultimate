@@ -640,3 +640,46 @@ De gevraagde skills `design:design-critique` en `design:accessibility-review` zi
 skillcatalogus of gereedschappen; geen uitvoering geclaimd. De beoordeling is zelf gedaan met Playwright,
 axe-core, DOM-metingen en beelden. Echte schermlezer, echte Windows-hoogcontrastomgeving en echte NAS/Hub-sleutel:
 **NIET GEVALIDEERD**. Geen wijziging in kern, rechtencontrole, API, gegevensgedrag, contract of Peil-bronkopie.
+
+### 13.5 Herstel van testisolatie na de rode CI (18 november 2026)
+
+De gerichte run met 25 tests uit §13.4 dekte de volledige bestandsvolgorde niet. CI-run **44193895258** op
+`4d93e5c` eindigde met **2 failed, 2 flaky, 241 passed**. De nieuwe `apikeys-ontwerpreview.spec.ts` draaide vóór
+`mediaguard.spec.ts`: haar `beforeAll` maakte de beheerder al aan. De eerste-installatietest kreeg daardoor
+`/login` in plaats van `/setup`. De achtergelaten donkere servervoorkeur verstoorde bovendien de bestaande
+thematest bij de wissel van systeem-donker naar systeem-licht.
+
+De bestaande opzet heeft één worker, één Chromium-project, `fullyParallel: false`, geen globale setup en één
+verse gedeelde e2e-datamap per run. Andere bestanden die een beheerder nodig hebben heten `werk-*.spec.ts` en
+houden een `needs_setup`-controle voor een gerichte uitvoering. De reviewtest volgt nu die afspraak als
+`e2e/werk-apikeys-ontwerpreview.spec.ts`; configuratie, eerste-installatietest en thematest blijven ongewijzigd.
+Na ieder geval verlaat de browser de app, wist hij zijn tijdelijke opslagthema en herstelt hij de oorspronkelijke
+servervoorkeur en taal. Eigen sleutels worden via de API ingetrokken en vervolgens uit de eigen testfixture
+opgeruimd; de aangezette noodstop gaat weer uit. De nacontrole meet de achtergelaten toestand.
+
+De twee wisselvallige gevallen waren in basisrun **44182794249** op `d15d87f` beide zonder herkansing groen
+(de volledige run: **233 passed**, geen flaky). Ze zijn daarom ook hersteld binnen de e2e-code:
+
+- `peil.spec.ts`, “peil dialogen en menu's zonder axe-fouten · dark”: de contrastmeting wacht nu op werkelijk
+  lopende eindige kleurtransities, inclusief vervangende transities. Geen vaste wachttijd, lagere contrastgrens
+  of uitgezette axe-regel. De regressietest wacht op een vertraagde transitie en keurt blijvend slecht contrast af.
+- `werk-mediaserver.spec.ts`, “ondertitels: wat ontbreekt …”: `afterEach` wacht via
+  `unrouteAll({ behavior: "wait" })` op lopende `route.fetch`/`fulfill`-afhandeling voordat de requestcontext sluit.
+  De regressietest houdt een echt lokaal antwoord onderweg en controleert dat opruimen daarop wacht.
+
+Zeven afzonderlijke tegenproeven zijn uitgevoerd: oude bestandsnaam, weggelaten server- of opslagthemaherstel,
+sleutelintrekking of noodstopherstel, wachten op kleurtransities en wachten op route-afhandeling. Iedere
+opzettelijke mutatie maakte haar controle rood (exitcode 1) op de bedoelde oorzaak; alle mutaties zijn teruggezet.
+Geen appcomponent, kernbestand, rechtencontrole of kwaliteitsnorm is gewijzigd.
+
+De volledige lokale web-e2e eindigde met **248 passed (12.9m)**, **0 flaky**, **0 overgeslagen**, zonder
+herkansingen. De bestaande eerste-installatietest en thematest, beide eerder wisselvallige gevallen en de drie nieuwe
+regressiecontroles zijn daarin groen. Ook `check:peil`, lint, typecheck, alle 138 unittests, de productiebuild,
+de lokale/online kopieëncontrole, `actionlint` en de 41 EVIDENCE/OpenAPI-tests zijn groen. De eerste gerichte
+ontwikkelrun ontdekte een onjuist statuspad in de nieuwe nacontrole; dat is vóór deze volledige run gecorrigeerd.
+De eindcommit, de geheimenscan en de CI-uitkomst op exact die commit worden na push vastgelegd in
+`RAPPORT-A-HERSTEL-4.md` van de keten S-P3-600; de eerdere rode run is geen afrondingsbewijs.
+
+De bestaande bewijsstatussen blijven ongewijzigd: **Bezig**, **NIET GEVALIDEERD (echte NAS)** voor het gebouwde
+deel scopes; alleen NAS-test nodig voor dat deel. De nog ontbrekende Hub-acceptatie wordt hiermee niet afgevinkt.
+Geen echte NAS, Emby of accounts benaderd; geen losgekoppelde diagnosedienst of container gestart.

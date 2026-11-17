@@ -37,6 +37,43 @@ test.beforeAll(async ({ request }) => {
   if (status.needs_setup) expect((await request.post("/api/v1/auth/setup", { data: ADMIN })).ok()).toBeTruthy();
 });
 
+async function finishRoutes(page: Page) {
+  // Laat lopende route.fetch/fulfill-handlers afronden vóór Playwright de
+  // requestcontext opruimt; ook een laatste statuspoll kan nog onderweg zijn.
+  await page.unrouteAll({ behavior: "wait" });
+}
+
+test.afterEach(async ({ page }) => {
+  await finishRoutes(page);
+});
+
+test("route-opruiming wacht op een onderweg zijnd echt antwoord vóór de requestcontext sluit", async ({ page }) => {
+  await login(page);
+  let started!: () => void;
+  let release!: () => void;
+  const inFlight = new Promise<void>((resolve) => { started = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/v1/health", async (route) => {
+    const response = await route.fetch();
+    started();
+    await gate;
+    const body = await response.json();
+    await route.fulfill({ response, json: body });
+  });
+  const response = page.evaluate(async () => (await fetch("/api/v1/health")).status);
+  await inFlight;
+  let finished = false;
+  const cleanup = finishRoutes(page).then(() => { finished = true; });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(finished, "opruimen wacht nog op route.fetch/fulfill").toBe(false);
+  } finally {
+    release();
+    await cleanup;
+    expect(await response).toBe(200);
+  }
+});
+
 for (const width of [1440, 390] as const) {
   test(`mediaserver-tab: Emby-sleutel en schakelaars in de app (${width})`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });

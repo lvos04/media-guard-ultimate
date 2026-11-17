@@ -6,6 +6,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 // S-P3-600: echte web-app en kern, uitsluitend de eigen e2e-database.
+// Het voorvoegsel werk- houdt de eenmalige installatie in mediaguard.spec.ts als eerste.
 const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" }; // gitleaks:allow openbare e2e-testfixture, zelfde waarde als in werk-apikeys.spec.ts; geen echt account.
 const SCOPE = "emergency_stop:on";
 const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
@@ -23,11 +24,51 @@ test.beforeAll(async ({ request }) => {
   if (status.needs_setup) expect((await request.post("/api/v1/auth/setup", { data: ADMIN })).ok()).toBeTruthy();
 });
 
+type Theme = "light" | "dark" | "system" | null;
+let originalTheme: Theme;
+let originalLocale: string;
+let suiteTheme: Theme;
+let suiteLocale: string;
+
+async function preferences(page: Page) {
+  return await (await page.request.get("/api/v1/auth/me")).json() as {
+    preferences: { theme?: Exclude<Theme, null> }; locale: string;
+  };
+}
+
+test.beforeAll(async ({ request }) => {
+  expect((await request.post("/api/v1/auth/login", { data: ADMIN })).ok()).toBeTruthy();
+  const me = await (await request.get("/api/v1/auth/me")).json();
+  suiteTheme = me.preferences.theme ?? null;
+  suiteLocale = me.locale;
+});
+
+test.beforeEach(async ({ page }) => {
+  expect((await page.request.post("/api/v1/auth/login", { data: ADMIN })).ok()).toBeTruthy();
+  const me = await preferences(page);
+  originalTheme = me.preferences.theme ?? null;
+  originalLocale = me.locale;
+});
+
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
+  // Verlaat de app voordat de voorkeur wordt hersteld: een late browserwrite
+  // mag de teruggezette serverkeuze niet opnieuw overschrijven.
+  await page.goto("/login");
+  await page.evaluate(() => localStorage.removeItem("mg.theme"));
   const headers = await csrf(page);
+  expect((await page.request.put("/api/v1/auth/me/preferences", { headers, data: { theme: originalTheme } })).ok()).toBeTruthy();
   expect((await page.request.post("/api/v1/system/emergency-stop", { headers, data: { active: false, reason: "ontwerpreview opruimen" } })).ok()).toBeTruthy();
-  expect((await page.request.put("/api/v1/auth/me/locale", { headers, data: { locale: "nl-NL" } })).ok()).toBeTruthy();
+  expect((await page.request.put("/api/v1/auth/me/locale", { headers, data: { locale: originalLocale } })).ok()).toBeTruthy();
+  const keys = await (await page.request.get("/api/v1/auth/api-keys")).json() as { items: { id: number; name: string; revoked_at: string | null }[] };
+  const own = keys.items.filter((key) => NAMES.includes(key.name));
+  for (const key of own) {
+    expect((await page.request.post(`/api/v1/auth/api-keys/${key.id}/revoke`, { headers })).ok()).toBeTruthy();
+  }
+  const revoked = await (await page.request.get("/api/v1/auth/api-keys")).json() as typeof keys;
+  expect(revoked.items.filter((key) => NAMES.includes(key.name) && !key.revoked_at), "alle eigen sleutels ingetrokken").toEqual([]);
+  expect((await preferences(page)).preferences.theme ?? null, "serverthema teruggezet").toBe(originalTheme);
+  expect(await page.evaluate(() => localStorage.getItem("mg.theme")), "opslagthema gewist").toBeNull();
   // Alleen de vier zelfgemaakte fixtures opruimen; sleutels uit andere tests blijven staan.
   execFileSync(process.env.MG_E2E_PYTHON as string, ["-I", "-c",
     "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.executemany('DELETE FROM api_keys WHERE name=?', [(n,) for n in sys.argv[2:]]); c.commit()",
@@ -160,8 +201,10 @@ for (const theme of ["light", "dark"] as const) for (const width of [320, 360, 3
     test.setTimeout(120_000);
     await page.setViewportSize({ width, height: 900 });
     await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
-    await page.addInitScript((t) => localStorage.setItem("mg.theme", t), theme);
-    expect((await page.request.post("/api/v1/auth/login", { data: ADMIN })).ok()).toBeTruthy();
+    await page.goto("/login");
+    await page.evaluate((t) => localStorage.setItem("mg.theme", t), theme);
+    const themeHeaders = await csrf(page);
+    expect((await page.request.put("/api/v1/auth/me/preferences", { headers: themeHeaders, data: { theme } })).ok()).toBeTruthy();
     await page.goto("/instellingen/api-sleutels");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     const prefix = `${theme}-${width}`;
@@ -307,3 +350,16 @@ for (const theme of ["light", "dark"] as const) for (const width of [320, 360, 3
     }
   });
 }
+
+// Draait ook bij een gerichte uitvoering van één matrixgeval met deze nacontrole.
+test("ontwerpreview laat thema, taal, sleutels en noodstop teruggezet achter", async ({ page }) => {
+  const me = await preferences(page);
+  expect(me.preferences.theme ?? null).toBe(suiteTheme);
+  expect(me.locale).toBe(suiteLocale);
+  const keys = await (await page.request.get("/api/v1/auth/api-keys")).json() as { items: { name: string }[] };
+  expect(keys.items.filter((key) => NAMES.includes(key.name))).toEqual([]);
+  const statusResponse = await page.request.get("/api/v1/status");
+  expect(statusResponse.ok()).toBeTruthy();
+  const status = await statusResponse.json();
+  expect(status.emergency_stop.active).toBe(false);
+});
