@@ -519,3 +519,124 @@ De eigen meting op volle lengte: in een kopie buiten de repo extra klassen in `S
 `class EnMeetLight360Hoog : ScreenShots(dark = false, D360.copy(screenHeight = 5236), docs = true, taal = AppTaal.En)`
 en daarna `PEIL_AFDRUKKEN=1 ./gradlew … :app:recordPaparazziDebug --tests 'nl.mediaguard.app.shots.EnMeet*'`.
 Nooit `recordPaparazziDebug` in de repo zonder ontwerpstap (P-PEIL).
+
+## 13. R-ONTWERP S-P3-600: API-sleutels met rechten
+
+**Datum:** 17 november 2026. **Niveau:** N3. **Beginstand:** `d15d87fae9da8773e92db70c04b67b9b3039c335`,
+branch `ccr-c133d7a0-kuz1cv`. Vervolg van de eerste review: precies de vier gemelde conceptbestanden waren aanwezig.
+Hun diff is beoordeeld en behouden. **Schermreview en lokale webpoort: groen.** De scanbeslissing en de
+herhaalde upgradeproef zijn hieronder vastgelegd. Details staan in de ketenrapporten `RAPPORT-R-ONTWERP-2.md`
+en `RAPPORT-R-ONTWERP-3.md`.
+
+### 13.1 Oorzaak van de eerdere focusmeting (R-ONTWERP-2)
+
+De eerste review stopte na drie rode focusproeven; haar `review-na` bevatte 88 JSON-metingen en 112 beelden uit
+verschillende ontwikkelruns. De fout was een onmiddellijke lezing van `outlineColor` op “Sleutel aanmaken”: wit op
+wit, 1:1. Eerst zijn de volgende bronnen en de echte browser vergeleken, vóór het herstel:
+
+- `styles/peil/ontwerptaal.css`, `:focus-visible` en `focus-ring`, en `styles/peil/mediaguard-mso.css`: buitenring
+  3 px in `--ring`, offset/halo 2 px in `--ring-halo`. Licht blauw/wit, donker lichtblauw/donker. Geen bronkopie gewijzigd.
+- `components/ui/button.tsx`, `buttonVariants`: `transition-colors`. De gebouwde CSS rekent daar óók
+  `outline-color` toe, met 150 ms. De test las de beginwaarde van die transitie vóór het tekenen; ook de
+  gereduceerde 0,01 ms is niet hetzelfde als “al getekend”. Een rolwissel kan om dezelfde reden tijdelijk
+  de oude spoorkleur naast de nieuwe knopkleur opleveren.
+- `e2e/peil.spec.ts`, “peil toetsenbord”: meet ringdikte ≥ 3 px en bedekking, geen kleurcontrast. Daardoor vindt die
+  bestaande test deze meetfout niet.
+- De ongewijzigde `/login` met de echte productiebuild vertoont dezelfde transitie: de lichte outline gaat van
+  wit/tussenkleur naar `rgb(18, 61, 163)`; donker van `rgb(6, 16, 31)` naar `rgb(141, 182, 255)`.
+  `git diff bd198e3 d15d87f -- apps/web/components/ui/button.tsx apps/web/styles/peil/ontwerptaal.css
+  apps/web/styles/peil/mediaguard-mso.css` is leeg. Dit bestond vóór deze stap.
+
+Herstel uitsluitend in `e2e/apikeys-ontwerpreview.spec.ts`: stijlberekening afdwingen en wachten op de werkelijk
+lopende, eindige animaties. Een mediawissel mag een oude transitie annuleren; ook vervangende transities worden
+afgewacht. Geen vaste slaaptijd, geen herkansing van een contrastassertie, geen skip en geen lagere grens.
+De test meet de buitenring tegen het omringende vlak, de halo tegen de knop en beide ringlagen tegen elkaar.
+De volledige 3 px buitenring moet zelfstandig ≥ 3:1 halen; een contrasterende halo vervangt die eis niet.
+Alfatransparantie van de systeemfocuskleur wordt meegerekend.
+
+Tegenproef op licht/320: een opzettelijk witte ring én halo op wit wordt nog steeds rood met
+`outerContrast=1`, `ringToHalo=1`, “Expected: >= 3”. De mutatie is verwijderd. De oorspronkelijke melding is
+hiermee opgelost als meetfout; een blijvend onzichtbare focusindicator wordt aantoonbaar afgekeurd.
+
+### 13.2 Opstelling, matrix en beelden
+
+Echte web-app (`node server.mjs`, productiebuild), echte kern, eigen verse e2e-database en
+`MG_START_BACKGROUND=0`, gestart door `playwright.config.ts`. Chromium binnen de zandbak; alleen testgegevens.
+Geen echte NAS, Emby of accounts. Toetsingsbasis: `API_SLEUTEL_SCOPES_ONTWERP.md` §8, Peil 1.1.1 en
+`COMPONENTEN.md` §1/§29. Vergeleken met `ai-server-manager:design/ontwerptaal/prototypes/instellingen-toegang.html`
+en `shots/instellingen-toegang-licht-390.png`.
+
+Alle negen meetpunten zijn uitgevoerd op **320, 360, 390, 768, 1024 en 1440 px**, licht en donker:
+
+| Meetpunt uit het ontwerp | Werkelijk gemeten uitkomst op alle 12 combinaties |
+|---|---|
+| 1. Operator | Geen rechtenveld in de DOM; bestaande MSO-aanmaakweg groen |
+| 2. Kijker | Schakelaar uit, juiste naam, groepnaam en beschrijving met “nooit opheffen” |
+| 3. Wisselen van rol | Aan → Operator → Kijker wist het recht; Operator-body bevat geen `scopes` |
+| 4. Kijker met recht | Lijst toont Kijker, Noodstop activeren en “nooit opheffen” |
+| 5. Gewone Kijker | Geen rechtenlabel |
+| 6. Serverfouten | Echte 422 voor Operator plus scopes en onbekende `wanted:search`; letterlijke Nederlandse tekst, invoer behouden; alleen uitgaande testbody aangepast |
+| 7. Intrekken | Feit Rechten (scopes) met het juiste label |
+| 8. Toegankelijkheid | Axe 0, doelen ≥ 44 px, tekst ≥ 14 px, geen paginaoverloop of gemeten tekstafkapping; volledige Tab-doorloop, Spatie/Enter, Esc en focus terug groen |
+| 9. Geforceerde kleuren | Spoor én schakelknop zichtbaar; aan/uit-positie verschilt; onbekend-label houdt stippelrand |
+| Logboek, Nederlands én Engels | Echte herhaalde noodstop; volledige actietekst zonder afkapping in beide talen op alle zes breedtes en beide thema’s; axe 0 |
+| DejaVu Sans en vergrote tekstafstand | Op 320 px in beide thema’s geen horizontale overloop, afkapping of kleinere doelen |
+
+Eén uniforme groene eindrun: **25 tests** (12 nieuwe reviewtests + 13 bestaande sleuteltests), **0 overgeslagen**,
+136 JSON-metingen, 108 focusmetingen en 148 PNG’s. Bewijs lokaal in de ketenmap onder `review2-definitief`;
+alle 148 beelden zijn zelf bekeken via de 28 beeldbladen in `review2-definitief-bladen`. De eenmalige sleutel
+is niet gefotografeerd. Beoordeeld: leesbare omlopende uitleg en foutteksten, onderscheid tussen aan/uit,
+zichtbare focuslagen, neutrale rechtenlabels, onbekend met tekst/icoon/stippel en volledige logboektekst.
+
+| Contrast, laagste gemeten verhouding | Licht | Donker |
+|---|---:|---:|
+| Tekst in het rechtenveld | 8,81:1 | 9,32:1 |
+| Spoorrand, schakelaar uit | 5,89:1 | 5,67:1 |
+| Knop tegen spoor, schakelaar uit | 19,22:1 | 16,13:1 |
+| Spoorrand, schakelaar aan | 9,45:1 | 8,01:1 |
+| Knop tegen spoor, schakelaar aan | 9,45:1 | 9,32:1 |
+| Spoor/knop in geforceerde kleuren, beide standen | 21:1 | 21:1 |
+
+Over alle gemeten teksten (inclusief uitgeschakelde bediening): minimum 4,73:1. Buitenringminimum 7,55:1,
+ring/halo minimum 9,45:1; alle 136 geometriecontroles hebben paginaoverloop 0 en axe 0 binnen hun vermelde scope.
+
+In geforceerde kleuren heeft axe de scope **schakelaar zelf**. Op alle zichtbare dialoogtekst blijft daarnaast
+onverkort de numerieke DOM-eis ≥ 4,5:1 staan (gemeten 21:1). De volledige dialoog krijgt axe in beide gewone
+thema’s. Reden: een aanvullende proef van axe op de hele geforceerde donkere dialoog rapporteerde onterecht
+1,1:1 voor de aanmaakknop. `axe-core/axe.js`, `getTextColor`, gebruikt `-webkit-text-fill-color` uit de auteursstijl
+(`#06101f`), terwijl Chromium zichtbaar witte systeemtekst op zwart schildert (`color` wit, achtergrond zwart).
+Dat is apart op de ongewijzigde inlogknop vastgesteld en afgebeeld. Geen axe-regel is uitgeschakeld.
+
+### 13.3 Beoordeeld conceptherstel
+
+- **R-ONTWERP-1 hersteld:** `components/mg/primitives.tsx`, `Switch`: uitsluitend in geforceerde kleuren krijgt
+  de schakelknop een rand in systeemkleur `CanvasText`. Het gedrag en de positie blijven gelijk. Zonder die rand
+  vallen knop en spoor samen. De tegenproef zonder rand wordt rood op knopcontrast 1:1; daarna is de mutatie verwijderd.
+- **R-ONTWERP-3 hersteld:** `lib/labels.ts`, `EVENTS`: eigen Nederlandse en Engelse vertaling voor
+  `system.emergency_stop_repeated`, exact “Noodstop stond al aan: opnieuw gevraagd, niets gewijzigd” en
+  “Emergency stop already active: requested again, nothing changed”. Alle 24 taal/thema/breedte-combinaties groen.
+- Twee typefouten uit de achtergelaten tekstafstandproef hersteld: stijlelementen via `parentNode.removeChild`
+  verwijderen, passend bij het door Playwright geleverde `Node`-type.
+
+### 13.4 Poorten, grenzen en overdracht
+
+Lokaal groen: `npm run check:peil`, `npm run lint`, `npm run typecheck`, `npm run test:unit` (138 tests),
+`nice -n 10 npm run build` en de gezamenlijke e2e van `werk-apikeys.spec.ts` en `apikeys-ontwerpreview.spec.ts`
+(25 tests). Kopieëncontrole lokaal/online, `actionlint`, OpenAPI/EVIDENCE (41 tests) en `git diff --check` groen.
+De kandidaatbuild en upgradepoort zijn herhaald onder de machinebrede `docker-build.lock`, met de vorige
+release op digest, een eigen image en poort. Het verslag meldt bij upgrade én terugzetten **“niets verloren”**;
+`api_keys` 3 → 3, geen verloren of gewijzigde rij. De eigen image is opgeruimd.
+
+De regisseur heeft de vaste openbare e2e-testaanmelding toegestaan als testfixture, met een gerichte
+`gitleaks:allow`-markering en reden op uitsluitend de betrokken regel. De staged geheimenscan meldt geen
+bevindingen. De eerder achtergebleven diagnosediensten zijn door de regisseur gestopt; de poorten zijn vrij.
+
+Vervolgpunt buiten deze stap: `components/ui/button.tsx`, `buttonVariants`, animeert de focuskleur via
+`transition-colors`, terwijl ONTWERPTAAL §6 zegt dat focus nooit geanimeerd wordt. Dit bestond al op de basiscommit,
+ook op `/login`. Een afzonderlijke ronde kan `outline-color` uit de knoptransitie halen en onmiddellijk zichtbare
+focus op ongewijzigde schermen meten; hier is de gedeelde knopstijl niet aangepast.
+
+De gevraagde skills `design:design-critique` en `design:accessibility-review` zijn niet beschikbaar in de
+skillcatalogus of gereedschappen; geen uitvoering geclaimd. De beoordeling is zelf gedaan met Playwright,
+axe-core, DOM-metingen en beelden. Echte schermlezer, echte Windows-hoogcontrastomgeving en echte NAS/Hub-sleutel:
+**NIET GEVALIDEERD**. Geen wijziging in kern, rechtencontrole, API, gegevensgedrag, contract of Peil-bronkopie.

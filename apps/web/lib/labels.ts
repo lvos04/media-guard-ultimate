@@ -118,6 +118,7 @@ const EVENTS: Record<string, Pair> = {
   "storage.twin_removed": ["Lege tweelingmap verwijderd", "Empty twin folder removed"], "storage.typo_fixed": ["Mapnaam hersteld", "Folder name fixed"],
   "auth.login_failed": ["Mislukte inlogpoging", "Failed sign-in"], "settings.change": ["Instelling gewijzigd", "Setting changed"], "arr.removed_deleted_title": ["Verwijderde titel opgeruimd", "Deleted title cleaned up"],
   "system.emergency_stop": ["Noodstop gewijzigd", "Emergency stop changed"], "instance.status": ["Koppeling gewijzigd", "Connection changed"],
+  "system.emergency_stop_repeated": ["Noodstop stond al aan: opnieuw gevraagd, niets gewijzigd", "Emergency stop already active: requested again, nothing changed"],
 };
 
 // veelvoorkomende woorden in actiecodes → Nederlands (terugval voor onbekende codes, S12)

@@ -181,7 +181,7 @@ export function Switch({ checked, onChange, label, disabled, id, describedBy }: 
         checked ? "border-primary bg-primary" : "border-input bg-card",
         "group-disabled:border-dashed group-disabled:border-border-strong group-disabled:bg-muted",
       )}>
-        <span className={cn("absolute size-4 rounded-full transition-[left] motion-reduce:transition-none",
+        <span className={cn("absolute size-4 rounded-full transition-[left] motion-reduce:transition-none forced-colors:border forced-colors:border-[CanvasText]",
           checked ? "left-[1.375rem] bg-primary-foreground" : "left-0.5 bg-foreground", "group-disabled:bg-disabled-foreground")} />
       </span>
     </button>
