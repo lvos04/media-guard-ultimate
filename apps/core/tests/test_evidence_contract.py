@@ -36,6 +36,7 @@ ALGEMEEN = {
     "NIET GEVALIDEERD (hardware)",
     "NIET GEVALIDEERD (account)",
     "NIET GEVALIDEERD (Mac/Xcode)",
+    "NIET GEVALIDEERD (echte Hub)",  # aanvulling C-12 (C12-6)
     "Niet getest",
 }
 WERK = {"Sim-getest", "Unit-getest"}
@@ -117,6 +118,24 @@ def test_negatieve_gevallen_worden_gezien(wijziging: dict[str, str], melding: st
     assert problemen(GOED) == []
     gevonden = problemen({**GOED, **wijziging})
     assert any(melding in p for p in gevonden), gevonden
+
+
+def test_vaste_lijst_is_de_tabel_van_paragraaf_11() -> None:
+    """De vaste lijst volgt het contract: een waarde erbij of eraf zonder contracttekst is rood
+    (C12-6: ``NIET GEVALIDEERD (echte Hub)``)."""
+    tekst = (PV2 / "PLATFORM_CONTRACTEN.md").read_text(encoding="utf-8")
+    begin = tekst.index("## 11. Bewijs en Excel")
+    p11 = tekst[begin : tekst.index("## 12.", begin)]
+    in_tabel: set[str] = set()
+    for ruw in p11.splitlines():
+        regel = ruw.strip()
+        if regel.startswith("| `"):
+            in_tabel.update(re.findall(r"`([^`]+)`", regel.split(" | ")[0]))
+    vast = ALGEMEEN | WERK | TEST
+    assert in_tabel == vast, f"verschil met contract §11: {sorted(in_tabel ^ vast)}"
+    hub = {**GOED, "validatie": "Unit-getest; NIET GEVALIDEERD (echte Hub)",
+           "blokkade": "NIET GEVALIDEERD (echte Hub): alleen met de Hub-simulator beproefd"}
+    assert problemen(hub) == []
 
 
 def test_ids_bestaan_en_zijn_uniek() -> None:

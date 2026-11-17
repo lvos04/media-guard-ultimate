@@ -26,15 +26,17 @@ kh = importlib.util.module_from_spec(_spec)
 sys.modules["kopie_herkomst"] = kh  # dataclasses zoeken hun module op
 _spec.loader.exec_module(kh)
 
-#: bron-commit in lvos04/ai-server-manager (branch ccr-c133d7a0-kuz1cv):
-#: contract 1.3 na de review én Peil 1.1.1
-BRON_COMMIT = "0a7143bc0a94ed5317a9655fa785e73a1fb07ba1"
+#: bron-commits in lvos04/ai-server-manager (branch ccr-c133d7a0-kuz1cv); de twee sets hebben
+#: elk een eigen pin. Contract 1.3 met de aanvulling C-12 (blijft 1.3):
+CONTRACT_BRON_COMMIT = "e88a290c9ad5fef4acf498d05ad3414395a4fcb5"
+#: Peil 1.1.1 (ongewijzigd sinds de review van contract 1.3):
+PEIL_BRON_COMMIT = "0a7143bc0a94ed5317a9655fa785e73a1fb07ba1"
 CONTRACT_SHA256 = {
     "docs/platform-v2/PLATFORM_CONTRACTEN.md": (
-        "15b30cf17f91b606451ef9c41f02327076ef76ce655ee94e40e3538106962310"
+        "4712dd62c837c2f2594fa4152a925464f6f7481e898473660f09607cc113c511"
     ),
     "docs/platform-v2/CONTRACT_1.3_CONFORMITEIT.md": (
-        "f0a2352ddb27088ae668013501c62a1eaaf879efe742a2d4422ffe8d33b43466"
+        "b5ebba073a8fe8beb715d58e6760feae38e33ad445956d107e64840133dd7924"
     ),
 }
 PEIL_VERSIE = "1.1.1"
@@ -56,14 +58,14 @@ def test_contract_13_is_byte_gelijk_aan_de_gepinde_bron() -> None:
     h = _herkomst("contract")
     assert (
         h["versie"] == "1.3"
-        and h["bron_commit"] == BRON_COMMIT
+        and h["bron_commit"] == CONTRACT_BRON_COMMIT
         and h["bron_repo"] == "lvos04/ai-server-manager"
     )
     assert set(h["bestanden"]) == set(CONTRACT_SHA256)
     for pad, digest in CONTRACT_SHA256.items():
         data = (ROOT / pad).read_bytes()
         assert kh.sha256(data) == digest, (
-            f"{pad} wijkt af van contract 1.3 (bron-commit {BRON_COMMIT[:7]})"
+            f"{pad} wijkt af van contract 1.3 (bron-commit {CONTRACT_BRON_COMMIT[:7]})"
         )
         assert h["bestanden"][pad]["sha256"] == digest and h["bestanden"][pad]["kop"] == 0
     assert (
@@ -74,7 +76,7 @@ def test_contract_13_is_byte_gelijk_aan_de_gepinde_bron() -> None:
 
 def test_peil_kopieen_pinnen_111_met_commit_en_herkomstkop() -> None:
     h = _herkomst("peil")
-    assert h["versie"] == PEIL_VERSIE and h["bron_commit"] == BRON_COMMIT
+    assert h["versie"] == PEIL_VERSIE and h["bron_commit"] == PEIL_BRON_COMMIT
     css = {k for k in h["bestanden"] if k.endswith(".css")}
     assert css == {
         "design/ontwerptaal/ontwerptaal.css",
@@ -85,7 +87,7 @@ def test_peil_kopieen_pinnen_111_met_commit_en_herkomstkop() -> None:
     for kopie in css:
         assert h["bestanden"][kopie]["strikt"] is True and h["bestanden"][kopie]["kop"] == 2
         kop = (ROOT / kopie).read_text(encoding="utf-8").split("\n", 2)
-        assert f"Peil {PEIL_VERSIE}" in kop[0] and f"@{BRON_COMMIT}" in kop[0]
+        assert f"Peil {PEIL_VERSIE}" in kop[0] and f"@{PEIL_BRON_COMMIT}" in kop[0]
         assert "Niet met de hand wijzigen" in kop[1]
     # de web-kopie (Docker-context) en de repo-kopie hebben dezelfde bron en dus dezelfde inhoud
     assert (
@@ -99,17 +101,20 @@ def test_peil_kopieen_pinnen_111_met_commit_en_herkomstkop() -> None:
 @pytest.mark.skipif(
     not (SIBLING / ".git").exists(), reason="geen checkout van ai-server-manager naast deze repo"
 )
-def test_lokale_bron_op_de_gepinde_commit_is_gelijk() -> None:
+@pytest.mark.parametrize(
+    ("soort", "commit"), [("contract", CONTRACT_BRON_COMMIT), ("peil", PEIL_BRON_COMMIT)]
+)
+def test_lokale_bron_op_de_gepinde_commit_is_gelijk(soort: str, commit: str) -> None:
     probe = subprocess.run(
-        ["git", "-C", str(SIBLING), "cat-file", "-e", f"{BRON_COMMIT}^{{commit}}"],
+        ["git", "-C", str(SIBLING), "cat-file", "-e", f"{commit}^{{commit}}"],
         capture_output=True,
         check=False,
     )
     if probe.returncode != 0:
         pytest.skip("de gepinde commit staat niet in de lokale checkout")
-    # alleen de gepinde commit: de werkbranch van de bron kan intussen verder zijn
+    # alleen de gepinde commit van deze set: de werkbranch van de bron kan intussen verder zijn
     # (dat is hooguit een waarschuwing)
-    u = kh.vergelijk(kh.haler_lokaal(SIBLING), "lokaal", ROOT, huidige_ref=BRON_COMMIT)
+    u = kh.vergelijk(kh.haler_lokaal(SIBLING), "lokaal", ROOT, sets=(soort,), huidige_ref=commit)
     assert u.fouten == [] and u.waarschuwingen == []
 
 
@@ -177,7 +182,7 @@ def test_herkomstkop_met_andere_commit_of_versie_faalt(tmp_path: Path) -> None:
     root = _kopie_van_repo(tmp_path)
     pad = root / "design/ontwerptaal/ontwerptaal.css"
     tekst = pad.read_text(encoding="utf-8")
-    pad.write_text(tekst.replace(f"@{BRON_COMMIT}", "@" + "1" * 40, 1), encoding="utf-8")
+    pad.write_text(tekst.replace(f"@{PEIL_BRON_COMMIT}", "@" + "1" * 40, 1), encoding="utf-8")
     andere = root / "apps/web/styles/peil/ontwerptaal.css"
     andere.write_text(
         andere.read_text(encoding="utf-8").replace("Peil 1.1.1", "Peil 1.1.0", 1), encoding="utf-8"
@@ -201,7 +206,9 @@ def test_ontbrekende_of_onleesbare_herkomst_faalt(tmp_path: Path) -> None:
 def test_bron_op_gepinde_commit_anders_is_drift(tmp_path: Path) -> None:
     root = _kopie_van_repo(tmp_path)
     bron = _bron(root)
-    bron[(BRON_COMMIT, "docs/platform-v2/CONTRACT_1.3_CONFORMITEIT.md")] += b"\nlokaal aangepast"
+    bron[(CONTRACT_BRON_COMMIT, "docs/platform-v2/CONTRACT_1.3_CONFORMITEIT.md")] += (
+        b"\nlokaal aangepast"
+    )
     u = kh.vergelijk(_haler(bron), "test", root)
     assert any(
         "CONTRACT_1.3_CONFORMITEIT.md: kopie ≠ bron" in f and "drift" in f for f in u.fouten
