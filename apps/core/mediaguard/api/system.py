@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -150,7 +151,12 @@ def emergency_stop(body: EmergencyBody, principal: Principal = Depends(require_e
               old_value=old, new_value=new, undo_hint="Zet de noodstop weer uit")
     from mediaguard.hookguard import write_flag
 
-    write_flag(ctx)  # leest opnieuw onder dezelfde databasevergrendeling als de ververser
+    try:
+        write_flag(ctx)  # leest opnieuw onder dezelfde databasevergrendeling als de ververser
+    except Exception:  # noqa: BLE001 - de toestand is gecommit; publiceren en wekken moeten doorgaan
+        logging.getLogger(__name__).warning(
+            "Noodstopvlag niet ververst; de vastgelegde noodstop blijft gelden, "
+            "de volgende verversing probeert opnieuw")
     ctx.events.publish("system.emergency_stop", new)
     runner = ctx.services.get("jobs")
     if runner is not None:

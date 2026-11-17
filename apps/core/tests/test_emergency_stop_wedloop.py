@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 import subprocess
 import sys
@@ -208,6 +209,122 @@ def test_vlagfout_laat_geen_vergrendeling_achter(ctx, monkeypatch):  # type: ign
     with sqlite3.connect(ctx.db.path, timeout=0) as conn:
         conn.execute("BEGIN IMMEDIATE")
     assert hookguard.write_flag(ctx)
+
+
+def test_vlag_databasefout_is_niet_fataal_en_wordt_ingehaald(ctx, caplog):  # type: ignore[no-untyped-def]
+    """Een onafhankelijke schrijver blokkeert alleen de vlag, zonder wachttijd."""
+    assert hookguard.write_flag(ctx)
+    vlag_voor = hookguard.flag_path(ctx).read_bytes()
+    ctx.state_set("emergency_stop", {"active": True, "reason": "Onderhoud"})
+    conn = ctx.db._connect()
+    timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.execute("PRAGMA busy_timeout=0")
+    try:
+        with sqlite3.connect(ctx.db.path, timeout=0) as schrijver:
+            schrijver.execute("BEGIN IMMEDIATE")
+            with caplog.at_level(logging.WARNING):
+                assert hookguard.write_flag(ctx) is False
+            assert hookguard.flag_path(ctx).read_bytes() == vlag_voor
+    finally:
+        conn.execute(f"PRAGMA busy_timeout={timeout}")
+    waarschuwingen = [r for r in caplog.records if r.name == hookguard.__name__]
+    assert len(waarschuwingen) == 1
+    assert waarschuwingen[0].levelno == logging.WARNING
+    assert "volgende verversing" in waarschuwingen[0].getMessage()
+    assert hookguard.write_flag(ctx)
+    vlag = json.loads(hookguard.flag_path(ctx).read_text())
+    assert vlag["active"] is True and vlag["reason"] == "Onderhoud"
+
+
+@pytest.mark.parametrize("met_scope", [False, True])
+@pytest.mark.parametrize("fout", ["databaseslot", "bestand", "onverwacht"])
+def test_vastgelegde_noodstop_blijft_werken_bij_vlagfout(  # type: ignore[no-untyped-def]
+        client, app, ctx, monkeypatch, caplog, met_scope, fout):
+    """Fout precies na de commit: 200, audit, één publicatie, wekken en later herstel."""
+    gemaakt = client.post("/api/v1/auth/api-keys", json={
+        "name": "vlagproef", "role": "viewer" if met_scope else "operator",
+        "scopes": ["emergency_stop:on"] if met_scope else None})
+    assert gemaakt.status_code == 200
+    assert hookguard.write_flag(ctx)
+    vlag_voor = hookguard.flag_path(ctx).read_bytes()
+    origineel = hookguard.write_flag
+    gepubliceerd, gewekt = [], []
+    monkeypatch.setattr(ctx.events, "publish", lambda *args: gepubliceerd.append(args))
+    monkeypatch.setattr(ctx.services["jobs"], "wake", lambda: gewekt.append(True))
+
+    def vlagfout(c):
+        assert not c.db._connect().in_transaction
+        assert c.state_get("emergency_stop")["active"] is True
+        if fout == "onverwacht":
+            raise RuntimeError("Opzettelijke testfout met vertrouwelijke details")
+        if fout == "bestand":
+            def schrijffout(*args, **kwargs):
+                raise OSError("Opzettelijke schrijffout")
+
+            with monkeypatch.context() as m:
+                m.setattr(hookguard.Path, "write_text", schrijffout)
+                return origineel(c)
+        conn = c.db._connect()
+        timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        conn.execute("PRAGMA busy_timeout=0")
+        try:
+            with sqlite3.connect(c.db.path, timeout=0) as schrijver:
+                schrijver.execute("BEGIN IMMEDIATE")
+                return origineel(c)
+        finally:
+            conn.execute(f"PRAGMA busy_timeout={timeout}")
+
+    verzoek = TestClient(app, raise_server_exceptions=False)
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(hookguard, "write_flag", vlagfout)
+            with caplog.at_level(logging.WARNING):
+                antwoord = verzoek.post(ROUTE, headers={"X-Api-Key": gemaakt.json()["key"]},
+                                        json={"active": True, "reason": "Onderhoud"})
+    finally:
+        verzoek.close()
+    assert antwoord.status_code == 200
+    toestand = ctx.state_get("emergency_stop")
+    assert toestand["active"] is True and antwoord.json() == toestand
+    assert gepubliceerd == [("system.emergency_stop", toestand)]
+    assert gewekt == [True]
+    audits = ctx.db.fetch_dicts("SELECT new_value FROM audit_events "
+                                "WHERE action='system.emergency_stop'")
+    assert len(audits) == 1 and json.loads(audits[0]["new_value"]) == toestand
+    assert hookguard.flag_path(ctx).read_bytes() == vlag_voor
+    waarschuwingen = [r for r in caplog.records
+                      if r.name in (hookguard.__name__, system.__name__)]
+    assert len(waarschuwingen) == (0 if fout == "bestand" else 1)
+    assert all(r.levelno == logging.WARNING and r.exc_info is None for r in waarschuwingen)
+    assert all("vertrouwelijke details" not in r.getMessage() for r in waarschuwingen)
+    assert origineel(ctx)
+    vlag = json.loads(hookguard.flag_path(ctx).read_text())
+    assert vlag["active"] is True
+    assert vlag["since"] == toestand["since"] and vlag["reason"] == toestand["reason"]
+
+
+def test_mislukte_toestandswijziging_blijft_een_fout(  # type: ignore[no-untyped-def]
+        client, ctx, monkeypatch):
+    """De best-effort vlag mag een echte databasefout bij het wijzigen niet verbergen."""
+    assert hookguard.write_flag(ctx)
+    toestand_voor = ctx.state_get("emergency_stop")
+    vlag_voor = hookguard.flag_path(ctx).read_bytes()
+    gepubliceerd, gewekt = [], []
+    monkeypatch.setattr(ctx.events, "publish", lambda *args: gepubliceerd.append(args))
+    monkeypatch.setattr(ctx.services["jobs"], "wake", lambda: gewekt.append(True))
+
+    def fout(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    with monkeypatch.context() as m:
+        m.setattr(ctx, "state_set", fout)
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            client.post(ROUTE, json={"active": True, "reason": "Onderhoud"})
+    assert ctx.state_get("emergency_stop") == toestand_voor
+    assert hookguard.flag_path(ctx).read_bytes() == vlag_voor
+    assert gepubliceerd == [] and gewekt == []
+    assert ctx.db.fetch_dicts("SELECT * FROM audit_events "
+                              "WHERE action='system.emergency_stop'") == []
 
 
 def test_geen_noodstopslot_tijdens_publiceren_of_wekken(ctx, monkeypatch):  # type: ignore[no-untyped-def]
