@@ -42,10 +42,11 @@ Onbekende NAS-gegevens (D01–D18) worden nooit met voorbeeldwaarden ingevuld; z
 
 - [`PLATFORM_CONTRACTEN.md`](PLATFORM_CONTRACTEN.md) (`contracts 1.3`) en
   [`CONTRACT_1.3_CONFORMITEIT.md`](CONTRACT_1.3_CONFORMITEIT.md) zijn **byte-gelijke kopieën** van
-  `lvos04/ai-server-manager@0a7143b`; de pin staat in [`HERKOMST.json`](HERKOMST.json). Nooit met de hand wijzigen:
-  `python3 scripts/kopie-herkomst.py controleer` (offline) en `vergelijk --online` (CI-job `kopieen`); een nieuwe kopie
-  is een stap van de orkestratie (`bijwerken --set contract`). Wat deze repo voor 1.3 moet doen: §6 van de
-  conformiteitslijst (C1.3-MGU-01…09).
+  `lvos04/ai-server-manager@e88a290` (aanvulling C-12, blijft 1.3); Peil blijft op `@0a7143b`. De pins staan in de
+  twee `HERKOMST.json`'s ([`HERKOMST.json`](HERKOMST.json) en `design/ontwerptaal/HERKOMST.json`). Nooit met de
+  hand wijzigen: `python3 scripts/kopie-herkomst.py controleer` (offline) en `vergelijk --online` (CI-job `kopieen`);
+  een nieuwe kopie is een stap van de orkestratie (`bijwerken --set contract`). Wat deze repo voor 1.3 moet doen:
+  §6 van de conformiteitslijst (C1.3-MGU-01…09).
 - Gedaan in deze ronde (alleen NU-punten, ADR-0021): C1.3-MGU-01 (kopie, drifttest, EVIDENCE-test), C1.3-MGU-03
   (upgradebewijs, HARDE EIS: `scripts/upgradebewijs.py`, gate in `release.yml` vóór `publish`) en het adresdeel van
   C1.3-MGU-08 (`system.hub_url` volgens §3.2). Peil 1.1.1 overgenomen (C1.3-ALG-05): `design/ontwerptaal/HERKOMST.md`.

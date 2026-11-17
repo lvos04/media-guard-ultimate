@@ -111,6 +111,14 @@
    `NIET GEVALIDEERD` uit `blokkade` ook in `validatie`, bestaande ID's (Excel, `C1.3-MGU-nn`/`C1.3-ALG-nn` uit de
    conformiteitslijst, `REVIEW-media-guard-ultimate-…`) en dat elk genoemd testbestand en elke testfunctie bestaat.
 
+### Aanvulling 2026-11-17 (contractronde C-12)
+
+Besluit 1 is niet meer één pin voor beide sets: sinds C-12 hebben contract en Peil elk een eigen gepinde bron-commit.
+Contract (`docs/platform-v2/HERKOMST.json`, `CONTRACT_BRON_COMMIT`): `e88a290c9ad5fef4acf498d05ad3414395a4fcb5`
+(aanvulling C-12, blijft `contracts 1.3`). Peil (`design/ontwerptaal/HERKOMST.json`, `PEIL_BRON_COMMIT`):
+ongewijzigd `0a7143bc0a94ed5317a9655fa785e73a1fb07ba1`. `scripts/kopie-herkomst.py` werkte al met een pin per set; de
+driftregels van besluit 2 blijven gelijk. De tekst hierboven is de stand van 2026-11-10.
+
 ## Gevolgen
 
 - Een nieuwe contract- of Peil-versie overnemen = `scripts/kopie-herkomst.py bijwerken --set … --commit <40 hex>`, de

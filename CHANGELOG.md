@@ -54,6 +54,8 @@ nieuwe of gewijzigde route, OpenAPI byte-gelijk). Besluiten: ADR-0021.
   geen `%`-codering of IDN); ongeldig → 422 bij opslaan en geen link in de UI.
 - **Peil 1.1.1:** nieuwe aliaslaag zet focusring en scroll-padding zelf terug; de eigen kopie in `peil-mg.css` is weg.
   Android-tokens opnieuw gegenereerd. Volledige Peil-matrix (axe, contrast, focus, 44 px) groen.
+- **Contractkopie aanvulling C-12:** `PLATFORM_CONTRACTEN.md` en `CONTRACT_1.3_CONFORMITEIT.md` overgenomen van
+  `lvos04/ai-server-manager@e88a290` (blijft 1.3); Peil blijft op `0a7143b`, elke set heeft nu een eigen pin.
 - **EVIDENCE-test volgens §11 van 1.3** (`apps/core/tests/test_evidence_contract.py`).
 - **Installatiedocs:** *Install via YAML* en losse containers staan expliciet als ontwikkeling/CI, geen
   installatiemethode.
