@@ -14,6 +14,9 @@ voorheen. Geen release.
   niet kent (of een onleesbare waarde), opent niets; een operator-sleutel met rechten in de database wordt geweigerd.
 - **API:** `POST /api/v1/auth/api-keys` neemt optioneel `scopes`; `GET /api/v1/auth/api-keys` en `GET /api/v1/auth/me`
   tonen `scopes` (nooit de sleutel). OpenAPI-export bijgewerkt. Zie `docs/SECURITY.md` §2a.
+- **Web-UI (Peil, nl en en-US):** *Instellingen → API-sleutels* krijgt bij rol Kijker het veld *Rechten (scopes)* met
+  de schakelaar *Noodstop activeren*; de lijst en de intrekdialoog tonen de rechten (een onbekend recht als
+  *Onbekend* met reden). Terug naar Operator maakt de rechten leeg.
 - **Niet gevalideerd:** een echte Hub-sleutel tegen de echte MediaGuard op de NAS.
 
 Meerdere mediaservers tegelijk en aanmelden per server (Δ-MG-DUAL, Δ-MG-AUTH; contract 1.3 §2.3 regel 2,

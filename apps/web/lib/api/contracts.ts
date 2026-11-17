@@ -12,6 +12,8 @@ export type Role = "admin" | "operator" | "viewer";
 export interface Me {
   username: string;
   role: Role;
+  /** Rechten (scopes) van een API-sleutel; null of afwezig = geen (sessies, sleutels zonder rechten). S-P3-600. */
+  scopes?: string[] | null;
   csrf_token: string | null;
   locale: string;
   /** Per-user UI preferences stored server-side (PUT /auth/me/preferences). */

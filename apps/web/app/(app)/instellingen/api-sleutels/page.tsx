@@ -3,9 +3,10 @@
 import { Ban, Copy, Eye, KeySquare, Plus, UserCog } from "lucide-react";
 import { useState } from "react";
 
+import { KNOWN_SCOPES, SCOPE_TEXT, ScopeChips, scopesForRequest, type KeyRole, type Scope } from "@/components/mg/apikey-scopes";
 import { AppPairing } from "@/components/mg/app-pairing";
 import { DangerDialog } from "@/components/mg/domain";
-import { Button, Card, Field, InlineState, Modal, Segmented, StatusChip } from "@/components/mg/primitives";
+import { Button, Card, Field, InlineState, Modal, Segmented, StatusChip, Switch } from "@/components/mg/primitives";
 import { ResourceView, StateView } from "@/components/mg/states";
 import { useToast } from "@/components/mg/toast";
 import { api } from "@/lib/api/client";
@@ -13,7 +14,6 @@ import { useResource } from "@/lib/api/hooks";
 import { useI18n } from "@/lib/i18n";
 import { useSession } from "@/lib/session";
 
-type KeyRole = "viewer" | "operator";
 type KeyStatus = "actief" | "ingetrokken" | "verlopen";
 
 export interface ApiKeyRow {
@@ -27,6 +27,8 @@ export interface ApiKeyRow {
   expires_at: string | null;
   revoked_at: string | null;
   status: KeyStatus;
+  /** Rechten (scopes) bovenop de rol; null = geen. Bewust string[]: een recht dat deze versie niet kent blijft zichtbaar. */
+  scopes?: string[] | null;
   /** Wat de sleutel mag en de laatste 7 dagen deed (rapport 5, M13). */
   permissions_nl?: string;
   usage?: { actions_7d: number; by_action: Array<{ action: string; action_nl?: string; count: number; last?: string }> };
@@ -49,7 +51,7 @@ export default function ApiKeysPage() {
   const toast = useToast();
   const keys = useResource<{ items: ApiKeyRow[] }>(can("admin") ? "/auth/api-keys" : null);
   const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState<{ name: string; role: KeyRole; expires: string }>({ name: "", role: "operator", expires: "" });
+  const [form, setForm] = useState<{ name: string; role: KeyRole; expires: string; scopes: Scope[] }>({ name: "", role: "operator", expires: "", scopes: [] });
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [created, setCreated] = useState<{ name: string; key: string } | null>(null);
@@ -61,7 +63,7 @@ export default function ApiKeysPage() {
   const nameOk = NAME_RE.test(form.name.trim());
   const dateOk = !form.expires || form.expires > today();
 
-  const open = () => { setError(null); setForm({ name: "", role: "operator", expires: "" }); setAdding(true); };
+  const open = () => { setError(null); setForm({ name: "", role: "operator", expires: "", scopes: [] }); setAdding(true); };
 
   const create = async () => {
     if (!nameOk || !dateOk) return;
@@ -70,6 +72,8 @@ export default function ApiKeysPage() {
     try {
       const body: Record<string, unknown> = { name: form.name.trim(), role: form.role };
       if (form.expires) body.expires_in_days = daysUntil(form.expires);
+      const scopes = scopesForRequest(form.role, form.scopes);
+      if (scopes) body.scopes = scopes;
       const res = await api.post<ApiKeyRow & { key: string }>("/auth/api-keys", body);
       setAdding(false);
       setCreated({ name: res.name, key: res.key });
@@ -129,7 +133,8 @@ export default function ApiKeysPage() {
                       {k.usage ? <div className="cell-sub" style={{ whiteSpace: "normal" }} data-testid={`apikey-usage-${k.name}`}>{k.usage.actions_7d
                         ? t("apikeys.usage", { count: k.usage.actions_7d, what: k.usage.by_action.slice(0, 3).map((a) => `${a.action_nl ?? a.action} ×${a.count}`).join(", ") })
                         : t("apikeys.usageNone")}</div> : null}</td>
-                    <td data-label={t("apikeys.col.role")}><StatusChip tone={k.role === "operator" ? "accent" : "neutral"} icon={k.role === "operator" ? UserCog : Eye}>{t(`role.${k.role}`)}</StatusChip></td>
+                    <td data-label={t("apikeys.col.role")}><StatusChip tone={k.role === "operator" ? "accent" : "neutral"} icon={k.role === "operator" ? UserCog : Eye}>{t(`role.${k.role}`)}</StatusChip>
+                      {k.scopes?.length ? <div className="mt-1"><ScopeChips scopes={k.scopes} testId={`apikey-scopes-${k.name}`} /></div> : null}</td>
                     <td data-label={t("apikeys.col.prefix")}><code className="mono">{k.prefix}…</code></td>
                     <td data-label={t("apikeys.col.created")}>{dateTime(k.created_at)}</td>
                     <td data-label={t("apikeys.col.lastUsed")}>{k.last_used_at ? dateTime(k.last_used_at) : t("apikeys.never")}</td>
@@ -157,12 +162,33 @@ export default function ApiKeysPage() {
           <Field label={t("apikeys.form.name")} htmlFor="apikey-name" hint={t("apikeys.form.nameHint")} error={form.name && !nameOk ? t("apikeys.form.nameInvalid") : undefined}>
             <input id="apikey-name" className="input" value={form.name} maxLength={64} autoComplete="off" onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
-          <Field label={t("apikeys.form.role")} htmlFor="apikey-role" hint={form.role === "operator" ? t("apikeys.form.hintOperator") : t("apikeys.form.hintViewer")}>
+          <Field label={t("apikeys.form.role")} htmlFor="apikey-role" hint={form.role === "operator" ? t("apikeys.form.hintOperator") : form.scopes.length ? t("apikeys.form.hintViewerScoped") : t("apikeys.form.hintViewer")}>
             <div id="apikey-role">
-              <Segmented label={t("apikeys.form.role")} value={form.role} onChange={(role) => setForm({ ...form, role })}
+              {/* terug naar operator: de rechten worden leeggemaakt, niet alleen verborgen (een operator-verzoek heeft nooit rechten) */}
+              <Segmented label={t("apikeys.form.role")} value={form.role} onChange={(role) => setForm({ ...form, role, scopes: role === "viewer" ? form.scopes : [] })}
                 options={[{ value: "operator", label: t("apikeys.form.roleOperator") }, { value: "viewer", label: t("apikeys.form.roleViewer") }]} />
             </div>
           </Field>
+          {form.role === "viewer" ? (
+            <Field label={t("apikeys.form.scopes")} htmlFor="apikey-scopes" hint={t("apikeys.form.scopesHint")}>
+              <div id="apikey-scopes" role="group" aria-label={t("apikeys.form.scopes")}>
+                {KNOWN_SCOPES.map((scope) => {
+                  const text = SCOPE_TEXT[scope];
+                  const id = `apikey-scope-${text.id}`;
+                  return (
+                    <div key={scope} className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <label className="font-semibold" htmlFor={id}>{t(text.label)}</label>
+                        <div className="cell-sub" id={`${id}-hint`}>{t(text.hint)} <code className="mono">{scope}</code></div>
+                      </div>
+                      <Switch id={id} checked={form.scopes.includes(scope)} label={t(text.label)} describedBy={`${id}-hint`}
+                        onChange={(on) => setForm({ ...form, scopes: on ? [...form.scopes.filter((s) => s !== scope), scope] : form.scopes.filter((s) => s !== scope) })} />
+                    </div>
+                  );
+                })}
+              </div>
+            </Field>
+          ) : null}
           <Field label={t("apikeys.form.expires")} htmlFor="apikey-expires" hint={t("apikeys.form.expiresHint")} error={!dateOk ? t("apikeys.form.datePast") : undefined}>
             <input id="apikey-expires" type="date" className="input" min={today()} value={form.expires} onChange={(e) => setForm({ ...form, expires: e.target.value })} />
           </Field>
@@ -184,7 +210,8 @@ export default function ApiKeysPage() {
 
       <DangerDialog open={Boolean(revoking)} onClose={() => setRevoking(null)} onConfirm={() => void revoke()} icon={Ban}
         title={t("apikeys.revokeTitle", { name: revoking?.name ?? "" })} description={t("apikeys.revokeBody")}
-        facts={revoking ? [{ label: t("apikeys.col.role"), value: t(`role.${revoking.role}`) }, { label: t("apikeys.col.prefix"), value: <code className="mono">{revoking.prefix}…</code> }] : undefined}
+        facts={revoking ? [{ label: t("apikeys.col.role"), value: t(`role.${revoking.role}`) }, { label: t("apikeys.col.prefix"), value: <code className="mono">{revoking.prefix}…</code> },
+          ...(revoking.scopes?.length ? [{ label: t("apikeys.form.scopes"), value: <ScopeChips scopes={revoking.scopes} testId="apikey-revoke-scopes" /> }] : [])] : undefined}
         confirmLabel={t("apikeys.revoke")} pending={pending} error={revokeError} />
     </Card>
     </div>

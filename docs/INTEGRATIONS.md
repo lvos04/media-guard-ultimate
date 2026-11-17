@@ -10,6 +10,10 @@ gebruiken een **API-sleutel**.
 2. Geef een naam (bv. `mso`), kies de rol en eventueel een vervaldatum.
    - **Operator** (vooraf gekozen): lezen én acties zoals een herzoek starten.
    - **Kijker**: alleen lezen.
+   - **Kijker met rechten (scopes)**: kies Kijker en zet onder **Rechten (scopes)** alleen aan wat de koppeling
+     nodig heeft. Nu is er één recht: **Noodstop activeren** (`emergency_stop:on`), bedoeld voor de Hub. Zo'n
+     sleutel mag lezen en de noodstop aanzetten, nooit opheffen; verder niets, ook niet wat een gewone kijker-sleutel
+     wel mag schrijven. Rechten kunnen alleen op een kijker-sleutel (beveiligingsdetails: `docs/SECURITY.md` §2a).
    - Beheerdersrechten bestaan niet voor sleutels.
 3. Kopieer de sleutel uit het venster dat volgt. **Hij wordt niet opnieuw getoond**; kwijt =
    intrekken en een nieuwe maken.
@@ -18,7 +22,8 @@ gebruiken een **API-sleutel**.
    `401 {"detail": "Ongeldige of ingetrokken API-sleutel"}`.
 
 Controle: `GET /api/v1/auth/me` met de sleutel geeft
-`{"username": "apikey:<naam>", "role": "operator", "csrf_token": null, …}`.
+`{"username": "apikey:<naam>", "role": "operator", "scopes": null, "csrf_token": null, …}`
+(een kijker-sleutel met rechten: `"role": "viewer", "scopes": ["emergency_stop:on"]`).
 Beveiligingsdetails: `docs/SECURITY.md` §2a.
 
 ## Media Source Optimizer (MSO)
