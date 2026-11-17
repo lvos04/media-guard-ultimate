@@ -6,7 +6,9 @@ Rechten (scopes) op API-sleutels (S-P3-600; contract 1.3 §2.3 regels 2 en 3, C1
 (`005_api_key_scopes`, voegt alleen een kolom toe); sleutels zonder rechten (MSO, de Android-app) werken precies als
 voorheen. Geen release.
 - **Kijker-sleutel met het recht `emergency_stop:on`** (bedoeld voor de Hub): mag lezen zoals een kijker en de
-  noodstop aanzetten, nooit opheffen (403, ook via de app-bediening `POST /api/v1/app/control`). Elke andere route met
+  noodstop aanzetten, nooit opheffen (403, ook via de app-bediening `POST /api/v1/app/control`). Staat de noodstop al
+  aan, dan wijzigt zo'n sleutel niets (200 met de bestaande toestand; reden, door en sinds blijven staan; alleen de
+  poging staat in de audit als `system.emergency_stop_repeated`). Elke andere route met
   een andere methode dan GET/HEAD geeft 403, ook de schrijfroutes die een gewone kijker wel mag. De controle zit
   centraal bij het aanmelden met de sleutel.
 - **Alleen op rol kijker:** een onbekend recht (ook `wanted:search`, dat pas na besluit BG-05 kan komen) of rechten op
