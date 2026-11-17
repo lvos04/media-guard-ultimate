@@ -29,6 +29,7 @@ ACTIONS_NL: dict[str, str] = {
     "apikey.created": "API-sleutel aangemaakt",
     "apikey.revoked": "API-sleutel ingetrokken",
     "apikey.rejected": "API-sleutel geweigerd",
+    "system.emergency_stop_repeated": "Noodstop stond al aan: opnieuw gevraagd, niets gewijzigd",
     "storage.typo_fix": "Map hernoemd",
     "arr.removed_deleted_title": "Verwijderde titel opgeruimd",
     "attention.dismissed": "Wacht op jou: bewust zo gekozen (verborgen)",

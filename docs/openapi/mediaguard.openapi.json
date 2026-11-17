@@ -24461,7 +24461,7 @@
     },
     "/api/v1/system/emergency-stop": {
       "post": {
-        "description": "Noodstop: blokkeert nieuwe grabs (via pre-grab hook), recovery-mutaties en encodes.\nLopende muterende jobs stoppen bij hun eerstvolgende controlepunt. Een API-sleutel met het\nrecht ``emergency_stop:on`` mag hem alleen aanzetten (403 bij ``active: false``).",
+        "description": "Noodstop: blokkeert nieuwe grabs (via pre-grab hook), recovery-mutaties en encodes.\nLopende muterende jobs stoppen bij hun eerstvolgende controlepunt. Een API-sleutel met het\nrecht ``emergency_stop:on`` mag hem alleen aanzetten (403 bij ``active: false``); staat hij\nal aan, dan wijzigt zo'n sleutel niets (200 met de bestaande toestand; alleen de poging komt\nin de audit).",
         "operationId": "emergency_stop_api_v1_system_emergency_stop_post",
         "requestBody": {
           "content": {

@@ -114,13 +114,20 @@ def emergency_stop(body: EmergencyBody, principal: Principal = Depends(require_e
                    ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
     """Noodstop: blokkeert nieuwe grabs (via pre-grab hook), recovery-mutaties en encodes.
     Lopende muterende jobs stoppen bij hun eerstvolgende controlepunt. Een API-sleutel met het
-    recht ``emergency_stop:on`` mag hem alleen aanzetten (403 bij ``active: false``)."""
+    recht ``emergency_stop:on`` mag hem alleen aanzetten (403 bij ``active: false``); staat hij
+    al aan, dan wijzigt zo'n sleutel niets (200 met de bestaande toestand; alleen de poging komt
+    in de audit)."""
     if not may_set_emergency_stop(principal, body.active):
         if principal.scopes is None:
             raise HTTPException(status_code=403, detail="Rol 'operator' vereist")
         raise HTTPException(status_code=403, detail=ESTOP_OFF_DETAIL if not body.active
                             else SCOPE_DENIED_DETAIL)
     old = ctx.state_get("emergency_stop", {"active": False})
+    if principal.scopes is not None and old.get("active"):
+        # reden, door en sinds van wie hem aanzette blijven staan (en dus de herinnering)
+        audit(ctx.db, actor=principal.actor, action="system.emergency_stop_repeated",
+              reason=body.reason, old_value=old)
+        return old  # type: ignore[no-any-return]
     new: dict[str, Any] = {"active": body.active, "reason": body.reason,
                            "by": principal.username, "since": utcnow()}
     if old.get("active") and not body.active:

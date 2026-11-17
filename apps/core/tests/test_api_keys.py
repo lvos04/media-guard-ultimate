@@ -596,3 +596,117 @@ def test_routetabel_en_rechtenlijst(app):  # type: ignore[no-untyped-def]
     assert [r["path"] for r in rows if r["scopes"]] == [ESTOP]
     control = next(r for r in rows if r["path"] == "/api/v1/app/control")
     assert control["role"] == "operator" and control["scopes"] == []
+
+
+# -- herstel na de reviews van S-P3-600 (A-HERSTEL) ---------------------------------------------
+def test_aanmaakaudit_krijgt_de_sleutel_niet_eens_aangeboden(client, ctx):  # type: ignore[no-untyped-def]
+    """R-TECH-2: de auditregel van apikey.created is precies wat hij moet zijn, dus zonder
+    sleutel en zonder masker (*** zou betekenen dat de sleutel wel werd aangeboden)."""
+    r = client.post("/api/v1/auth/api-keys",
+                    json={"name": "hub", "role": "viewer", "scopes": [SCOPE]})
+    assert r.status_code == 200, r.text
+    row = ctx.db.fetch_one("SELECT reason, new_value, undo_hint FROM audit_events "
+                           "WHERE action='apikey.created'")
+    assert row["reason"] == "API-sleutel 'hub' (viewer) met rechten emergency_stop:on aangemaakt"
+    assert json.loads(row["new_value"]) == {"name": "hub", "role": "viewer", "expires_at": None,
+                                            "scopes": [SCOPE]}
+    assert row["undo_hint"] is None
+
+
+def test_audit_redigeert_een_sleutel_in_reden_en_waarden(ctx):  # type: ignore[no-untyped-def]
+    """R-TECH-3: de tweede laag zelf: audit() slaat een mgk_-sleutel in reason, old_value en
+    new_value gemaskeerd op."""
+    from mediaguard.audit import audit
+
+    key = apikeys.generate_key()
+    audit(ctx.db, actor="test", action="test.redactie", reason=f"reden {key}",
+          old_value={"oud": key}, new_value={"apiKey": key, "los": key})
+    row = ctx.db.fetch_one("SELECT reason, old_value, new_value FROM audit_events "
+                           "WHERE action='test.redactie'")
+    for field in ("reason", "old_value", "new_value"):
+        assert key not in row[field] and "***" in row[field], field
+
+
+def test_sleutel_met_recht_laat_een_actieve_noodstop_ongemoeid(client, machine, ctx):  # type: ignore[no-untyped-def]
+    """R-VEILIG vervolgpunt 1: staat de noodstop al aan, dan wijzigt een sleutel met het recht
+    niets (200 met de bestaande toestand): reden, door en sinds van de beheerder blijven staan en
+    de herinnering 'Noodstop staat al … aan' blijft lopen, op beide wegen. Alleen de poging komt
+    in de audit. Operators, beheerders en sessies (NULL) overschrijven zoals altijd."""
+    from mediaguard import monitor
+    from mediaguard.api.system import EmergencyBody, emergency_stop
+    from mediaguard.auth import Principal
+    from mediaguard.hookguard import flag_path
+
+    made = _hub(client)
+    h = {"X-Api-Key": made["key"]}
+    r = client.post(ESTOP, json={"active": True, "reason": "Pool wordt hersteld: NIET opheffen"})
+    assert r.status_code == 200
+    st = _estop(ctx)
+    st["since"] = (datetime.now(UTC) - timedelta(hours=3)).isoformat(timespec="seconds")
+    ctx.state_set("emergency_stop", st)  # de beheerder zette hem 3 uur geleden aan
+    before = _estop(ctx)
+    assert before["by"] == "admin" and monitor.emergency_stop_item(ctx)
+    flag = flag_path(ctx).read_text("utf-8")
+
+    r = machine.post(ESTOP, headers=h, json={"active": True, "reason": "Vals alarm, mag weer uit"})
+    assert r.status_code == 200 and r.json() == before
+    # tweede weg: de app-bediening is voor deze sleutel dicht ...
+    r = machine.post("/api/v1/app/control", headers=h,
+                     json={"action": "emergency_stop_on", "confirm": True,
+                           "params": {"reason": "Vals alarm"}})
+    assert r.status_code == 403 and r.json() == DENIED
+    # ... en de functie die zij aanroept, laat de noodstop ook zelf ongemoeid
+    hub = Principal(username="apikey:hub", role="viewer", machine=True, scopes=(SCOPE,))
+    assert emergency_stop(EmergencyBody(active=True, reason="Via de app"), hub, ctx) == before
+    assert _estop(ctx) == before and flag_path(ctx).read_text("utf-8") == flag
+    assert monitor.emergency_stop_item(ctx)
+    rows = ctx.db.fetch_all("SELECT actor, action, reason, old_value, new_value FROM audit_events "
+                            "WHERE actor='apikey:hub' ORDER BY id")
+    assert [(a["action"], a["reason"]) for a in rows] == [
+        ("system.emergency_stop_repeated", "Vals alarm, mag weer uit"),
+        ("system.emergency_stop_repeated", "Via de app")]
+    assert all(json.loads(a["old_value"]) == before and a["new_value"] is None for a in rows)
+    shown = client.get("/api/v1/audit?action=system.emergency_stop_repeated&limit=1").json()[0]
+    assert shown["action_nl"] == "Noodstop stond al aan: opnieuw gevraagd, niets gewijzigd"
+    # NULL-weg ongewijzigd: een operator-sleutel en een beheerderssessie overschrijven zoals altijd
+    mso = {"X-Api-Key": _create(client, name="mso", role="operator")["key"]}
+    r = machine.post(ESTOP, headers=mso, json={"active": True, "reason": "MSO"})
+    assert r.status_code == 200 and _estop(ctx)["by"] == "apikey:mso"
+    assert _estop(ctx)["reason"] == "MSO" and _estop(ctx)["since"] != before["since"]
+    assert client.post(ESTOP, json={"active": True, "reason": "beheerder"}).status_code == 200
+    assert _estop(ctx)["by"] == "admin" and _estop(ctx)["reason"] == "beheerder"
+    # staat hij uit, dan zet de sleutel hem gewoon aan
+    assert client.post(ESTOP, json={"active": False}).status_code == 200
+    r = machine.post(ESTOP, headers=h, json={"active": True, "reason": "Hub"})
+    assert r.status_code == 200 and _estop(ctx)["by"] == "apikey:hub"
+
+
+def test_scope_guard_zonder_route_of_met_een_andere_methode_opent_niets() -> None:
+    """R-VEILIG vervolgpunt 3: auth.scope_guard zelf. Een verzoek zonder route wordt geweigerd;
+    hetzelfde pad met een andere methode opent niets; OPTIONS is geen lezen."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from mediaguard.auth import Principal, scope_guard
+
+    def request(method: str, path: str | None) -> Request:
+        scope = {"type": "http", "method": method, "path": path or ESTOP, "headers": []}
+        if path is not None:  # zoals Starlette na het routeren: het padsjabloon met voorvoegsel
+            scope["route"] = SimpleNamespace(path_format=path)
+        return Request(scope)
+
+    hub = Principal(username="apikey:hub", role="viewer", machine=True, scopes=(SCOPE,))
+    scope_guard(request("POST", ESTOP), hub)  # het enige wat het recht opent
+    for method in ("GET", "HEAD"):
+        scope_guard(request(method, None), hub)  # lezen mag, ook zonder route
+    for method, path in [(m, None) for m in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS")] + [
+            (m, ESTOP) for m in ("PUT", "PATCH", "DELETE", "OPTIONS")] + [
+            ("POST", "/api/v1/app/control")]:
+        with pytest.raises(HTTPException) as exc:
+            scope_guard(request(method, path), hub)
+        assert exc.value.status_code == 403 and exc.value.detail == DENIED["detail"], (method, path)
+    # zonder rechten (NULL) raakt deze controle niets, ook zonder route
+    scope_guard(request("POST", None), Principal(username="apikey:mso", role="operator",
+                                                 machine=True))
