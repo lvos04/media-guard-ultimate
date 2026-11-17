@@ -31,6 +31,9 @@ from pathlib import Path
 from typing import Any
 
 REPO = Path(__file__).resolve().parents[1]
+#: eigen controlefuncties met een vaste minimale rol (naast require(<rol>)); wat een API-sleutel
+#: met rechten (scopes) daarnaast mag, staat per route in het veld "scopes" (S-P3-600)
+EIGEN_CONTROLE = {"require_emergency_stop": "operator"}
 
 
 def _role(dependant: Any) -> str:
@@ -40,6 +43,8 @@ def _role(dependant: Any) -> str:
         call = dep.call
         if getattr(call, "__qualname__", "") == "require.<locals>.dep" and call.__closure__:
             return str(call.__closure__[0].cell_contents)
+        if getattr(call, "__name__", "") in EIGEN_CONTROLE:
+            return EIGEN_CONTROLE[call.__name__]
         if getattr(call, "__name__", "") == "current_principal":
             return "ingelogd"
         stack.extend(dep.dependencies)
@@ -63,8 +68,12 @@ def _temp_app() -> Iterator[Any]:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def collect() -> list[dict[str, Any]]:
+def collect(app: Any | None = None) -> list[dict[str, Any]]:
+    """Alle routes van ``app`` (zonder app: een tijdelijke app) met minimale rol en de rechten
+    (scopes) van API-sleutels die de route openen (``mediaguard.auth.SCOPE_ROUTES``)."""
     from fastapi.routing import APIRoute, APIWebSocketRoute
+
+    from mediaguard.auth import SCOPE_ROUTES
 
     rows: list[dict[str, Any]] = []
 
@@ -76,9 +85,12 @@ def collect() -> list[dict[str, Any]]:
             rel = str(src.relative_to(REPO))
         except (OSError, TypeError, ValueError):
             rel, line = "?", 0
-        rows.append({"methods": sorted(getattr(route, "methods", None) or ["WS"]),
-                     "path": prefix + route.path, "role": _role(route.dependant),
-                     "file": rel, "line": line, "func": fn.__name__,
+        methods = sorted(getattr(route, "methods", None) or ["WS"])
+        path = prefix + route.path
+        scopes = sorted(s for s, opened in SCOPE_ROUTES.items()
+                        if any((m, path) in opened for m in methods))
+        rows.append({"methods": methods, "path": path, "role": _role(route.dependant),
+                     "scopes": scopes, "file": rel, "line": line, "func": fn.__name__,
                      "in_schema": bool(getattr(route, "include_in_schema", True))})
 
     def walk(routes: list[Any], prefix: str) -> None:
@@ -90,8 +102,11 @@ def collect() -> list[dict[str, Any]]:
             elif hasattr(route, "routes") and hasattr(route, "prefix"):
                 walk(route.routes, prefix)
 
-    with _temp_app() as app:
+    if app is not None:
         walk(app.routes, "")
+    else:
+        with _temp_app() as tmp_app:
+            walk(tmp_app.routes, "")
     rows.sort(key=lambda r: (r["path"], ",".join(r["methods"])))
     return rows
 
@@ -100,7 +115,8 @@ def markdown(rows: list[dict[str, Any]]) -> str:
     out = ["| Methode | Pad | Min. rol | Bestand:regel |", "|---|---|---|---|"]
     for r in rows:
         methods = ",".join(m for m in r["methods"] if m != "HEAD")
-        out.append(f"| {methods} | `{r['path']}` | {r['role']} | `{r['file']}:{r['line']}` |")
+        role = r["role"] + "".join(f" (of sleutel met recht `{s}`)" for s in r["scopes"])
+        out.append(f"| {methods} | `{r['path']}` | {role} | `{r['file']}:{r['line']}` |")
     return "\n".join(out)
 
 

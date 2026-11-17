@@ -1764,7 +1764,7 @@
       },
       "NewApiKey": {
         "additionalProperties": false,
-        "description": "Rol 'admin' bestaat bewust niet voor sleutels: die geeft 422.",
+        "description": "Rol 'admin' bestaat bewust niet voor sleutels: die geeft 422. Rechten (scopes) alleen bij\nrol viewer; een onbekend recht of rechten op een operator-sleutel geven 422 met een\nNederlandse tekst (``apikeys.check_scopes``). Leeg of weggelaten = geen rechten (NULL).",
         "properties": {
           "expires_in_days": {
             "anyOf": [
@@ -1794,6 +1794,21 @@
             ],
             "title": "Role",
             "type": "string"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Rechten bovenop 'lezen als kijker', alleen bij rol viewer. Nu alleen 'emergency_stop:on' (de noodstop aanzetten, nooit opheffen). Leeg of weggelaten = geen rechten.",
+            "title": "Scopes"
           }
         },
         "required": [
@@ -24446,7 +24461,7 @@
     },
     "/api/v1/system/emergency-stop": {
       "post": {
-        "description": "Noodstop: blokkeert nieuwe grabs (via pre-grab hook), recovery-mutaties en encodes.\nLopende muterende jobs stoppen bij hun eerstvolgende controlepunt.",
+        "description": "Noodstop: blokkeert nieuwe grabs (via pre-grab hook), recovery-mutaties en encodes.\nLopende muterende jobs stoppen bij hun eerstvolgende controlepunt. Een API-sleutel met het\nrecht ``emergency_stop:on`` mag hem alleen aanzetten (403 bij ``active: false``).",
         "operationId": "emergency_stop_api_v1_system_emergency_stop_post",
         "requestBody": {
           "content": {

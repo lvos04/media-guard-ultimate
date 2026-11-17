@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+Rechten (scopes) op API-sleutels (S-P3-600; contract 1.3 §2.3 regels 2 en 3, C1.3-MGU-05). Eén migratie
+(`005_api_key_scopes`, voegt alleen een kolom toe); sleutels zonder rechten (MSO, de Android-app) werken precies als
+voorheen. Geen release.
+- **Kijker-sleutel met het recht `emergency_stop:on`** (bedoeld voor de Hub): mag lezen zoals een kijker en de
+  noodstop aanzetten, nooit opheffen (403, ook via de app-bediening `POST /api/v1/app/control`). Elke andere route met
+  een andere methode dan GET/HEAD geeft 403, ook de schrijfroutes die een gewone kijker wel mag. De controle zit
+  centraal bij het aanmelden met de sleutel.
+- **Alleen op rol kijker:** een onbekend recht (ook `wanted:search`, dat pas na besluit BG-05 kan komen) of rechten op
+  een operator-sleutel geven 422 met een Nederlandse tekst; een lege lijst = geen rechten. Een recht dat deze versie
+  niet kent (of een onleesbare waarde), opent niets; een operator-sleutel met rechten in de database wordt geweigerd.
+- **API:** `POST /api/v1/auth/api-keys` neemt optioneel `scopes`; `GET /api/v1/auth/api-keys` en `GET /api/v1/auth/me`
+  tonen `scopes` (nooit de sleutel). OpenAPI-export bijgewerkt. Zie `docs/SECURITY.md` §2a.
+- **Niet gevalideerd:** een echte Hub-sleutel tegen de echte MediaGuard op de NAS.
+
 Meerdere mediaservers tegelijk en aanmelden per server (Δ-MG-DUAL, Δ-MG-AUTH; contract 1.3 §2.3 regel 2,
 C1.3-MGU-04). Besluiten: ADR-0022 en ADR-0023. Eén migratie (`150_mediaserver_servers`, voegt alleen toe); de
 status-API krijgt er velden bij, geen veld verdwijnt. Geen release.

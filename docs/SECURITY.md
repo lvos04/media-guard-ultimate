@@ -82,7 +82,7 @@ die tunnel.
   pauzebodem, AI-toestemming) gaat naar `audit_events` met actor, oude/nieuwe waarde en
   undo-hint.
 - **API-sleutels:** header `X-Api-Key` → principal `apikey:<naam>` met de rol van de sleutel
-  (viewer of operator), zie §2a.
+  (viewer of operator) en eventueel rechten (scopes), zie §2a.
 - **Volgorde** in `principal_from_request`: interne token (alleen intern) → `X-Api-Key` →
   (dev-bypass) → sessiecookie. Een meegestuurde maar ongeldige `X-Api-Key` geeft altijd 401;
   er wordt dan niet teruggevallen op de cookie.
@@ -105,12 +105,17 @@ API-sleutels**.
 | Rate limit | 10 mislukte sleutelpogingen per IP per 5 minuten, daarna `429` met `Retry-After` (ook voor geldige sleutels vanaf dat adres) |
 | `last_used_at` | hooguit één keer per minuut per sleutel bijgewerkt |
 | Audit | `apikey.created`, `apikey.revoked`, `apikey.rejected` (alleen de prefix, nooit de sleutel); acties met een sleutel staan op naam van `apikey:<naam>` |
-| `GET /api/v1/auth/me` | `{"username": "apikey:<naam>", "role": "<rol>", "csrf_token": null, "preferences": {}, …}` |
+| Rechten (scopes) | Kolom `scopes` (migratie `005_api_key_scopes`): `NULL` = geen rechten, de rol bepaalt alles (zoals vóór deze kolom; de sleutels van MSO en de Android-app blijven zo). Anders een lijst rechten, **alleen op rol `viewer`**. Zo'n sleutel mag lezen (`GET`/`HEAD`) zoals een kijker plus precies de routes die zijn rechten openen; elke andere route met een andere methode geeft `403 {"detail": "Deze API-sleutel heeft beperkte rechten (scopes) en mag dit niet"}`, ook de schrijfroutes die een gewone kijker wel mag. De controle zit centraal bij het aanmelden met de sleutel (`auth.scope_guard`, tabel `auth.SCOPE_ROUTES`), dus ook op de tweede weg `POST /api/v1/app/control`. Routes zonder aanmelding (inloggen, hooks) kijken niet naar `X-Api-Key`: daar geeft zo'n sleutel niets meer dan geen sleutel. |
+| `emergency_stop:on` | Het enige recht: `POST /api/v1/system/emergency-stop` met `{"active": true}`. Opheffen (`active: false`) geeft 403, ook met dit recht en ook via de app-bediening (`may_set_emergency_stop` in `api/system.py`, aangeroepen door de route én door `/app/control`). `wanted:search` bestaat nog niet (besluit BG-05 is open). |
+| Fail-closed | Een recht dat deze versie niet kent of een onleesbare waarde in de kolom opent niets; de sleutel mag dan alleen lezen. Een operator-sleutel met rechten (kan alleen via een handmatig aangepaste database) wordt geweigerd met 401. Bij aanmaken: onbekend recht of rechten op een operator-sleutel → 422 met een Nederlandse tekst; een lege lijst = `NULL`. |
+| Terugzetten | De vorige versie (1.2.2) kent de kolom niet en negeert hem: een kijker-sleutel met rechten is daar een gewone kijker (kan de noodstop dan niet aanzetten, krijgt niets ruimer). Daarom kunnen rechten niet op een operator-sleutel: die zou na terugzetten weer alle operator-rechten krijgen. |
+| `GET /api/v1/auth/me` | `{"username": "apikey:<naam>", "role": "<rol>", "scopes": null \| ["…"], "csrf_token": null, "preferences": {}, …}` |
 
-Beheer (alleen admin, met CSRF): `GET /api/v1/auth/api-keys` (nooit hash of sleutel),
-`POST /api/v1/auth/api-keys {name, role, expires_in_days?}` (antwoord bevat `key`, één keer),
-`POST /api/v1/auth/api-keys/{id}/revoke`. In `/api/v1/openapi.json` staat het schema als
-`securitySchemes.apiKey` (type `apiKey`, in `header`, naam `X-Api-Key`).
+Beheer (alleen admin, met CSRF): `GET /api/v1/auth/api-keys` (nooit hash of sleutel; met
+`scopes` en `permissions_nl`), `POST /api/v1/auth/api-keys {name, role, expires_in_days?, scopes?}`
+(antwoord bevat `key`, één keer), `POST /api/v1/auth/api-keys/{id}/revoke`. In
+`/api/v1/openapi.json` staat het schema als `securitySchemes.apiKey` (type `apiKey`, in `header`,
+naam `X-Api-Key`).
 
 ## 2b. Tweestapsverificatie en sessies (`apps/core/mediaguard/security/`)
 

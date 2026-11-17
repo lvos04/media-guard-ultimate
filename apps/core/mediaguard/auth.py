@@ -10,6 +10,10 @@
   eigen hook-sleutel die alleen op ``/api/v1/hooks/*`` geldt.
 - Koppelingen (bv. Media Source Optimizer): header ``X-Api-Key`` met een API-sleutel met rol
   viewer of operator (zie ``mediaguard.apikeys``). Ongeldig = 401, nooit terugval op de cookie.
+- Rechten (scopes, S-P3-600): een kijker-sleutel met rechten mag lezen (GET/HEAD) zoals een kijker
+  plus precies de routes die zijn rechten openen (``SCOPE_ROUTES``); al het andere geeft 403
+  (``scope_guard``, centraal bij het aanmelden met de sleutel). Zonder rechten (NULL) bepaalt de
+  rol alles, zoals altijd.
 """
 
 from __future__ import annotations
@@ -22,12 +26,24 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, HTTPException, Request
+from starlette.requests import HTTPConnection
 
 from mediaguard.db import Database, utcnow
 
 SESSION_COOKIE = "mg_session"
 SESSION_DAYS = 14
 ROLE_RANK = {"viewer": 1, "operator": 2, "admin": 3}
+
+#: Rechten (scopes) van API-sleutels (S-P3-600, C1.3-MGU-05): per recht de routes (methode,
+#: padsjabloon) die het bovenop "lezen als kijker" opent. Een recht dat hier niet staat, opent
+#: niets (fail-closed). ``wanted:search`` komt er pas na besluit BG-05.
+SCOPE_ESTOP_ON = "emergency_stop:on"
+SCOPE_ROUTES: dict[str, frozenset[tuple[str, str]]] = {
+    SCOPE_ESTOP_ON: frozenset({("POST", "/api/v1/system/emergency-stop")}),
+}
+#: wat een sleutel met rechten altijd mag, net als een kijker (een websocket begint met GET)
+SCOPE_READ_METHODS = frozenset({"GET", "HEAD"})
+SCOPE_DENIED_DETAIL = "Deze API-sleutel heeft beperkte rechten (scopes) en mag dit niet"
 
 
 @dataclass(frozen=True)
@@ -37,6 +53,8 @@ class Principal:
     user_id: int | None = None
     csrf_token: str | None = None
     machine: bool = False
+    #: rechten van een API-sleutel; None = geen rechten (NULL): de rol bepaalt alles
+    scopes: tuple[str, ...] | None = None
 
     @property
     def actor(self) -> str:
@@ -113,7 +131,9 @@ def principal_from_request(request: Request) -> Principal | None:
         from mediaguard.apikeys import authenticate
 
         # geldig -> principal; anders HTTPException 401/429 (geen terugval op de cookie)
-        return authenticate(app, request, api_key)
+        principal = authenticate(app, request, api_key)
+        scope_guard(request, principal)
+        return principal
     if app.settings.dev_auth_bypass:
         return Principal(username="dev", role="admin", csrf_token=None)
     token = request.cookies.get(SESSION_COOKIE)
@@ -133,6 +153,23 @@ def principal_from_request(request: Request) -> Principal | None:
         app.db.execute("UPDATE sessions SET last_seen_at=? WHERE token_hash=?", (now, th))
     return Principal(username=row["username"], role=row["role"], user_id=int(row["id"]),
                      csrf_token=row["csrf_token"])
+
+
+def scope_guard(request: HTTPConnection, principal: Principal) -> None:
+    """Centrale controle voor een API-sleutel met rechten (scopes niet NULL): lezen (GET/HEAD)
+    mag zoals een kijker; elke andere methode alleen op een route die een van zijn rechten
+    opent (``SCOPE_ROUTES``), anders 403. Geldt voor elke route met aanmelding, ook voor de
+    tweede weg naar de noodstop (``POST /api/v1/app/control``). Een sleutel zonder rechten
+    (NULL) raakt deze controle niet."""
+    if principal.scopes is None:
+        return
+    method = str(request.scope.get("method") or "GET")
+    if method in SCOPE_READ_METHODS:
+        return
+    route = getattr(request.scope.get("route"), "path_format", None)
+    opened = {r for scope in principal.scopes for r in SCOPE_ROUTES.get(scope, frozenset())}
+    if route is None or (method, route) not in opened:
+        raise HTTPException(status_code=403, detail=SCOPE_DENIED_DETAIL)
 
 
 def current_principal(request: Request) -> Principal:

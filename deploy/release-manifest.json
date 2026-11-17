@@ -151,6 +151,7 @@
       "002_jobs_maintenance",
       "003_notifications_merge",
       "004_api_keys",
+      "005_api_key_scopes",
       "020_instances",
       "021_library",
       "022_wanted",

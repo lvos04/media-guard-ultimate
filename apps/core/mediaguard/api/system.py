@@ -9,7 +9,16 @@ from pydantic import BaseModel, Field
 
 from mediaguard import __version__, jobs
 from mediaguard.audit import audit
-from mediaguard.auth import Principal, require_admin, require_operator, require_viewer
+from mediaguard.auth import (
+    ROLE_RANK,
+    SCOPE_DENIED_DETAIL,
+    SCOPE_ESTOP_ON,
+    Principal,
+    current_principal,
+    require_admin,
+    require_operator,
+    require_viewer,
+)
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import loads, utcnow
 
@@ -75,11 +84,42 @@ class EmergencyBody(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
+ESTOP_OFF_DETAIL = "Deze API-sleutel mag de noodstop alleen aanzetten, nooit opheffen"
+
+
+def require_emergency_stop(principal: Principal = Depends(current_principal)) -> Principal:
+    """Eigen controle van de noodstoproute, naast ``require_operator`` (S-P3-600): zonder rechten
+    (NULL) precies ``require_operator``, zoals altijd; met rechten alleen een sleutel met
+    ``emergency_stop:on``. Wat die sleutel met de noodstop mag (alleen aanzetten), controleert
+    ``emergency_stop`` zelf, want die functie is ook de tweede weg
+    (``POST /api/v1/app/control``)."""
+    if principal.scopes is None:
+        return require_operator(principal)  # type: ignore[no-any-return]
+    if SCOPE_ESTOP_ON not in principal.scopes:
+        raise HTTPException(status_code=403, detail=SCOPE_DENIED_DETAIL)
+    return principal
+
+
+def may_set_emergency_stop(principal: Principal, active: bool) -> bool:
+    """Wie de noodstop mag zetten. Zonder rechten (NULL): operator of hoger, aan en uit, zoals
+    altijd. Met rechten: alleen aanzetten, alleen een kijker met ``emergency_stop:on``; opheffen
+    nooit, op geen enkele weg."""
+    if principal.scopes is None:
+        return ROLE_RANK.get(principal.role, 0) >= ROLE_RANK["operator"]
+    return active and principal.role == "viewer" and SCOPE_ESTOP_ON in principal.scopes
+
+
 @router.post("/system/emergency-stop")
-def emergency_stop(body: EmergencyBody, principal: Principal = Depends(require_operator),
+def emergency_stop(body: EmergencyBody, principal: Principal = Depends(require_emergency_stop),
                    ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
     """Noodstop: blokkeert nieuwe grabs (via pre-grab hook), recovery-mutaties en encodes.
-    Lopende muterende jobs stoppen bij hun eerstvolgende controlepunt."""
+    Lopende muterende jobs stoppen bij hun eerstvolgende controlepunt. Een API-sleutel met het
+    recht ``emergency_stop:on`` mag hem alleen aanzetten (403 bij ``active: false``)."""
+    if not may_set_emergency_stop(principal, body.active):
+        if principal.scopes is None:
+            raise HTTPException(status_code=403, detail="Rol 'operator' vereist")
+        raise HTTPException(status_code=403, detail=ESTOP_OFF_DETAIL if not body.active
+                            else SCOPE_DENIED_DETAIL)
     old = ctx.state_get("emergency_stop", {"active": False})
     new: dict[str, Any] = {"active": body.active, "reason": body.reason,
                            "by": principal.username, "since": utcnow()}

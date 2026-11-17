@@ -161,6 +161,8 @@ def me(principal: Principal = Depends(current_principal),
     from mediaguard.security import api as sec
 
     return {"username": principal.username, "role": principal.role,
+            # rechten van een API-sleutel (S-P3-600); null = geen rechten: de rol bepaalt alles
+            "scopes": list(principal.scopes) if principal.scopes is not None else None,
             "csrf_token": principal.csrf_token, "locale": locale,
             "preferences": prefs, "theme": theme,
             "twofa_enabled": bool(principal.user_id and
@@ -323,12 +325,18 @@ def change_own_password(body: PasswordChange, request: Request,
 
 # -- API-sleutels (alleen admin) --------------------------------------------------------------
 class NewApiKey(BaseModel):
-    """Rol 'admin' bestaat bewust niet voor sleutels: die geeft 422."""
+    """Rol 'admin' bestaat bewust niet voor sleutels: die geeft 422. Rechten (scopes) alleen bij
+    rol viewer; een onbekend recht of rechten op een operator-sleutel geven 422 met een
+    Nederlandse tekst (``apikeys.check_scopes``). Leeg of weggelaten = geen rechten (NULL)."""
 
     model_config = {"extra": "forbid"}
     name: str = Field(min_length=2, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9 ._-]*$")
     role: Literal["viewer", "operator"] = "operator"
     expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+    scopes: list[str] | None = Field(
+        default=None, description="Rechten bovenop 'lezen als kijker', alleen bij rol viewer. "
+                                  "Nu alleen 'emergency_stop:on' (de noodstop aanzetten, nooit "
+                                  "opheffen). Leeg of weggelaten = geen rechten.")
 
 
 @router.get("/api-keys")
@@ -346,7 +354,8 @@ def create_api_key(body: NewApiKey, principal: Principal = Depends(require_admin
     from mediaguard import apikeys
 
     return apikeys.create_key(ctx, name=body.name.strip(), role=body.role,
-                              expires_in_days=body.expires_in_days, actor=principal.actor)
+                              expires_in_days=body.expires_in_days, actor=principal.actor,
+                              scopes=body.scopes)
 
 
 @router.post("/api-keys/{key_id}/revoke")

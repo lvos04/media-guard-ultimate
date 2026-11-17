@@ -6,12 +6,17 @@ Bedoeld voor koppelingen zoals Media Source Optimizer (MSO). De sleutel gaat mee
 
 Een onbekende, ingetrokken of verlopen sleutel geeft altijd 401 — er wordt dan niet
 teruggevallen op een sessiecookie in hetzelfde verzoek, want dat zou fouten maskeren.
+
+Rechten (scopes, S-P3-600): kolom ``scopes`` is NULL (het oude gedrag: de rol bepaalt alles)
+of een JSON-lijst met rechten, alleen op rol viewer. Wat een recht opent staat in
+``mediaguard.auth.SCOPE_ROUTES``; een recht dat deze versie niet kent, opent niets.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import secrets
 import threading
 import time
@@ -21,9 +26,12 @@ from typing import TYPE_CHECKING, Any
 from fastapi import HTTPException
 
 from mediaguard.audit import audit
+from mediaguard.auth import SCOPE_ESTOP_ON, SCOPE_ROUTES
 from mediaguard.db import utcnow
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from starlette.requests import HTTPConnection
 
     from mediaguard.auth import Principal
@@ -33,6 +41,10 @@ HEADER = "X-Api-Key"
 KEY_PREFIX = "mgk_"
 PREFIX_LEN = 8
 ROLES = ("viewer", "operator")
+#: rechten die deze versie kent (alleen op rol viewer); nu alleen "noodstop aan" (BG-05 is open)
+KNOWN_SCOPES = tuple(SCOPE_ROUTES)
+SCOPE_ROLE_DETAIL = ("Rechten (scopes) kunnen alleen op een sleutel met rol kijker. Kies rol "
+                     "kijker of laat de rechten leeg.")
 INVALID_DETAIL = "Ongeldige of ingetrokken API-sleutel"
 TOUCH_INTERVAL_S = 60
 # mislukte pogingen per IP (zelfde idee als bij inloggen): max N binnen het venster
@@ -95,6 +107,48 @@ def client_ip(request: HTTPConnection) -> str:
     return real_ip(request)
 
 
+def parse_scopes(raw: Any) -> tuple[str, ...] | None:
+    """Kolom ``scopes`` → None (NULL: geen rechten, de rol bepaalt alles) of de rechten.
+
+    Fail-closed: een waarde die geen JSON-lijst met teksten is, telt als één onbekend recht.
+    Zo'n sleutel heeft dan rechten (dus alleen lezen, ``auth.scope_guard``) en opent niets."""
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        data = None
+    if not isinstance(data, list) or not all(isinstance(s, str) for s in data):
+        return (f"ongeldig:{str(raw)[:48]}",)
+    return tuple(sorted(set(data)))
+
+
+def check_scopes(role: str, scopes: Sequence[str] | None) -> tuple[str, ...] | None:
+    """Rechten bij het aanmaken: leeg of weggelaten = None (NULL); een onbekend recht of rechten
+    op een andere rol dan viewer → 422 met een Nederlandse tekst (een tekst, geen lijst met
+    validatiefouten: de web-UI toont hem letterlijk)."""
+    if not scopes:
+        return None
+    for scope in scopes:
+        if scope not in KNOWN_SCOPES:
+            raise HTTPException(422, f"Onbekend recht (scope) '{str(scope)[:64]}'. Toegestaan: "
+                                     f"{', '.join(KNOWN_SCOPES)}.")
+    if role != "viewer":
+        raise HTTPException(422, SCOPE_ROLE_DETAIL)
+    return tuple(sorted(set(scopes)))
+
+
+def permissions_nl(role: str, scopes: tuple[str, ...] | None) -> str:
+    """Wat een sleutel mag, in gewone taal (sleutellijst)."""
+    if scopes is None:
+        return ("Alleen lezen" if role == "viewer" else
+                "Lezen en acties zoals 'zoek opnieuw'; geen beheer, gebruikers of geheimen")
+    if role != "viewer":
+        return "Wordt geweigerd: rechten (scopes) kunnen alleen op een sleutel met rol kijker"
+    extra = ", plus de noodstop activeren (nooit opheffen)" if SCOPE_ESTOP_ON in scopes else ""
+    return f"Alleen lezen{extra}; verder niets"
+
+
 def _expired(expires_at: str | None) -> bool:
     if not expires_at:
         return False
@@ -139,8 +193,14 @@ def authenticate(ctx: AppContext, request: HTTPConnection, key: str) -> Principa
         raise _reject(ctx, request, key, f"verlopen sleutel '{row['name']}'", count=False)
     if row["role"] not in ROLES:  # verdedigt tegen een handmatig aangepaste database
         raise _reject(ctx, request, key, "ongeldige rol")
+    scopes = parse_scopes(row["scopes"])
+    if scopes is not None and row["role"] != "viewer":
+        # kan alleen via een handmatig aangepaste database: nooit stil als operator gebruiken
+        raise _reject(ctx, request, key, f"rechten (scopes) op sleutel '{row['name']}' met rol "
+                                         f"{row['role']}", count=False)
     _touch(ctx, int(row["id"]), row["last_used_at"])
-    return Principal(username=f"apikey:{row['name']}", role=str(row["role"]), machine=True)
+    return Principal(username=f"apikey:{row['name']}", role=str(row["role"]), machine=True,
+                     scopes=scopes)
 
 
 def _touch(ctx: AppContext, key_id: int, last_used: str | None) -> None:
@@ -157,11 +217,13 @@ def _touch(ctx: AppContext, key_id: int, last_used: str | None) -> None:
 
 # -- beheer -----------------------------------------------------------------------------------
 PUBLIC_COLUMNS = ("id", "name", "prefix", "role", "created_by", "created_at", "last_used_at",
-                  "expires_at", "revoked_at")
+                  "expires_at", "revoked_at", "scopes")
 
 
 def _public(row: Any) -> dict[str, Any]:
     out = {k: row[k] for k in PUBLIC_COLUMNS}
+    scopes = parse_scopes(out["scopes"])
+    out["scopes"] = list(scopes) if scopes is not None else None
     if out["revoked_at"]:
         status = "ingetrokken"
     elif _expired(out["expires_at"]):
@@ -181,9 +243,9 @@ def list_keys(ctx: AppContext) -> list[dict[str, Any]]:
     for k in out:
         k["usage"] = usage.get(str(k["name"]), {"actions_7d": 0, "by_action": [],
                                                 "last": []})
-        k["permissions_nl"] = ("Alleen lezen" if k.get("role") == "viewer" else
-                               "Lezen en acties zoals 'zoek opnieuw'; geen beheer, gebruikers "
-                               "of geheimen")
+        scopes = k["scopes"]
+        k["permissions_nl"] = permissions_nl(str(k.get("role")),
+                                             tuple(scopes) if scopes is not None else None)
     return out
 
 
@@ -215,9 +277,10 @@ def usage_summary(ctx: AppContext, days: int = 7) -> dict[str, dict[str, Any]]:
 
 
 def create_key(ctx: AppContext, *, name: str, role: str, expires_in_days: int | None,
-               actor: str) -> dict[str, Any]:
+               actor: str, scopes: Sequence[str] | None = None) -> dict[str, Any]:
     if role not in ROLES:
         raise ValueError("rol")
+    granted = check_scopes(role, scopes)
     if ctx.db.fetch_one("SELECT 1 AS x FROM api_keys WHERE name=?", (name,)):
         raise HTTPException(409, f"Er bestaat al een API-sleutel met de naam '{name}'")
     key = generate_key()
@@ -226,12 +289,15 @@ def create_key(ctx: AppContext, *, name: str, role: str, expires_in_days: int | 
         expires = (datetime.now(UTC) + timedelta(days=expires_in_days)).isoformat(
             timespec="seconds")
     key_id = ctx.db.execute_insert(
-        "INSERT INTO api_keys(name,prefix,key_hash,role,created_by,created_at,expires_at) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (name, key[:PREFIX_LEN], key_hash(key), role, actor, utcnow(), expires))
+        "INSERT INTO api_keys(name,prefix,key_hash,role,created_by,created_at,expires_at,scopes) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (name, key[:PREFIX_LEN], key_hash(key), role, actor, utcnow(), expires,
+         json.dumps(list(granted)) if granted is not None else None))
+    rights = f" met rechten {', '.join(granted)}" if granted else ""
     audit(ctx.db, actor=actor, action="apikey.created", target_type="api_key",
-          target_id=key_id, reason=f"API-sleutel '{name}' ({role}) aangemaakt",
-          new_value={"name": name, "role": role, "expires_at": expires})
+          target_id=key_id, reason=f"API-sleutel '{name}' ({role}){rights} aangemaakt",
+          new_value={"name": name, "role": role, "expires_at": expires,
+                     "scopes": list(granted) if granted is not None else None})
     row = ctx.db.fetch_one(f"SELECT {','.join(PUBLIC_COLUMNS)} FROM api_keys WHERE id=?",  # noqa: S608
                            (key_id,))
     assert row is not None
