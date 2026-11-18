@@ -189,6 +189,75 @@ def test_hervatten_van_oude_scan_zonder_bestandscursor(tmp_path, monkeypatch):
     assert db.fetch_one("SELECT COUNT(*) FROM besluit")[0] == 1
 
 
+def _gewijzigd_met_wachttaak(tmp_path, monkeypatch):
+    from app.media.beslissen import Besluit
+    from app.uitvoerder import create_job_from_decision
+
+    library = tmp_path / "films"
+    library.mkdir()
+    film, taakbron = library / "Film.mkv", library / "Z.mkv"
+    for bron in (film, taakbron):
+        bron.write_bytes(b"synthetisch")
+        os.utime(bron, (1, 1))
+    db = _database_for_path(tmp_path / "database", library)
+    monkeypatch.setattr(scanner_module, "is_hoofdbestand", lambda *a, **kw: (True, "proef", "ok"))
+    monkeypatch.setattr(scanner_module, "probe", lambda path: None)
+    origineel = scanner_module.decide_catalog_item
+    monkeypatch.setattr(
+        scanner_module, "decide_catalog_item",
+        lambda path, *a, **kw: Besluit(actie="hercoderen", baan="cpu", encoder="libsvtav1",
+                                       reden="proef") if Path(path).name == "Z.mkv"
+        else origineel(path, *a, **kw),
+    )
+    with monkeypatch.context() as patch:  # De taakbron houdt de vingerafdruk van een eerdere versie.
+        patch.setattr(scanner_module, "DECISION_CODE_FINGERPRINT", "eerdere-versie")
+        scan_library(db, 1)
+    besluit = db.fetch_one("SELECT id FROM besluit WHERE actie='hercoderen'")[0]
+    db.execute("UPDATE besluit SET status='goedgekeurd' WHERE id=?", (besluit,))
+    create_job_from_decision(db, besluit)
+    film.write_bytes(b"gewijzigde vermelding")
+    return db
+
+
+def _stop_na_beide_bestanden(db, monkeypatch):
+    original = scanner_module._process_file
+    verwerkt = []
+
+    def stop(*args, **kwargs):
+        original(*args, **kwargs)
+        verwerkt.append(args[2])
+        if len(verwerkt) == 2:
+            raise scanner_module.ScanInterrupted("proefstop")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(scanner_module, "_process_file", stop)
+        with pytest.raises(scanner_module.ScanInterrupted):
+            scan_library(db, 1)
+
+
+def test_wijzigingstelling_blijft_na_hervatten_met_wachttaak(tmp_path, monkeypatch):
+    db = _gewijzigd_met_wachttaak(tmp_path, monkeypatch)
+    _stop_na_beide_bestanden(db, monkeypatch)
+    # De taak behoudt zijn oudere profielvingerafdruk; dat mag de telling niet wissen.
+    final = scan_library(db, 1)
+    assert final.hervat and final.gewijzigd == 1
+    assert db.fetch_one("SELECT gewijzigd,fout FROM scan_run ORDER BY id DESC LIMIT 1")[0] == 1
+    assert [r[0] for r in db.fetch_all("SELECT status FROM job")] == ["wacht"]
+    assert db.fetch_one("SELECT COUNT(*) FROM besluit")[0] == 2
+
+
+def test_oude_scan_zonder_telling_wordt_ondergrens_en_zichtbaar_onvolledig(tmp_path, monkeypatch):
+    db = _gewijzigd_met_wachttaak(tmp_path, monkeypatch)
+    _stop_na_beide_bestanden(db, monkeypatch)
+    with db.connection() as conn, conn:  # Een eerdere scanner bewaarde deze tellingen niet.
+        conn.execute("UPDATE scan_run SET cursor=NULL,gevonden=0,nieuw=0,gewijzigd=0,uitgesteld=0")
+        conn.execute("UPDATE library SET scan_cursor=NULL")
+    final = scan_library(db, 1)
+    assert final.gewijzigd == 1
+    fout = db.fetch_one("SELECT fout FROM scan_run ORDER BY id DESC LIMIT 1")[0]
+    assert fout.startswith("telling onvolledig")
+
+
 def test_profielwijziging_tijdens_scan_herstart_met_nieuwste_instellingen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

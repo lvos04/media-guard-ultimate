@@ -299,6 +299,7 @@ export interface Library {
   stabiliteitswachtrij: number;
   laatste_scan_nieuw: number;
   laatste_scan_gewijzigd: number;
+  laatste_scan_telling_onvolledig: number;
   laatste_scan_verdwenen: number;
   ai_goedgekeurd: number;
   handmatig_wachtend: number;

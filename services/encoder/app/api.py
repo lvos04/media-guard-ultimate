@@ -993,6 +993,9 @@ def create_api_router() -> APIRouter:
                     ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_nieuw,
                    COALESCE((SELECT s.gewijzigd FROM scan_run s WHERE s.library_id=l.id
                     ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_gewijzigd,
+                   COALESCE((SELECT s.fout LIKE 'telling onvolledig%' FROM scan_run s
+                    WHERE s.library_id=l.id ORDER BY s.id DESC LIMIT 1),0)
+                    AS laatste_scan_telling_onvolledig,
                    COALESCE((SELECT s.verdwenen FROM scan_run s WHERE s.library_id=l.id
                     ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_verdwenen,
                    (SELECT COUNT(*) FROM besluit b JOIN bestand f ON f.id=b.bestand_id

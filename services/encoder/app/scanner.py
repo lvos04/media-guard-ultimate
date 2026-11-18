@@ -140,6 +140,47 @@ def _reset_scan_pass(connection: sqlite3.Connection, scan_id: int, library_id: i
     connection.execute("UPDATE library SET scan_cursor=NULL WHERE id=?", (library_id,))
 
 
+def _herstel_wijzigingstelling(
+    database: Database, library_id: int, scan_id: int, scan_marker: str, summary: ScanSummary,
+) -> None:
+    """Vul de telling aan voor bestanden die al zijn vastgelegd zonder telling.
+
+    Een oudere scanner bewaarde per map alleen `gevonden`, en na een reset zijn de
+    vastgelegde bestanden niet meer `gewijzigd` ten opzichte van hun eigen rij. Een
+    bestand dat in deze pass wacht en na het einde van de vorige voltooide scan
+    is aangepast, is zeker gewijzigd: dat is de ondergrens. De telling blijft
+    zichtbaar onvolledig (scan_run.fout), want andere wijzigingen zijn niet meer te zien.
+    shortcut: alleen wachtende bestanden met nieuwere mtime; ruim daarna ook gewone vervangingen via een extra schema-kolom.
+    """
+
+    with database.connection() as connection, connection:
+        vorige = connection.execute(
+            "SELECT klaar_op FROM scan_run WHERE library_id=? AND status='klaar' "
+            "AND klaar_op IS NOT NULL ORDER BY id DESC LIMIT 1", (library_id,),
+        ).fetchone()
+        verwerkt, ondergrens = connection.execute(
+            """
+            SELECT COUNT(*),COALESCE(SUM(scan_status='wacht_op_stabiliteit'
+                   AND COALESCE(eerste_gezien,'')<? AND mtime>?),0)
+            FROM bestand WHERE library_id=? AND gescand_op=? AND aanwezig=1
+            """,
+            (
+                scan_marker,
+                datetime.fromisoformat(vorige[0]).timestamp() if vorige else float("inf"),
+                library_id,
+                scan_marker,
+            ),
+        ).fetchone()
+        tekort = verwerkt > summary.gevonden
+        if ondergrens <= summary.gewijzigd and not tekort:
+            return
+        summary.gewijzigd = max(summary.gewijzigd, int(ondergrens))
+        connection.execute(
+            "UPDATE scan_run SET gewijzigd=?,fout=? WHERE id=?",
+            (summary.gewijzigd, "telling onvolledig: gereconstrueerd na hervatten", scan_id),
+        )
+
+
 # Systeem-, prullenbak- en snapshotmappen van NAS'en; nooit media om te verwerken.
 SKIP_DIRECTORIES = {".recycle", ".zfs", "@eadir", "#recycle", "$recycle.bin", "lost+found"}
 
@@ -256,10 +297,12 @@ def _scan_library_locked(
         # dat geval is de opgeslagen cursor niet meer geldig: ook de mappen vóór
         # die cursor moeten opnieuw door de beslisboom met het nieuwste profiel.
         stale_pass = database.fetch_one(
-            """
+            f"""
             SELECT 1 FROM bestand
             WHERE library_id=? AND gescand_op=?
               AND COALESCE(profiel_fingerprint, '')<>?
+              AND NOT EXISTS (SELECT 1 FROM job WHERE bestand_id=bestand.id
+                              AND status IN {ACTIVE_SQL})
             LIMIT 1
             """,
             (library_id, started_at, profile_fingerprint),
@@ -270,9 +313,15 @@ def _scan_library_locked(
             summary = ScanSummary(library_id=library_id, dry_run=False, hervat=True)
             with database.connection() as connection, connection:
                 _reset_scan_pass(connection, scan_id, library_id)
+        if summary.hervat:
+            _herstel_wijzigingstelling(database, library_id, scan_id, started_at, summary)
 
     processed_directories = 0
+    telling_herstellen = False
     while True:
+        if telling_herstellen:  # na het sluiten van de afrondingstransactie
+            _herstel_wijzigingstelling(database, library_id, scan_id, started_at, summary)
+            telling_herstellen = False
         restart_with_new_profile = False
         for directory in _directories(root):
             directory_text = str(directory)
@@ -301,6 +350,8 @@ def _scan_library_locked(
                 if scan_id is not None:
                     with database.connection() as connection, connection:
                         _reset_scan_pass(connection, scan_id, library_id)
+                    _herstel_wijzigingstelling(
+                        database, library_id, scan_id, started_at, summary)
                 LOGGER.info(
                     "Profiel van library %s wijzigde tijdens de scan; herstart vanaf het begin",
                     library_id,
@@ -400,6 +451,7 @@ def _scan_library_locked(
                 )
                 _reset_scan_pass(connection, scan_id, library_id)
                 connection.commit()
+                telling_herstellen = True
                 LOGGER.info(
                     "Profiel van library %s wijzigde bij afronding; herstart vanaf het begin",
                     library_id,
