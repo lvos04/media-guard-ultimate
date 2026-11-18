@@ -42,9 +42,13 @@ def applied_versions(path: Path, table: str, column: str, *,
 
     uri = f"{path.resolve().as_uri()}?mode=ro"
     with closing(sqlite3.connect(uri, uri=True, timeout=timeout)) as db:
-        exists = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
-        ).fetchone()
-        if not exists:
-            return set()
-        return {row[0] for row in db.execute(f"SELECT {column} FROM {table}")}  # noqa: S608
+        return versions_in(db, table, column)
+
+
+def versions_in(db: sqlite3.Connection, table: str, column: str) -> set[str | int]:
+    exists = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
+    ).fetchone()
+    if not exists:
+        return set()
+    return {row[0] for row in db.execute(f"SELECT {column} FROM {table}")}  # noqa: S608

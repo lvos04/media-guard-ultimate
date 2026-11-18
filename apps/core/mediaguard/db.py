@@ -113,6 +113,14 @@ def loads(value: str | bytes | None, default: Any = None) -> Any:
     return json.loads(value)
 
 
+def check_schema_versions(path: Path, *, connection: sqlite3.Connection | None = None) -> None:
+    have = (schema.versions_in(connection, "schema_migrations", "version")
+            if connection is not None else
+            schema.applied_versions(path, "schema_migrations", "version"))
+    if have - {file.stem for file in MIGRATIONS_DIR.glob("*.sql")}:
+        raise schema.SchemaTooNew()
+
+
 class Database:
     def __init__(self, path: Path, *, synchronous: str = "NORMAL") -> None:
         """``synchronous``: NORMAL is in WAL-modus corruptievrij en ~40× sneller per schrijf-
@@ -123,12 +131,9 @@ class Database:
         self._lock = threading.RLock()
         self._local = threading.local()
         self.read_only = False
-        self._schema_checked = False
 
     # -- verbinding -----------------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        if not self._schema_checked:
-            self.check_schema()
         self.require_writable()
         conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
         if conn is None:
@@ -150,15 +155,18 @@ class Database:
             conn.close()
             self._local.conn = None
 
-    def check_schema(self) -> None:
-        self.read_only = bool(os.environ.get(schema.AIO_RECOVERY_ENV)) or bool(
-            schema.applied_versions(self.path, "schema_migrations", "version")
-            - {file.stem for file in MIGRATIONS_DIR.glob("*.sql")}
-        )
-        self._schema_checked = True
+    def check_schema(self) -> bool:
+        if not self.read_only:
+            try:
+                if os.environ.get(schema.AIO_RECOVERY_ENV):
+                    raise schema.SchemaTooNew()
+                check_schema_versions(self.path)
+            except schema.SchemaTooNew:
+                self.read_only = True
+        return self.read_only
 
     def require_writable(self) -> None:
-        if self.read_only:
+        if self.check_schema():
             raise schema.SchemaTooNew()
 
     def initialize(self) -> None:
@@ -169,8 +177,7 @@ class Database:
         if not folder.is_dir():
             folder.mkdir(parents=True, exist_ok=True)
         with schema.startup_lock(folder):
-            self.check_schema()
-            if not self.read_only:
+            if not self.check_schema():
                 self._initialize()
 
     def _initialize(self) -> None:
@@ -339,7 +346,6 @@ class Database:
         consistente momentopname): in WAL-modus blokkeert lezen geen schrijvers, dus core,
         recovery en de hooks gaan tijdens een back-up van een grote database gewoon door."""
         with schema.startup_lock(self.path.parent):
-            self.check_schema()
             self.require_writable()
             self._backup_to(target)
 

@@ -166,6 +166,33 @@ def test_successful_health_probes_are_not_logged():
     assert not aio.quiet_line('INFO: 127.0.0.1:5 - "POST /api/v1/jobs HTTP/1.1" 200 OK')
 
 
+def test_bewaker_wordt_ongezond_bij_schemawijziging_tijdens_bedrijf(tmp_path):
+    import json
+    import urllib.error
+    from io import BytesIO
+    from unittest.mock import Mock, patch
+
+    specs = aio.build_specs(_env(tmp_path))
+    for spec in specs:
+        spec.proc = Mock()
+        spec.proc.poll.return_value = None
+        spec.proc.pid = 123
+    state = tmp_path / "supervisor.json"
+    state.write_text("voor de schemaverandering")
+    health = tmp_path / "health"
+    sup = aio.Supervisor(specs, None, None, state_path=state, health_path=health)
+    body = json.dumps({"reason_code": "schema_nieuwer"}).encode()
+    with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
+        specs[-1].health, 503, "herstelweergave", {}, BytesIO(body),
+    )), patch.object(sup, "_terminate") as stop:
+        sup.write_state()
+    assert sup.schema_recovery
+    assert {s.name for s in sup.specs} == {"core", "web", "hookguard"}
+    assert stop.call_count == len(specs) - 3
+    assert state.read_text() == "voor de schemaverandering"
+    assert health.read_text() == "fail schema_nieuwer\n"
+
+
 def test_dri_groepen_van_gpu_nodes(tmp_path):
     """/dev/dri-groepen (render/video) gaan mee naar de encoder; root nooit; geen GPU = leeg."""
     import os

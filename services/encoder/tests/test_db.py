@@ -185,3 +185,33 @@ def test_onbekend_schema_blokkeert_av1_ingangen(toekomstig_schema, monkeypatch, 
     assert upgradebewijs.meet_db(path) == voor
     assert not toekomstig_schema.backup_root.exists()
     sys.modules.pop("upgradebewijs", None)
+
+
+def test_draaiende_av1_gaat_blijvend_naar_herstelweergave(tmp_path: Path) -> None:
+    from contextlib import closing
+
+    from fastapi.testclient import TestClient
+
+    from app.db import SchemaTooNew
+    from app.main import create_app
+
+    instance = replace(
+        settings, config_root=tmp_path, pipeline_root=tmp_path, work_root=tmp_path / "work",
+        backup_root=tmp_path / "backups", database_path=tmp_path / "app.db",
+    )
+    database = Database(instance)
+    with TestClient(create_app(instance, database, start_planner=False, validate_storage=False),
+                    raise_server_exceptions=False) as client:
+        assert client.get("/livez").status_code == 200
+        with closing(sqlite3.connect(database.path)) as conn, conn:
+            conn.execute("INSERT INTO schema_versie VALUES (999, 'proef', 'proef')")
+        with pytest.raises(SchemaTooNew):
+            database.execute("CREATE TABLE proef (id INTEGER)")
+        response = client.get("/livez")
+        assert response.status_code == 503
+        assert response.json()["reason_code"] == "schema_nieuwer"
+        assert client.post("/api/backups").status_code == 409
+        with closing(sqlite3.connect(database.path)) as conn, conn:
+            assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='proef'").fetchone()
+            conn.execute("DELETE FROM schema_versie WHERE versie=999")
+        assert client.get("/livez").status_code == 503

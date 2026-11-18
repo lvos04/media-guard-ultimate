@@ -150,7 +150,16 @@ def principal_from_request(request: Request) -> Principal | None:
     now = utcnow()
     if not row["last_seen_at"] or row["last_seen_at"][:16] != now[:16]:
         # hooguit één schrijfactie per minuut per sessie (overzicht 'ingelogde apparaten')
-        app.db.execute("UPDATE sessions SET last_seen_at=? WHERE token_hash=?", (now, th))
+        def touch() -> None:
+            app.db.execute("UPDATE sessions SET last_seen_at=? WHERE token_hash=?", (now, th))
+
+        if getattr(request.scope.get("route"), "path_format", None) == (
+            "/api/v1/backups/{name}/restore"
+        ):
+            # Een geweigerde herstelkopie mag ook de sessie niet wijzigen.
+            request.state.touch_restore_session = touch
+        else:
+            touch()
     return Principal(username=row["username"], role=row["role"], user_id=int(row["id"]),
                      csrf_token=row["csrf_token"])
 

@@ -40,6 +40,7 @@ RECOVERY_PORT = 38101
 ENCODER_PORT = 38000
 # hookwacht tussen de forks en core: houdt de noodstop vast terwijl core herstart
 HOOKGUARD_PORT = 38102
+RECOVERY_SERVICES = frozenset({"core", "web", "hookguard"})
 # de web-server draait als eigen gebruiker zonder toegang tot /config (sleutels, database)
 # en zonder de groepen van de app-gebruiker; standaard 'nobody'
 WEB_UID = 65534
@@ -335,7 +336,7 @@ def build_specs(env: dict[str, str]) -> list[Spec]:
         health=f"http://{INTERNAL_HOST}:{web_port}/login", grace=60, stop_rank=1,
         user=(web_uid, web_gid)))
     if env.get(schema.AIO_RECOVERY_ENV):
-        specs = [spec for spec in specs if spec.name in {"core", "web", "hookguard"}]
+        specs = [spec for spec in specs if spec.name in RECOVERY_SERVICES]
         for spec in specs:
             spec.env[schema.AIO_RECOVERY_ENV] = "1"
         core = core_specs[0]
@@ -630,24 +631,47 @@ class Supervisor:
         return busy
 
     @staticmethod
-    def probe(url: str, timeout: float = 5.0) -> bool:
+    def probe_status(url: str, timeout: float = 5.0) -> tuple[bool, bool]:
         import urllib.error
         import urllib.request
         try:
             with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310
-                return int(response.status) < 500
+                return int(response.status) < 500, False
         except urllib.error.HTTPError as exc:
             with exc:
                 if exc.code == 503:
                     try:
                         body = json.loads(exc.read(4096))
                     except (OSError, ValueError):
-                        return False
+                        return False, False
                     # Dit antwoord is ongezond, maar de webdienst is bereikbaar.
-                    return isinstance(body, dict) and body.get("reason_code") == schema.REASON
-                return exc.code < 500  # 401/404 = het proces antwoordt wel
+                    recovering = isinstance(body, dict) and body.get("reason_code") == schema.REASON
+                    return recovering, recovering
+                return exc.code < 500, False  # 401/404 = het proces antwoordt wel
         except (OSError, ValueError):
-            return False
+            return False, False
+
+    @staticmethod
+    def probe(url: str, timeout: float = 5.0) -> bool:
+        return Supervisor.probe_status(url, timeout)[0]
+
+    def check_schema_recovery(self) -> None:
+        if self.schema_recovery:
+            return
+        for spec in self.specs:
+            if (spec.name == "core" and spec.health and spec.proc is not None
+                    and spec.proc.poll() is None and self.probe_status(spec.health, 1.0)[1]):
+                self.schema_recovery = True
+                self.state_path = self.log_path = None
+                previous = self.specs
+                self.specs = [s for s in previous if s.name in RECOVERY_SERVICES]
+                for reader in self.specs:
+                    reader.env[schema.AIO_RECOVERY_ENV] = "1"
+                for writer in previous:
+                    if writer.name not in RECOVERY_SERVICES and writer.proc is not None:
+                        self._terminate(writer.proc, grace=2.0)
+                self.log(schema.MESSAGE)
+                break
 
     def check_health(self, now: float | None = None) -> list[str]:
         """Eén controleronde. Een dienst die ``max_fails`` keer achter elkaar niet antwoordt
@@ -657,7 +681,8 @@ class Supervisor:
         restarted: list[str] = []
         for spec in self.specs:
             proc = spec.proc
-            if (self.stopping or not spec.health or proc is None or proc.poll() is not None
+            if (self.stopping or (self.schema_recovery and spec.name not in RECOVERY_SERVICES)
+                    or not spec.health or proc is None or proc.poll() is not None
                     or now - spec.started_at < spec.grace):
                 continue
             limit = spec.max_fails or self.max_fails
@@ -774,6 +799,7 @@ class Supervisor:
         return state
 
     def write_state(self) -> None:
+        self.check_schema_recovery()
         snap = self.snapshot()
         if self.state_path is not None:
             with contextlib.suppress(OSError):
@@ -894,7 +920,9 @@ class Supervisor:
             return
         self.stopping = True
         budget = self.stop_budget if budget is None else budget
-        self.announce_planned_stop()
+        self.check_schema_recovery()
+        if not self.schema_recovery:
+            self.announce_planned_stop()
         self.log(f"stoppen (hooguit {int(budget)} s)…")
         start = time.monotonic()
         deadline = start + budget

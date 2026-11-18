@@ -30,9 +30,14 @@ if __name__ == "__main__":
     # Geheimen lezen mag vóór de schemacontrole. Logbestanden pas daarna openen.
     load_secret_files()
     application = create_app()
-    logs.configure(os.environ.get("MG_ROLE", "core"),
-                   None if application.state.ctx.db.read_only else logs.log_dir(),
-                   os.environ.get("MG_LOG_LEVEL", "info"))
+    database = application.state.ctx.db
+    logfile = logs.configure(os.environ.get("MG_ROLE", "core"),
+                             None if database.read_only else logs.log_dir(),
+                             os.environ.get("MG_LOG_LEVEL", "info"))
+    if logfile is not None:
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.FileHandler) and handler.baseFilename == str(logfile):
+                handler.addFilter(lambda _: not database.read_only)
     logging.getLogger("uvicorn.access").addFilter(_QuietAccess())
     # proxy_headers uit: core bepaalt zelf welke proxy-headers te vertrouwen zijn
     # (mediaguard.security.net). Uvicorn zou X-Forwarded-For anders blind overnemen.

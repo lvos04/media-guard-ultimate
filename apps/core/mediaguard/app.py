@@ -8,15 +8,17 @@ met een waarschuwing, zodat parallel werk elkaar niet blokkeert.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from types import ModuleType
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from mediaguard import __version__, schema
@@ -123,7 +125,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         LOGGER.warning(schema.MESSAGE)
         app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
         app.state.ctx = ctx
-        app.add_middleware(SchemaRecovery)
+        app.add_middleware(SchemaRecovery, database=ctx.db)
         return app
 
     modules = _load_modules()
@@ -132,22 +134,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        if settings.start_background:
-            await runner.start()
         started: list[ModuleType] = []
-        for module in modules:
-            startup = getattr(module, "startup", None)
-            if startup is not None:
-                await startup(ctx)
-                started.append(module)
+        recovery_shutdown: asyncio.Task[None] | None = None
+
+        async def stop_background() -> None:
+            while started:
+                module = started.pop()
+                shutdown = getattr(module, "shutdown", None)
+                if shutdown is not None:
+                    with suppress(schema.SchemaTooNew):
+                        await shutdown(ctx)
+            with suppress(schema.SchemaTooNew):
+                await runner.stop()
+
+        async def watch_schema() -> None:
+            nonlocal recovery_shutdown
+            while not await run_in_threadpool(ctx.db.check_schema):
+                await asyncio.sleep(1)
+            recovery_shutdown = asyncio.create_task(stop_background())
+
+        watcher = None
+        try:
+            if settings.start_background:
+                await runner.start()
+            for module in modules:
+                startup = getattr(module, "startup", None)
+                if startup is not None:
+                    await startup(ctx)
+                    started.append(module)
+            if settings.start_background:
+                watcher = asyncio.create_task(watch_schema())
+        except schema.SchemaTooNew:
+            await stop_background()
         try:
             yield
         finally:
-            for module in reversed(started):
-                shutdown = getattr(module, "shutdown", None)
-                if shutdown is not None:
-                    await shutdown(ctx)
-            await runner.stop()
+            if watcher is not None:
+                watcher.cancel()
+                with suppress(asyncio.CancelledError):
+                    await watcher
+            if recovery_shutdown is not None:
+                await recovery_shutdown
+            else:
+                await stop_background()
 
     install_log_redaction()
     # API-documentatie alleen voor een ingelogde beheerder (zie _admin_docs), niet open via
@@ -168,10 +197,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         router = getattr(module, "router", None)
         if router is not None:
             app.include_router(router)
-    from mediaguard.connector.errors import InputLimit, install
+    from mediaguard.connector.errors import InputLimit, failure, install
+
+    @app.exception_handler(schema.SchemaTooNew)
+    async def _schema_error(request: Request, _: schema.SchemaTooNew) -> JSONResponse:
+        if ctx.db.read_only:
+            return SchemaRecovery.response(request.scope)
+        return failure(409, schema.REASON, schema.MESSAGE)
 
     install(app)
     app.add_middleware(InputLimit)
+    app.add_middleware(SchemaRecovery, database=ctx.db)
     _document_security(app)
     _admin_docs(app)
     return app
@@ -180,18 +216,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 class SchemaRecovery:
     """Antwoord vóór routering, validatie, authenticatie en sessieverlenging."""
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, database: Database) -> None:
         self.app = app
+        self.database = database
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        from mediaguard.connector.errors import failure
-
+        if scope["type"] not in {"http", "websocket"} or not await run_in_threadpool(
+            self.database.check_schema,
+        ):
+            await self.app(scope, receive, send)
+            return
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1013, "reason": schema.MESSAGE})
             return
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
+        await self.response(scope)(scope, receive, send)
+
+    @staticmethod
+    def response(scope: Scope) -> JSONResponse:
+        from mediaguard.connector.errors import failure
+
         path = scope["path"].rstrip("/")
         if scope["method"] in {"GET", "HEAD"} and path in {
             "/api/v1/health", "/healthz", "/readyz", "/connector/v1/health",
@@ -211,14 +254,12 @@ class SchemaRecovery:
                     check("worker", "unknown", None),
                     check("jobs", "unknown", None),
                 ]
-            response = JSONResponse(
+            return JSONResponse(
                 health,
                 status_code=503,
                 headers={"Cache-Control": "no-store", "Retry-After": "300"},
             )
-        else:
-            response = failure(409, schema.REASON, schema.MESSAGE)
-        await response(scope, receive, send)
+        return failure(409, schema.REASON, schema.MESSAGE)
 
 
 def _admin_docs(app: FastAPI) -> None:

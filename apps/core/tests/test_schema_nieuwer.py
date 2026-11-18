@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from mediaguard import emergency
 from mediaguard.app import create_app
 from mediaguard.config import Settings
 from mediaguard.db import Database
+from mediaguard.schema import SchemaTooNew
 
 MELDING = ("database is van een nieuwere MediaGuard-versie; zet de bijpassende versie "
            "of de set van vóór de update terug")
@@ -87,6 +90,87 @@ def test_huidig_schema_start_gewoon(tmp_path: Path) -> None:
     assert not app.state.ctx.db.read_only
     assert not emergency.active(app.state.ctx)
     app.state.ctx.db.close()
+
+
+def test_verbinding_weigert_onbekend_schema_zonder_initialize(nieuw_schema: Path) -> None:
+    voor = ub.meet_db(nieuw_schema, intern=True)
+    db = Database(nieuw_schema)
+    with pytest.raises(SchemaTooNew):
+        db.execute("CREATE TABLE proef (id INTEGER)")
+    with pytest.raises(SchemaTooNew):
+        db.fetch_all("SELECT 1")
+    with pytest.raises(SchemaTooNew), db.transaction():
+        pytest.fail("schrijftransactie geopend")
+    with pytest.raises(SchemaTooNew):
+        db.maintenance()
+    assert ub.meet_db(nieuw_schema, intern=True) == voor
+
+
+def test_schema_verandert_tussen_twee_processen(tmp_path: Path) -> None:
+    app = create_app(Settings(data_dir=tmp_path, start_background=False))
+    db = app.state.ctx.db
+    with TestClient(app, raise_server_exceptions=False) as client:
+        assert client.get("/api/v1/health").status_code == 200
+        with subprocess.Popen(  # noqa: S603 - vaste proefcode op een wegwerpdatabase
+            [sys.executable, "-u", "-c", """
+import sys
+from pathlib import Path
+from mediaguard.db import Database
+from mediaguard.schema import SchemaTooNew
+db = Database(Path(sys.argv[1]))
+db.fetch_one('SELECT 1')
+print('gereed', flush=True)
+if sys.stdin.readline().strip() != 'schrijf':
+    sys.exit(2)
+try:
+    db.execute('CREATE TABLE proef (id INTEGER)')
+except SchemaTooNew:
+    sys.exit(0)
+sys.exit(1)
+""", str(db.path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        ) as worker:
+            try:
+                assert worker.stdout is not None and worker.stdout.readline() == "gereed\n"
+                with closing(sqlite3.connect(db.path)) as conn, conn:
+                    conn.execute("INSERT INTO schema_migrations VALUES ('999_toekomst', 'proef')")
+                voor = ub.meet_db(db.path, intern=True)
+                assert worker.communicate("schrijf\n", timeout=10)[0] == ""
+                assert worker.returncode == 0
+                for route in ("/api/v1/health", "/healthz", "/readyz", "/connector/v1/health"):
+                    response = client.get(route)
+                    assert response.status_code == 503
+                    assert response.json()["reason_code"] == "schema_nieuwer"
+                response = client.post("/api/v1/auth/setup", json={})
+                assert response.status_code == 409
+                assert response.json()["code"] == "schema_nieuwer"
+                assert emergency.active(app.state.ctx)
+                assert ub.meet_db(db.path, intern=True) == voor
+                assert not db.path.with_name("backups").exists()
+                with closing(sqlite3.connect(db.path)) as conn, conn:
+                    conn.execute("DELETE FROM schema_migrations WHERE version='999_toekomst'")
+                assert client.get("/api/v1/health").status_code == 503
+                with pytest.raises(SchemaTooNew):
+                    db.execute("CREATE TABLE andere_proef (id INTEGER)")
+            finally:
+                if worker.poll() is None:
+                    worker.kill()
+    db.close()
+
+
+def test_herstelroute_weigert_gekozen_nieuwere_kopie(client, ctx) -> None:
+    folder = ctx.settings.backup_dir
+    folder.mkdir()
+    copy = folder / "mediaguard-proef.db"
+    ctx.db.backup_to(copy)
+    with closing(sqlite3.connect(copy)) as conn, conn:
+        conn.execute("INSERT INTO schema_migrations VALUES ('999_toekomst', 'proef')")
+    ctx.db.execute("UPDATE sessions SET last_seen_at='2000-01-01T00:00:00+00:00'")
+    voor = ub.meet_db(ctx.db.path, intern=True)
+    response = client.post(f"/api/v1/backups/{copy.name}/restore", json={"confirm": copy.name})
+    assert response.status_code == 409
+    assert response.json()["code"] == "schema_nieuwer"
+    assert ub.meet_db(ctx.db.path, intern=True) == voor
+    assert not list(folder.glob("mediaguard-pre-restore-*"))
 
 
 def test_noodtoegang_en_backups_weigeren(nieuw_schema: Path, capsys) -> None:

@@ -11,12 +11,13 @@ import platform
 import shutil
 import sqlite3
 import zipfile
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -24,7 +25,7 @@ from mediaguard import __version__
 from mediaguard.audit import audit
 from mediaguard.auth import Principal, require_admin, require_operator, require_viewer
 from mediaguard.context import AppContext, get_app_context
-from mediaguard.db import utcnow
+from mediaguard.db import check_schema_versions, utcnow
 from mediaguard.secrets_store import redact
 from mediaguard.settings_registry import REGISTRY, SettingDef
 
@@ -441,11 +442,13 @@ class RestoreBody(BaseModel):
 
 
 @router.post("/backups/{name}/restore")
-def restore_backup(name: str, body: RestoreBody, principal: Principal = Depends(require_admin),
+def restore_backup(name: str, body: RestoreBody, request: Request,
+                   principal: Principal = Depends(require_admin),
                    ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
     """Herstelt de core-DB. Maakt eerst een veiligheidsback-up van de huidige staat.
     Geheimen blijven geldig zolang secret.key niet verandert."""
     ctx.db.require_writable()
+    touch = getattr(request.state, "touch_restore_session", None)
     if ".encode-" in name:
         raise HTTPException(422, "Dit is een kopie van de AV1-engine-database, geen "
                                  "MediaGuard-back-up")
@@ -453,7 +456,10 @@ def restore_backup(name: str, body: RestoreBody, principal: Principal = Depends(
     if pre is not None:
         if body.confirm != name:
             raise HTTPException(422, "Bevestiging komt niet overeen met de back-upnaam")
-        return _stage_pre_update(ctx, pre, principal)
+        result = _stage_pre_update(ctx, pre, principal)
+        if touch is not None:
+            touch()
+        return result
     path = _backup_path(ctx, name)
     if body.confirm != name:
         raise HTTPException(422, "Bevestiging komt niet overeen met de back-upnaam")
@@ -462,18 +468,20 @@ def restore_backup(name: str, body: RestoreBody, principal: Principal = Depends(
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
         if meta.get("sha256") != _sha256(path):
             raise HTTPException(409, "Checksum klopt niet; back-up is beschadigd")
-    try:
-        safety = create_backup(ctx, kind="pre-restore", actor=principal.actor)
-    except BackupError as exc:
-        raise HTTPException(409, f"Niet hersteld: eerst een veiligheidsback-up van de huidige "
-                                 f"staat maken lukte niet ({exc})") from exc
-    src = sqlite3.connect(path)
-    try:
+    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as src:
+        # Houd dezelfde leessnapshot vast vanaf de versietoets tot en met het terugzetten.
+        src.execute("BEGIN")
+        check_schema_versions(path, connection=src)
+        if touch is not None:
+            touch()
+        try:
+            safety = create_backup(ctx, kind="pre-restore", actor=principal.actor)
+        except BackupError as exc:
+            raise HTTPException(409, "Niet hersteld: eerst een veiligheidsback-up van de huidige "
+                                     f"staat maken lukte niet ({exc})") from exc
         conn = ctx.db._connect()
         with ctx.db._lock:
             src.backup(conn)
-    finally:
-        src.close()
     ctx.config.invalidate()  # instellingen komen nu uit de herstelde database
     audit(ctx.db, actor=principal.actor, action="backup.restore", target_type="backup",
           target_id=name, reason="Herstel uit back-up",

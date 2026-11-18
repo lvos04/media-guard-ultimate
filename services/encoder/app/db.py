@@ -43,11 +43,8 @@ class Database:
         self.migrations_dir = migrations_dir or Path(__file__).with_name("migrations")
         self._write_lock = threading.RLock()
         self.read_only = False
-        self._schema_checked = False
 
     def connect(self) -> sqlite3.Connection:
-        if not self._schema_checked:
-            self.check_schema()
         self.require_writable()
         connection = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         connection.row_factory = sqlite3.Row
@@ -73,7 +70,9 @@ class Database:
         finally:
             os.close(fd)
 
-    def check_schema(self) -> None:
+    def check_schema(self) -> bool:
+        if self.read_only:
+            return True
         have: set[int] = set()
         if self.path.exists():
             uri = f"{self.path.resolve().as_uri()}?mode=ro"
@@ -83,19 +82,19 @@ class Database:
                 ).fetchone()
                 if table:
                     have = {row[0] for row in db.execute("SELECT versie FROM schema_versie")}
-        self.read_only = bool(have - {version for version, _ in self.migration_files()})
-        self._schema_checked = True
+        if have - {version for version, _ in self.migration_files()}:
+            self.read_only = True
+        return self.read_only
 
     def require_writable(self) -> None:
-        if self.read_only:
+        if self.check_schema():
             raise SchemaTooNew()
 
     def initialize(self, *, prepare: Callable[[], None] | None = None) -> None:
         if not self.path.parent.is_dir():
             self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.startup_lock():
-            self.check_schema()
-            if self.read_only:
+            if self.check_schema():
                 return
             if prepare is not None:
                 prepare()
@@ -144,7 +143,6 @@ class Database:
 
     def apply_migrations(self) -> None:
         with self.startup_lock():
-            self.check_schema()
             self.require_writable()
             self._apply_migrations()
 

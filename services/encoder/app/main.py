@@ -12,8 +12,9 @@ from contextlib import asynccontextmanager, suppress
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app import __version__
@@ -21,7 +22,7 @@ from app.ai_controller import AiController, reconcile_safety_fingerprint
 from app.api import create_api_router
 from app.config import ConfigError, Settings, settings
 from app.cpubudget import unify_cpu_percent
-from app.db import SCHEMA_MESSAGE, SCHEMA_REASON, Database
+from app.db import SCHEMA_MESSAGE, SCHEMA_REASON, Database, SchemaTooNew
 from app.health import dependency_report
 from app.integraties import IntegrationMonitor
 from app.live import clients_connected, register_websocket
@@ -77,26 +78,30 @@ class SchemaRecoveryMiddleware:
         self.database = database
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if not self.database.read_only or scope["type"] not in {"http", "websocket"}:
+        if scope["type"] not in {"http", "websocket"} or not await run_in_threadpool(
+            self.database.check_schema,
+        ):
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1013, "reason": SCHEMA_MESSAGE})
             return
+        await self.response(scope)(scope, receive, send)
+
+    @staticmethod
+    def response(scope: Scope) -> JSONResponse:
         if scope["method"] in {"GET", "HEAD"} and scope["path"].rstrip("/") in {
             "/health", "/livez", "/api/health", "/api/mediaguard/v1/health",
         }:
-            response = JSONResponse(
+            return JSONResponse(
                 {"status": "down", "reason_code": SCHEMA_REASON, "message": SCHEMA_MESSAGE},
                 status_code=503, headers={"Cache-Control": "no-store", "Retry-After": "300"},
             )
-        else:
-            response = JSONResponse(
-                {"code": SCHEMA_REASON, "message": SCHEMA_MESSAGE, "details": {},
-                 "trace_id": str(uuid4())},
-                status_code=409, headers={"Cache-Control": "no-store"},
-            )
-        await response(scope, receive, send)
+        return JSONResponse(
+            {"code": SCHEMA_REASON, "message": SCHEMA_MESSAGE, "details": {},
+             "trace_id": str(uuid4())},
+            status_code=409, headers={"Cache-Control": "no-store"},
+        )
 
 
 class QuietAccessLog(logging.Filter):
@@ -139,8 +144,13 @@ def create_app(
             yield
             return
         # rapport 16: info-regels naar /config/logs/encoder.log (alleen met MG_LOG_DIR)
-        log_task = (asyncio.create_task(logboek.volg_loop())
-                    if logboek.inrichten(app_settings.log_level) is not None else None)
+        logfile = logboek.inrichten(app_settings.log_level)
+        log_task = asyncio.create_task(logboek.volg_loop()) if logfile is not None else None
+        if logfile is not None:
+            for handler in logging.getLogger().handlers:
+                if (isinstance(handler, logging.FileHandler)
+                        and handler.baseFilename == str(logfile)):
+                    handler.addFilter(lambda _: not database.read_only)
         storage_error: str | None = None
         if validate_storage:
             try:
@@ -247,23 +257,26 @@ def create_app(
         application.state.ai_controller.stopping = True
         application.state.integration_monitor.stopping = True
         if planner_task is not None:
-            await planner_task
+            with suppress(SchemaTooNew):
+                await planner_task
         if scan_scheduler_task is not None:
-            await scan_scheduler_task
+            with suppress(SchemaTooNew):
+                await scan_scheduler_task
         if ai_controller_task is not None:
-            await ai_controller_task
+            with suppress(SchemaTooNew):
+                await ai_controller_task
         integration_task.cancel()
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, SchemaTooNew):
             await integration_task
         maintenance_task.cancel()
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, SchemaTooNew):
             await maintenance_task
         if gpu_watch_task is not None:
             gpu_watch_task.cancel()
-            with suppress(asyncio.CancelledError):
+            with suppress(asyncio.CancelledError, SchemaTooNew):
                 await gpu_watch_task
         system_metrics_task.cancel()
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, SchemaTooNew):
             await system_metrics_task
         await application.state.gpu_monitor.stop()
         if log_task is not None:
@@ -274,7 +287,7 @@ def create_app(
         for task in tasks.values():
             task.cancel()
         for task in list(tasks.values()):
-            with suppress(asyncio.CancelledError):
+            with suppress(asyncio.CancelledError, SchemaTooNew):
                 await task
         SCAN_STOP.clear()
 
@@ -302,6 +315,10 @@ def create_app(
     application.add_middleware(WakePlannerMiddleware, planner=application.state.planner)
     application.add_middleware(SchemaRecoveryMiddleware, database=database)
     register_websocket(application)
+
+    @application.exception_handler(SchemaTooNew)
+    async def schema_error(request: Request, _: SchemaTooNew) -> JSONResponse:
+        return SchemaRecoveryMiddleware.response(request.scope)
 
     @application.get("/livez", include_in_schema=False)
     async def livez() -> dict[str, str]:
