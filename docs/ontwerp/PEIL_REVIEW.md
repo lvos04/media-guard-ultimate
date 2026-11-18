@@ -650,8 +650,8 @@ De gerichte run met 25 tests uit §13.4 dekte de volledige bestandsvolgorde niet
 thematest bij de wissel van systeem-donker naar systeem-licht.
 
 De bestaande opzet heeft één worker, één Chromium-project, `fullyParallel: false`, geen globale setup en één
-verse gedeelde e2e-datamap per run. Andere bestanden die een beheerder nodig hebben heten `werk-*.spec.ts` en
-houden een `needs_setup`-controle voor een gerichte uitvoering. De reviewtest volgt nu die afspraak als
+verse gedeelde e2e-datamap per run. Bestanden die een beheerder nodig hebben komen alfabetisch na `mediaguard.spec.ts` (bijvoorbeeld `werk-*.spec.ts`);
+voor een gerichte uitvoering gebruiken ze een `needs_setup`-controle. De reviewtest volgt nu die afspraak als
 `e2e/werk-apikeys-ontwerpreview.spec.ts`; configuratie, eerste-installatietest en thematest blijven ongewijzigd.
 Na ieder geval verlaat de browser de app, wist hij zijn tijdelijke opslagthema en herstelt hij de oorspronkelijke
 servervoorkeur en taal. Eigen sleutels worden via de API ingetrokken en vervolgens uit de eigen testfixture

@@ -57,7 +57,8 @@ Onbekende NAS-gegevens (D01–D18) worden nooit met voorbeeldwaarden ingevuld; z
   `mediaservers`, zware run). Het upgradebewijs vergelijkt nu ook in de alles-in-één-rooktest per tabel. De
   Android-app bestaat ook in en-US. Stand per verzoek: [`B03_DELTAVERZOEKEN.md`](B03_DELTAVERZOEKEN.md) §3 en §4.
   Alles Sim-getest; op de echte NAS NIET GEVALIDEERD.
-- Open (latere fasen, in [`EVIDENCE.json`](EVIDENCE.json) als `Niet gestart`): C1.3-MGU-05/-06/-07/-09
+- C1.3-MGU-05 is `Bezig` (scopes; gereserveerde acties na BG-05).
+- Open (latere fasen, in [`EVIDENCE.json`](EVIDENCE.json) als `Niet gestart`): C1.3-MGU-06/-07/-09
   (P3), terugkeerpad na inloggen (-08, P3); C1.3-MGU-02 is `Geblokkeerd` tot de gebruiker het GHCR-pakket aan de nieuwe
   repo koppelt.
 - Commit-hashes in `EVIDENCE.json`-regels van vóór 2026-11-10 (B04-001…010) verwijzen naar de oude historie, nu
