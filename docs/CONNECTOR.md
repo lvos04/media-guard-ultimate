@@ -7,13 +7,19 @@ van toepassing; een sleutel met `emergency_stop:on` mag de connector lezen, maar
 krijgt op elke connector-POST `403 scope_ontbreekt`. Sessies behouden hun CSRF-controle.
 Een ongeldige sleutel valt nooit terug op een geldige sessie.
 
+De enige databasewijzigingen op de connectorroutes zijn bestaande
+aanmeldregistraties: `api_keys.last_used_at`, `sessions.last_seen_at` en nieuwe
+rijen in `audit_events` met actie `apikey.rejected` bij geweigerde sleutels.
+MediaGuard-voortgang, bibliotheek en instellingen blijven gelijk. De publieke
+routes `/healthz` en `/readyz` laten de hele database gelijk.
+
 | Route | Gedrag |
 |---|---|
 | `GET /connector/v1/discover` | Dienst, bronversie, schemaversie, `read`, rol `viewer`, lege `item_types` en `actions`, maximale meetleeftijd 900 seconden |
 | `GET /connector/v1/health` | Checks `database`, `worker`, `jobs`, `encoder` en `instances`; totaal is de slechtste check |
 | `POST /connector/v1/propose`, `/apply`, `/rollback` | Vaste weigering `501 capability_unavailable` na de bestaande toegangscontrole; geen uitvoering |
 | `GET /healthz` | Zonder aanmelding alleen `{"status":"ok"}` wanneer de kern leeft |
-| `GET /readyz` | Zonder aanmelding alleen `status: ok` (200) of `unavailable` (503); controleert database en toegepaste migraties |
+| `GET /readyz` | Controleert zonder aanmelding de database en toegepaste migraties. Geeft `status: ok` (200) of `unavailable` (503) met `Retry-After: 5` |
 
 Alle routes zijn bereikbaar via de bestaande enkele webpoort. De nieuwe routes
 geven `Cache-Control: no-store`. Wanneer de kern niet bereikbaar is, geeft de
@@ -40,7 +46,9 @@ niet doorgegeven. `hub_link` is niet van toepassing op deze bestaande app.
 ## Grenzen en vervolg
 
 Het contractfoutformaat geldt uitsluitend onder `/connector/v1`: `code`,
-Nederlandse `message`, `details` en een UUID als `trace_id`. De nieuwe routes
+Nederlandse `message`, `details` en een UUID als `trace_id`. Connectorpaden
+volgen hoofdstuk 6 zonder eindslash. Een pad met eindslash krijgt `404 not_found`
+in het contractfoutformaat en bevat geen `Location`-header. De nieuwe routes
 begrenzen de gehele body op 1 MiB vóór routering en authenticatie, ook chunked.
 Bij een bekende overschrijding via `Content-Length` weigert de webproxy zelf en
 leest de resterende invoer zonder opslag uit, zodat de client de 413 ontvangt.
