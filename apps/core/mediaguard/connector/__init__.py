@@ -1,4 +1,4 @@
-"""Alleen-lezen connector voor het platform, contract 1.3 §5 en §6."""
+"""Alleen-lezen connector voor het platform, contract 1.3 §5–§7."""
 
 from __future__ import annotations
 
@@ -14,9 +14,11 @@ from mediaguard.auth import Principal, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import MIGRATIONS_DIR
 
+from . import events
 from .errors import failure
 
 router = APIRouter(tags=["connector"])
+router.include_router(events.router)
 MAX_AGE = 900
 ORDER = {"healthy": 0, "unknown": 1, "degraded": 2, "down": 3}
 

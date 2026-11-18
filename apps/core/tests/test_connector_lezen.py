@@ -71,6 +71,7 @@ def measurement(ctx):
     [
         ("discover", "get"),
         ("health", "get"),
+        ("events", "get"),
         ("propose", "post"),
         ("apply", "post"),
         ("rollback", "post"),
@@ -230,12 +231,22 @@ def test_connector_openapi_documents_only_current_routes(app):
     paths = app.openapi()["paths"]
     assert {p for p in paths if p.startswith("/connector/v1/")} == {
         "/connector/v1/discover", "/connector/v1/health", "/connector/v1/propose",
-        "/connector/v1/apply", "/connector/v1/rollback",
+        "/connector/v1/apply", "/connector/v1/rollback", "/connector/v1/events",
     }
     for action in ("propose", "apply", "rollback"):
         assert "501" in paths[f"/connector/v1/{action}"]["post"]["responses"]
     for path in ("/healthz", "/readyz"):
         assert paths[path]["get"]["security"] == []
+    events = paths["/connector/v1/events"]["get"]
+    params = {p["name"]: p["schema"] for p in events["parameters"]}
+    assert params["limit"]["type"] == "integer" and params["limit"]["maximum"] == 200
+    assert {"200", "401", "409", "422"} <= set(events["responses"])
+    for status in ("401", "409", "422"):
+        schema = events["responses"][status]["content"]["application/json"]["schema"]
+        assert schema["$ref"].endswith("/ConnectorError")
+    assert events["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/EventPage"
+    )
 
 
 def database_snapshot(ctx, *, allow_auth_timestamps=False):
@@ -306,7 +317,7 @@ def populated_installation(settings):
 
 @pytest.mark.parametrize(("method", "route"), [
     ("GET", "discover"), ("GET", "health"), ("POST", "propose"), ("POST", "apply"),
-    ("POST", "rollback"),
+    ("POST", "rollback"), ("GET", "events"),
 ])
 def test_action_payloads_never_dispatch_or_change_progress(populated_installation, method, route):
     ctx, client, machine = populated_installation

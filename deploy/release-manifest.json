@@ -183,7 +183,8 @@
       "080_migration",
       "090_notify_security",
       "100_ai_advisor",
-      "150_mediaserver_servers"
+      "150_mediaserver_servers",
+      "151_outbox_event_identity"
     ],
     "encoder": [
       1,

@@ -216,6 +216,12 @@ def vul(db: Path, profiel: str, rijen: int = 2) -> dict[str, Any]:
         for tabel in _volgorde(conn, _tabellen(conn), profiel):
             if tabel in OVERSLAAN.get(profiel, set()):
                 continue
+            al = conn.execute(f'SELECT COUNT(*) FROM "{tabel}"').fetchone()[0]
+            if (profiel, tabel) == ("core", "outbox_retention"):
+                # Deze tabel is gevuld door migratie 151 en heeft precies één stand.
+                if al != 1:
+                    mislukt[tabel] = "de door de migratie gevulde retentiestand ontbreekt"
+                continue
             sql = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (tabel,)).fetchone()[0]
             checks = _checks(sql)
             info = conn.execute(f'PRAGMA table_info("{tabel}")').fetchall()
@@ -223,7 +229,6 @@ def vul(db: Path, profiel: str, rijen: int = 2) -> dict[str, Any]:
             fks.update(VERWIJST.get((profiel, tabel), {}))
             pk = [r[1] for r in info if r[5]]
             auto = len(pk) == 1 and next(r[2] for r in info if r[1] == pk[0]).upper() == "INTEGER"
-            al = conn.execute(f'SELECT COUNT(*) FROM "{tabel}"').fetchone()[0]
             n = 0
             fout = ""
             for i in range(al, al + rijen):

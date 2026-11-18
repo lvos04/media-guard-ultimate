@@ -900,6 +900,36 @@
         "title": "ConfirmationBody",
         "type": "object"
       },
+      "ConnectorError": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "details",
+          "trace_id"
+        ],
+        "title": "ConnectorError",
+        "type": "object"
+      },
       "ConsentBody": {
         "properties": {
           "granted": {
@@ -1296,6 +1326,183 @@
           "provider_id"
         ],
         "title": "EvaluateBody",
+        "type": "object"
+      },
+      "EventActor": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "const": "mediaguard",
+            "default": "mediaguard",
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "system",
+            "default": "system",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id"
+        ],
+        "title": "EventActor",
+        "type": "object"
+      },
+      "EventEntity": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "media_component",
+            "default": "media_component",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id"
+        ],
+        "title": "EventEntity",
+        "type": "object"
+      },
+      "EventEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/EventActor"
+          },
+          "classification": {
+            "const": "internal",
+            "default": "internal",
+            "title": "Classification",
+            "type": "string"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "entity": {
+            "$ref": "#/components/schemas/EventEntity"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "event_type": {
+            "maxLength": 128,
+            "pattern": "^media\\.[a-z0-9_]+\\.[a-z0-9_]+$",
+            "title": "Event Type",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/EventPayload"
+          },
+          "payload_ref": {
+            "title": "Payload Ref",
+            "type": "null"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_app": {
+            "const": "mediaguard",
+            "default": "mediaguard",
+            "title": "Source App",
+            "type": "string"
+          },
+          "source_event_id": {
+            "title": "Source Event Id",
+            "type": "string"
+          },
+          "timestamp_utc": {
+            "format": "date-time",
+            "title": "Timestamp Utc",
+            "type": "string"
+          },
+          "trace_id": {
+            "format": "uuid",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "event_id",
+          "source_app",
+          "source_event_id",
+          "event_type",
+          "entity",
+          "timestamp_utc",
+          "trace_id",
+          "correlation_id",
+          "actor",
+          "classification",
+          "payload",
+          "payload_ref"
+        ],
+        "title": "EventEnvelope",
+        "type": "object"
+      },
+      "EventPage": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/EventEnvelope"
+            },
+            "maxItems": 200,
+            "title": "Events",
+            "type": "array"
+          },
+          "next_cursor": {
+            "title": "Next Cursor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "events",
+          "next_cursor"
+        ],
+        "title": "EventPage",
+        "type": "object"
+      },
+      "EventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "ernst": {
+            "enum": [
+              "kritiek",
+              "hoog",
+              "middel",
+              "laag",
+              "info"
+            ],
+            "title": "Ernst",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ernst"
+        ],
+        "title": "EventPayload",
         "type": "object"
       },
       "FeedbackBody": {
@@ -25551,6 +25758,102 @@
           }
         },
         "summary": "Discover",
+        "tags": [
+          "connector"
+        ]
+      }
+    },
+    "/connector/v1/events": {
+      "get": {
+        "description": "Lees een pagina op oplopend bron-ID. Zonder cursor begint de oudste bewaarde rij.",
+        "operationId": "poll_connector_v1_events_get",
+        "parameters": [
+          {
+            "description": "Cursor uit de vorige pagina.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 42,
+                  "pattern": "^v1\\.(0|[1-9][0-9]{0,18})\\.(0|[1-9][0-9]{0,18})$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Cursor uit de vorige pagina.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Aanmelding ontbreekt of is ongeldig."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Onvoldoende rechten."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "cursor_expired: herstart zonder cursor."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Ongeldige cursor of limiet."
+          }
+        },
+        "summary": "Poll",
         "tags": [
           "connector"
         ]
