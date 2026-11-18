@@ -5,7 +5,7 @@ import shutil
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -205,6 +205,85 @@ def _trace_sql(db, monkeypatch, trace):
     monkeypatch.setattr(db, "_open_connection", tracked_open)
 
 
+def test_bezette_map_leidt_tot_begrensd_opnieuw_reserveren(tmp_path, monkeypatch):
+    db, _, job = _case(tmp_path)
+    lock = db.startup_lock
+    pogingen = 0
+    eerste = None
+
+    @contextmanager
+    def bezet_bij_hercontrole(*, blocking=True):
+        nonlocal pogingen, eerste
+        if not blocking:
+            pogingen += 1
+            if eerste is None:
+                eerste = time.monotonic()
+            if time.monotonic() - eerste < 0.15:
+                raise BlockingIOError
+        with lock(blocking=blocking):
+            yield
+
+    monkeypatch.setattr(db, "startup_lock", bezet_bij_hercontrole)
+    db.execute("UPDATE job SET percent=65 WHERE id=?", (job,))
+    assert db.fetch_one("SELECT percent FROM job WHERE id=?", (job,))[0] == 65
+    assert pogingen <= 12
+
+
+@pytest.mark.usefixtures("ruime_cache")
+def test_opslagbewaking_gebruikt_grenzen_van_de_schrijftransactie(tmp_path, monkeypatch):
+    db, configured, _ = _case(tmp_path)
+    db.execute("UPDATE instelling SET cache_pauze_gb=1,cache_waarschuwing_gb=2")
+    ingesteld = False
+
+    def trace(sql):
+        nonlocal ingesteld
+        if sql == "BEGIN IMMEDIATE" and not ingesteld:
+            with closing(sqlite3.connect(db.path)) as other, other:
+                other.execute(
+                    "UPDATE instelling SET cache_pauze_gb=999999,cache_waarschuwing_gb=1000000"
+                )
+            ingesteld = True
+
+    _trace_sql(db, monkeypatch, trace)
+    storage_guard(db, configured)
+    assert ingesteld
+    assert db.fetch_one("SELECT gepauzeerd FROM worker_config WHERE baan='cpu'")[0] == 1
+
+
+@pytest.mark.parametrize("wijziging", ["onbekend", "teruggezet"])
+def test_backup_wordt_alleen_bij_de_gekopieerde_database_geregistreerd(
+    tmp_path, monkeypatch, wijziging
+):
+    from app.backups import BackupError, create_backup
+    from app.db import SchemaTooNew
+
+    db, configured, _ = _case(tmp_path)
+    eerdere_paden = set(configured.backup_root.iterdir())
+    restored = tmp_path / "terugzetting.db"
+    with db.connection(write=False) as source, closing(sqlite3.connect(restored)) as copy:
+        source.backup(copy)
+    connection = db.connection
+
+    @contextmanager
+    def wissel_voor_registratie(*, write=True, blocking=True):
+        if write:
+            with db.startup_lock():
+                if wijziging == "onbekend":
+                    with closing(sqlite3.connect(db.path)) as other, other:
+                        other.execute("INSERT INTO schema_versie VALUES (999,'proef','proef')")
+                else:
+                    restored.replace(db.path)
+        with connection(write=write, blocking=blocking) as conn:
+            yield conn
+
+    monkeypatch.setattr(db, "connection", wissel_voor_registratie)
+    with pytest.raises(SchemaTooNew if wijziging == "onbekend" else BackupError):
+        create_backup(db, configured)
+    assert set(configured.backup_root.iterdir()) == eerdere_paden
+    with closing(sqlite3.connect(db.path)) as current:
+        assert current.execute("SELECT count(*) FROM backup_status").fetchone() == (0,)
+
+
 def test_weekonderhoud_toetst_schema_in_het_exclusieve_slot(tmp_path, monkeypatch):
     from app.db import SchemaTooNew
 
@@ -228,28 +307,34 @@ def test_weekonderhoud_toetst_schema_in_het_exclusieve_slot(tmp_path, monkeypatc
 def test_uurcyclus_neemt_sqlite_slot_buiten_de_mapsloten(tmp_path, monkeypatch):
     import fcntl
 
+    from app.backups import enforce_retention, verify_backup
     from app.onderhoud import run_maintenance
 
     db, configured, _ = _case(tmp_path)
-    db.execute("UPDATE functie SET ingeschakeld=0 WHERE sleutel='automatische_backups'")
     core = tmp_path / "core"
     core.mkdir()
     free_folders = []
+    bezet = []
 
     def trace(sql):
-        if sql == "BEGIN EXCLUSIVE":
+        if sql in ("BEGIN EXCLUSIVE", "BEGIN IMMEDIATE"):
             for folder in (core, db.path.parent):
                 fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    free_folders.append(folder)
+                    if sql == "BEGIN EXCLUSIVE":
+                        free_folders.append(folder)
                 except BlockingIOError:
-                    pass
+                    bezet.append((sql, folder.name))
                 finally:
                     os.close(fd)
 
     _trace_sql(db, monkeypatch, trace)
     run_maintenance(db, configured)
+    backup = db.fetch_one("SELECT id FROM backup_status")[0]
+    assert verify_backup(db, configured, backup)["herstelbaar"]
+    assert enforce_retention(db, keep=0) == 1
+    assert not bezet
     assert free_folders == [core, db.path.parent]
     assert db.fetch_one("SELECT 1 FROM onderhoud_status WHERE sleutel='sqlite_weekonderhoud'")
 

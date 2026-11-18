@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, closing, contextmanager, suppress
 from datetime import UTC, datetime
@@ -150,6 +151,7 @@ class Database:
 
     @contextmanager
     def _writer(self, *, exclusive: bool, blocking: bool) -> Iterator[sqlite3.Connection]:
+        retry_delay = 0.005
         with ExitStack() as held:
             while True:
                 # Open het juiste bestand onder de mapsloten, wacht op SQLite erbuiten.
@@ -167,6 +169,10 @@ class Database:
                     held.close()  # De andere slothouder kan zelf op SQLite wachten.
                     if not blocking:
                         raise
+                    # Geef de andere schrijver tijd voor zijn hercontrole. Anders nemen
+                    # beide schrijvers telkens elkaars mapslot tijdens het openen.
+                    time.sleep(retry_delay)
+                    retry_delay = min(2 * retry_delay, 0.05)
                     continue
                 if self.path.exists() and os.path.samestat(opened, self.path.stat()):
                     break

@@ -157,9 +157,14 @@ STORAGE_PAUSE_PREFIXES = ("automatisch: cache", "automatisch: opslag")
 def cache_limits(database: Database, settings: Settings) -> dict[str, int]:
     """Ingestelde en effectieve cachegrenzen (GB); de effectieve bodem telt."""
 
-    row = database.fetch_one(
+    with database.connection(write=False) as conn:
+        return _cache_limits(conn, settings)
+
+
+def _cache_limits(conn: sqlite3.Connection, settings: Settings) -> dict[str, int]:
+    row = conn.execute(
         "SELECT cache_waarschuwing_gb,cache_pauze_gb FROM instelling WHERE id=1"
-    )
+    ).fetchone()
     warning_gb = int(row["cache_waarschuwing_gb"]) if row else DEFAULT_CACHE_WARNING_GB
     pause_gb = int(row["cache_pauze_gb"]) if row else DEFAULT_CACHE_PAUSE_GB
     effective_warning, effective_pause = settings.effective_cache_limits(warning_gb, pause_gb)
@@ -233,43 +238,32 @@ def storage_guard(database: Database, settings: Settings) -> dict[str, int | str
             (f"automatisch: opslag niet bereikbaar: {exc}",),
         )
         return {"vrij_bytes": 0, "status": f"automatisch gepauzeerd: {exc}"}
-    limits = cache_limits(database, settings)
-    effective_warning = int(limits["cache_warning_gb"])
-    effective_pause = int(limits["cache_min_free_gb"])
-    warning = effective_warning * 1024**3
-    pause = effective_pause * 1024**3
-    status = "voldoende"
-    if free < pause:
-        status = "automatisch gepauzeerd: opslag onder veilige vrije-ruimtebodem"
-        database.execute(
-            """
-            UPDATE worker_config SET gepauzeerd=1,pauze_reden=?
-            WHERE gepauzeerd=0 OR pauze_reden LIKE 'automatisch: cache%'
-               OR pauze_reden LIKE 'automatisch: opslag%'
-            """,
-            (
+    # Een API-verzoek kan de bodem wijzigen tijdens de schijfmeting. Lees de
+    # grenzen en pas de baanstatus toe in dezelfde korte transactie.
+    with database.connection() as conn, conn:
+        limits = _cache_limits(conn, settings)
+        effective_pause = limits["cache_min_free_gb"]
+        if free < effective_pause * 1024**3:
+            status = "automatisch gepauzeerd: opslag onder veilige vrije-ruimtebodem"
+            reason = (
                 f"automatisch: cache heeft nog {free / 1024**3:.1f} GB vrij, onder de "
                 f"pauzebodem van {effective_pause} GB; encoderen gepauzeerd tot er weer "
-                "ruimte is",
-            ),
-        )
-    elif free < warning:
-        status = "waarschuwing: cache onder waarschuwingsgrens"
-        database.execute(
-            """
-            UPDATE worker_config SET gepauzeerd=0,pauze_reden=NULL
-            WHERE pauze_reden LIKE 'automatisch: cache%'
-               OR pauze_reden LIKE 'automatisch: opslag%'
-            """
-        )
-    else:
-        database.execute(
-            """
-            UPDATE worker_config SET gepauzeerd=0,pauze_reden=NULL
-            WHERE pauze_reden LIKE 'automatisch: cache%'
-               OR pauze_reden LIKE 'automatisch: opslag%'
-            """
-        )
+                "ruimte is"
+            )
+            conn.execute(
+                """UPDATE worker_config SET gepauzeerd=1,pauze_reden=?
+                   WHERE gepauzeerd=0 OR pauze_reden LIKE 'automatisch: cache%'
+                      OR pauze_reden LIKE 'automatisch: opslag%'""",
+                (reason,),
+            )
+        else:
+            status = ("waarschuwing: cache onder waarschuwingsgrens"
+                      if free < limits["cache_warning_gb"] * 1024**3 else "voldoende")
+            conn.execute(
+                """UPDATE worker_config SET gepauzeerd=0,pauze_reden=NULL
+                   WHERE pauze_reden LIKE 'automatisch: cache%'
+                      OR pauze_reden LIKE 'automatisch: opslag%'"""
+            )
     return {"vrij_bytes": free, "status": status}
 
 
