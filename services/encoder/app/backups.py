@@ -24,7 +24,7 @@ def create_backup(database: Database, settings: Settings) -> dict[str, Any]:
         target = settings.backup_root / (
             "app-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ") + ".db"
         )
-        with database.connection() as source, sqlite3.connect(target) as destination:
+        with database.connection(write=False) as source, sqlite3.connect(target) as destination:
             source.backup(destination)
         target.chmod(0o640)
         digest = hashlib.sha256(target.read_bytes()).hexdigest()

@@ -102,3 +102,71 @@ def test_wachtende_av1_schrijver_weigert_nieuw_schema(tmp_path, monkeypatch) -> 
             toekomst.result(timeout=5)
     with closing(sqlite3.connect(db.path)) as conn:
         assert conn.execute("SELECT count(*) FROM proef").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("startslot", [False, True])
+@pytest.mark.parametrize("ingang", ["stop", "groep", "insert", "migratie"])
+def test_sqlite_schrijfslot_bewaakt_av1(tmp_path, monkeypatch, ingang, startslot):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import closing, nullcontext
+    from threading import Event
+
+    from test_onderhoud import _case
+
+    from app.db import SchemaTooNew
+    from app.uitvoerder import requeue_for_planned_stop
+
+    db, _, job = _case(tmp_path)
+    db.execute("UPDATE job SET status='bezig', percent=37 WHERE id=?", (job,))
+    if ingang == "migratie":
+        db.migrations_dir = shutil.copytree(db.migrations_dir, tmp_path / "migraties")
+        (db.migrations_dir / "026_proef.sql").write_text("CREATE TABLE proef (id INTEGER);")
+    gestart, bij_sqlite = Event(), Event()
+    connect = db.connect
+
+    def verbinden():
+        conn = connect()
+
+        def trace(sql):
+            if sql.lstrip().startswith(("BEGIN IMMEDIATE", "UPDATE job", "INSERT INTO auditlog")):
+                bij_sqlite.set()
+
+        conn.set_trace_callback(trace)
+        return conn
+
+    def schrijf():
+        gestart.set()
+        if ingang == "stop":
+            requeue_for_planned_stop(db, job)
+        elif ingang == "groep":
+            with db.connection() as conn:
+                conn.execute("UPDATE job SET percent=0 WHERE id=?", (job,))
+                conn.commit()
+        elif ingang == "insert":
+            db.execute_insert(
+                "INSERT INTO auditlog(soort,onderwerp,tijd) VALUES ('proef','schrijfslot','nu')"
+            )
+        else:
+            db.apply_migrations()
+
+    monkeypatch.setattr(db, "connect", verbinden)
+    with ThreadPoolExecutor(1) as pool:
+        slot = db.startup_lock() if startslot else nullcontext()
+        with slot, closing(sqlite3.connect(db.path)) as peer:
+            peer.execute("BEGIN IMMEDIATE")
+            peer.execute("INSERT INTO schema_versie VALUES (999, 'proef', 'proef')")
+            taak = pool.submit(schrijf)
+            assert gestart.wait(5)
+            if not startslot:
+                assert bij_sqlite.wait(5)
+            assert not taak.done()
+            verwacht = list(peer.iterdump())
+            peer.commit()
+        with pytest.raises(SchemaTooNew):
+            taak.result(timeout=5)
+    with closing(sqlite3.connect(db.path)) as conn:
+        assert list(conn.iterdump()) == verwacht
+        assert conn.execute("SELECT status,percent FROM job WHERE id=?", (job,)).fetchone() == (
+            "bezig", 37,
+        )
+    assert db.read_only

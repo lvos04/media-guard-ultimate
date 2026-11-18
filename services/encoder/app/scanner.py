@@ -303,35 +303,35 @@ def _scan_library_locked(
             except FileNotFoundError:
                 # Map verdween tijdens de scan (Radarr/Sonarr verplaatste hem).
                 entries = []
-            with database.connection() as connection:
-                for path in entries:
-                    if (
-                        _skip_name(path.name)
-                        or path.is_symlink()
-                        or not path.is_file()
-                        or path.suffix.lower() not in VIDEO_EXT
-                    ):
-                        continue
-                    try:
-                        stat = path.stat()
-                        _process_file(
-                            connection,
-                            library_id,
-                            path,
-                            stat,
-                            profile,
-                            profile_fingerprint,
-                            started_at,
-                            dry_run,
-                            summary,
-                            root,
-                        )
-                    except FileNotFoundError:
-                        # Eén verdwenen bestand mag niet de hele scan afbreken;
-                        # de volgende scan markeert het als afwezig.
-                        LOGGER.info("Bestand verdween tijdens de scan: %s", path)
-                        continue
-                if not dry_run and scan_id is not None:
+            for path in entries:
+                if (
+                    _skip_name(path.name)
+                    or path.is_symlink()
+                    or not path.is_file()
+                    or path.suffix.lower() not in VIDEO_EXT
+                ):
+                    continue
+                try:
+                    stat = path.stat()
+                    _process_file(
+                        database,
+                        library_id,
+                        path,
+                        stat,
+                        profile,
+                        profile_fingerprint,
+                        started_at,
+                        dry_run,
+                        summary,
+                        root,
+                    )
+                except FileNotFoundError:
+                    # Eén verdwenen bestand mag niet de hele scan afbreken;
+                    # de volgende scan markeert het als afwezig.
+                    LOGGER.info("Bestand verdween tijdens de scan: %s", path)
+                    continue
+            if not dry_run and scan_id is not None:
+                with database.connection() as connection:
                     connection.execute(
                         "UPDATE scan_run SET cursor=?, gevonden=? WHERE id=?",
                         (directory_text, summary.gevonden, scan_id),
@@ -372,7 +372,6 @@ def _scan_library_locked(
         with database.connection() as connection:
             # BEGIN IMMEDIATE sluit het laatste kleine racevenster: een profiel-
             # wijziging kan niet tegelijk met het definitief afronden committen.
-            connection.execute("BEGIN IMMEDIATE")
             latest_profile = _profile_from_connection(connection, library_id)
             latest_fingerprint = _profile_fingerprint(latest_profile)
             if latest_fingerprint != profile_fingerprint:
@@ -441,18 +440,11 @@ def _scan_library_locked(
         return summary
 
 
-def _process_file(
-    connection: Any,
-    library_id: int,
-    path: Path,
-    stat: os.stat_result,
-    profile: dict[str, Any],
-    profile_fingerprint: str,
-    scan_marker: str,
-    dry_run: bool,
-    summary: ScanSummary,
-    root: Path | None = None,
-) -> None:
+def _available_file(
+    connection: sqlite3.Connection, path: Path, stat: os.stat_result, profile_fingerprint: str,
+    scan_marker: str, dry_run: bool, summary: ScanSummary,
+) -> tuple[sqlite3.Row | None, bool, bool] | None:
+    """Een actieve job blijft eigenaar van dit bestand, ook als die tijdens de probe start."""
     existing = connection.execute(
         """
         SELECT id,grootte,mtime,nlink,device,inode,categorie,probe,aanwezig,
@@ -496,10 +488,29 @@ def _process_file(
                     nlink=stat.st_nlink,
                 )
             )
-            return
+            return None
 
+    return existing, metadata_unchanged, profile_unchanged
+
+
+def _inspect_file(
+    connection: sqlite3.Connection,
+    library_id: int,
+    path: Path,
+    stat: os.stat_result,
+    profile_fingerprint: str,
+    scan_marker: str,
+    dry_run: bool,
+    summary: ScanSummary,
+) -> tuple[sqlite3.Row | None, bool, bool] | None:
+    observed = _available_file(connection, path, stat, profile_fingerprint, scan_marker,
+                               dry_run, summary)
+    if observed is None:
+        return None
+    existing, metadata_unchanged, profile_unchanged = observed
     if (
-        metadata_unchanged
+        existing is not None
+        and metadata_unchanged
         and profile_unchanged
         and existing["scan_status"] == "gereed"
         and not dry_run
@@ -529,7 +540,7 @@ def _process_file(
                 nlink=stat.st_nlink,
             )
         )
-        return
+        return None
 
     if time.time() - stat.st_mtime < FILE_STABILITY_SECONDS:
         _store_deferred_file(
@@ -558,13 +569,31 @@ def _process_file(
                 nlink=stat.st_nlink,
             )
         )
-        return
+        return None
 
-    # Een vorige bestandsobservatie kan deze maptransactie al schrijvend hebben
-    # gemaakt. Geef die lock vrij voordat de duur- en mediaprobes starten: op
-    # grote SMB-bestanden kunnen die minuten duren en de planner mag ondertussen
-    # gewoon een reeds goedgekeurde job claimen.
-    connection.commit()
+    return existing, metadata_unchanged, profile_unchanged
+
+
+def _process_file(
+    database: Database,
+    library_id: int,
+    path: Path,
+    stat: os.stat_result,
+    profile: dict[str, Any],
+    profile_fingerprint: str,
+    scan_marker: str,
+    dry_run: bool,
+    summary: ScanSummary,
+    root: Path | None = None,
+) -> None:
+    with database.connection(write=not dry_run) as connection, connection:
+        observed = _inspect_file(connection, library_id, path, stat, profile_fingerprint,
+                                 scan_marker, dry_run, summary)
+        if observed is None:
+            return
+    existing, metadata_unchanged, _ = observed
+
+    # Duurmeting, mediaprobe en bestandsanalyse kunnen minuten duren.
     ok, filter_reason, category = is_hoofdbestand(
         str(path),
         float(profile.get("min_duur_sec", 0)),
@@ -583,42 +612,14 @@ def _process_file(
         probe_data = probe(str(path)) if category in {"ok", "extra"} else None
 
     after = path.stat()
-    if (
+    changed_during_probe = (
         after.st_dev,
         after.st_ino,
         after.st_size,
         after.st_mtime,
         after.st_nlink,
-    ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime, stat.st_nlink):
-        _store_deferred_file(
-            connection,
-            library_id,
-            path,
-            after,
-            existing,
-            profile_fingerprint,
-            scan_marker,
-            dry_run,
-        )
-        summary.gevonden += 1
-        summary.uitgesteld += 1
-        if existing is None:
-            summary.nieuw += 1
-        elif not metadata_unchanged:
-            summary.gewijzigd += 1
-        summary.items.append(
-            ScanItem(
-                pad=str(path),
-                categorie=category,
-                filter_reden="bestand veranderde tijdens analyse",
-                actie="overslaan",
-                besluit_reden="wacht tot kopie of download klaar is",
-                nlink=after.st_nlink,
-            )
-        )
-        return
-
-    decision = decide_catalog_item(
+    ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime, stat.st_nlink)
+    decision = None if changed_during_probe else decide_catalog_item(
         str(path),
         category,
         probe_data,
@@ -626,78 +627,117 @@ def _process_file(
         stat.st_nlink,
         library_root=str(root) if root is not None else None,
     )
-    summary.gevonden += 1
-    summary.items.append(
-        ScanItem(
-            pad=str(path),
-            categorie=category,
-            filter_reden=filter_reason,
-            actie=decision.actie,
-            besluit_reden=decision.reden,
-            nlink=stat.st_nlink,
-        )
-    )
-    if dry_run:
-        return
-    probe_json = json.dumps(probe_data, ensure_ascii=False) if probe_data is not None else None
-    changed = bool(
-        existing is None
-        or existing["scan_status"] != "gereed"
-        or not (metadata_unchanged and profile_unchanged)
-    )
-    now = datetime.now(UTC).isoformat()
-    if existing is None:
-        cursor = connection.execute(
-            """
-            INSERT INTO bestand(
-                library_id,pad,grootte,mtime,nlink,categorie,probe,gescand_op,
-                device,inode,aanwezig,eerste_gezien,stabiel_vanaf,scan_status,
-                profiel_fingerprint
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'gereed', ?)
-            """,
-            (
+
+    with database.connection(write=not dry_run) as connection, connection:
+        # Intussen kan een job het bronpad geclaimd hebben of het schema zijn gewijzigd.
+        observed = _available_file(connection, path, stat, profile_fingerprint, scan_marker,
+                                   dry_run, summary)
+        if observed is None:
+            return
+        existing, metadata_unchanged, profile_unchanged = observed
+        if decision is None:
+            _store_deferred_file(
+                connection,
                 library_id,
-                str(path),
-                stat.st_size,
-                stat.st_mtime,
-                stat.st_nlink,
-                category,
-                probe_json,
-                scan_marker,
-                stat.st_dev,
-                stat.st_ino,
-                now,
-                now,
+                path,
+                after,
+                existing,
                 profile_fingerprint,
-            ),
-        )
-        bestand_id = int(cursor.lastrowid)
-        summary.nieuw += 1
-    else:
-        bestand_id = int(existing["id"])
-        connection.execute(
-            """
-            UPDATE bestand
-            SET grootte=?,mtime=?,nlink=?,categorie=?,probe=?,gescand_op=?,device=?,inode=?,
-                aanwezig=1,stabiel_vanaf=?,scan_status='gereed',profiel_fingerprint=?
-            WHERE id=?
-            """,
-            (
-                stat.st_size,
-                stat.st_mtime,
-                stat.st_nlink,
-                category,
-                probe_json,
                 scan_marker,
-                stat.st_dev,
-                stat.st_ino,
-                now,
-                profile_fingerprint,
-                bestand_id,
-            ),
+                dry_run,
+            )
+            summary.gevonden += 1
+            summary.uitgesteld += 1
+            if existing is None:
+                summary.nieuw += 1
+            elif not metadata_unchanged:
+                summary.gewijzigd += 1
+            summary.items.append(
+                ScanItem(
+                    pad=str(path),
+                    categorie=category,
+                    filter_reden="bestand veranderde tijdens analyse",
+                    actie="overslaan",
+                    besluit_reden="wacht tot kopie of download klaar is",
+                    nlink=after.st_nlink,
+                )
+            )
+            return
+
+        summary.gevonden += 1
+        summary.items.append(
+            ScanItem(
+                pad=str(path),
+                categorie=category,
+                filter_reden=filter_reason,
+                actie=decision.actie,
+                besluit_reden=decision.reden,
+                nlink=stat.st_nlink,
+            )
         )
-        summary.gewijzigd += int(changed)
-    store_decision(connection, bestand_id, decision, changed)
+        if dry_run:
+            return
+        probe_json = json.dumps(probe_data, ensure_ascii=False) if probe_data is not None else None
+        changed = bool(
+            existing is None
+            or existing["scan_status"] != "gereed"
+            or not (metadata_unchanged and profile_unchanged)
+        )
+        now = datetime.now(UTC).isoformat()
+        if existing is None:
+            cursor = connection.execute(
+                """
+                INSERT INTO bestand(
+                    library_id,pad,grootte,mtime,nlink,categorie,probe,gescand_op,
+                    device,inode,aanwezig,eerste_gezien,stabiel_vanaf,scan_status,
+                    profiel_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'gereed', ?)
+                """,
+                (
+                    library_id,
+                    str(path),
+                    stat.st_size,
+                    stat.st_mtime,
+                    stat.st_nlink,
+                    category,
+                    probe_json,
+                    scan_marker,
+                    stat.st_dev,
+                    stat.st_ino,
+                    now,
+                    now,
+                    profile_fingerprint,
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise sqlite3.DatabaseError("Nieuw catalogusbestand heeft geen id")
+            bestand_id = cursor.lastrowid
+            summary.nieuw += 1
+        else:
+            bestand_id = int(existing["id"])
+            connection.execute(
+                """
+                UPDATE bestand
+                SET grootte=?,mtime=?,nlink=?,categorie=?,probe=?,gescand_op=?,device=?,inode=?,
+                    aanwezig=1,stabiel_vanaf=?,scan_status='gereed',profiel_fingerprint=?
+                WHERE id=?
+                """,
+                (
+                    stat.st_size,
+                    stat.st_mtime,
+                    stat.st_nlink,
+                    category,
+                    probe_json,
+                    scan_marker,
+                    stat.st_dev,
+                    stat.st_ino,
+                    now,
+                    profile_fingerprint,
+                    bestand_id,
+                ),
+            )
+            summary.gewijzigd += int(changed)
+        store_decision(connection, bestand_id, decision, changed)
 
 
 def _store_deferred_file(

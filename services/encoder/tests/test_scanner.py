@@ -112,11 +112,10 @@ def test_profielwijziging_tijdens_scan_herstart_met_nieuwste_instellingen(
         original_process_file(*args, **kwargs)
         if changed:
             return
-        connection = args[0]
-        row = connection.execute("SELECT inst FROM profiel WHERE id=1").fetchone()
+        row = database.fetch_one("SELECT inst FROM profiel WHERE id=1")
         values = json.loads(str(row["inst"]))
         values["drempel_1080"] = 999_999
-        connection.execute(
+        database.execute(
             "UPDATE profiel SET inst=? WHERE id=1",
             (json.dumps(values, ensure_ascii=False),),
         )
@@ -296,3 +295,65 @@ def test_ffprobe_houdt_geen_sqlite_schrijftransactie_open(
     assert database.fetch_one(
         "SELECT COUNT(*) FROM auditlog WHERE onderwerp='scanner-lock'"
     )[0] == 1
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_voortgang_schrijft_tijdens_mediaprobe(tmp_path, monkeypatch, dry_run):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from test_onderhoud import _case
+
+    from app.uitvoerder import _set_detail
+
+    database, settings, job = _case(tmp_path)
+    source = settings.library_root / "Ander bestand.mkv"
+    source.touch()
+    os.utime(source, (1, 1))
+    database.execute("UPDATE job SET percent=37 WHERE id=?", (job,))
+    begonnen, vrijgave = Event(), Event()
+
+    def trage_probe(*args, **kwargs):
+        begonnen.set()
+        assert vrijgave.wait(10)
+        return True, "proef", "ok"
+
+    monkeypatch.setattr(scanner_module, "is_hoofdbestand", trage_probe)
+    monkeypatch.setattr(scanner_module, "probe", lambda path: None)
+    with ThreadPoolExecutor(2) as pool:
+        scan = pool.submit(scan_library, database, 1, dry_run=dry_run)
+        try:
+            assert begonnen.wait(5)
+            voortgang = pool.submit(_set_detail, database, job, "proef", 65)
+            voortgang.result(timeout=3)
+            assert database.fetch_one("SELECT percent FROM job WHERE id=?", (job,))[0] == 65
+        finally:
+            vrijgave.set()
+        assert scan.result(timeout=5).gevonden == 1
+
+
+def test_scan_toetst_schema_opnieuw_na_de_probe(tmp_path, monkeypatch):
+    from contextlib import closing
+
+    from app.db import SchemaTooNew
+
+    library = tmp_path / "media"
+    library.mkdir()
+    source = library / "Proef.mkv"
+    source.touch()
+    os.utime(source, (1, 1))
+    db = _database_for_path(tmp_path / "database", library)
+
+    def nieuw_schema(*args, **kwargs):
+        with closing(sqlite3.connect(db.path)) as peer, peer:
+            peer.execute("INSERT INTO schema_versie VALUES (999, 'proef', 'proef')")
+        return True, "proef", "ok"
+
+    monkeypatch.setattr(scanner_module, "is_hoofdbestand", nieuw_schema)
+    monkeypatch.setattr(scanner_module, "probe", lambda path: None)
+    with pytest.raises(SchemaTooNew):
+        scan_library(db, 1)
+    with closing(sqlite3.connect(db.path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM bestand").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM besluit").fetchone() == (0,)
+        assert conn.execute("SELECT cursor,gevonden FROM scan_run").fetchone() == (None, 0)

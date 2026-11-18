@@ -219,7 +219,6 @@ def requeue_hdr_on_cpu(database: Database, job_id: int, decision: Besluit, reaso
     # haalde met preset 8 maar 0,06–0,15×; de GPU-poging was al het "snelle" pad.
     inst["preset_2160"] = max(int(inst.get("preset_2160") or 0), CPU_FALLBACK_PRESET_2160)
     with database.connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             "UPDATE besluit SET baan='cpu',encoder='libsvtav1',reden=?,payload=? WHERE id=?",
             (cpu.reden, cpu.model_dump_json(), int(row["besluit_id"])),

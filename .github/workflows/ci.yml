@@ -155,7 +155,8 @@ jobs:
         run: >-
           python -m pytest -q -rfEs -p no:cacheprovider
           tests/test_mediaguard_policy.py tests/test_beslissen.py tests/test_bestandsfilter.py
-          tests/test_db.py tests/test_opslag.py tests/test_onderhoud.py
+          tests/test_db.py tests/test_schema_ingangen.py tests/test_scanner.py
+          tests/test_opslag.py tests/test_onderhoud.py
           tests/test_mediaguard_storage_guard.py tests/test_scanscheduler.py
           tests/test_smb_helper.py tests/test_ai_controller.py tests/test_integraties.py
           tests/test_verificatie.py tests/test_systeem.py

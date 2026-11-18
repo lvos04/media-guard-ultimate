@@ -9,7 +9,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack, closing, contextmanager, suppress
+from contextlib import ExitStack, closing, contextmanager, nullcontext, suppress
 from datetime import UTC, datetime
 from importlib.util import find_spec
 from pathlib import Path
@@ -118,10 +118,30 @@ class Database:
         return connection
 
     @contextmanager
-    def connection(self) -> Iterator[sqlite3.Connection]:
-        """Houd de schematoets geldig totdat de aanroeper klaar is met schrijven."""
-        with self.startup_lock(), closing(self.connect()) as connection:
-            yield connection
+    def connection(self, *, write: bool = True) -> Iterator[sqlite3.Connection]:
+        """Eén gecontroleerde schrijftransactie, of een alleen-lezende verbinding."""
+        lock = self.startup_lock() if write else nullcontext()
+        with lock, closing(self.connect()) as conn:
+            if write:
+                conn.execute("BEGIN IMMEDIATE")
+                if self.check_schema(conn):
+                    raise SchemaTooNew()
+                # executescript mag de getoetste transactie niet impliciet committen.
+                conn.autocommit = False
+            else:
+                conn.execute("PRAGMA query_only=ON")
+            yield conn
+
+    @contextmanager
+    def exclusive_connection(self) -> Iterator[sqlite3.Connection]:
+        """Behoud het SQLite-slot bij bewerkingen die buiten een transactie moeten."""
+        with self.startup_lock(), closing(self.connect()) as conn:
+            conn.execute("PRAGMA locking_mode=EXCLUSIVE")
+            conn.execute("BEGIN EXCLUSIVE")
+            if self.check_schema(conn):
+                raise SchemaTooNew()
+            conn.commit()
+            yield conn  # SQLite laat het exclusieve slot pas bij close() los.
 
     @contextmanager
     def startup_lock(self) -> Iterator[None]:
@@ -132,10 +152,11 @@ class Database:
                     locks.enter_context(_folder_lock(folder))
             yield
 
-    def check_schema(self) -> bool:
+    def check_schema(self, connection: sqlite3.Connection | None = None) -> bool:
         if self.read_only:
             return True
-        have = _applied_versions(self.path, "schema_versie", "versie")
+        have = (_versions_in(connection, "schema_versie", "versie") if connection is not None
+                else _applied_versions(self.path, "schema_versie", "versie"))
         core = _applied_versions(self._core_database(), "schema_migrations", "version")
         if (have - {version for version, _ in self.migration_files()}
                 or core - {file.stem for file in _core_migrations().glob("*.sql")}):
@@ -157,13 +178,18 @@ class Database:
                 return
             if prepare is not None:
                 prepare()
-            self._initialize()
+            try:
+                self._initialize()
+            except SchemaTooNew:
+                self.read_only = True
 
     def _initialize(self) -> None:
+        with closing(self.connect()) as connection:
+            mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        if mode != "wal":
+            with self.exclusive_connection() as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
         with self.connection() as connection:
-            # WAL is persistent in het bestand: één keer zetten. Vroeger bij élke verbinding
-            # (tientallen per seconde tijdens encodes), wat onnodig locks pakte.
-            connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS schema_versie ("
                 "versie INTEGER PRIMARY KEY, naam TEXT NOT NULL, toegepast_op TEXT NOT NULL)"
@@ -198,7 +224,7 @@ class Database:
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         target = backup_dir / f"app-{timestamp}.db"
         # SQLite backup voorkomt een inconsistente kopie terwijl WAL actief is.
-        with self.connection() as source, sqlite3.connect(target) as destination:
+        with self.connection(write=False) as source, sqlite3.connect(target) as destination:
             source.backup(destination)
         target.chmod(0o640)
 
@@ -208,36 +234,33 @@ class Database:
             self._apply_migrations()
 
     def _apply_migrations(self) -> None:
-        applied = self.applied_versions()
-        pending = [
-            (version, path)
-            for version, path in self.migration_files()
-            if version not in applied
-        ]
-        if pending:
-            self._backup_before_migration()
+        files = self.migration_files()
+        with self.connection() as connection:
+            applied = _versions_in(connection, "schema_versie", "versie")
+            pending = [(v, path) for v, path in files if v not in applied]
+            if pending:
+                self._backup_before_migration()
         for version, path in pending:
             sql = path.read_text(encoding="utf-8")
-            applied_at = datetime.now(UTC).isoformat()
-            quoted_name = path.name.replace("'", "''")
-            quoted_time = applied_at.replace("'", "''")
-            script = (
-                "BEGIN IMMEDIATE;\n"
-                f"{sql}\n"
-                "INSERT INTO schema_versie(versie, naam, toegepast_op) "
-                f"VALUES ({version}, '{quoted_name}', '{quoted_time}');\n"
-                "COMMIT;"
-            )
-            with self.connection() as connection:
-                try:
-                    connection.executescript(script)
-                except sqlite3.Error as exc:
-                    with suppress(sqlite3.Error):
-                        connection.execute("ROLLBACK")
-                    raise MigrationError(f"Migratie {path.name} mislukt: {exc}") from exc
+            try:
+                with self.connection() as connection:
+                    if connection.execute("SELECT 1 FROM schema_versie WHERE versie=?",
+                                          (version,)).fetchone():
+                        continue
+                    connection.executescript(sql)
+                    connection.execute(
+                        "INSERT INTO schema_versie(versie, naam, toegepast_op) VALUES (?,?,?)",
+                        (version, path.name, datetime.now(UTC).isoformat()),
+                    )
+                    connection.commit()
+            except sqlite3.Error as exc:
+                raise MigrationError(f"Migratie {path.name} mislukt: {exc}") from exc
             LOGGER.info("Migratie %s toegepast", path.name)
 
     def execute(self, sql: str, parameters: Sequence[Any] = ()) -> int:
+        if sql.strip().upper() == "VACUUM":
+            with self.exclusive_connection() as connection:
+                return connection.execute(sql, parameters).rowcount
         with self.connection() as connection:
             cursor = connection.execute(sql, parameters)
             connection.commit()

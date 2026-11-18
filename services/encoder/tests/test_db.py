@@ -240,3 +240,50 @@ def test_av1_voorcontrole_leest_ook_wal_en_maakt_geen_hulpbestanden(tmp_path, in
     with pytest.raises(SchemaTooNew):
         Database(instance).require_writable()
     assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == files
+
+
+@pytest.mark.parametrize("fout", ["nieuwer_schema", "ongeldige_sql"])
+def test_av1_migratiescript_blijft_in_de_getoetste_transactie(tmp_path, monkeypatch, fout):
+    from contextlib import closing
+
+    from test_onderhoud import _case
+
+    from app.db import MigrationError, SchemaTooNew
+
+    db, _, _ = _case(tmp_path)
+    db.migrations_dir = shutil.copytree(db.migrations_dir, tmp_path / "migraties")
+    script = db.migrations_dir / "026_proef.sql"
+    sql = "CREATE TABLE proef (id INTEGER);"
+    if fout == "ongeldige_sql":
+        sql += " INSERT INTO ontbrekende_tabel VALUES (1);"
+    script.write_text(sql)
+    gelezen = False
+    read = Path.read_text
+    connect = db.connect
+
+    def lees(pad, *args, **kwargs):
+        nonlocal gelezen
+        if pad == script:
+            gelezen = True
+        return read(pad, *args, **kwargs)
+
+    def verbinden():
+        conn = connect()
+
+        def trace(statement):
+            if gelezen and statement.startswith("BEGIN IMMEDIATE") and fout == "nieuwer_schema":
+                with closing(sqlite3.connect(db.path)) as peer, peer:
+                    peer.execute("INSERT INTO schema_versie VALUES (999, 'proef', 'proef')")
+
+        conn.set_trace_callback(trace)
+        return conn
+
+    monkeypatch.setattr(Path, "read_text", lees)
+    monkeypatch.setattr(db, "connect", verbinden)
+    with pytest.raises(SchemaTooNew if fout == "nieuwer_schema" else MigrationError):
+        db.apply_migrations()
+    with closing(sqlite3.connect(db.path)) as conn:
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='proef'").fetchone() is None
+        assert conn.execute("SELECT 1 FROM schema_versie WHERE versie=26").fetchone() is None
+        toekomst = conn.execute("SELECT 1 FROM schema_versie WHERE versie=999").fetchone()
+        assert toekomst == ((1,) if fout == "nieuwer_schema" else None)

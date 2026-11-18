@@ -90,7 +90,6 @@ def rebalance_waiting_jobs(
             continue
         decision = Besluit.model_validate(plan["decision"])
         with database.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 "UPDATE job SET baan=?,mg_inst=? WHERE id=? AND status='wacht' AND baan=? "
                 "AND gestart_op IS NULL AND proces_pid IS NULL",

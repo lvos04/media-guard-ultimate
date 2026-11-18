@@ -1141,7 +1141,6 @@ def create_api_router() -> APIRouter:
             int(job_id) for job_id, task in planner_tasks.items() if not task.done()
         }
         with database.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             library = connection.execute(
                 "SELECT * FROM library WHERE id=?", (library_id,)
             ).fetchone()
@@ -1251,7 +1250,6 @@ def create_api_router() -> APIRouter:
             )
 
         with database.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             current = connection.execute(
                 "SELECT naam,pad,bron_type,bron_uri,actief FROM library WHERE id=?",
                 (library_id,),

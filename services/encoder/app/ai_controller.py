@@ -590,7 +590,6 @@ class AiController:
             validated_libraries.add(library_id)
         try:
             with self.database.connection() as connection:
-                connection.execute("BEGIN IMMEDIATE")
                 for row in rows:
                     current = connection.execute(
                         "SELECT id,bestand_id,actie,baan,status FROM besluit WHERE id=?",
@@ -1112,7 +1111,6 @@ def revoke_ai_consent(
         parameters = tuple(library_ids)
     now = datetime.now(UTC).isoformat()
     with database.connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
         scan_scope = (
             f" AND library_id IN ({','.join('?' for _ in library_ids)})"
             if library_ids

@@ -575,7 +575,6 @@ class Planner:
         except Exception as exc:
             return None, f"opslagcontrole: {exc}"
         with self.database.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             active = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM job WHERE status IN ('bezig','verifieren')"

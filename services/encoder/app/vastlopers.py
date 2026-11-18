@@ -142,7 +142,6 @@ def apply_reroute(database: Any, job_id: int, decision: Any, route: str, reason:
                                            FAST_CPU_PRESET)
     new_decision = decision.model_copy(update=update)
     with database.connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             "UPDATE besluit SET baan=?,encoder=?,reden=?,payload=? WHERE id=?",
             (lane, encoder, new_decision.reden, new_decision.model_dump_json(),

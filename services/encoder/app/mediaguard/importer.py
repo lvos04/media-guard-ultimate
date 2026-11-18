@@ -138,13 +138,12 @@ def import_standalone_db(
     database._backup_before_migration()  # bestaand mechanisme: kopie in backups/voor-migratie
     with (
         closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as old,
-        database.connection() as target,
+        database.exclusive_connection() as target,
     ):
         old.backup(target)
     database.apply_migrations()
     now = datetime.now(UTC).isoformat()
     with database.connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
         for table, column in (
             ("library", "pad"),
             ("library", "bron_uri"),
