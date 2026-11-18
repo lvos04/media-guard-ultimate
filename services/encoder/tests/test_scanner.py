@@ -246,16 +246,78 @@ def test_wijzigingstelling_blijft_na_hervatten_met_wachttaak(tmp_path, monkeypat
     assert db.fetch_one("SELECT COUNT(*) FROM besluit")[0] == 2
 
 
-def test_oude_scan_zonder_telling_wordt_ondergrens_en_zichtbaar_onvolledig(tmp_path, monkeypatch):
+@pytest.mark.parametrize("sprong", [0, 3700])
+def test_oude_scan_zonder_telling_wordt_ondergrens_en_zichtbaar_onvolledig(
+    tmp_path, monkeypatch, sprong,
+):
+    from types import SimpleNamespace
+
     db = _gewijzigd_met_wachttaak(tmp_path, monkeypatch)
     _stop_na_beide_bestanden(db, monkeypatch)
     with db.connection() as conn, conn:  # Een eerdere scanner bewaarde deze tellingen niet.
         conn.execute("UPDATE scan_run SET cursor=NULL,gevonden=0,nieuw=0,gewijzigd=0,uitgesteld=0")
         conn.execute("UPDATE library SET scan_cursor=NULL")
+        conn.execute("DELETE FROM scan_bijdrage")
+    if sprong:  # Het stabiliteitsvenster verstrijkt: het bestand wordt nu heranalyseerd.
+        klok = SimpleNamespace(time=lambda: time.time() + sprong)
+        monkeypatch.setattr(scanner_module, "time", klok)
     final = scan_library(db, 1)
-    assert final.gewijzigd == 1
+    assert final.gewijzigd == 1  # één keer, ook na heranalyse
     fout = db.fetch_one("SELECT fout FROM scan_run ORDER BY id DESC LIMIT 1")[0]
     assert fout.startswith("telling onvolledig")
+
+
+def test_opgeslagen_telling_overleeft_profielherbeoordeling_bij_update(tmp_path, monkeypatch):
+    db = _gewijzigd_met_wachttaak(tmp_path, monkeypatch)
+    _stop_na_beide_bestanden(db, monkeypatch)
+    with db.connection() as conn, conn:  # De vorige versie bewaarde geen bijdragen.
+        conn.execute("DELETE FROM scan_bijdrage")
+    assert db.fetch_one("SELECT gewijzigd FROM scan_run ORDER BY id DESC LIMIT 1")[0] == 1
+    with monkeypatch.context() as patch:  # De update brengt een andere besliscode mee.
+        patch.setattr(scanner_module, "DECISION_CODE_FINGERPRINT", "nieuwe-versie")
+        final = scan_library(db, 1)
+    assert final.gewijzigd == 1
+    assert db.fetch_one("SELECT fout FROM scan_run ORDER BY id DESC LIMIT 1")[0] is None
+
+
+def test_voorlopende_bestandstijd_telt_niet_als_wijziging_bij_hervatten(tmp_path, monkeypatch):
+    db = _gewijzigd_met_wachttaak(tmp_path, monkeypatch)
+    film = Path(db.fetch_one("SELECT pad FROM library")[0]) / "Film.mkv"
+    toekomst = time.time() + 120
+    os.utime(film, (toekomst, toekomst))
+    scan_library(db, 1)  # Deze tijdstempel is nu bekend en geldt als ongewijzigd.
+    _stop_na_beide_bestanden(db, monkeypatch)
+    with db.connection() as conn, conn:
+        conn.execute("UPDATE scan_run SET cursor=NULL,gevonden=0,nieuw=0,gewijzigd=0,uitgesteld=0")
+        conn.execute("UPDATE library SET scan_cursor=NULL")
+        conn.execute("DELETE FROM scan_bijdrage")
+    assert scan_library(db, 1).gewijzigd == 0
+
+
+def test_api_toont_onvolledige_telling_ook_voor_hervatten(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api import create_api_router
+
+    db = _gewijzigd_met_wachttaak(tmp_path, monkeypatch)
+    _stop_na_beide_bestanden(db, monkeypatch)
+
+    def lees():
+        app = FastAPI()
+        app.state.database = db
+        app.include_router(create_api_router())
+        with TestClient(app) as client:
+            (bibliotheek,) = client.get("/api/libraries").json()
+        return bibliotheek["laatste_scan_gewijzigd"], bibliotheek["laatste_scan_telling_onvolledig"]
+
+    assert lees() == (1, 0)
+    with db.connection() as conn, conn:  # Historische scan zonder tussentelling.
+        conn.execute("UPDATE scan_run SET cursor=NULL,gevonden=0,nieuw=0,gewijzigd=0,uitgesteld=0")
+        conn.execute("DELETE FROM scan_bijdrage")
+    assert lees() == (0, 1)
+    scan_library(db, 1)
+    assert lees() == (1, 1)
 
 
 def test_profielwijziging_tijdens_scan_herstart_met_nieuwste_instellingen(

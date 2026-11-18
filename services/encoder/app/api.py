@@ -993,8 +993,11 @@ def create_api_router() -> APIRouter:
                     ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_nieuw,
                    COALESCE((SELECT s.gewijzigd FROM scan_run s WHERE s.library_id=l.id
                     ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_gewijzigd,
-                   COALESCE((SELECT s.fout LIKE 'telling onvolledig%' FROM scan_run s
-                    WHERE s.library_id=l.id ORDER BY s.id DESC LIMIT 1),0)
+                   COALESCE((SELECT s.fout LIKE 'telling onvolledig%'
+                       OR (s.status='bezig' AND (SELECT COUNT(*) FROM bestand f
+                           WHERE f.library_id=s.library_id AND f.gescand_op=s.gestart_op
+                           AND f.aanwezig=1) > s.gevonden)
+                    FROM scan_run s WHERE s.library_id=l.id ORDER BY s.id DESC LIMIT 1),0)
                     AS laatste_scan_telling_onvolledig,
                    COALESCE((SELECT s.verdwenen FROM scan_run s WHERE s.library_id=l.id
                     ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_verdwenen,
@@ -1379,6 +1382,11 @@ def create_api_router() -> APIRouter:
             connection.execute(
                 "DELETE FROM besluit WHERE bestand_id IN "
                 "(SELECT id FROM bestand WHERE library_id=?)",
+                (library_id,),
+            )
+            connection.execute(
+                "DELETE FROM scan_bijdrage WHERE scan_id IN "
+                "(SELECT id FROM scan_run WHERE library_id=?)",
                 (library_id,),
             )
             connection.execute("DELETE FROM bestand WHERE library_id=?", (library_id,))

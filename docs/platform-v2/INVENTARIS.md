@@ -58,7 +58,7 @@ image → commit rust daarom op de release-run (`30f7415`), niet op een gelezen 
 |---|---|---|---|---|
 | core + recovery | 1.2.2 (Python 3.12 los, 3.14 in AIO) | 35 SQL-migraties, laatste `100_ai_advisor` (`apps/core/mediaguard/migrations/`) | CI groen; lokaal 1069 passed/2 skipped (§6) | **onbekend — NIET GEVALIDEERD** |
 | web | 1.2.2, Next 16.3.3, React 19.2.8, Node 22 | — | CI groen incl. Playwright-e2e; lokaal lint + typecheck groen | onbekend |
-| AV1-engine | 1.2.2, upstream `lvos04/av1@4b31986`, FFmpeg 8.1.3 (sha256 gepind), SVT-AV1 2.3.0, dovi_tool 2.3.1 | 25 migraties (`services/encoder/app/migrations/001…025`) | CI-subset groen; volledige suite alleen nightly | onbekend |
+| AV1-engine | 1.2.2, upstream `lvos04/av1@4b31986`, FFmpeg 8.1.3 (sha256 gepind), SVT-AV1 2.3.0, dovi_tool 2.3.1 | 26 migraties (`services/encoder/app/migrations/001…026`) | CI-subset groen; volledige suite alleen nightly | onbekend |
 | Sonarr-fork | 4.0.20.3014 @ `bc54afb` + 5 patches (`forks/sonarr/patches`) | eigen SQLite (upstream) | nightly forkbuild + unittests (`docs/TEST_RESULTS.md`: 591 passed) | onbekend |
 | Radarr-fork | 6.4.4.10685 @ `a96bf7c` + 3 patches | eigen SQLite (upstream) | idem (433 passed) | onbekend |
 | AIO-image | `1.2.2-aio` | core + encoder samen | **rooktest** op database van eerdere versie: success (release-run) | onbekend |
@@ -240,7 +240,7 @@ scope-beperking); (5) ingetrokken sleutel → 401 (geen open toegang, EX16).
 | Database | Pad (AIO) | Migraties | Back-up | Bewaakt |
 |---|---|---|---|---|
 | core (SQLite WAL; recovery-rol `synchronous=FULL`) | `/config/core/mediaguard.db` | 35 bestanden `apps/core/mediaguard/migrations/001_core.sql … 100_ai_advisor.sql`, eenmalig toegepast via `schema_migrations` (`db.py:150-215`); alleen vooruit (nooit een toegepast bestand wijzigen, `migrations/README.md`) | dagelijks + handmatig, SQLite-backup-API → `integrity_check` → sha256-meta (`maintenance/api.py:102-145`); **automatische set vóór een migratie** (`db.py:218`, `maintenance/preupdate.py`) | **I R** |
-| AV1-engine (SQLite) | `/config/encode/*.db` | 25 bestanden `services/encoder/app/migrations/001_init.sql … 025_routeleer.sql` (`schema_versie`) | meegekopieerd met elke core-back-up (`maintenance/api.py:158-185`) en in de set vóór update | **I R** |
+| AV1-engine (SQLite) | `/config/encode/*.db` | 26 bestanden `services/encoder/app/migrations/001_init.sql … 026_scan_bijdrage.sql` (`schema_versie`) | meegekopieerd met elke core-back-up (`maintenance/api.py:158-185`) en in de set vóór update | **I R** |
 | 4 forks (SQLite, upstream-schema) | `/config/<instantie>/` | upstream Sonarr/Radarr-migraties | eigen wekelijkse fork-back-ups (`/api/v1/instances/{id}/backups`, `instances/manage.py:927-942`); **niet** in de core-back-up/herstelbundel | **R** (eigen fork) |
 | geheimen | `/config/core/secret.key` (Fernet, 0600), `/config/secrets/` (interne token, fork-API- en hooksleutels) | — | alleen in de **versleutelde herstelbundel** (X25519 + AES-256-GCM, herstelcode; `maintenance/bundle.py:1-20`) en via dataset-snapshot | **R V** |
 
