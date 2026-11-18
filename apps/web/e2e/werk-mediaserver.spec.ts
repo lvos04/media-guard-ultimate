@@ -212,7 +212,8 @@ for (const width of [1440, 390] as const) {
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/mediaservers-ontkoppelen-${width}.png` });
     await dialoog.getByRole("button", { name: "Server ontkoppelen" }).click();
     await expect(dialoog).toHaveCount(0);
-    await expect(tweede.locator(".chip")).toContainText("Ontkoppeld");
+    // De dialoog sluit vóór de status is opgehaald. Wacht op de hele lijst met de nieuwe status.
+    await expect(tweede.locator(".chip")).toHaveText(["Ontkoppeld"]);
     await expect(tab.getByTestId(`ms-why-${nieuw}`)).toContainText("Adres en sleutel zijn bewaard");
     expect((await servers(page))[1]).toMatchObject({ enabled: false, followed: false, key_set: true });
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/mediaservers-ontkoppeld-${width}.png`, fullPage: true });
