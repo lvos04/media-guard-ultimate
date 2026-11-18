@@ -16,6 +16,7 @@ import importlib.util
 import json
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -702,9 +703,15 @@ class _NepPoort(ub.Poort):
     def __init__(self, args: Any, wijzig: dict[str, Any] | None = None) -> None:
         super().__init__(args)
         self.wijzig = wijzig or {}
+        self.mediaserver_ingesteld = False
 
     def start(self, image: str, config: str = "config") -> None:
         self.stap(f"(nep) start {image} op {config}")
+        if self.wijzig.get("mediaserver_achtergrondronde") and not self.mediaserver_ingesteld:
+            db = self.werk / config / "core" / "mediaguard.db"
+            with closing(sqlite3.connect(db)) as conn, conn:
+                conn.execute("UPDATE mediaserver_pending SET done_at='proef', result='skipped' "
+                             "WHERE done_at IS NULL")
 
     def stop(self) -> None:
         pass
@@ -713,6 +720,11 @@ class _NepPoort(ub.Poort):
         return []
 
     def hulp(self, *cmd: str, als: str = "0") -> str:
+        if cmd[0] == "-c":
+            assert "mediaserver.url" in cmd[1] and "http://localhost:1" in cmd[1]
+            assert als == str(ub.APP_UID)
+            self.mediaserver_ingesteld = True
+            return ""
         assert "vul" in cmd, cmd
         return json.dumps({"profiel": "encode", "toegevoegd": {"job": 2}, "niet_gevuld": {}})
 
@@ -794,8 +806,15 @@ def test_poort_is_rood_als_open_werk_dichtgaat(tmp_path: Path, uit: str) -> None
 
 
 def test_poort_is_rood_als_open_werk_voor_de_meting_al_dicht_was(tmp_path: Path) -> None:
-    fouten, _tekst = _nep_poort(tmp_path, {"meting-voor.json": _met_open_overdracht_dicht})
+    fouten, tekst = _nep_poort(tmp_path, {"meting-voor.json": _met_open_overdracht_dicht})
     assert any("open overdracht" in f for f in fouten), fouten
+    assert "niets verloren" not in tekst
+
+
+def test_poort_beschermt_open_overdracht_vanaf_de_eerste_start(tmp_path: Path) -> None:
+    fouten, tekst = _nep_poort(tmp_path, {"mediaserver_achtergrondronde": True})
+    assert fouten == []
+    assert tekst.count("vóór 1, na 1.") == 2
 
 
 # -- vorige-release.json is de direct vorige gepubliceerde release --------------------------------

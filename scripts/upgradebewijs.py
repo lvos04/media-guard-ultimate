@@ -610,6 +610,27 @@ class Poort:
         return _docker("run", "--rm", "--user", "0", "--network", "none", "--entrypoint", "sh",
                        "-v", f"{self.werk}:/mnt", self.a.vorige, "-c", script, timeout=600)
 
+    def configureer_proefkoppeling(self) -> None:
+        """De achtergrondtaak sluit open overdrachten als er geen koppeling is."""
+        # De fixture verwijst uitsluitend naar een onbereikbaar lokaal proefadres.
+        self.hulp("-c", """
+from pathlib import Path
+from secrets import token_urlsafe
+from mediaguard.app import build_context
+from mediaguard.config import Settings
+from mediaguard.mediaserver.api import register_settings
+from mediaguard.mediaserver.service import SECRET_KEY
+
+register_settings()
+ctx = build_context(Settings(data_dir=Path("/mnt/config/core"), start_background=False))
+try:
+    ctx.config.set("global", "", "mediaserver.kind", "jellyfin", "upgradebewijs")
+    ctx.config.set("global", "", "mediaserver.url", "http://localhost:1", "upgradebewijs")
+    ctx.secrets.set(SECRET_KEY, token_urlsafe(24), "upgradebewijs")
+finally:
+    ctx.db.close()
+""", als=str(APP_UID))
+
     def start(self, image: str, config: str = "config") -> None:
         _docker("run", "-d", "--name", self.naam, "-p", f"127.0.0.1:{self.a.poort}:30080",
                 "-e", "TZ=UTC", "-e", "MG_HOST=127.0.0.1",
@@ -816,10 +837,19 @@ class Poort:
         herstel(fixture_sql, self.werk / "config" / "core" / "mediaguard.db")
         self.shell(f"chown -R {APP_UID}:{APP_UID} /mnt/config /mnt/work /mnt/data")
         fouten: list[str] = []
+        verwacht_open = fixture.get("open_overdrachten")
+        if verwacht_open:
+            self.configureer_proefkoppeling()
         # 1. vorige release op de fixture; de AV1-database maakt hij zelf, daarna vullen
         self.stap(f"vorige release starten: {self.a.vorige}")
         self.start(self.a.vorige)
         self.stop()
+        if isinstance(verwacht_open, int):
+            na_eerste_stop = open_werk(self.meet("config", "na-eerste-stop.json"))
+            self.stap(f"open overdrachten na eerste stop: {na_eerste_stop}")
+            if na_eerste_stop != verwacht_open:
+                fouten.append(f"na eerste stop: {na_eerste_stop} open overdracht(en), "
+                              f"fixture verwacht {verwacht_open}")
         uit = self.hulp("/s/upgradebewijs.py", "vul", "--db", "/mnt/config/encode/app.db",
                         "--profiel", "encode", als=str(APP_UID))
         self.stap(f"AV1-database gevuld: {uit}")
@@ -835,8 +865,10 @@ class Poort:
         fouten += [f"vorige release: {p}" for p in self.readback(fixture, None)]
         self.stop()
         voor = self.meet("config", "meting-voor.json")
-        # zonder volledige meting vóór is 'niets verloren' leeg: dan is de poort rood
+        # Zonder volledige nulmeting valt er niets te bewijzen.
         fouten += dekking(voor, fixture)
+        if fouten:
+            return fouten, rapport("Nulmeting upgradebewijs", fouten, [], [])
         # zoals een ZFS-snapshot vóór de update (terugzetten = vorige image + deze snapshot)
         self.shell("cp -a /mnt/config /mnt/config-snapshot")
         # 3. nieuwe release op dezelfde mappen
