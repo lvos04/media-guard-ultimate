@@ -27,6 +27,7 @@ from mediaguard.audit import audit
 from mediaguard.auth import ROLE_RANK, Principal, require_operator, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import dumps, loads, utcnow
+from mediaguard.read_observation import observation_read
 
 LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/attention", tags=["attention"])
@@ -87,7 +88,8 @@ def _hidden(ctx: AppContext, key: str, fingerprint: str | None) -> bool:
         return False
     if fingerprint is not None and entry.get("fp") == fingerprint:
         return True
-    forget(ctx, key)
+    if not observation_read.get():
+        forget(ctx, key)
     return False
 
 
@@ -404,6 +406,8 @@ def _instances(ctx: AppContext) -> list[dict[str, Any]]:
                 "hem hervat.", f"/instellingen/instanties#{inst.id}",
                 actions=[_act("Hervatten", f"/instances/{inst.id}/resume", primary=True),
                          _dismiss_act([(skey, "1", f"{inst.name} op pauze")])]))
+            if observation_read.get():
+                out[-1]["instance_id"] = inst.id
         elif shadow and not hide_h:
             out.append(_item(
                 hkey, "warning", f"{inst.name} staat nog in proefmodus",
@@ -411,6 +415,8 @@ def _instances(ctx: AppContext) -> list[dict[str, Any]]:
                 "migratie meer; rond de overstap af of zet de proefmodus uit.",
                 f"/instellingen/instanties#{inst.id}",
                 actions=[_dismiss_act([(hkey, "1", f"{inst.name} in proefmodus")])]))
+            if observation_read.get():
+                out[-1]["instance_id"] = inst.id
     return out
 
 
@@ -540,8 +546,11 @@ async def _encoder(ctx: AppContext) -> list[dict[str, Any]]:
 
     try:
         health = await get_encoder_client(ctx).health()
-        note_encoder_reachability(ctx, True)
+        if not observation_read.get():
+            note_encoder_reachability(ctx, True)
     except EncoderError:
+        if observation_read.get():
+            raise
         if not note_encoder_reachability(ctx, False):
             return []  # één misser (druk of net herstart) is nog geen storing
         return [_item("encoder.offline", "error", "AV1-engine reageert niet",
@@ -623,8 +632,11 @@ def _storage_forecast(ctx: AppContext) -> list[dict[str, Any]]:
 
     out = []
     for d in storage_forecast.attention_items(ctx):
-        out.append(_item("storage.full_soon", d["severity"], d["title_nl"], d["detail_nl"],
-                         "/systeem#opslag"))
+        item = _item("storage.full_soon", d["severity"], d["title_nl"], d["detail_nl"],
+                     "/systeem#opslag")
+        if observation_read.get():
+            item["source_identity"] = d["path"]
+        out.append(item)
     return out
 
 
@@ -705,6 +717,8 @@ def collect_local(ctx: AppContext) -> list[dict[str, Any]]:
         try:
             items.extend(source(ctx))
         except Exception:  # noqa: BLE001 - één bron mag de lijst nooit leegmaken
+            if observation_read.get():
+                raise
             LOGGER.exception("attention-bron %s mislukt", source.__name__)
     return items
 
@@ -726,6 +740,20 @@ def summary(ctx: AppContext) -> dict[str, int]:
     items = collect_local(ctx)
     return {"count": len(items), "errors": sum(1 for i in items if i["severity"] == "error"),
             "warnings": sum(1 for i in items if i["severity"] == "warning")}
+
+
+async def collect_observation(ctx: AppContext) -> tuple[list[dict[str, Any]], bool]:
+    """Lokale punten blijven beschikbaar als de engine geen waarneming oplevert."""
+    from mediaguard.encoding.client import EncoderError
+
+    items = collect_local(ctx)
+    if os.environ.get("MG_ATTENTION_SKIP_ENCODER") == "1":
+        return items, True
+    try:
+        items.extend(await _encoder(ctx))
+    except (EncoderError, OSError, ValueError, TypeError):
+        return items, False
+    return items, True
 
 
 async def collect(ctx: AppContext) -> list[dict[str, Any]]:

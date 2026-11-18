@@ -1,6 +1,6 @@
 # Connector — alleen lezen
 
-S-P3-610 levert de eerste helft van P3-01, volgens contract 1.3 hoofdstukken 5 en 6.
+S-P3-610 en S-P3-615 leveren de leesconnector van P3-01 volgens contract 1.3, hoofdstukken 5 en 6.
 De connector gebruikt de bestaande authenticatie: een API-sleutel met minstens rol
 `viewer`, of een bestaande sessie met die rol. De centrale rechtencontrole blijft
 van toepassing; een sleutel met `emergency_stop:on` mag de connector lezen, maar
@@ -15,8 +15,10 @@ routes `/healthz` en `/readyz` laten de hele database gelijk.
 
 | Route | Gedrag |
 |---|---|
-| `GET /connector/v1/discover` | Dienst, bronversie, schemaversie, `read`, rol `viewer`, lege `item_types` en `actions`, maximale meetleeftijd 900 seconden |
+| `GET /connector/v1/discover` | Dienst, bronversie, schemaversie, `read`, rol `viewer`, `item_types`, lege `actions`, maximale meetleeftijd 900 seconden en paginagrootte 200 |
 | `GET /connector/v1/health` | Checks `database`, `worker`, `jobs`, `encoder` en `instances`; totaal is de slechtste check |
+| `GET /connector/v1/items?type=&cursor=&limit=` | Vijf datasets met vaste projecties, UTC-meettijd, deeplink en ETag |
+| `GET /connector/v1/evidence/{id}` | Geredigeerd pakket op basis van een auditregel of job |
 | `GET /connector/v1/events` | Geredigeerde outbox in de event-envelop van hoofdstuk 7, met cursor en maximaal 200 gebeurtenissen per pagina |
 | `POST /connector/v1/propose`, `/apply`, `/rollback` | Vaste weigering `501 capability_unavailable` na de bestaande toegangscontrole; geen uitvoering |
 | `GET /healthz` | Zonder aanmelding alleen `{"status":"ok"}` wanneer de kern leeft |
@@ -75,6 +77,48 @@ of instantie-ID door. `correlation_id` en `payload_ref` zijn `null`.
 De tests in `apps/core/tests/test_connector_events.py` beproeven paginering,
 retentie, sleutelrechten, redactie en terugzetten met lokale gegevens.
 
+## Datasets en paginering
+
+| Type | Bron | Inhoud en bestemming |
+|---|---|---|
+| `wanted` | Zelfde open selectie als `/api/v1/wanted` | Soort, reden, status en instantie. Link naar Ontbrekend met filters. |
+| `status` | De lokale tellingen van `/api/v1/status` | Noodstop, sinds, ingeplande, lopende en gefaalde jobs en ongelezen waarschuwingen. Link naar Overzicht. |
+| `downloads` | De activiteitsmeting achter `/api/v1/activity` | Status, voortgang en wachten op import. Link naar Activiteit → Downloads. |
+| `av1_lanes` | De werkermeting van `/api/v1/app/status` en de ingestelde resources | Bezetting, werkelijke en ingestelde capaciteit, en pauzetoestand per baan. Link naar AV1. |
+| `incidents` | De incidentbronnen van `/api/v1/attention` | Ernst, aantal, eigen oorzaakcode en `owner_app: "mediaguard"`. Een aantoonbaar instantiegebonden incident krijgt `instance_id`. |
+
+Volg `next_cursor` met hetzelfde type totdat de cursor `null` is. Een limiet
+boven 200 levert hooguit 200 items. `wanted` bladert op het persistente rij-ID.
+Alle pagina's van een meting delen hun `snapshot_id`, `observed_at` en totaal.
+Is de meetpagina intussen vervangen of verlopen, begin dan opnieuw zonder
+cursor na `409 snapshot_changed`. De ETag is een SHA-256 van de JSON-inhoud.
+
+Bij een onbereikbare bron geeft de pagina `status: "unknown"` en `total: null`.
+Lokaal bekende incidenten blijven zichtbaar wanneer de AV1-bron uitvalt.
+Na 900 seconden geeft een verlopen meting `meting_verouderd` met de oude
+meettijd. De connector houdt de huidige installatiestatus en instellingen
+tijdens deze waarnemingen alleen ter inzage.
+
+## Bewijspakket
+
+Gebruik `audit:<nummer>` of `job:<nummer>` als bewijs-ID. De twee reeksen zijn
+onafhankelijk. Een job bevat alleen een gekoppelde auditregel wanneer de audit
+de job expliciet als doel noemt en de audit na de aanmaak is vastgelegd.
+Het pakket heeft UTC-tijden, een deeplink en waar beschikbaar een toegestane
+`undo_hint`. Een onbekend of ongeldig bewijs-ID krijgt `404 not_found`.
+
+Het pakket vermeldt in `details` de herkomst van de geredigeerde `request` en
+`response`. Bij een auditregel gaat het om toegestane oude en nieuwe waarden.
+Bij een job gaat het om toegestane invoer en resultaatvelden, aangevuld met
+de jobstatus. Historische HTTP-body's zijn niet vastgelegd. Ontbrekende waarden
+zijn `null`. Alleen vaste, gecontroleerde herstelteksten worden getoond.
+
+Migratie 152 voegt de appversie toe aan nieuwe auditregels en jobs. De jobversie
+begint bij aanmaak en wordt bij uitvoering bijgewerkt naar de versie van die
+poging. Bestaande rijen houden hun oorspronkelijke inhoud. Een historisch
+bewijsstuk zonder vastgelegde versie heeft `app_version: null` en
+`details.app_version: "onbekend"`.
+
 ## Grenzen en vervolg
 
 Het contractfoutformaat geldt uitsluitend onder `/connector/v1`: `code`,
@@ -88,8 +132,8 @@ Chunked invoer wordt tijdens het lezen in de kern begrensd.
 De drie vaste 501-routes zijn volgens contract hoofdstuk 5 uitgezonderd van
 `Idempotency-Key`. De connector biedt geen gereserveerde actie aan.
 
-Items, bewijs en de vergelijking van vijf datasets volgen in S-P3-615. De echte
-Hub en MediaGuard op de NAS zijn niet beproefd. NIET GEVALIDEERD (echte NAS).
+De echte Hub en MediaGuard op de NAS zijn niet beproefd.
+NIET GEVALIDEERD (echte NAS), N-P6-05.
 
 De tests staan in `apps/core/tests/test_connector_lezen.py`, de volledige
 routetabelcontrole in `apps/core/tests/test_api_keys.py` en de webdoorgifteproef

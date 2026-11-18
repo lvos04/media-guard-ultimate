@@ -14,6 +14,7 @@ from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 
 from mediaguard.db import Database, utcnow
+from mediaguard.read_observation import observation_read
 
 _PREFIXED = [
     # Jellyfin 12.x (Δ-MG-AUTH): ``Authorization: MediaBrowser …, Token="…"``, ook JSON-geëscapet;
@@ -86,6 +87,8 @@ class SecretStore:
     def _cipher(self) -> Fernet:
         if self._fernet is None:
             if not self.key_path.exists():
+                if observation_read.get():
+                    raise ValueError("Sleutelbestand ontbreekt")
                 self.key_path.parent.mkdir(parents=True, exist_ok=True)
                 key = Fernet.generate_key()
                 fd = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

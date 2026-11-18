@@ -70,22 +70,22 @@ def _clean_reason(reason: Any) -> str | None:
 async def _encoder(ctx: AppContext, stop_active: bool = False) -> dict[str, Any]:
     """Banen met echte bezetting (bezig/plekken) en lopende encodes met baan en ETA, uit de
     engine-API ``GET /api/workers``; de titels en de jobstatus komen uit core."""
-    from mediaguard.encoding.client import EncoderError, get_encoder_client
+    from mediaguard.encoding import resources
+    from mediaguard.encoding.client import EncoderError
 
     lanes: list[dict[str, Any]] = []
     engine_jobs: dict[str, dict[str, Any]] = {}
     reachable = True
     try:
-        workers = await asyncio.wait_for(get_encoder_client(ctx).engine("GET", "/workers"), 6)
+        workers = await resources.workers(ctx)
         rows_w = [w for w in (workers if isinstance(workers, list) else []) if isinstance(w, dict)]
         for w in sorted(rows_w, key=lambda w: str(w.get("baan")) != "gpu"):
             lane = str(w.get("baan") or "")
             active = [j for j in (w.get("actieve_jobs") or []) if isinstance(j, dict)]
-            paused = bool(w.get("gepauzeerd"))
-            lanes.append({"lane": lane, "running": len(active),
-                          "slots": int(w.get("aantal") or 0), "paused": paused,
+            lane_counts = resources.lane_counts(w)
+            lanes.append({"lane": lane, **lane_counts,
                           "reason_nl": (_clean_reason(w.get("pauze_reden")) or "gepauzeerd")
-                          if paused else None})
+                          if lane_counts["paused"] else None})
             for j in active:
                 engine_jobs[str(j.get("job_id"))] = {
                     "lane": lane, "percent": j.get("percent"), "eta": j.get("eta_seconden"),

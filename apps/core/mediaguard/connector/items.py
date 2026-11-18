@@ -1,0 +1,450 @@
+"""Gepagineerde projecties van de bestaande MediaGuard-leesbronnen."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import binascii
+import hashlib
+import json
+import re
+import time
+from bisect import bisect_right
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal, get_args
+from urllib.parse import urlencode
+
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+
+from mediaguard import attention
+from mediaguard.activity.api import CACHE_SECONDS, activity_cached
+from mediaguard.api.system import status_counts
+from mediaguard.auth import Principal, require_viewer
+from mediaguard.context import AppContext, get_app_context
+from mediaguard.db import utcnow
+from mediaguard.encoding import resources
+from mediaguard.encoding.client import EncoderError
+from mediaguard.instances.registry import INSTANCE_ID_RE
+from mediaguard.read_observation import observation_read
+from mediaguard.secrets_store import redact
+from mediaguard.wanted.engine import open_wanted_page
+
+from .errors import failure
+from .events import MAX_SQLITE_ID, ConnectorError
+
+router = APIRouter(prefix="/connector/v1")
+ItemType = Literal["wanted", "status", "downloads", "av1_lanes", "incidents"]
+ITEM_TYPES: tuple[ItemType, ...] = get_args(ItemType)
+MAX_AGE = 900
+PAGE_LIMIT = 200
+MAX_LIMIT_DIGITS = 18
+CURSOR_PATTERN = r"^[A-Za-z0-9_-]{1,256}$"
+
+
+class Item(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    observed_at: AwareDatetime | None
+    deep_link: str
+
+
+class WantedItem(Item):
+    instance_id: str | None
+    kind: Literal["episode", "movie"]
+    reason: Literal["missing", "cutoff"]
+    status: Literal["wanted", "searching", "unavailable"]
+
+
+class SystemItem(Item):
+    emergency_stop_active: bool
+    emergency_stop_since: AwareDatetime | None
+    jobs_queued: int
+    jobs_running: int
+    jobs_failed: int
+    unread_notifications: int
+
+
+DownloadStatus = Literal[
+    "downloading", "stalled", "queued", "paused", "completed", "failed",
+    "warning", "processing", "delay", "downloadclientunavailable", "unknown",
+]
+DOWNLOAD_STATUSES = frozenset(get_args(DownloadStatus))
+
+
+class DownloadItem(Item):
+    status: DownloadStatus
+    progress: Annotated[float, Field(ge=0, le=100)] | None
+    awaiting_import: bool
+
+
+class LaneItem(Item):
+    lane: Literal["cpu", "gpu"]
+    running: int
+    slots: int
+    desired_slots: int
+    paused: bool
+
+
+class IncidentItem(Item):
+    owner_app: Literal["mediaguard"]
+    cause_code: str
+    instance_id: str | None
+    severity: Literal["error", "warning", "info"]
+    count: int
+
+
+class ItemPage(BaseModel):
+    type: ItemType
+    items: list[WantedItem | SystemItem | DownloadItem | LaneItem | IncidentItem] = Field(
+        max_length=PAGE_LIMIT,
+    )
+    status: Literal["ok", "unknown"]
+    reason_code: str | None
+    snapshot_id: str | None
+    observed_at: AwareDatetime | None
+    total: int | None
+    next_cursor: str | None
+
+
+def content_hash(value: Any) -> str:
+    body = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def instant(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+        # Oudere lokale SQLite-waarden zonder offset stonden ook in UTC.
+        return dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _stale(observed: datetime) -> bool:
+    return (datetime.now(UTC) - observed).total_seconds() > MAX_AGE
+
+
+def _instance_id(value: Any) -> str | None:
+    if isinstance(value, str) and INSTANCE_ID_RE.fullmatch(value) and redact(value) == value:
+        return value
+    return None
+
+
+def _cursor(kind: ItemType, last: str, snapshot: str | None) -> str:
+    value = json.dumps([kind, last, snapshot], separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(value).decode().rstrip("=")
+
+
+def _position(kind: ItemType, cursor: str) -> tuple[str, str | None]:
+    decoded = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+    value = json.loads(decoded)
+    if not isinstance(value, list) or len(value) != 3:
+        raise ValueError
+    selected, last, snapshot = value
+    if selected != kind or not isinstance(last, str) or kind == "status":
+        raise ValueError
+    if kind == "wanted":
+        if snapshot is not None or not re.fullmatch(r"[1-9][0-9]{0,18}", last):
+            raise ValueError
+        if int(last) > MAX_SQLITE_ID:
+            raise ValueError
+    elif not (
+        isinstance(snapshot, str) and re.fullmatch(r"[0-9a-f]{64}", snapshot)
+        and re.fullmatch(r"[0-9a-f]{64}", last)
+    ):
+        raise ValueError
+    if cursor != _cursor(kind, last, snapshot):
+        raise ValueError
+    return last, snapshot
+
+
+def _wanted(ctx: AppContext, after: int, limit: int) -> ItemPage:
+    total, rows = open_wanted_page(ctx, after, limit + 1)
+    items = []
+    for r in rows[:limit]:
+        iid = _instance_id(r["instance_id"])
+        filters = {"reason": r["reason"]}
+        if iid is not None:
+            filters["instance"] = iid
+        items.append(WantedItem(
+            id=f"wanted:{r['id']}", observed_at=instant(r["updated_at"]),
+            deep_link="/ontbrekend?" + urlencode(filters), instance_id=iid,
+            kind=r["kind"], reason=r["reason"], status=r["status"],
+        ))
+    return ItemPage(
+        type="wanted", items=items, total=total, status="ok", reason_code=None,
+        observed_at=None, snapshot_id=None,
+        next_cursor=_cursor("wanted", str(rows[limit - 1]["id"]), None)
+        if len(rows) > limit else None,
+    )
+
+
+def _system(ctx: AppContext, measured: datetime) -> SystemItem:
+    value = status_counts(ctx)
+    stop = value["emergency_stop"]
+    return SystemItem(
+        id="status:installation", observed_at=measured, deep_link="/",
+        emergency_stop_active=bool(stop.get("active")),
+        emergency_stop_since=instant(stop.get("since")) if stop.get("active") else None,
+        jobs_queued=value["jobs"].get("queued", 0), jobs_running=value["jobs"].get("running", 0),
+        jobs_failed=value["jobs"]["failed"], unread_notifications=value["unread_notifications"],
+    )
+
+
+def _downloads(value: dict[str, Any], measured: datetime) -> list[DownloadItem]:
+    items: dict[str, DownloadItem] = {}
+    rows = value["downloads"]
+    for row in sorted(rows, key=lambda d: (str(d.get("instance_id")), str(d.get("id")))):
+        download_id = str(row.get("download_id") or "").upper()
+        protocol = str(row.get("protocol") or "").lower()
+        if download_id:
+            # Dezelfde sleutel voor een cliëntdownload als die later in de Arr-wachtrij verschijnt.
+            identity = content_hash([protocol, download_id])
+        elif row.get("id") is not None and row.get("instance_id"):
+            identity = content_hash([row["instance_id"], row["id"]])
+        else:
+            continue
+        if identity in items:
+            # Een tweede bronrij voor hetzelfde cliënt-ID behoudt haar eigen wachtrij-identiteit.
+            identity = content_hash([identity, row.get("instance_id"), row.get("id"),
+                                     row.get("client")])
+        status = row.get("status")
+        progress = row.get("progress")
+        items[identity] = DownloadItem(
+            id=identity, observed_at=measured, deep_link="/activiteit?tab=downloads",
+            status=status if isinstance(status, str) and status in DOWNLOAD_STATUSES else "unknown",
+            progress=progress if type(progress) in (int, float) and 0 <= progress <= 100 else None,
+            awaiting_import=bool(row.get("awaiting_import")),
+        )
+    return list(items.values())
+
+
+async def _lanes(ctx: AppContext, measured: datetime) -> list[LaneItem]:
+    configured = resources.desired(ctx)
+    lanes = {}
+    workers = await resources.workers(ctx)
+    if not isinstance(workers, list) or any(not isinstance(row, dict) for row in workers):
+        raise EncoderError("AV1-werkermeting ontbreekt")
+    for row in workers:
+        lane = row.get("baan")
+        if lane in ("cpu", "gpu"):
+            lanes[lane] = LaneItem(
+                id=content_hash(["av1_lanes", lane]), observed_at=measured, deep_link="/av1",
+                lane=lane, desired_slots=configured[f"{lane}_workers"],
+                **resources.lane_counts(row),
+            )
+    if not lanes:
+        raise EncoderError("AV1-werkermeting ontbreekt")
+    return list(lanes.values())
+
+
+INCIDENT_LINKS = frozenset({
+    "/", "/aanvragen", "/ai", "/anime", "/av1", "/bibliotheek", "/dolby-vision",
+    "/inrichten?tab=downloads", "/inrichten?tab=seerr", "/instellingen#veiligheid",
+    "/instellingen#beveiliging", "/instellingen/beveiliging", "/instellingen/geheimen",
+    "/ontbrekend", "/quarantaine", "/systeem", "/systeem#back-ups", "/systeem#herstelbundel",
+    "/systeem#opslag", "/systeem#updates", "/activiteit?tab=problemen",
+})
+INCIDENT_CODES = frozenset({
+    "backup.bundle_failed", "backup.bundle_missing", "backup.failed",
+    "backup.rollback_pending", "delivery.stalled",
+    "downloads.sab_category_missing", "dv.verified", "encoder.offline",
+    "encoding.awaiting_activation", "encoding.conflict", "encoding.failed_final",
+    "encoding.gpu_idle", "encoding.stalled", "identity.ai_consent", "identity.replace_failed",
+    "identity.review", "library.locked", "maintenance.failed", "notices.whats_new",
+    "quarantine.check_failed",
+    "quarantine.full", "recovery.not_ready", "routing.review", "security.secret_key_mismatch",
+    "security.tunnel_untrusted", "security.twofa_off", "seerr.repair_test_failed",
+    "seerr.sync_failed", "settings.unsafe", "storage.full_soon", "storage.pool_degraded",
+    "storage.typo", "storage.write_probe", "system.emergency_stop", "system.update_available",
+    "tasks.stale",
+})
+
+
+def _incident(row: dict[str, Any], measured: datetime) -> IncidentItem:
+    key = str(row["key"])
+    instance = _instance_id(row.get("instance_id"))
+    head, _, tail = key.rpartition(".")
+    if instance and tail == instance and head in ("instance.shadow", "instance.suspended"):
+        code = head
+    else:
+        instance = None
+        if key in INCIDENT_CODES or (
+            head in ("encoder.idle", "encoder.paused", "encoder.stalls")
+            and tail in ("cpu", "gpu")
+        ):
+            code = key
+        elif head == "supervisor.restarts":
+            code = head
+        else:
+            code = "incident.recorded"
+    href = row.get("href")
+    link = href if isinstance(href, str) and href in INCIDENT_LINKS else "/activiteit?tab=problemen"
+    if instance:
+        link = f"/instellingen/instanties#{instance}"
+    severity = row.get("severity")
+    identity = ["incidents", key]
+    if key == "storage.full_soon" and row.get("source_identity"):
+        identity.append(row["source_identity"])
+    return IncidentItem(
+        id=content_hash(identity), observed_at=measured, deep_link=link,
+        owner_app="mediaguard", cause_code=code, instance_id=instance,
+        severity=severity if severity in ("error", "warning", "info") else "info",
+        count=row.get("count", 1),
+    )
+
+
+class Snapshot(BaseModel):
+    id: str
+    observed_at: AwareDatetime | None
+    collected_at: float
+    rows: list[SystemItem | DownloadItem | LaneItem | IncidentItem]
+    reason: str | None
+
+
+async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
+                   previous: Snapshot | None) -> Snapshot:
+    measured = instant(utcnow())
+    assert measured is not None
+    rows: list[SystemItem | DownloadItem | LaneItem | IncidentItem] = []
+    reason = None
+    token = observation_read.set(True)
+    try:
+        if kind == "status":
+            rows.append(_system(ctx, measured))
+        elif kind == "downloads":
+            value = await activity_cached(ctx)
+            meta = ctx.services.get("activity_observation")
+            measured = instant(meta[1]) if meta and meta[0] is value else None
+            if measured is None:
+                reason = "meting_ontbreekt"
+            elif value["errors"] or not value["summary"].get("download_clients_ok", True):
+                reason = "bron_onbereikbaar"
+            else:
+                rows.extend(_downloads(value, measured))
+        elif kind == "av1_lanes":
+            rows.extend(await _lanes(ctx, measured))
+        else:
+            source, complete = await attention.collect_observation(ctx)
+            visible = attention.for_role(source, principal.role)
+            incidents = {item.id: item for item in (_incident(r, measured) for r in visible)}
+            rows.extend(incidents.values())
+            if not complete:
+                reason = "bron_onbereikbaar"
+    except (EncoderError, TimeoutError, OSError, ValueError, TypeError):
+        reason = "bron_onbereikbaar"
+        measured = previous.observed_at if previous else None
+    finally:
+        observation_read.reset(token)
+
+    if kind == "downloads" and reason == "bron_onbereikbaar":
+        # Een mislukte ronde maakt een eerdere succesvolle waarneming nooit verser.
+        measured = previous.observed_at if previous else None
+    if measured is not None:
+        if _stale(measured):
+            rows.clear()
+            reason = "meting_verouderd"
+        elif measured > datetime.now(UTC):
+            rows.clear()
+            reason = "meettijd_ongeldig"
+    rows.sort(key=lambda row: row.id)
+    snapshot_id = content_hash([
+        kind, measured.isoformat() if measured else None,
+        reason, [row.model_dump(mode="json") for row in rows],
+    ])
+    return Snapshot(id=snapshot_id, observed_at=measured, collected_at=time.monotonic(),
+                    rows=rows, reason=reason)
+
+
+async def _snapshot(ctx: AppContext, principal: Principal, kind: ItemType) -> Snapshot:
+    slot = f"connector_items:{kind}:{principal.role}"
+    previous = ctx.services.get(slot)
+    if previous and time.monotonic() - previous.collected_at < CACHE_SECONDS:
+        return previous
+    lock = ctx.services.setdefault(f"{slot}:lock:{id(asyncio.get_running_loop())}", asyncio.Lock())
+    async with lock:
+        previous = ctx.services.get(slot)
+        if previous and time.monotonic() - previous.collected_at < CACHE_SECONDS:
+            return previous
+        result = await _observe(ctx, principal, kind, previous)
+        ctx.services[slot] = result
+        return result
+
+
+def _snapshot_page(kind: ItemType, snapshot: Snapshot, last: str, limit: int) -> ItemPage:
+    rows = snapshot.rows
+    reason = snapshot.reason
+    if snapshot.observed_at and _stale(snapshot.observed_at):
+        rows = []
+        reason = "meting_verouderd"
+    start = bisect_right(rows, last, key=lambda row: row.id)
+    page = rows[start:start + limit]
+    return ItemPage(
+        type=kind, items=page, observed_at=snapshot.observed_at, snapshot_id=snapshot.id,
+        total=None if reason else len(rows), status="unknown" if reason else "ok",
+        reason_code=reason, next_cursor=_cursor(kind, page[-1].id, snapshot.id)
+        if start + limit < len(rows) else None,
+    )
+
+
+@router.get(
+    "/items", response_model=ItemPage,
+    responses={
+        200: {"headers": {"ETag": {"schema": {"type": "string"}}}},
+        401: {"model": ConnectorError, "description": "Aanmelding ontbreekt of is ongeldig."},
+        403: {"model": ConnectorError, "description": "Onvoldoende rechten."},
+        409: {"model": ConnectorError, "description": "snapshot_changed: begin zonder cursor."},
+        413: {"model": ConnectorError, "description": "Verzoek groter dan 1 MiB."},
+        422: {"model": ConnectorError, "description": "Onbekend type of ongeldige invoer."},
+        500: {"model": ConnectorError, "description": "Interne leesfout."},
+    },
+)
+async def get_items(
+    principal: Annotated[Principal, Depends(require_viewer)],
+    ctx: Annotated[AppContext, Depends(get_app_context)],
+    type_: Annotated[ItemType, Query(alias="type")],
+    cursor: Annotated[str | None, Query(pattern=CURSOR_PATTERN, max_length=256)] = None,
+    limit: Annotated[int, Query(
+        ge=1, le=10**MAX_LIMIT_DIGITS - 1,
+        description="Een waarde boven 200 levert hooguit 200 items.",
+    )] = 200,
+) -> JSONResponse:
+    """Lees eigen MediaGuard-data met vaste velden en een cursor per type."""
+    limit = min(limit, PAGE_LIMIT)
+    last = ""
+    snapshot_id = None
+    if cursor is not None:
+        try:
+            last, snapshot_id = _position(type_, cursor)
+        except (ValueError, binascii.Error, RecursionError):
+            return failure(422, "validation_error", "Ongeldige invoer", {
+                "fouten": [{"veld": ["query", "cursor"], "type": "ongeldige_cursor"}],
+            })
+
+    if type_ == "wanted":
+        page = _wanted(ctx, int(last or 0), limit)
+    else:
+        if snapshot_id is None:
+            snapshot = await _snapshot(ctx, principal, type_)
+        else:
+            snapshot = ctx.services.get(f"connector_items:{type_}:{principal.role}")
+            if (
+                not snapshot or snapshot.id != snapshot_id
+                or time.monotonic() - snapshot.collected_at > MAX_AGE
+                or snapshot.observed_at is None
+                or _stale(snapshot.observed_at)
+            ):
+                return failure(409, "snapshot_changed", "Begin opnieuw zonder cursor.",
+                               {"restart": True})
+            if not any(row.id == last for row in snapshot.rows):
+                return failure(422, "validation_error", "Ongeldige invoer", {
+                    "fouten": [{"veld": ["query", "cursor"], "type": "ongeldige_cursor"}],
+                })
+        page = _snapshot_page(type_, snapshot, last, limit)
+    body = page.model_dump(mode="json")
+    return JSONResponse(body, headers={"ETag": '"' + content_hash(body) + '"'})

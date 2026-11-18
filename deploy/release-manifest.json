@@ -184,7 +184,8 @@
       "090_notify_security",
       "100_ai_advisor",
       "150_mediaserver_servers",
-      "151_outbox_event_identity"
+      "151_outbox_event_identity",
+      "152_connector_evidence_version"
     ],
     "encoder": [
       1,

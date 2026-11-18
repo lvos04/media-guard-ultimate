@@ -35,6 +35,11 @@ def health() -> dict[str, str]:
 @router.get("/status")
 def status(_: Principal = Depends(require_viewer),
            ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
+    return {**status_counts(ctx), **_attention_and_health(ctx), "time": utcnow()}
+
+
+def status_counts(ctx: AppContext) -> dict[str, Any]:
+    """Installatiebrede status uit SQLite, zonder andere metingen te starten."""
     counts = {r["status"]: r["n"] for r in ctx.db.fetch_all(
         "SELECT status, COUNT(*) AS n FROM jobs GROUP BY status")}
     # 'failed' = alleen recente, nog niet opgeloste of genegeerde fouten (de badge en
@@ -50,9 +55,6 @@ def status(_: Principal = Depends(require_viewer),
         "emergency_stop": ctx.state_get("emergency_stop", {"active": False}),
         "jobs": counts,
         "unread_notifications": int(unread["n"]) if unread else 0,
-        # 'Wacht op jou' (zonder encoder-health): telt mee in 'N dingen vragen aandacht'
-        **_attention_and_health(ctx),
-        "time": utcnow(),
     }
 
 
@@ -181,6 +183,7 @@ def audit_list(limit: int = Query(200, le=2000), offset: int = 0,
     from mediaguard.audit_labels import label_row
 
     for row in rows:
+        row.pop("evidence_app_version", None)
         row["old_value"] = loads(row["old_value"])
         row["new_value"] = loads(row["new_value"])
         label_row(row)
@@ -203,6 +206,7 @@ def job_list(status: str | None = None, job_type: str | None = None,
             params.append(val)
     rows = ctx.db.fetch_dicts(sql + " ORDER BY id DESC LIMIT ?", [*params, limit])
     for row in rows:
+        row.pop("evidence_app_version", None)
         row["payload"] = loads(row["payload"], {})
         row["result"] = loads(row["result"])
     return rows
@@ -215,6 +219,7 @@ def job_detail(job_id: int, _: Principal = Depends(require_viewer),
     if row is None:
         raise HTTPException(404, "Job niet gevonden")
     job = dict(row)
+    job.pop("evidence_app_version", None)
     job["payload"] = loads(job["payload"], {})
     job["result"] = loads(job["result"])
     # rapport 31: een job met tienduizenden logregels mag core niet ophouden; de nieuwste

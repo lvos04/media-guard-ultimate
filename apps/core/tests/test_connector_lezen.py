@@ -72,6 +72,8 @@ def measurement(ctx):
         ("discover", "get"),
         ("health", "get"),
         ("events", "get"),
+        ("items?type=status", "get"),
+        ("evidence/audit:1", "get"),
         ("propose", "post"),
         ("apply", "post"),
         ("rollback", "post"),
@@ -89,7 +91,9 @@ def test_discover_advertises_only_existing_read_access(client, machine):
     assert d["app_id"] == "media-guard-ultimate" and d["source_version"]
     assert d["schema_version"] == "1.0" and d["capabilities"] == ["read"]
     assert d["permissions"] == ["viewer"]
-    assert d["actions"] == [] and d["item_types"] == []
+    assert d["actions"] == []
+    assert d["item_types"] == ["wanted", "status", "downloads", "av1_lanes", "incidents"]
+    assert all(d["limits"]["max_age_s"][name] == 900 for name in d["item_types"])
     assert d["limits"]["max_age_s"]["health"] == 900
     assert d["timestamp_utc"].endswith("Z")
 
@@ -196,7 +200,7 @@ def test_legacy_error_and_container_health_unchanged(machine):
 
 @pytest.mark.parametrize(
     "path", ["/connector/v1/health", "/connector/v1/health/", "/connector/v1/niet-bestaand",
-             "/healthz", "/readyz"]
+             "/connector/v1/items", "/connector/v1/evidence/audit:1", "/healthz", "/readyz"]
 )
 def test_body_limit_before_auth_with_and_without_content_length(machine, path):
     payload = b"x" * (1048576 + 1)
@@ -213,6 +217,7 @@ def test_unknown_connector_errors_are_contract_errors(machine):
 
 @pytest.mark.parametrize(("method", "suffix"), [
     ("GET", ""), ("GET", "discover/"), ("GET", "health/"),
+    ("GET", "items/"), ("GET", "evidence/job:1/"),
     ("POST", "propose/"), ("POST", "apply/"), ("POST", "rollback/"),
 ])
 def test_connector_trailing_slash_returns_contract_404(machine, method, suffix):
@@ -232,6 +237,7 @@ def test_connector_openapi_documents_only_current_routes(app):
     assert {p for p in paths if p.startswith("/connector/v1/")} == {
         "/connector/v1/discover", "/connector/v1/health", "/connector/v1/propose",
         "/connector/v1/apply", "/connector/v1/rollback", "/connector/v1/events",
+        "/connector/v1/items", "/connector/v1/evidence/{id}",
     }
     for action in ("propose", "apply", "rollback"):
         assert "501" in paths[f"/connector/v1/{action}"]["post"]["responses"]
@@ -247,6 +253,22 @@ def test_connector_openapi_documents_only_current_routes(app):
     assert events["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith(
         "/EventPage"
     )
+
+    items = paths["/connector/v1/items"]["get"]
+    assert "ETag" in items["responses"]["200"]["headers"]
+    params = {p["name"]: p["schema"] for p in items["parameters"]}
+    assert params["type"]["enum"] == ["wanted", "status", "downloads", "av1_lanes", "incidents"]
+    evidence = paths["/connector/v1/evidence/{id}"]["get"]
+    for endpoint, statuses in ((items, ("401", "403", "409", "422")),
+                               (evidence, ("401", "403", "404", "422"))):
+        for status in statuses:
+            schema = endpoint["responses"][status]["content"]["application/json"]["schema"]
+            assert schema["$ref"].endswith("/ConnectorError")
+    app_version = app.openapi()["components"]["schemas"]["EvidencePackage"]["properties"][
+        "app_version"
+    ]
+    assert {option["type"] for option in app_version["anyOf"]} == {"string", "null"}
+    assert '"onbekend" in details.app_version' in app_version["description"]
 
 
 def database_snapshot(ctx, *, allow_auth_timestamps=False):
@@ -490,3 +512,370 @@ async def test_stream_limit_counts_each_chunk_before_routing():
         {"type": "http", "path": "/connector/v1/health", "headers": []}, receive, send
     )
     assert calls == [] and output[0]["status"] == 413
+
+
+def test_items_validation_and_evidence_not_found(client, machine, caplog):
+    headers = key(client)
+    caplog.set_level("INFO")
+    supplied = headers["X-Api-Key"]
+    for params in ({"type": supplied}, {"type": "wanted", "limit": 0},
+                   {"type": "wanted", "cursor": supplied}):
+        response = machine.get("/connector/v1/items", headers=headers, params=params)
+        assert error(response, 422, "validation_error")["details"]["fouten"]
+        assert supplied not in response.text
+    for identifier in ("audit:99999", "job:99999", supplied):
+        response = machine.get(f"/connector/v1/evidence/{identifier}", headers=headers)
+        error(response, 404, "not_found")
+        assert supplied not in response.text
+    assert supplied not in caplog.text
+
+
+def test_items_wanted_pagination(populated_installation):
+    ctx, client, machine = populated_installation
+    headers = key(client)
+    instance = ctx.db.fetch_one("SELECT id FROM instances LIMIT 1")[0]
+    now = utcnow()
+    with ctx.db.transaction() as conn:
+        conn.executemany(
+            "INSERT INTO wanted_items(instance_id,kind,provider_id,item_provider_id,reason,title,"
+            "first_seen_at,updated_at) VALUES (?,'movie',?,?,'missing','Fixture',?,?)",
+            [(instance, n, n, now, now) for n in range(10000, 10210)],
+        )
+    url = "/connector/v1/items"
+    first = machine.get(url, headers=headers, params={"type": "wanted", "limit": 201})
+    assert first.status_code == 200
+    again = machine.get(url, headers=headers, params={"type": "wanted", "limit": 201})
+    assert first.headers["etag"] == again.headers["etag"]
+    page = first.json()
+    assert len(page["items"]) == 200
+    remainder = machine.get(url, headers=headers, params={
+        "type": "wanted", "cursor": page["next_cursor"], "limit": 201,
+    }).json()
+    ids = [row["id"] for row in page["items"] + remainder["items"]]
+    assert len(ids) == len(set(ids)) == page["total"]
+    assert remainder["next_cursor"] is None
+    error(machine.get(url, headers=headers, params={
+        "type": "downloads", "cursor": page["next_cursor"],
+    }), 422, "validation_error")
+
+
+def test_evidence_versions_and_audit_job_identity(client, machine, ctx, caplog):
+    from mediaguard import __version__
+    from mediaguard.audit import audit
+    from mediaguard.jobs import enqueue
+
+    headers = key(client)
+    supplied = headers["X-Api-Key"]
+    caplog.set_level("INFO")
+    job = enqueue(ctx.db, "library.sync", {"full": True, "secret": supplied})
+    ctx.db.execute("DELETE FROM audit_events WHERE id=?", (job,))
+    old = ctx.db.execute_insert(
+        "INSERT INTO audit_events(id, ts, actor, action) VALUES (?,?,'fixture','job.cancel')",
+        (job, utcnow()),
+    )
+    assert old == job
+    related = audit(
+        ctx.db, actor=supplied, action="job.cancel", target_type="job", target_id=job,
+        undo_hint=f"/fixture/{supplied}",
+    )
+    prefix = "/connector/v1/evidence/"
+    historical = machine.get(prefix + f"audit:{old}", headers=headers).json()
+    assert historical["app_version"] is None
+    assert historical["details"]["app_version"] == "onbekend"
+    record = machine.get(prefix + f"job:{job}", headers=headers)
+    assert record.status_code == 200 and supplied not in record.text
+    assert record.json()["app_version"] == __version__
+    assert record.json()["request"] == {"active": None, "full": True}
+    assert record.json()["response"]["status"] == "queued"
+    assert record.json()["audit"]["id"] == f"audit:{related}"
+    assert record.json()["audit"]["undo_hint"] is None
+    linked = machine.get(prefix + f"audit:{related}", headers=headers).json()
+    assert linked["id"] == f"audit:{related}" and linked["app_version"] == __version__
+    estop = audit(
+        ctx.db, actor=supplied, action="system.emergency_stop", reason=supplied,
+        old_value={"active": False, "payload": [{"headers": {"X-Api-Key": supplied}}]},
+        new_value={"active": True, "by": supplied, "path": f"/fixture/{supplied}"},
+        undo_hint="Zet de noodstop weer uit",
+    )
+    response = machine.get(prefix + f"audit:{estop}", headers=headers)
+    assert response.json()["request"]["active"] is False
+    assert response.json()["response"]["active"] is True
+    assert response.json()["audit"]["undo_hint"] == "Zet de noodstop weer uit"
+    assert supplied not in response.text and supplied not in caplog.text
+
+
+def test_items_five_sources_and_exact_fields(populated_installation, monkeypatch, caplog):
+    from test_arr_fakes import FakeArr, wire
+
+    from mediaguard import attention, storage_forecast
+    from mediaguard.downloads import live
+    from mediaguard.encoding import resources
+
+    ctx, client, machine = populated_installation
+    headers = key(client, scopes=[])
+    supplied = headers["X-Api-Key"]
+    markers = {
+        "sessions": "privaat_kijkgedrag",
+        "hold": {"active": True, "reason": "privaat_kijkreden"},
+        "actions": "privaat_acties",
+        "tests": "privaat_proefgegevens",
+        "last": "privaat_vorige_waarde",
+    }
+    arr = [wire(ctx, row["id"], FakeArr(row["app"]))
+           for row in ctx.db.fetch_all("SELECT id,app FROM instances")]
+    instance = ctx.db.fetch_one(
+        "SELECT id FROM instances WHERE archived=0 ORDER BY id LIMIT 1",
+    )[0]
+    ctx.db.execute("UPDATE instances SET suspended=1 WHERE id=?", (instance,))
+    ctx.db.execute(
+        "INSERT INTO wanted_items(instance_id,kind,provider_id,item_provider_id,reason,title,"
+        "first_seen_at,updated_at) VALUES (?,'movie',99001,99001,'cutoff',?,?,?)",
+        (instance, supplied, utcnow(), utcnow()),
+    )
+    ctx.state_set("emergency_stop", {"active": True, "since": utcnow(), **markers})
+    workers = [
+        {"baan": "cpu", "aantal": 2, "gepauzeerd": True, "pauze_reden": supplied, **markers},
+        {"baan": "gpu", "aantal": 3, "gepauzeerd": False, "actieve_jobs": [
+            {"job_id": 99, "bestand": f"/fixture/{supplied}", **markers},
+        ]},
+    ]
+    called = []
+
+    def engine(request):
+        called.append(request.method)
+        assert request.method == "GET"
+        if request.url.path.endswith("/workers"):
+            return httpx.Response(200, json=workers)
+        if request.url.path.endswith("/settings/resources"):
+            return httpx.Response(200, json={"percent": 1, "cpu_workers": 99})
+        assert request.url.path.endswith("/health")
+        return httpx.Response(200, json={"lanes_paused": [
+            {"lane": "cpu", "reason": "automatisch: proefpauze", **markers},
+        ]})
+
+    ctx.services["encoder_transport"] = httpx.MockTransport(engine)
+
+    async def downloads(_):
+        return [
+            {"download_id": "fixture-taak", "client": "fixture", "protocol": "torrent",
+             "release": supplied, "progress": 37, "status": "downloading", "size": 1000,
+             "size_left": 630, "time_left": "0:00:30", "status_nl": "Bezig", "category": "tv",
+             **markers},
+        ], []
+
+    async def old_queues(_):
+        return [], []
+
+    monkeypatch.setattr(live, "client_downloads", downloads)
+    monkeypatch.setattr(live, "source_queues", old_queues)
+
+    def synthetic_incident(_):
+        return [{
+            **markers, "key": "system.update_available", "severity": "warning", "count": 3,
+            "detail_nl": supplied, "href": f"//fixture.invalid/{supplied}",
+            "rows": [{"id": "privaat_beheerder", "fields": markers}],
+            "actions": [{"label_nl": markers["actions"], "path": "/fixture/actie",
+                         "role": "admin"}],
+        }]
+
+    monkeypatch.setattr(attention, "SOURCES", (*attention.SOURCES, synthetic_incident))
+    monkeypatch.setattr(storage_forecast, "attention_items", lambda _: [
+        {"path": f"/fixture/{n}/{supplied}", "severity": "warning",
+         "title_nl": "Schijf bijna vol", "detail_nl": supplied}
+        for n in range(2)
+    ])
+    src_wanted = machine.get("/api/v1/wanted", headers=headers).json()
+    src_status = machine.get("/api/v1/status", headers=headers).json()
+    src_downloads = machine.get("/api/v1/activity", headers=headers).json()["downloads"]
+    src_lanes = machine.get("/api/v1/app/status", headers=headers).json()["encoder"]["lanes"]
+    src_incidents = machine.get("/api/v1/attention", headers=headers).json()["items"]
+    assert src_wanted["items"] and src_downloads and src_lanes and src_incidents
+    assert src_downloads[0]["id"] is None
+
+    # Het verouderde wegklikbesluit blijft behouden. De bestaande bronroute mag
+    # het bij een volgende gewone aanvraag wel opruimen.
+    saved = {"instance.suspended." + instance: {"fp": "oude-proefkeuze"}}
+    ctx.state_set(attention.DISMISSED_KEY, saved)
+    before = database_snapshot(ctx, allow_auth_timestamps=True)
+    expected_fields = {
+        "wanted": {"instance_id", "kind", "reason", "status"},
+        "status": {"emergency_stop_active", "emergency_stop_since", "jobs_queued",
+                   "jobs_running", "jobs_failed", "unread_notifications"},
+        "downloads": {"status", "progress", "awaiting_import"},
+        "av1_lanes": {"lane", "running", "slots", "desired_slots", "paused"},
+        "incidents": {"owner_app", "cause_code", "instance_id", "severity", "count"},
+    }
+    caplog.set_level("INFO")
+    results = {}
+    for kind, fields in expected_fields.items():
+        url = f"/connector/v1/items?type={kind}"
+        first = machine.get(url, headers=headers)
+        second = machine.get(url, headers=headers)
+        assert first.status_code == second.status_code == 200, first.text
+        first_data = first.json()
+        assert first_data == second.json()
+        assert first.headers["ETag"] == second.headers["ETag"]
+        assert len(first.headers["ETag"]) == 66
+        assert first_data["status"] == "ok" and first_data["items"]
+        for row in first_data["items"]:
+            assert set(row) == fields | {"id", "observed_at", "deep_link"}
+            assert row["observed_at"].endswith("Z")
+            assert row["deep_link"].startswith("/") and not row["deep_link"].startswith("//")
+        for marker in (*[value for value in markers.values() if isinstance(value, str)],
+                       markers["hold"]["reason"], "privaat_beheerder", supplied):
+            assert marker not in first.text and marker not in caplog.text
+        results[kind] = first_data["items"]
+
+    assert called and all(method == "GET" for method in called)
+    assert any(fake.calls for fake in arr)
+    assert all(call[0] == "GET" for fake in arr for call in fake.calls)
+    assert ctx.state_get(attention.DISMISSED_KEY) == saved
+    assert ctx.state_get(resources.PUSHED_STATE) is None
+    assert_database_preserved(ctx, before, allow_auth_timestamps=True)
+    wanted_ids = {f"wanted:{r['id']}" for r in src_wanted["items"]}
+    assert {r["id"] for r in results["wanted"]} == wanted_ids
+    assert {r["status"] for r in results["wanted"]} == {r["status"] for r in src_wanted["items"]}
+    assert results["status"][0]["emergency_stop_active"] == src_status["emergency_stop"]["active"]
+    assert results["status"][0]["unread_notifications"] == src_status["unread_notifications"]
+    assert results["status"][0]["jobs_failed"] == src_status["jobs"]["failed"]
+    assert [(d["status"], d["progress"]) for d in results["downloads"]] == [
+        (d["status"], d["progress"]) for d in src_downloads
+    ]
+    downloads_observed = ctx.services["activity_observation"][1].replace("+00:00", "Z")
+    assert results["downloads"][0]["observed_at"] == downloads_observed
+    assert {(r["lane"], r["running"], r["slots"], r["paused"]) for r in results["av1_lanes"]} == {
+        (r["lane"], r["running"], r["slots"], r["paused"]) for r in src_lanes
+    }
+    from mediaguard.connector.items import content_hash
+
+    assert len(results["incidents"]) == len(src_incidents)
+    assert {r["id"] for r in results["incidents"] if r["cause_code"] != "storage.full_soon"} == {
+        content_hash(["incidents", r["key"]]) for r in src_incidents
+        if r["key"] != "storage.full_soon"
+    }
+    storage_ids = {r["id"] for r in results["incidents"] if r["cause_code"] == "storage.full_soon"}
+    assert len(storage_ids) == 2
+    assert {r["owner_app"] for r in results["incidents"]} == {"mediaguard"}
+    assert any(r["cause_code"] == "instance.suspended" and r["instance_id"] == instance
+               and r["deep_link"] == f"/instellingen/instanties#{instance}"
+               for r in results["incidents"])
+    assert any(r["count"] == 3 and r["deep_link"] == "/activiteit?tab=problemen"
+               for r in results["incidents"])
+
+
+def test_items_measured_snapshot_and_source_failure(client, machine, ctx, caplog):
+    from mediaguard.activity import api as activity
+    from mediaguard.connector.items import Snapshot
+
+    headers = key(client)
+    supplied = headers["X-Api-Key"]
+    caplog.set_level("INFO")
+    url = "/connector/v1/items?type=downloads"
+    slot = "connector_items:downloads:viewer"
+
+    def seed(observed, *, broken=False, linked=False):
+        rows = [
+            {"id": None, "download_id": str(n), "protocol": "torrent",
+             "status": "downloading", "progress": 12}
+            for n in range(3)
+        ]
+        if linked:
+            rows[0].update(id=734, instance_id="sonarr-series")
+        value = {"downloads": rows, "summary": {"download_clients_ok": not broken},
+                 "errors": [{"error": supplied}] if broken else []}
+        ctx.services["activity_cache"] = (time.monotonic(), value)
+        ctx.services["activity_observation"] = (value, observed)
+
+    seed(utcnow())
+    first = machine.get(url + "&limit=1", headers=headers).json()
+    nxt = first["next_cursor"]
+    assert nxt and first["total"] == 3 and first["snapshot_id"]
+    seed(utcnow(), linked=True)
+    query = {"type": "downloads", "cursor": nxt}
+    second = machine.get("/connector/v1/items", params=query, headers=headers).json()
+    assert second["snapshot_id"] == first["snapshot_id"]
+    assert second["observed_at"] == first["observed_at"] and second["total"] == first["total"]
+    ids = {r["id"] for r in first["items"] + second["items"]}
+    assert len(ids) == 3 and second["next_cursor"] is None
+
+    previous = ctx.services[slot]
+    assert isinstance(previous, Snapshot)
+    previous.collected_at -= activity.CACHE_SECONDS + 1
+    linked = machine.get(url, headers=headers).json()
+    assert {row["id"] for row in linked["items"]} == ids
+
+    old = (datetime.now(UTC) - timedelta(seconds=1000)).isoformat()
+    ctx.services[slot].collected_at -= activity.CACHE_SECONDS + 1
+    seed(old)
+    stale = machine.get(url, headers=headers).json()
+    assert stale["status"] == "unknown" and stale["reason_code"] == "meting_verouderd"
+    assert stale["observed_at"] == old.replace("+00:00", "Z")
+    assert stale["items"] == [] and stale["total"] is None
+    error(machine.get("/connector/v1/items", params=query, headers=headers),
+          409, "snapshot_changed")
+
+    ctx.services.pop(slot)
+    seed(utcnow(), broken=True)
+    response = machine.get(url, headers=headers)
+    assert response.json()["status"] == "unknown"
+    assert response.json()["reason_code"] == "bron_onbereikbaar"
+    assert response.json()["total"] is None and response.json()["items"] == []
+    assert supplied not in response.text and supplied not in caplog.text
+
+
+def test_items_unreachable_encoder_and_read_only_secret_store(client, machine, ctx, monkeypatch):
+    from mediaguard.encoding import client as encoder
+
+    headers = key(client)
+    remote_calls = []
+
+    def unavailable(request):
+        remote_calls.append(request.method)
+        assert request.method == "GET"
+        raise httpx.ConnectError("proefbron niet bereikbaar", request=request)
+
+    def forbidden(*args):
+        pytest.fail("Waarnemen mag de uitvalteller niet wijzigen")
+
+    monkeypatch.setattr(encoder, "note_encoder_reachability", forbidden)
+    monkeypatch.delenv("MG_ATTENTION_SKIP_ENCODER", raising=False)
+    ctx.services["encoder_transport"] = httpx.MockTransport(unavailable)
+    path = ctx.secrets.key_path
+    assert not path.exists()
+    lanes = machine.get("/connector/v1/items?type=av1_lanes", headers=headers).json()
+    assert lanes["status"] == "unknown" and lanes["total"] is None and lanes["items"] == []
+    incidents = machine.get("/connector/v1/items?type=incidents", headers=headers).json()
+    assert incidents["status"] == "unknown" and incidents["total"] is None
+    assert remote_calls == ["GET", "GET"]
+    assert not path.exists()
+
+
+def test_connector_item_and_evidence_role_and_legacy_shape(client, machine, app, ctx):
+    from mediaguard.jobs import enqueue
+
+    job = enqueue(ctx.db, "library.sync")
+    assert "evidence_app_version" not in client.get("/api/v1/jobs").json()[0]
+    assert "evidence_app_version" not in client.get(f"/api/v1/jobs/{job}").json()
+    assert all("evidence_app_version" not in row for row in client.get("/api/v1/audit").json())
+    app.dependency_overrides[current_principal] = lambda: Principal("test", "onbekend")
+    for route in ("items?type=status", f"evidence/job:{job}"):
+        error(machine.get(f"/connector/v1/{route}"), 403, "forbidden")
+
+
+
+def test_evidence_job_version_follows_worker_attempt(client, machine, ctx, monkeypatch):
+    from mediaguard import jobs
+
+    headers = key(client)
+    monkeypatch.setattr(jobs, "__version__", "2.3.4")
+    job = jobs.enqueue(ctx.db, "library.sync")
+    url = f"/connector/v1/evidence/job:{job}"
+    created = machine.get(url, headers=headers).json()
+    assert created["app_version"] == "2.3.4" and created["started_at"] is None
+    monkeypatch.setattr(jobs, "__version__", "2.3.5")
+    assert ctx.services["jobs"]._claim_next()["id"] == job
+    running = machine.get(url, headers=headers).json()
+    assert running["app_version"] == "2.3.5" and running["started_at"].endswith("Z")
+    assert running["response"]["status"] == "running" and running["finished_at"] is None
+    monkeypatch.setattr(jobs, "__version__", "2.3.6")
+    assert machine.get(url, headers=headers).json() == running

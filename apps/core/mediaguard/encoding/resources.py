@@ -9,6 +9,7 @@ na een wijziging. De engine vertaalt het CPU-percentage naar threads per encode
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from typing import Any
@@ -91,6 +92,17 @@ def desired(ctx: AppContext) -> dict[str, Any]:
         if window.get("start") and window.get("end") and window["start"] != window["end"]:
             body["quiet_start"], body["quiet_end"] = window["end"], window["start"]
     return body
+
+
+async def workers(ctx: AppContext) -> Any:
+    """Dezelfde werkermeting voor de app en de connector."""
+    return await asyncio.wait_for(get_encoder_client(ctx).engine("GET", "/workers"), 6)
+
+
+def lane_counts(worker: dict[str, Any]) -> dict[str, Any]:
+    active = worker.get("actieve_jobs") or []
+    return {"running": sum(isinstance(job, dict) for job in active),
+            "slots": int(worker.get("aantal") or 0), "paused": bool(worker.get("gepauzeerd"))}
 
 
 def parallel_encodes(ctx: AppContext) -> int:

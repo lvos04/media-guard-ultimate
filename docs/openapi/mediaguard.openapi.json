@@ -1161,6 +1161,75 @@
         "title": "DismissEntry",
         "type": "object"
       },
+      "DownloadItem": {
+        "additionalProperties": false,
+        "properties": {
+          "awaiting_import": {
+            "title": "Awaiting Import",
+            "type": "boolean"
+          },
+          "deep_link": {
+            "title": "Deep Link",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress"
+          },
+          "status": {
+            "enum": [
+              "downloading",
+              "stalled",
+              "queued",
+              "paused",
+              "completed",
+              "failed",
+              "warning",
+              "processing",
+              "delay",
+              "downloadclientunavailable",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "observed_at",
+          "deep_link",
+          "status",
+          "progress",
+          "awaiting_import"
+        ],
+        "title": "DownloadItem",
+        "type": "object"
+      },
       "EmergencyBody": {
         "properties": {
           "active": {
@@ -1505,6 +1574,318 @@
         "title": "EventPayload",
         "type": "object"
       },
+      "EvidenceAudit": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "timestamp_utc": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp Utc"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undo Hint"
+          }
+        },
+        "required": [
+          "id",
+          "timestamp_utc",
+          "action",
+          "undo_hint"
+        ],
+        "title": "EvidenceAudit",
+        "type": "object"
+      },
+      "EvidenceDetails": {
+        "properties": {
+          "app_version": {
+            "enum": [
+              "opgeslagen",
+              "onbekend"
+            ],
+            "title": "App Version",
+            "type": "string"
+          },
+          "http_body": {
+            "const": "niet_vastgelegd",
+            "title": "Http Body",
+            "type": "string"
+          },
+          "request_source": {
+            "enum": [
+              "audit.old_value",
+              "job.payload"
+            ],
+            "title": "Request Source",
+            "type": "string"
+          },
+          "response_source": {
+            "enum": [
+              "audit.new_value",
+              "job.result"
+            ],
+            "title": "Response Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "app_version",
+          "request_source",
+          "response_source",
+          "http_body"
+        ],
+        "title": "EvidenceDetails",
+        "type": "object"
+      },
+      "EvidencePackage": {
+        "properties": {
+          "app_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Vastgelegde gebruikte appversie. Bij historische stukken zonder versie is dit null en staat \"onbekend\" in details.app_version.",
+            "title": "App Version"
+          },
+          "audit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceAudit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "deep_link": {
+            "title": "Deep Link",
+            "type": "string"
+          },
+          "details": {
+            "$ref": "#/components/schemas/EvidenceDetails"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "job_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Type"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "response": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "enum": [
+              "audit",
+              "job"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "app_version",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "deep_link",
+          "job_type",
+          "request",
+          "response",
+          "audit",
+          "details"
+        ],
+        "title": "EvidencePackage",
+        "type": "object"
+      },
+      "EvidenceRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "full": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full"
+          }
+        },
+        "title": "EvidenceRequest",
+        "type": "object"
+      },
+      "EvidenceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "episodes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episodes"
+          },
+          "failed_items": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed Items"
+          },
+          "movies": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Movies"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "queued",
+                  "running",
+                  "succeeded",
+                  "failed",
+                  "retry_scheduled",
+                  "cancelled",
+                  "paused"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "EvidenceResponse",
+        "type": "object"
+      },
       "FeedbackBody": {
         "properties": {
           "comment": {
@@ -1688,6 +2069,76 @@
         "title": "ImportBody",
         "type": "object"
       },
+      "IncidentItem": {
+        "additionalProperties": false,
+        "properties": {
+          "cause_code": {
+            "title": "Cause Code",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "deep_link": {
+            "title": "Deep Link",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "instance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance Id"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "owner_app": {
+            "const": "mediaguard",
+            "title": "Owner App",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "error",
+              "warning",
+              "info"
+            ],
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "observed_at",
+          "deep_link",
+          "owner_app",
+          "cause_code",
+          "instance_id",
+          "severity",
+          "count"
+        ],
+        "title": "IncidentItem",
+        "type": "object"
+      },
       "InspectBody": {
         "properties": {
           "instance_id": {
@@ -1769,6 +2220,121 @@
           }
         },
         "title": "ItemAction",
+        "type": "object"
+      },
+      "ItemPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/WantedItem"
+                },
+                {
+                  "$ref": "#/components/schemas/SystemItem"
+                },
+                {
+                  "$ref": "#/components/schemas/DownloadItem"
+                },
+                {
+                  "$ref": "#/components/schemas/LaneItem"
+                },
+                {
+                  "$ref": "#/components/schemas/IncidentItem"
+                }
+              ]
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          },
+          "type": {
+            "enum": [
+              "wanted",
+              "status",
+              "downloads",
+              "av1_lanes",
+              "incidents"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "items",
+          "status",
+          "reason_code",
+          "snapshot_id",
+          "observed_at",
+          "total",
+          "next_cursor"
+        ],
+        "title": "ItemPage",
         "type": "object"
       },
       "JobBody": {
@@ -1870,6 +2436,67 @@
           "path"
         ],
         "title": "JobBody",
+        "type": "object"
+      },
+      "LaneItem": {
+        "additionalProperties": false,
+        "properties": {
+          "deep_link": {
+            "title": "Deep Link",
+            "type": "string"
+          },
+          "desired_slots": {
+            "title": "Desired Slots",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lane": {
+            "enum": [
+              "cpu",
+              "gpu"
+            ],
+            "title": "Lane",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "paused": {
+            "title": "Paused",
+            "type": "boolean"
+          },
+          "running": {
+            "title": "Running",
+            "type": "integer"
+          },
+          "slots": {
+            "title": "Slots",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "observed_at",
+          "deep_link",
+          "lane",
+          "running",
+          "slots",
+          "desired_slots",
+          "paused"
+        ],
+        "title": "LaneItem",
         "type": "object"
       },
       "LocaleBody": {
@@ -4022,6 +4649,76 @@
         "title": "SuspendBody",
         "type": "object"
       },
+      "SystemItem": {
+        "additionalProperties": false,
+        "properties": {
+          "deep_link": {
+            "title": "Deep Link",
+            "type": "string"
+          },
+          "emergency_stop_active": {
+            "title": "Emergency Stop Active",
+            "type": "boolean"
+          },
+          "emergency_stop_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emergency Stop Since"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "jobs_failed": {
+            "title": "Jobs Failed",
+            "type": "integer"
+          },
+          "jobs_queued": {
+            "title": "Jobs Queued",
+            "type": "integer"
+          },
+          "jobs_running": {
+            "title": "Jobs Running",
+            "type": "integer"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "unread_notifications": {
+            "title": "Unread Notifications",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "observed_at",
+          "deep_link",
+          "emergency_stop_active",
+          "emergency_stop_since",
+          "jobs_queued",
+          "jobs_running",
+          "jobs_failed",
+          "unread_notifications"
+        ],
+        "title": "SystemItem",
+        "type": "object"
+      },
       "TagBody": {
         "properties": {
           "label": {
@@ -4447,6 +5144,78 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WantedItem": {
+        "additionalProperties": false,
+        "properties": {
+          "deep_link": {
+            "title": "Deep Link",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "instance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance Id"
+          },
+          "kind": {
+            "enum": [
+              "episode",
+              "movie"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "reason": {
+            "enum": [
+              "missing",
+              "cutoff"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "wanted",
+              "searching",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "observed_at",
+          "deep_link",
+          "instance_id",
+          "kind",
+          "reason",
+          "status"
+        ],
+        "title": "WantedItem",
         "type": "object"
       },
       "WebhookBody": {
@@ -25741,7 +26510,7 @@
     },
     "/connector/v1/discover": {
       "get": {
-        "description": "Alleen aanwezige leesmogelijkheden; items en acties volgen in andere stappen.",
+        "description": "Aanwezige leesmogelijkheden, itemtypen en bronlimieten.",
         "operationId": "discover_connector_v1_discover_get",
         "responses": {
           "200": {
@@ -25859,6 +26628,101 @@
         ]
       }
     },
+    "/connector/v1/evidence/{id}": {
+      "get": {
+        "description": "Geredigeerde audit- of jobgegevens met de opgeslagen appversie.\n\nHistorische HTTP-body's zijn niet vastgelegd. Het bewijspakket vermeldt\nde herkomst van de toegestane velden; een onbekende versie blijft null.",
+        "operationId": "get_evidence_connector_v1_evidence__id__get",
+        "parameters": [
+          {
+            "description": "Bron-ID in de vorm audit:<nummer> of job:<nummer>.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Bron-ID in de vorm audit:<nummer> of job:<nummer>.",
+              "title": "Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidencePackage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Aanmelding ontbreekt of is ongeldig."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Onvoldoende rechten."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Het bewijsstuk is niet beschikbaar."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Verzoek groter dan 1 MiB."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Ongeldige invoer."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Interne leesfout."
+          }
+        },
+        "summary": "Get Evidence",
+        "tags": [
+          "connector"
+        ]
+      }
+    },
     "/connector/v1/health": {
       "get": {
         "description": "Zelfde gezondheidsbron als de UI; geen ruwe foutteksten, paden of kijkgedrag.",
@@ -25878,6 +26742,145 @@
           }
         },
         "summary": "Health",
+        "tags": [
+          "connector"
+        ]
+      }
+    },
+    "/connector/v1/items": {
+      "get": {
+        "description": "Lees eigen MediaGuard-data met vaste velden en een cursor per type.",
+        "operationId": "get_items_connector_v1_items_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "enum": [
+                "wanted",
+                "status",
+                "downloads",
+                "av1_lanes",
+                "incidents"
+              ],
+              "title": "Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "pattern": "^[A-Za-z0-9_-]{1,256}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "description": "Een waarde boven 200 levert hooguit 200 items.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "Een waarde boven 200 levert hooguit 200 items.",
+              "maximum": 999999999999999999,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemPage"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Aanmelding ontbreekt of is ongeldig."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Onvoldoende rechten."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "snapshot_changed: begin zonder cursor."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Verzoek groter dan 1 MiB."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Onbekend type of ongeldige invoer."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Interne leesfout."
+          }
+        },
+        "summary": "Get Items",
         "tags": [
           "connector"
         ]

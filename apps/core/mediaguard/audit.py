@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from mediaguard import __version__
 from mediaguard.db import Database, dumps, utcnow
 from mediaguard.secrets_store import redact
 
@@ -24,7 +25,8 @@ def audit(
 ) -> int:
     return db.execute_insert(
         "INSERT INTO audit_events(ts,actor,action,target_type,target_id,instance_id,"
-        "correlation_id,reason,old_value,new_value,undo_hint) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "correlation_id,reason,old_value,new_value,undo_hint,evidence_app_version) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             utcnow(),
             actor,
@@ -37,5 +39,6 @@ def audit(
             None if old_value is None else redact(dumps(old_value)),
             None if new_value is None else redact(dumps(new_value)),
             undo_hint,
+            __version__,
         ),
     )

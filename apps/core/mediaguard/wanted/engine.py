@@ -279,6 +279,24 @@ WANTED_SORTS = {
 }
 
 
+WANTED_FROM = "FROM wanted_items w JOIN instances i ON i.id=w.instance_id"
+WANTED_OPEN = "w.status IN ('wanted','searching','unavailable')"
+
+
+def open_wanted_page(ctx: AppContext, after_id: int, limit: int) -> tuple[int, list[dict]]:
+    """Lees op persistent ID en tel in hetzelfde SQLite-statement."""
+    records = ctx.db.fetch_dicts(
+        f"""WITH total AS (SELECT COUNT(*) AS n {WANTED_FROM} WHERE {WANTED_OPEN})
+            SELECT total.n, p.* FROM total
+            LEFT JOIN (
+                SELECT w.id, w.instance_id, w.kind, w.reason, w.status, w.updated_at
+                {WANTED_FROM} WHERE {WANTED_OPEN} AND w.id > ? ORDER BY w.id LIMIT ?
+            ) p ON TRUE ORDER BY p.id""",
+        (after_id, limit),
+    )
+    return records[0]["n"], [row for row in records if row["id"] is not None]
+
+
 def list_wanted(ctx: AppContext, *, instance_id: str | None = None,
                 media_type: str | None = None, kind: str | None = None,
                 reason: str | None = None, status: str | None = "open", q: str | None = None,
@@ -286,10 +304,10 @@ def list_wanted(ctx: AppContext, *, instance_id: str | None = None,
                 reason_code: str | None = None, searched_before: str | None = None,
                 searched_after: str | None = None, never_searched: bool | None = None,
                 page: int = 1, page_size: int = 50, sort: str = "priority") -> dict:
-    sql = "FROM wanted_items w JOIN instances i ON i.id=w.instance_id WHERE 1=1"
+    sql = WANTED_FROM + " WHERE 1=1"
     params: list[Any] = []
     if status == "open":
-        sql += " AND w.status IN ('wanted','searching','unavailable')"
+        sql += " AND " + WANTED_OPEN
     elif status:
         sql += " AND w.status=?"
         params.append(status)

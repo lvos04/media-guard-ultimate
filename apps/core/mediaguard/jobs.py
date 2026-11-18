@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from mediaguard import __version__
 from mediaguard.db import Database, dumps, loads, utcnow
 from mediaguard.secrets_store import redact
 
@@ -132,13 +133,14 @@ def enqueue(
             db.execute("UPDATE jobs SET idempotency_key=NULL WHERE id=?", (row["id"],))
     return db.execute_insert(
         "INSERT INTO jobs(job_type,status,instance_id,target_type,target_id,priority,payload,"
-        "max_attempts,idempotency_key,correlation_id,run_after,created_at,created_by) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "max_attempts,idempotency_key,correlation_id,run_after,created_at,created_by,"
+        "evidence_app_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             job_type, "queued", instance_id, target_type,
             None if target_id is None else str(target_id), priority, dumps(payload or {}),
             max_attempts, idempotency_key, correlation_id or uuid.uuid4().hex,
             run_after.isoformat(timespec="seconds") if run_after else None, utcnow(), created_by,
+            __version__,
         ),
     )
 
@@ -252,8 +254,8 @@ class JobRunner:
                 if not self._eligible(row, stopped):
                     continue
                 conn.execute(
-                    "UPDATE jobs SET status='running', started_at=?, attempts=attempts+1 "
-                    "WHERE id=?", (now, row["id"]),
+                    "UPDATE jobs SET status='running', started_at=?, attempts=attempts+1, "
+                    "evidence_app_version=? WHERE id=?", (now, __version__, row["id"]),
                 )
                 return dict(row)
         return None

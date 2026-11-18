@@ -14,12 +14,14 @@ from mediaguard.auth import Principal, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import MIGRATIONS_DIR
 
-from . import events
+from . import events, evidence, items
 from .errors import failure
 
 router = APIRouter(tags=["connector"])
 router.include_router(events.router)
-MAX_AGE = 900
+router.include_router(evidence.router)
+router.include_router(items.router)
+MAX_AGE = items.MAX_AGE
 ORDER = {"healthy": 0, "unknown": 1, "degraded": 2, "down": 3}
 
 
@@ -59,16 +61,17 @@ def check(
 
 @router.get("/connector/v1/discover")
 def discover(_: Principal = Depends(require_viewer)) -> dict[str, Any]:
-    """Alleen aanwezige leesmogelijkheden; items en acties volgen in andere stappen."""
+    """Aanwezige leesmogelijkheden, itemtypen en bronlimieten."""
     return {
         "app_id": "media-guard-ultimate",
         "source_version": __version__,
         "schema_version": "1.0",
         "capabilities": ["read"],
         "permissions": ["viewer"],
-        "limits": {"max_age_s": {"health": MAX_AGE}},
+        "limits": {"max_age_s": {"health": MAX_AGE, **dict.fromkeys(items.ITEM_TYPES, MAX_AGE)},
+                   "max_page_size": items.PAGE_LIMIT},
         "timestamp_utc": stamp(),
-        "item_types": [],
+        "item_types": list(items.ITEM_TYPES),
         "actions": [],
     }
 
