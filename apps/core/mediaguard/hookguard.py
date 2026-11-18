@@ -143,12 +143,17 @@ def _db_active(db: Path | None) -> bool:
     from mediaguard.maintenance.preupdate import check_encoder_schema
 
     try:
-        check_encoder_schema(schema.encoder_dir(db.parent), timeout=0.5)
-        if not db.exists():
-            return False
         applied = schema.applied_versions(db, "schema_migrations", "version", timeout=0.5)
         if applied - {file.stem for file in MIGRATIONS_DIR.glob("*.sql")}:
             return True
+        check_encoder_schema(schema.encoder_dir(db.parent), timeout=0.5)
+    except (OSError, sqlite3.Error, RuntimeError, ValueError, TypeError):
+        # De fork mag geen download of vervangende import starten zolang de schematoestand
+        # onzeker is. Dezelfde terugval geldt als een schema aantoonbaar te nieuw is.
+        return True
+    if not db.exists():
+        return False
+    try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
         try:
             row = conn.execute("SELECT value_json FROM system_state WHERE "
@@ -156,8 +161,6 @@ def _db_active(db: Path | None) -> bool:
         finally:
             conn.close()
         data = json.loads(row[0]) if row is not None else None
-    except schema.SchemaTooNew:
-        return True
     except (sqlite3.Error, RuntimeError, ValueError, TypeError):
         return False
     return isinstance(data, dict) and bool(data.get("active"))

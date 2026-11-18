@@ -1,5 +1,6 @@
 """Losse ingangen controleren beide databases van de app."""
 
+import json
 import sqlite3
 from contextlib import closing
 
@@ -70,6 +71,39 @@ def test_losse_kern_ingangen_toetsen_beide_databases(
     assert not settings.backup_dir.exists()
     assert ub.meet(tmp_path, intern=True) == before
     ctx.db.close()
+
+
+@pytest.mark.parametrize("gebrek", ["bezet", "migratiemap"])
+@pytest.mark.parametrize("kern_nieuwer", [False, True])
+def test_hookwacht_weigert_bij_onzekere_av1_voorcontrole(
+    tmp_path, monkeypatch, gebrek, kern_nieuwer,
+):
+    from mediaguard.hookguard import Guard
+
+    core = tmp_path / "core" / "mediaguard.db"
+    db = Database(core)
+    db.initialize()
+    db.close()
+    if kern_nieuwer:
+        with closing(sqlite3.connect(core)) as conn, conn:
+            conn.execute("INSERT INTO schema_migrations VALUES ('999_toekomst', 'proef')")
+    av1 = tmp_path / "encode" / "app.db"
+    av1.parent.mkdir()
+    with closing(sqlite3.connect(av1)) as conn:
+        conn.execute("CREATE TABLE schema_versie (versie INTEGER PRIMARY KEY)")
+        if gebrek == "bezet":
+            conn.execute("BEGIN EXCLUSIVE")
+            conn.execute("INSERT INTO schema_versie VALUES (1)")
+        else:
+            monkeypatch.setenv("MG_AIO_ENCODER_DIR", str(tmp_path / "ontbreekt"))
+
+        guard = Guard("localhost", 1, timeout=0.1, flag=None, db=core)
+        for route, body, verwacht in [
+            ("pre-grab", b"", "reject"),
+            ("pre-import", b'{"is_upgrade":true}', "defer"),
+        ]:
+            code, antwoord = guard.fallback(f"/api/v1/hooks/{route}", body)
+            assert (code, json.loads(antwoord).get("decision")) == (200, verwacht)
 
 
 def test_hookwacht_weigert_bij_onbekend_av1_schema_als_kern_onbereikbaar_is(tmp_path):
