@@ -632,9 +632,12 @@ class Poort:
             time.sleep(3)
         raise RuntimeError(f"niet gezond binnen {int(self.a.timeout)} s: {laatste}\n{self.logs()}")
 
-    def logs(self) -> str:
-        out = subprocess.run(["docker", "logs", "--tail", "120", self.naam], capture_output=True,
-                             text=True, check=False)
+    def logs(self, *, volledig: bool = False) -> str:
+        tail = [] if volledig else ["--tail", "120"]
+        out = subprocess.run(["docker", "logs", *tail, self.naam], capture_output=True,
+                             text=True, check=False, timeout=30)
+        if volledig and out.returncode:
+            raise RuntimeError("containerlog voor de schemaproef kon niet worden gelezen")
         return out.stdout + out.stderr
 
     def stop(self) -> None:
@@ -703,13 +706,16 @@ class Poort:
         )
         verwacht = "healthy" if schema == "vorige" else "unhealthy"
         http_code = 200 if schema == "vorige" else 503
+        # De kern heeft 90 s opstarttijd en de bewaker controleert elke 30 s.
+        bewaking_s = 90 + 3 * 30 + 5 if schema != "vorige" else 0
         deadline = time.monotonic() + self.a.timeout
+        waargenomen = None
         staat = "onbekend"
         while time.monotonic() < deadline:
             staat = _docker("inspect", "-f", "{{.State.Status}} {{.State.Health.Status}} "
                             "{{.RestartCount}}", self.naam)
             running, health, restarts = staat.split()
-            if running == "exited" or int(restarts):
+            if running != "running" or int(restarts):
                 break
             if health == verwacht:
                 uit = _docker("exec", self.naam, "/opt/venv/bin/python", "-c",
@@ -724,8 +730,21 @@ class Poort:
                 if uit:
                     code, body = json.loads(uit)
                     if code == http_code:
-                        self.stop()
-                        return health, body, int(restarts)
+                        now = time.monotonic()
+                        if waargenomen is None:
+                            waargenomen = now
+                        if now - waargenomen >= bewaking_s:
+                            if bewaking_s and any(
+                                "herstart" in line.casefold()
+                                for line in self.logs(volledig=True).splitlines()
+                            ):
+                                raise RuntimeError(f"schemaproef {schema}: herstartregels gevonden")
+                            self.stop()
+                            return health, body, int(restarts)
+                        time.sleep(5)
+                        continue
+            if waargenomen is not None:
+                break
             time.sleep(2)
         raise RuntimeError(f"schemaproef {schema}: verwachte toestand {verwacht} ontbreekt "
                            f"({staat})\n{self.logs()}")
