@@ -452,3 +452,72 @@ def test_bewaker_onderscheidt_ongezond_van_vastgelopen(tmp_path: Path, monkeypat
     assert supervisor.snapshot()["healthy"] is False
     supervisor.write_state()
     assert vlag.read_text() == "fail schema_nieuwer\n"
+
+
+@pytest.mark.parametrize("startslot", [False, True])
+def test_initialisatie_wacht_op_schrijver_van_nieuw_schema(tmp_path, monkeypatch, startslot):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import nullcontext
+    from threading import Event
+
+    path = tmp_path / "core" / "mediaguard.db"
+    ub.herstel(ub.FIXTURES / "core-1.2.2.sql", path)
+    db = Database(path)
+    gestart, bij_sqlite = Event(), Event()
+    connect = db._connect
+
+    def verbinden():
+        conn = connect()
+        conn.set_trace_callback(lambda sql: bij_sqlite.set() if sql == "BEGIN IMMEDIATE" else None)
+        return conn
+
+    def starten():
+        gestart.set()
+        try:
+            db.initialize()
+        finally:
+            db.close()
+
+    monkeypatch.setattr(db, "_connect", verbinden)
+    with ThreadPoolExecutor(1) as pool:
+        slot = db.startup_lock() if startslot else nullcontext()
+        with slot, closing(sqlite3.connect(path)) as peer:
+            peer.execute("PRAGMA journal_mode=WAL")
+            peer.execute("BEGIN IMMEDIATE")
+            peer.execute("INSERT INTO schema_migrations VALUES ('999_toekomst', 'proef')")
+            taak = pool.submit(starten)
+            assert gestart.wait(5)
+            if not startslot:
+                assert bij_sqlite.wait(5)
+            assert not taak.done()
+            verwacht = {row[0] for row in peer.execute("SELECT version FROM schema_migrations")}
+            peer.commit()
+        taak.result(timeout=5)
+    with closing(sqlite3.connect(path)) as conn:
+        assert {row[0] for row in conn.execute("SELECT version FROM schema_migrations")} == verwacht
+    assert db.read_only
+    assert not (path.parent / "backups").exists()
+    assert not (path.parent / "migratie-mislukt.json").exists()
+
+
+def test_iedere_kernmigratie_toetst_haar_eigen_transactie(tmp_path, monkeypatch):
+    path = tmp_path / "core" / "mediaguard.db"
+    ub.herstel(ub.FIXTURES / "core-1.2.2.sql", path)
+    db = Database(path)
+    apply = db._apply_migration
+    voor = None
+
+    def volgende_migratie(conn, file):
+        nonlocal voor
+        if file.stem == "150_mediaserver_servers":
+            with closing(sqlite3.connect(path)) as peer, peer:
+                peer.execute("INSERT INTO schema_migrations VALUES ('999_toekomst', 'proef')")
+            voor = ub.meet_db(path, intern=True)
+        apply(conn, file)
+
+    monkeypatch.setattr(db, "_apply_migration", volgende_migratie)
+    db.initialize()
+    db.close()
+    assert voor and ub.meet_db(path, intern=True) == voor
+    assert db.read_only
+    assert not (path.parent / "migratie-mislukt.json").exists()

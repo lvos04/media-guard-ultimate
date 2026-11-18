@@ -188,26 +188,37 @@ class Database:
                 folder.mkdir(parents=True, exist_ok=True)
         with self.startup_lock():
             if not self.check_schema():
-                self._initialize()
+                try:
+                    self._initialize()
+                except schema.SchemaTooNew:
+                    self.read_only = True
 
     def _initialize(self) -> None:
         folder = self.path.parent
-        for old in stale_migrations(folder):  # afgebroken eerdere poging
-            with contextlib.suppress(OSError):
-                Path(old["marker"]).unlink()
-        marker = migration_marker(folder)
-        # In een container krijgt een dienst bij elke start vaak hetzelfde pid: een markering
-        # met ons pid is dan van een eerder (afgebroken) proces, niet van ons. Blijft hij
-        # staan, dan denkt de supervisor dat we eeuwig migreren en herstart hij nooit meer.
-        with contextlib.suppress(OSError):
-            marker.unlink()
         conn = self._connect()
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS schema_migrations("
-            "version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
-        )
-        applied = {r["version"] for r in conn.execute("SELECT version FROM schema_migrations")}
+        if conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
+            # De omschakeling mag alleen buiten een transactie. Een exclusief slot
+            # op deze korte verbinding blijft na COMMIT staan tot de verbinding sluit.
+            with contextlib.closing(sqlite3.connect(self.path, timeout=30)) as setup:
+                setup.execute("PRAGMA locking_mode=EXCLUSIVE")
+                setup.execute("BEGIN EXCLUSIVE")
+                self._check_write_schema(setup)
+                setup.commit()
+                setup.execute("PRAGMA journal_mode=WAL")
+
+        marker = migration_marker(folder)
+        with self._migration_transaction(conn):
+            for old in stale_migrations(folder):
+                with contextlib.suppress(OSError):
+                    Path(old["marker"]).unlink()
+            # Na een containerherstart kan de afgebroken poging hetzelfde pid hebben.
+            with contextlib.suppress(OSError):
+                marker.unlink()
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations("
+                "version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+            )
+            applied = {r["version"] for r in conn.execute("SELECT version FROM schema_migrations")}
         pending = [f for f in sorted(MIGRATIONS_DIR.glob("*.sql")) if f.stem not in applied]
         if not pending:
             with contextlib.suppress(OSError):
@@ -223,9 +234,12 @@ class Database:
             if applied and other is None:
                 # automatische back-up vóór een update met databasewijzigingen (migreert
                 # een ander proces al, dan heeft dat hem gemaakt: geen halfbijgewerkte kopie)
-                self._backup_before_migration(max(applied), pending[-1].stem)
+                with self._migration_transaction(conn):
+                    self._backup_before_migration(max(applied), pending[-1].stem)
             for file in pending:
                 self._apply_migration(conn, file)
+        except schema.SchemaTooNew:
+            raise  # normale herstelweergave, geen mislukte migratie
         except BaseException as exc:
             # voor de uitleg van een herstartlus (supervisor): welke stap, welke fout
             with contextlib.suppress(OSError):
@@ -240,28 +254,34 @@ class Database:
             with contextlib.suppress(OSError):
                 marker.unlink()
 
+    def _check_write_schema(self, conn: sqlite3.Connection) -> None:
+        try:
+            check_schema_versions(self.path, connection=conn)
+        except schema.SchemaTooNew:
+            self.read_only = True
+            raise
+
+    @contextmanager
+    def _migration_transaction(self, conn: sqlite3.Connection) -> Iterator[None]:
+        with self._lock, conn:
+            _begin_immediate_waiting(conn)
+            self._check_write_schema(conn)
+            yield
+
     def _apply_migration(self, conn: sqlite3.Connection, file: Path) -> None:
         version = file.stem
         sql = file.read_text(encoding="utf-8")
-        with self._lock:
-            _begin_immediate_waiting(conn)
-            try:
-                # core en recovery starten allebei: wat het andere proces intussen al
-                # toepaste, niet nog eens doen (anders 'table already exists' → herstartlus)
-                if conn.execute("SELECT 1 FROM schema_migrations WHERE version=?",
-                                (version,)).fetchone() is not None:
-                    conn.execute("COMMIT")
-                    return
-                for statement in _split_sql(sql):
-                    conn.execute(statement)
-                conn.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?,?)",
-                    (version, utcnow()),
-                )
-                conn.execute("COMMIT")
-            except Exception:
-                conn.execute("ROLLBACK")
-                raise
+        with self._migration_transaction(conn):
+            # Core en recovery kunnen dezelfde migratie klaar hebben staan.
+            if conn.execute("SELECT 1 FROM schema_migrations WHERE version=?",
+                            (version,)).fetchone() is not None:
+                return
+            for statement in _split_sql(sql):
+                conn.execute(statement)
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?,?)",
+                (version, utcnow()),
+            )
 
     def _backup_before_migration(self, current: str, target: str) -> None:
         """Volledige set vóór de update (map met kopie + metadata). In de AIO maakt de
@@ -324,11 +344,7 @@ class Database:
                 try:
                     # Ook een migratie die alleen het SQLite-slot gebruikt kan tijdens
                     # het wachten op BEGIN IMMEDIATE zijn vastgelegd.
-                    try:
-                        check_schema_versions(self.path, connection=conn)
-                    except schema.SchemaTooNew:
-                        self.read_only = True
-                        raise
+                    self._check_write_schema(conn)
                     yield conn
                     conn.execute("COMMIT")
                 except BaseException:
