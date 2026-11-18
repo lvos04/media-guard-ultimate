@@ -18,6 +18,7 @@ from app.beslisser import decide_catalog_item, store_decision
 from app.bronnen import SourceError, validate_registered_source
 from app.db import Database
 from app.jobstatus import ACTIVE_SQL
+from app.media.beslissen import Besluit
 from app.media.bestandsfilter import VIDEO_EXT, is_hoofdbestand
 from app.media.probe import probe
 
@@ -129,23 +130,14 @@ def _profile_from_connection(connection: Any, library_id: int) -> dict[str, Any]
     return value
 
 
-def _reset_scan_pass(
-    database: Database,
-    scan_id: int | None,
-    library_id: int,
-    *,
-    dry_run: bool,
-) -> None:
+def _reset_scan_pass(connection: sqlite3.Connection, scan_id: int, library_id: int) -> None:
     """Wis alleen de voortgang; eerdere besluiten worden bij herbeoordeling vervangen."""
 
-    if dry_run or scan_id is None:
-        return
-    with database.connection() as connection:
-        connection.execute(
-            "UPDATE scan_run SET cursor=NULL,gevonden=0 WHERE id=?", (scan_id,)
-        )
-        connection.execute("UPDATE library SET scan_cursor=NULL WHERE id=?", (library_id,))
-        connection.commit()
+    connection.execute(
+        "UPDATE scan_run SET cursor=NULL,gevonden=0,nieuw=0,gewijzigd=0,uitgesteld=0 WHERE id=?",
+        (scan_id,),
+    )
+    connection.execute("UPDATE library SET scan_cursor=NULL WHERE id=?", (library_id,))
 
 
 # Systeem-, prullenbak- en snapshotmappen van NAS'en; nooit media om te verwerken.
@@ -226,15 +218,25 @@ def _scan_library_locked(
     summary = ScanSummary(library_id=library_id, dry_run=dry_run)
     scan_id: int | None = None
     cursor_path = ""
+    file_cursor: Path | None = None
     started_at = datetime.now(UTC).isoformat()
     if not dry_run:
         current = database.fetch_one(
-            "SELECT * FROM scan_run WHERE library_id=? AND status='bezig' ORDER BY id DESC LIMIT 1",
+            """SELECT s.*, l.scan_cursor FROM scan_run s JOIN library l ON l.id=s.library_id
+               WHERE s.library_id=? AND s.status='bezig' ORDER BY s.id DESC LIMIT 1""",
             (library_id,),
         )
         if current is not None:
             scan_id = int(current["id"])
             cursor_path = str(current["cursor"] or "")
+            # scan_run.cursor wijst naar de laatste voltooide map. Binnen de
+            # volgende map wijst library.scan_cursor naar het laatste vastgelegde bestand.
+            if current["scan_cursor"] and current["scan_cursor"] != cursor_path:
+                file_cursor = Path(current["scan_cursor"])
+            summary.gevonden = current["gevonden"]
+            summary.nieuw = current["nieuw"]
+            summary.gewijzigd = current["gewijzigd"]
+            summary.uitgesteld = current["uitgesteld"]
             started_at = str(current["gestart_op"])
             summary.hervat = True
         else:
@@ -264,7 +266,10 @@ def _scan_library_locked(
         )
         if stale_pass is not None:
             cursor_path = ""
-            _reset_scan_pass(database, scan_id, library_id, dry_run=dry_run)
+            file_cursor = None
+            summary = ScanSummary(library_id=library_id, dry_run=False, hervat=True)
+            with database.connection() as connection, connection:
+                _reset_scan_pass(connection, scan_id, library_id)
 
     processed_directories = 0
     while True:
@@ -272,6 +277,8 @@ def _scan_library_locked(
         for directory in _directories(root):
             directory_text = str(directory)
             if cursor_path and directory_text <= cursor_path:
+                continue
+            if file_cursor is not None and directory_text < str(file_cursor.parent):
                 continue
             if SCAN_STOP.is_set():
                 raise ScanInterrupted("scan onderbroken door servicestop; hervat later")
@@ -285,12 +292,15 @@ def _scan_library_locked(
                 profile = latest_profile
                 profile_fingerprint = latest_fingerprint
                 cursor_path = ""
+                file_cursor = None
                 summary = ScanSummary(
                     library_id=library_id,
                     dry_run=dry_run,
                     hervat=summary.hervat,
                 )
-                _reset_scan_pass(database, scan_id, library_id, dry_run=dry_run)
+                if scan_id is not None:
+                    with database.connection() as connection, connection:
+                        _reset_scan_pass(connection, scan_id, library_id)
                 LOGGER.info(
                     "Profiel van library %s wijzigde tijdens de scan; herstart vanaf het begin",
                     library_id,
@@ -299,11 +309,14 @@ def _scan_library_locked(
                 break
 
             try:
-                entries = sorted(directory.iterdir(), key=lambda path: path.name.casefold())
+                entries = sorted(directory.iterdir(), key=_file_order)
             except FileNotFoundError:
                 # Map verdween tijdens de scan (Radarr/Sonarr verplaatste hem).
                 entries = []
             for path in entries:
+                if (file_cursor is not None and directory == file_cursor.parent
+                        and _file_order(path) <= _file_order(file_cursor)):
+                    continue
                 if (
                     _skip_name(path.name)
                     or path.is_symlink()
@@ -324,6 +337,7 @@ def _scan_library_locked(
                         dry_run,
                         summary,
                         root,
+                        scan_id,
                     )
                 except FileNotFoundError:
                     # Eén verdwenen bestand mag niet de hele scan afbreken;
@@ -333,14 +347,14 @@ def _scan_library_locked(
             if not dry_run and scan_id is not None:
                 with database.connection() as connection:
                     connection.execute(
-                        "UPDATE scan_run SET cursor=?, gevonden=? WHERE id=?",
-                        (directory_text, summary.gevonden, scan_id),
+                        "UPDATE scan_run SET cursor=? WHERE id=?", (directory_text, scan_id),
                     )
                     connection.execute(
                         "UPDATE library SET scan_cursor=? WHERE id=?",
                         (directory_text, library_id),
                     )
                     connection.commit()
+            file_cursor = None
             processed_directories += 1
             if (
                 stop_after_directories is not None
@@ -358,6 +372,7 @@ def _scan_library_locked(
                 profile = latest_profile
                 profile_fingerprint = latest_fingerprint
                 cursor_path = ""
+                file_cursor = None
                 summary = ScanSummary(
                     library_id=library_id,
                     dry_run=True,
@@ -375,7 +390,6 @@ def _scan_library_locked(
             latest_profile = _profile_from_connection(connection, library_id)
             latest_fingerprint = _profile_fingerprint(latest_profile)
             if latest_fingerprint != profile_fingerprint:
-                connection.rollback()
                 profile = latest_profile
                 profile_fingerprint = latest_fingerprint
                 cursor_path = ""
@@ -384,7 +398,8 @@ def _scan_library_locked(
                     dry_run=False,
                     hervat=summary.hervat,
                 )
-                _reset_scan_pass(database, scan_id, library_id, dry_run=False)
+                _reset_scan_pass(connection, scan_id, library_id)
+                connection.commit()
                 LOGGER.info(
                     "Profiel van library %s wijzigde bij afronding; herstart vanaf het begin",
                     library_id,
@@ -440,15 +455,43 @@ def _scan_library_locked(
         return summary
 
 
-def _available_file(
+def _file_order(path: Path) -> tuple[str, str]:
+    return path.name.casefold(), path.name
+
+
+@dataclass(frozen=True, slots=True)
+class _FileState:
+    existing: sqlite3.Row | None
+    metadata_unchanged: bool
+    profile_unchanged: bool
+
+    @property
+    def active(self) -> bool:
+        return self.existing is not None and bool(self.existing["actief"])
+
+    def reuse_decision(self, dry_run: bool) -> bool:
+        return (not dry_run and self.existing is not None and self.metadata_unchanged
+                and self.profile_unchanged and self.existing["scan_status"] == "gereed")
+
+    def count_change(self, summary: ScanSummary, scan_marker: str, changed: bool) -> None:
+        row = self.existing
+        # Bij een eerdere scanner kan de eerste waarneming al vastliggen zonder cursor.
+        if (row is None or (row["gescand_op"] == scan_marker
+                            and (row["eerste_gezien"] or "") >= scan_marker)):
+            summary.nieuw += 1
+        elif changed:
+            summary.gewijzigd += 1
+
+
+def _file_state(
     connection: sqlite3.Connection, path: Path, stat: os.stat_result, profile_fingerprint: str,
-    scan_marker: str, dry_run: bool, summary: ScanSummary,
-) -> tuple[sqlite3.Row | None, bool, bool] | None:
-    """Een actieve job blijft eigenaar van dit bestand, ook als die tijdens de probe start."""
+) -> _FileState:
     existing = connection.execute(
-        """
+        f"""
         SELECT id,grootte,mtime,nlink,device,inode,categorie,probe,aanwezig,
-               profiel_fingerprint,scan_status
+               profiel_fingerprint,scan_status,gescand_op,eerste_gezien,
+               EXISTS(SELECT 1 FROM job WHERE bestand_id=bestand.id AND status IN {ACTIVE_SQL})
+                   AS actief
         FROM bestand WHERE pad=?
         """,
         (str(path),),
@@ -466,55 +509,36 @@ def _available_file(
         existing is not None and existing["profiel_fingerprint"] == profile_fingerprint
     )
 
-    if existing is not None:
-        active = connection.execute(
-            f"SELECT 1 FROM job WHERE bestand_id=? AND status IN {ACTIVE_SQL} LIMIT 1",
-            (int(existing["id"]),),
-        ).fetchone()
-        if active is not None:
-            if not dry_run:
-                connection.execute(
-                    "UPDATE bestand SET gescand_op=?,aanwezig=1 WHERE id=?",
-                    (scan_marker, int(existing["id"])),
-                )
-            summary.gevonden += 1
-            summary.items.append(
-                ScanItem(
-                    pad=str(path),
-                    categorie=str(existing["categorie"]),
-                    filter_reden="actieve job",
-                    actie="overslaan",
-                    besluit_reden="actieve job blijft eigenaar van dit bronpad",
-                    nlink=stat.st_nlink,
-                )
-            )
-            return None
-
-    return existing, metadata_unchanged, profile_unchanged
+    return _FileState(existing, metadata_unchanged, profile_unchanged)
 
 
-def _inspect_file(
-    connection: sqlite3.Connection,
-    library_id: int,
-    path: Path,
-    stat: os.stat_result,
-    profile_fingerprint: str,
-    scan_marker: str,
-    dry_run: bool,
+def _store_without_probe(
+    connection: sqlite3.Connection, state: _FileState, library_id: int, path: Path,
+    stat: os.stat_result, profile_fingerprint: str, scan_marker: str, dry_run: bool,
     summary: ScanSummary,
-) -> tuple[sqlite3.Row | None, bool, bool] | None:
-    observed = _available_file(connection, path, stat, profile_fingerprint, scan_marker,
-                               dry_run, summary)
-    if observed is None:
-        return None
-    existing, metadata_unchanged, profile_unchanged = observed
-    if (
-        existing is not None
-        and metadata_unchanged
-        and profile_unchanged
-        and existing["scan_status"] == "gereed"
-        and not dry_run
-    ):
+) -> bool:
+    existing = state.existing
+    if existing is not None and state.active:
+        if not dry_run:
+            connection.execute(
+                "UPDATE bestand SET gescand_op=?,aanwezig=1 WHERE id=?",
+                (scan_marker, int(existing["id"])),
+            )
+        summary.gevonden += 1
+        state.count_change(summary, scan_marker, changed=False)
+        summary.items.append(
+            ScanItem(
+                pad=str(path),
+                categorie=str(existing["categorie"]),
+                filter_reden="actieve job",
+                actie="overslaan",
+                besluit_reden="actieve job blijft eigenaar van dit bronpad",
+                nlink=stat.st_nlink,
+            )
+        )
+        return True
+
+    if existing is not None and state.reuse_decision(dry_run):
         latest = connection.execute(
             "SELECT actie,reden FROM besluit WHERE bestand_id=? ORDER BY id DESC LIMIT 1",
             (int(existing["id"]),),
@@ -528,6 +552,7 @@ def _inspect_file(
             (scan_marker, stat.st_dev, stat.st_ino, int(existing["id"])),
         )
         summary.gevonden += 1
+        state.count_change(summary, scan_marker, changed=False)
         summary.items.append(
             ScanItem(
                 pad=str(path),
@@ -540,7 +565,7 @@ def _inspect_file(
                 nlink=stat.st_nlink,
             )
         )
-        return None
+        return True
 
     if time.time() - stat.st_mtime < FILE_STABILITY_SECONDS:
         _store_deferred_file(
@@ -555,10 +580,7 @@ def _inspect_file(
         )
         summary.gevonden += 1
         summary.uitgesteld += 1
-        if existing is None:
-            summary.nieuw += 1
-        elif not metadata_unchanged:
-            summary.gewijzigd += 1
+        state.count_change(summary, scan_marker, changed=not state.metadata_unchanged)
         summary.items.append(
             ScanItem(
                 pad=str(path),
@@ -569,39 +591,34 @@ def _inspect_file(
                 nlink=stat.st_nlink,
             )
         )
-        return None
+        return True
 
-    return existing, metadata_unchanged, profile_unchanged
+    return False
 
 
-def _process_file(
-    database: Database,
-    library_id: int,
-    path: Path,
-    stat: os.stat_result,
-    profile: dict[str, Any],
-    profile_fingerprint: str,
-    scan_marker: str,
-    dry_run: bool,
-    summary: ScanSummary,
-    root: Path | None = None,
-) -> None:
-    with database.connection(write=not dry_run) as connection, connection:
-        observed = _inspect_file(connection, library_id, path, stat, profile_fingerprint,
-                                 scan_marker, dry_run, summary)
-        if observed is None:
-            return
-    existing, metadata_unchanged, _ = observed
+@dataclass(slots=True)
+class _Analysis:
+    category: str
+    filter_reason: str
+    probe_data: dict[str, Any] | None
+    after: os.stat_result
+    decision: Besluit | None
 
+
+def _analyse_file(
+    state: _FileState, path: Path, stat: os.stat_result, profile: dict[str, Any],
+    root: Path,
+) -> _Analysis:
+    existing = state.existing
     # Duurmeting, mediaprobe en bestandsanalyse kunnen minuten duren.
     ok, filter_reason, category = is_hoofdbestand(
         str(path),
         float(profile.get("min_duur_sec", 0)),
-        basis=str(root) if root is not None else None,
+        basis=str(root),
     )
     del ok
     if (
-        metadata_unchanged
+        state.metadata_unchanged
         and existing is not None
         and existing["scan_status"] == "gereed"
         and existing["probe"]
@@ -625,119 +642,154 @@ def _process_file(
         probe_data,
         profile,
         stat.st_nlink,
-        library_root=str(root) if root is not None else None,
+        library_root=str(root),
     )
 
-    with database.connection(write=not dry_run) as connection, connection:
-        # Intussen kan een job het bronpad geclaimd hebben of het schema zijn gewijzigd.
-        observed = _available_file(connection, path, stat, profile_fingerprint, scan_marker,
-                                   dry_run, summary)
-        if observed is None:
-            return
-        existing, metadata_unchanged, profile_unchanged = observed
-        if decision is None:
-            _store_deferred_file(
-                connection,
-                library_id,
-                path,
-                after,
-                existing,
-                profile_fingerprint,
-                scan_marker,
-                dry_run,
-            )
-            summary.gevonden += 1
-            summary.uitgesteld += 1
-            if existing is None:
-                summary.nieuw += 1
-            elif not metadata_unchanged:
-                summary.gewijzigd += 1
-            summary.items.append(
-                ScanItem(
-                    pad=str(path),
-                    categorie=category,
-                    filter_reden="bestand veranderde tijdens analyse",
-                    actie="overslaan",
-                    besluit_reden="wacht tot kopie of download klaar is",
-                    nlink=after.st_nlink,
-                )
-            )
-            return
+    return _Analysis(category, filter_reason, probe_data, after, decision)
 
+
+def _store_analysis(
+    connection: sqlite3.Connection, state: _FileState, analysis: _Analysis, library_id: int,
+    path: Path, stat: os.stat_result, profile_fingerprint: str, scan_marker: str,
+    dry_run: bool, summary: ScanSummary,
+) -> None:
+    existing = state.existing
+    category, after, decision = analysis.category, analysis.after, analysis.decision
+    if decision is None:
+        _store_deferred_file(
+            connection,
+            library_id,
+            path,
+            after,
+            existing,
+            profile_fingerprint,
+            scan_marker,
+            dry_run,
+        )
         summary.gevonden += 1
+        summary.uitgesteld += 1
+        state.count_change(summary, scan_marker, changed=not state.metadata_unchanged)
         summary.items.append(
             ScanItem(
                 pad=str(path),
                 categorie=category,
-                filter_reden=filter_reason,
-                actie=decision.actie,
-                besluit_reden=decision.reden,
-                nlink=stat.st_nlink,
+                filter_reden="bestand veranderde tijdens analyse",
+                actie="overslaan",
+                besluit_reden="wacht tot kopie of download klaar is",
+                nlink=after.st_nlink,
             )
         )
-        if dry_run:
+        return
+
+    summary.gevonden += 1
+    summary.items.append(
+        ScanItem(
+            pad=str(path),
+            categorie=category,
+            filter_reden=analysis.filter_reason,
+            actie=decision.actie,
+            besluit_reden=decision.reden,
+            nlink=stat.st_nlink,
+        )
+    )
+    if dry_run:
+        return
+    probe_json = (json.dumps(analysis.probe_data, ensure_ascii=False)
+                  if analysis.probe_data is not None else None)
+    changed = bool(
+        existing is None
+        or existing["scan_status"] != "gereed"
+        or not (state.metadata_unchanged and state.profile_unchanged)
+    )
+    now = datetime.now(UTC).isoformat()
+    if existing is None:
+        cursor = connection.execute(
+            """
+            INSERT INTO bestand(
+                library_id,pad,grootte,mtime,nlink,categorie,probe,gescand_op,
+                device,inode,aanwezig,eerste_gezien,stabiel_vanaf,scan_status,
+                profiel_fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'gereed', ?)
+            """,
+            (
+                library_id,
+                str(path),
+                stat.st_size,
+                stat.st_mtime,
+                stat.st_nlink,
+                category,
+                probe_json,
+                scan_marker,
+                stat.st_dev,
+                stat.st_ino,
+                now,
+                now,
+                profile_fingerprint,
+            ),
+        )
+        if cursor.lastrowid is None:
+            raise sqlite3.DatabaseError("Nieuw catalogusbestand heeft geen id")
+        bestand_id = cursor.lastrowid
+    else:
+        bestand_id = int(existing["id"])
+        connection.execute(
+            """
+            UPDATE bestand
+            SET grootte=?,mtime=?,nlink=?,categorie=?,probe=?,gescand_op=?,device=?,inode=?,
+                aanwezig=1,stabiel_vanaf=?,scan_status='gereed',profiel_fingerprint=?
+            WHERE id=?
+            """,
+            (
+                stat.st_size,
+                stat.st_mtime,
+                stat.st_nlink,
+                category,
+                probe_json,
+                scan_marker,
+                stat.st_dev,
+                stat.st_ino,
+                now,
+                profile_fingerprint,
+                bestand_id,
+            ),
+        )
+    state.count_change(summary, scan_marker, changed)
+    replay = (existing is not None and existing["gescand_op"] == scan_marker
+              and state.metadata_unchanged)
+    store_decision(connection, bestand_id, decision, changed,
+                   replay_since=scan_marker if replay else None)
+
+
+def _process_file(
+    database: Database, library_id: int, path: Path, stat: os.stat_result,
+    profile: dict[str, Any], profile_fingerprint: str, scan_marker: str, dry_run: bool,
+    summary: ScanSummary, root: Path, scan_id: int | None,
+) -> None:
+    while True:
+        with database.connection(write=False) as conn:
+            state = _file_state(conn, path, stat, profile_fingerprint)
+        analysis = None
+        if (not state.active and not state.reuse_decision(dry_run)
+                and time.time() - stat.st_mtime >= FILE_STABILITY_SECONDS):
+            analysis = _analyse_file(state, path, stat, profile, root)
+
+        with database.connection(write=not dry_run) as conn, conn:
+            # Een job kan het bestand tijdens de probe claimen of vrijgeven.
+            state = _file_state(conn, path, stat, profile_fingerprint)
+            if not _store_without_probe(conn, state, library_id, path, stat, profile_fingerprint,
+                                        scan_marker, dry_run, summary):
+                if analysis is None:
+                    continue  # Inmiddels is een probe nodig. Laat het schrijfslot eerst los.
+                _store_analysis(conn, state, analysis, library_id, path, stat, profile_fingerprint,
+                                scan_marker, dry_run, summary)
+            if scan_id is not None:
+                conn.execute(
+                    "UPDATE scan_run SET gevonden=?,nieuw=?,gewijzigd=?,uitgesteld=? WHERE id=?",
+                    (summary.gevonden, summary.nieuw, summary.gewijzigd,
+                     summary.uitgesteld, scan_id),
+                )
+                conn.execute("UPDATE library SET scan_cursor=? WHERE id=?", (str(path), library_id))
             return
-        probe_json = json.dumps(probe_data, ensure_ascii=False) if probe_data is not None else None
-        changed = bool(
-            existing is None
-            or existing["scan_status"] != "gereed"
-            or not (metadata_unchanged and profile_unchanged)
-        )
-        now = datetime.now(UTC).isoformat()
-        if existing is None:
-            cursor = connection.execute(
-                """
-                INSERT INTO bestand(
-                    library_id,pad,grootte,mtime,nlink,categorie,probe,gescand_op,
-                    device,inode,aanwezig,eerste_gezien,stabiel_vanaf,scan_status,
-                    profiel_fingerprint
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'gereed', ?)
-                """,
-                (
-                    library_id,
-                    str(path),
-                    stat.st_size,
-                    stat.st_mtime,
-                    stat.st_nlink,
-                    category,
-                    probe_json,
-                    scan_marker,
-                    stat.st_dev,
-                    stat.st_ino,
-                    now,
-                    now,
-                    profile_fingerprint,
-                ),
-            )
-            if cursor.lastrowid is None:
-                raise sqlite3.DatabaseError("Nieuw catalogusbestand heeft geen id")
-            bestand_id = cursor.lastrowid
-            summary.nieuw += 1
-        else:
-            bestand_id = int(existing["id"])
-            connection.execute(
-                """
-                UPDATE bestand
-                SET grootte=?,mtime=?,nlink=?,categorie=?,probe=?,gescand_op=?,device=?,inode=?,
-                    aanwezig=1,stabiel_vanaf=?,scan_status='gereed',profiel_fingerprint=?
-                WHERE id=?
-                """,
-                (
-                    stat.st_size,
-                    stat.st_mtime,
-                    stat.st_nlink,
-                    category,
-                    probe_json,
-                    scan_marker,
-                    stat.st_dev,
-                    stat.st_ino,
-                    now,
-                    profile_fingerprint,
-                    bestand_id,
-                ),
-            )
-            summary.gewijzigd += int(changed)
-        store_decision(connection, bestand_id, decision, changed)
 
 
 def _store_deferred_file(

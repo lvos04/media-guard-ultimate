@@ -100,6 +100,95 @@ def test_afgebroken_scan_wordt_hervat(tmp_path: Path) -> None:
     assert database.fetch_one("SELECT status FROM scan_run ORDER BY id DESC")[0] == "klaar"
 
 
+def test_hervatten_bewaart_bestandsresultaat_en_alle_tellingen(tmp_path, monkeypatch):
+    library = tmp_path / "films"
+    library.mkdir()
+    changed = library / "A.mkv"
+    changed.touch()
+    os.utime(changed, (1, 1))
+    db = _database_for_path(tmp_path / "database", library)
+    monkeypatch.setattr(scanner_module, "is_hoofdbestand", lambda *a, **kw: (True, "proef", "ok"))
+    monkeypatch.setattr(scanner_module, "probe", lambda path: None)
+    scan_library(db, 1)
+    changed.write_bytes(b"gewijzigd")
+    os.utime(changed, (2, 2))
+    (library / "B.mkv").touch()  # Nieuw en nog in het stabiliteitsvenster.
+    child = library / "vervolg"
+    child.mkdir()
+    (child / "C.mkv").touch()
+    os.utime(child / "C.mkv", (1, 1))
+    original = scanner_module._process_file
+    processed = 0
+
+    def interrupt(*args, **kwargs):
+        nonlocal processed
+        original(*args, **kwargs)
+        processed += 1
+        if processed == 2:
+            raise scanner_module.ScanInterrupted("proefstop midden in de map")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(scanner_module, "_process_file", interrupt)
+        with pytest.raises(scanner_module.ScanInterrupted):
+            scan_library(db, 1)
+
+    def counts():
+        return tuple(db.fetch_one(
+            "SELECT gevonden,nieuw,gewijzigd,uitgesteld FROM scan_run ORDER BY id DESC LIMIT 1"
+        ))
+
+    assert counts() == (2, 1, 1, 1)
+    partial = scan_library(db, 1, stop_after_directories=1)
+    assert partial.hervat and counts() == (2, 1, 1, 1)
+    final = scan_library(db, 1)
+    assert (final.gevonden, final.nieuw, final.gewijzigd, final.uitgesteld) == (3, 2, 1, 1)
+    assert counts() == (3, 2, 1, 1)
+    assert db.fetch_one("SELECT COUNT(*) FROM besluit")[0] == 3
+
+
+def test_fout_bij_cursor_draait_ook_bestand_en_besluit_terug(tmp_path, monkeypatch):
+    library = tmp_path / "films"
+    library.mkdir()
+    source = library / "Film.mkv"
+    source.touch()
+    os.utime(source, (1, 1))
+    db = _database_for_path(tmp_path / "database", library)
+    monkeypatch.setattr(scanner_module, "is_hoofdbestand", lambda *a, **kw: (True, "proef", "ok"))
+    monkeypatch.setattr(scanner_module, "probe", lambda path: None)
+    db.execute("""
+        CREATE TRIGGER weiger_cursor BEFORE UPDATE OF scan_cursor ON library
+        BEGIN SELECT RAISE(ABORT, 'proefstop bij cursor'); END
+    """)
+    with pytest.raises(sqlite3.IntegrityError, match="proefstop bij cursor"):
+        scan_library(db, 1)
+    assert db.fetch_one("SELECT COUNT(*) FROM bestand")[0] == 0
+    assert db.fetch_one("SELECT COUNT(*) FROM besluit")[0] == 0
+    assert tuple(db.fetch_one("SELECT cursor,gevonden,nieuw FROM scan_run")) == (None, 0, 0)
+    db.execute("DROP TRIGGER weiger_cursor")
+    assert scan_library(db, 1).nieuw == 1
+
+
+def test_hervatten_van_oude_scan_zonder_bestandscursor(tmp_path, monkeypatch):
+    library = tmp_path / "films"
+    library.mkdir()
+    source = library / "Film.mkv"
+    source.touch()
+    os.utime(source, (1, 1))
+    db = _database_for_path(tmp_path / "database", library)
+    monkeypatch.setattr(scanner_module, "is_hoofdbestand", lambda *a, **kw: (True, "proef", "ok"))
+    monkeypatch.setattr(scanner_module, "probe", lambda path: None)
+    with monkeypatch.context() as patch:
+        patch.setattr(scanner_module, "DECISION_CODE_FINGERPRINT", "eerdere-scanner")
+        assert scan_library(db, 1, stop_after_directories=1).nieuw == 1
+    # De eerdere scanner kon het bestand en besluit al bewaren vóór de eerste mapcursor.
+    with db.connection() as conn, conn:
+        conn.execute("UPDATE scan_run SET cursor=NULL,gevonden=0,nieuw=0")
+        conn.execute("UPDATE library SET scan_cursor=NULL")
+    resumed = scan_library(db, 1)
+    assert resumed.hervat and (resumed.gevonden, resumed.nieuw, resumed.gewijzigd) == (1, 1, 0)
+    assert db.fetch_one("SELECT COUNT(*) FROM besluit")[0] == 1
+
+
 def test_profielwijziging_tijdens_scan_herstart_met_nieuwste_instellingen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

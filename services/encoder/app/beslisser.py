@@ -51,17 +51,24 @@ def store_decision(
     bestand_id: int,
     decision: Besluit,
     changed: bool,
+    *,
+    replay_since: str | None = None,
 ) -> int | None:
     """Vervang alleen nog niet uitgevoerde besluiten wanneer een bestand veranderde."""
 
     existing = connection.execute(
-        "SELECT id,status FROM besluit WHERE bestand_id=? ORDER BY id DESC LIMIT 1",
+        "SELECT id,gemaakt_op,payload FROM besluit WHERE bestand_id=? ORDER BY id DESC LIMIT 1",
         (bestand_id,),
     ).fetchone()
     # Een scan van een onveranderd bestand mag ook na goedkeuring of planning
     # geen tweede uitvoerbaar besluit maken. Dat veroorzaakte dubbele encodes
     # zodra een gebruiker opnieuw scande terwijl de eerste job nog liep.
     if existing is not None and not changed:
+        return int(existing["id"])
+    payload = decision.model_dump_json()
+    # Een herbeoordeling binnen dezelfde scan behoudt een al vastgelegd gelijk besluit.
+    if (existing is not None and replay_since is not None
+            and existing["gemaakt_op"] >= replay_since and existing["payload"] == payload):
         return int(existing["id"])
     if changed:
         connection.execute(
@@ -84,7 +91,7 @@ def store_decision(
             decision.baan or None,
             decision.encoder or None,
             decision.reden,
-            decision.model_dump_json(),
+            payload,
             datetime.now(UTC).isoformat(),
         ),
     )
