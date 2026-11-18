@@ -116,6 +116,32 @@ def _copy_sqlite(src: Path, dest: Path) -> dict[str, Any]:
     return {"sha256": _sha256(dest), "size": dest.stat().st_size}
 
 
+def _core_generation(path: Path) -> list[list[int]]:
+    # De gegevens staan in het hoofdbestand en eventueel de WAL. Het gedeelde
+    # lezersregister (-shm) en een lege WAL bevatten geen databasewijzigingen.
+    main = list(schema._generation(path))
+    try:
+        wal = list(schema._generation(path.with_name(path.name + "-wal")))
+    except FileNotFoundError:
+        wal = []
+    return [main, wal if wal and wal[2] else []]
+
+
+def matches_core(path: Path, core_db: Path, current: str, target: str) -> bool:
+    """Hergebruik de supervisorsnapshot uitsluitend bij dezelfde live bestandsstand."""
+    if path.parent != core_db.parent / "backups" / FOLDER or not _SET_NAME.fullmatch(path.name):
+        return False
+    meta = _read_meta(path) or {}
+    if (meta.get("from_schema"), meta.get("to_schema"), meta.get("core_generation")) != (
+        current, target, _core_generation(core_db),
+    ):
+        return False
+    _set_files(core_db.parent, path)
+    if problems := verify(path):
+        raise SetError(", ".join(problems))
+    return True
+
+
 def make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
              from_schema: str | None = None, to_schema: str | None = None,
              from_version: str | None = None, to_version: str | None = None,
@@ -146,6 +172,7 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
     work.mkdir(parents=True)
     files: list[dict[str, Any]] = []
     try:
+        generation = _core_generation(core_db) if reason == "update" else None
         files.append({"name": "mediaguard.db", "live": f"{core_db.parent.name}/{core_db.name}",
                       **_copy_sqlite(core_db, work / "mediaguard.db")})
         encoder_problem = None
@@ -164,7 +191,14 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
                 "from_schema": from_schema, "to_schema": to_schema, "files": files,
                 "encoder_included": any(f["name"].startswith("encode/") for f in files),
                 "encoder_problem": encoder_problem, "integrity_ok": True}
+        if generation is not None and generation == _core_generation(core_db):
+            meta["core_generation"] = generation
         (work / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        if reason == "update":
+            if encoder_problem or _read_meta(work) != meta:
+                raise SetError("de herstelset voor de update is onvolledig")
+            if problems := verify(work):
+                raise SetError(", ".join(problems))
         os.replace(work, folder / name)
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
@@ -637,7 +671,7 @@ def snapshot_before_start(config_root: Path, *, core_migrations: Path,
                           encoder_migrations: Path | None, app_version: str,
                           owner: tuple[int, int] | None = None) -> Path | None:
     """Supervisor, vóór de start van de diensten: staat er een migratie open (core of AV1-
-    engine), maak dan een set met beide databases. Een fout blokkeert de start nooit."""
+    engine), verifieer dan de set met beide databases vóór het vrijgeven van de start."""
     with config_locks(config_root):
         core, enc = inspect_schema(config_root, core_migrations=core_migrations,
                                    encoder_migrations=encoder_migrations)

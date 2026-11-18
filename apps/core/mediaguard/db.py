@@ -231,11 +231,13 @@ class Database:
         with contextlib.suppress(OSError):
             marker.write_text(json.dumps(info), encoding="utf-8")
         try:
-            if applied and other is None:
-                # automatische back-up vóór een update met databasewijzigingen (migreert
-                # een ander proces al, dan heeft dat hem gemaakt: geen halfbijgewerkte kopie)
+            requires_backup = any(f.stem == "151_outbox_event_identity" for f in pending)
+            if applied and (requires_backup or other is None):
+                # Voor de outboxomzetting moet deze schrijver onder zijn eigen slot
+                # een herstelset van de actuele gegevens kunnen verifiëren.
                 with self._migration_transaction(conn):
-                    self._backup_before_migration(max(applied), pending[-1].stem)
+                    self._backup_before_migration(max(applied), pending[-1].stem,
+                                                  required=requires_backup)
             for file in pending:
                 self._apply_migration(conn, file)
         except schema.SchemaTooNew:
@@ -283,26 +285,33 @@ class Database:
                 (version, utcnow()),
             )
 
-    def _backup_before_migration(self, current: str, target: str) -> None:
-        """Volledige set vóór de update (map met kopie + metadata). In de AIO maakt de
-        supervisor die set al vóór de start van alle diensten, inclusief de database van de
-        AV1-engine (``MG_PRE_UPDATE_SET``); dan is een tweede kopie hier overbodig."""
+    def _backup_before_migration(self, current: str, target: str, *,
+                                 required: bool = False) -> None:
+        """Verifieer bij de outboxomzetting een verse set onder het schrijfslot."""
         made = os.environ.get("MG_PRE_UPDATE_SET")
-        if made and (Path(made) / "meta.json").is_file():
+        if not required and made and (Path(made) / "meta.json").is_file():
             return
         from mediaguard import __version__
         from mediaguard.maintenance import preupdate
 
         try:
-            preupdate.make_set(self.path.parent / "backups" / preupdate.FOLDER, self.path,
-                               encode_dir=None, from_schema=current, to_schema=target,
-                               from_version=preupdate._previous_version(self.path),
-                               to_version=__version__)
+            if required and made and preupdate.matches_core(Path(made), self.path, current, target):
+                return
+            encoder = schema.encoder_dir(self.path.parent)
+            preupdate.make_set(
+                self.path.parent / "backups" / preupdate.FOLDER, self.path,
+                encode_dir=encoder if required and encoder.is_dir() else None,
+                from_schema=current, to_schema=target,
+                from_version=preupdate._previous_version(self.path), to_version=__version__,
+                reason="update" if required else "migratie",
+            )
         except preupdate.SetError as exc:
-            if exc.disk:  # geen ruimte/rechten: migratie niet blokkeren, wel melden
+            if exc.disk and not required:
                 LOGGER.warning("back-up vóór migratie mislukt: %s", exc)
                 return
-            raise RuntimeError(f"back-up vóór migratie is niet intact: {exc}") from exc
+            raise RuntimeError(f"back-up vóór migratie mislukt: {exc}") from exc
+        except (OSError, sqlite3.Error) as exc:
+            raise RuntimeError(f"back-up vóór migratie mislukt: {exc}") from exc
 
     def maintenance(self, *, vacuum: bool = False) -> None:
         """Dagelijks: statistieken bijwerken en de WAL inkorten; wekelijks ook VACUUM."""

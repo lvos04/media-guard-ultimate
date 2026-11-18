@@ -1058,7 +1058,12 @@ def _run(env: dict[str, str], config: Path) -> int:  # pragma: no cover - integr
     if fallback is not None:
         fallback.close()
     if not env.get(schema.AIO_RECOVERY_ENV):
-        for line in before_services(env, config, owner):
+        try:
+            lines = before_services(env, config, owner)
+        except RuntimeError as exc:
+            print(f"[mediaguard] {exc}", flush=True)
+            return 1
+        for line in lines:
             print(f"[mediaguard] {line}", flush=True)
     recovering = bool(env.get(schema.AIO_RECOVERY_ENV))
     logs_dir = config / "logs"
@@ -1177,13 +1182,15 @@ def before_services(env: dict[str, str], config: Path,
     migrations = preupdate.encoder_migrations(env)
     with preupdate.config_locks(config):
         out = apply_staged_restore(config, owner, migrations)
+    env.pop("MG_PRE_UPDATE_SET", None)
     try:
         made = _preupdate("snapshot", config, migrations, owner)
     except schema.SchemaTooNew:
         env[schema.AIO_RECOVERY_ENV] = "1"
         return [*out, schema.MESSAGE]
-    except Exception as exc:  # noqa: BLE001 - core maakt dan zelf een kopie vóór zijn migratie
-        return [*out, f"back-up vóór de update mislukt: {exc}"]
+    except Exception as exc:
+        raise RuntimeError("back-up vóór de update mislukt; diensten en migratie zijn "
+                           f"niet gestart: {exc}") from exc
     if made is not None:
         env["MG_PRE_UPDATE_SET"] = str(made)
         out.append(f"back-up vóór de update gemaakt: {made.name}")
