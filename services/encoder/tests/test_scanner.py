@@ -209,7 +209,7 @@ def _gewijzigd_met_wachttaak(tmp_path, monkeypatch):
                                        reden="proef") if Path(path).name == "Z.mkv"
         else origineel(path, *a, **kw),
     )
-    with monkeypatch.context() as patch:  # De taakbron houdt de vingerafdruk van een eerdere versie.
+    with monkeypatch.context() as patch:  # De taakbron houdt een oudere vingerafdruk.
         patch.setattr(scanner_module, "DECISION_CODE_FINGERPRINT", "eerdere-versie")
         scan_library(db, 1)
     besluit = db.fetch_one("SELECT id FROM besluit WHERE actie='hercoderen'")[0]

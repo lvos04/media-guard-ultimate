@@ -150,7 +150,8 @@ def _herstel_wijzigingstelling(
     bestand dat in deze pass wacht en na het einde van de vorige voltooide scan
     is aangepast, is zeker gewijzigd: dat is de ondergrens. De telling blijft
     zichtbaar onvolledig (scan_run.fout), want andere wijzigingen zijn niet meer te zien.
-    shortcut: alleen wachtende bestanden met nieuwere mtime; ruim daarna ook gewone vervangingen via een extra schema-kolom.
+    shortcut: alleen wachtende bestanden met nieuwere mtime; upgrade met een
+    schema-kolom voor de oorspronkelijke bijdrage per bestand.
     """
 
     with database.connection() as connection, connection:
