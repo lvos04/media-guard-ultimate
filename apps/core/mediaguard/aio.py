@@ -1072,20 +1072,21 @@ def _run(env: dict[str, str], config: Path) -> int:  # pragma: no cover - integr
         return 0
     code = sup.run()
     # alle diensten zijn nu gestopt: een in de app klaargezette terugzetting omwisselen
-    from mediaguard.maintenance.preupdate import config_locks
+    from mediaguard.maintenance.preupdate import config_locks, encoder_migrations
 
     with config_locks(config):
-        for line in apply_staged_restore(config, owner):
+        for line in apply_staged_restore(config, owner, encoder_migrations(env)):
             print(f"[mediaguard] {line}", flush=True)
     return code
 
 
-def apply_staged_restore(config: Path, owner: tuple[int, int] | None) -> list[str]:
+def apply_staged_restore(config: Path, owner: tuple[int, int] | None,
+                         migrations: Path | None = None) -> list[str]:
     """Alleen als geen enkele dienst draait (bij de start of na het stoppen)."""
     from mediaguard.maintenance import preupdate
 
     try:
-        result = preupdate.apply_staged(config / "core", owner)
+        result = preupdate.apply_staged(config / "core", owner, av1_migrations=migrations)
     except Exception as exc:  # noqa: BLE001 - nooit de start blokkeren
         return [f"terugzetten mislukt: {exc}"]
     if result is None:
@@ -1144,7 +1145,7 @@ def prepare_start(env: dict[str, str], config: Path,
             try:
                 _preupdate("inspect", config, migrations, owner)
             except schema.SchemaTooNew:
-                out = apply_staged_restore(config, owner)
+                out = apply_staged_restore(config, owner, migrations)
                 if out:
                     _preupdate("inspect", config, migrations, owner)
                 else:
@@ -1164,10 +1165,11 @@ def before_services(env: dict[str, str], config: Path,
     """Verwerk klaargezet herstel en maak zo nodig een set vlak vóór het starten."""
     from mediaguard.maintenance import preupdate
 
+    migrations = preupdate.encoder_migrations(env)
     with preupdate.config_locks(config):
-        out = apply_staged_restore(config, owner)
+        out = apply_staged_restore(config, owner, migrations)
     try:
-        made = _preupdate("snapshot", config, preupdate.encoder_migrations(env), owner)
+        made = _preupdate("snapshot", config, migrations, owner)
     except schema.SchemaTooNew:
         env[schema.AIO_RECOVERY_ENV] = "1"
         return [*out, schema.MESSAGE]

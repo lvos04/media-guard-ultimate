@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from mediaguard import schema
-from mediaguard.db import MIGRATIONS_DIR, Database
+from mediaguard.db import MIGRATIONS_DIR, Database, check_schema_versions
 
 FOLDER = "voor-update"
 SET_PREFIX = "voor-update-"
@@ -273,39 +273,101 @@ def _within(root: Path, rel: str) -> Path:
     return target
 
 
+def _live_name(core_dir: Path, rel: str) -> bool:
+    parts = Path(rel).parts
+    return rel == f"{core_dir.name}/mediaguard.db" or (
+        len(parts) == 2 and parts[0] == "encode" and parts[1].endswith(".db")
+        and rel == f"encode/{parts[1]}"
+    )
+
+
+def _set_files(core_dir: Path, path: Path) -> dict[str, tuple[Path, int, str]]:
+    if path.is_file():
+        return {f"{core_dir.name}/mediaguard.db": (path, path.stat().st_size, _sha256(path))}
+    meta = _read_meta(path) or {}
+    files = meta.get("files")
+    if not isinstance(files, list) or meta.get("encoder_problem"):
+        raise SetError("meta.json ontbreekt of de back-upset is onvolledig")
+    entries: dict[str, tuple[Path, int, str]] = {}
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise SetError("ongeldige bestandenlijst in de back-upset")
+        rel, name = entry.get("live"), entry.get("name")
+        if not isinstance(rel, str) or not _live_name(core_dir, rel) or rel in entries:
+            raise SetError("ongeldig databasepad in de back-upset")
+        expected = Path(rel).name if rel.startswith(f"{core_dir.name}/") else rel
+        size, digest = entry.get("size"), entry.get("sha256")
+        if name != expected or not isinstance(size, int) or not isinstance(digest, str):
+            raise SetError("ongeldige metadata in de back-upset")
+        entries[rel] = (path / expected, size, digest)
+    if f"{core_dir.name}/mediaguard.db" not in entries:
+        raise SetError("MediaGuard-database ontbreekt in de back-upset")
+    if bool(meta.get("encoder_included")) != any(rel.startswith("encode/") for rel in entries):
+        raise SetError("AV1-database ontbreekt in de back-upset")
+    return entries
+
+
+def _check_restore_copy(path: Path, rel: str, size: int, digest: str,
+                        av1_migrations: Path) -> None:
+    try:
+        sidecars = (path.with_name(path.name + tail) for tail in ("-wal", "-shm", "-journal"))
+        if (not path.is_file() or path.is_symlink() or path.stat().st_size != size
+                or _sha256(path) != digest or any(p.exists() for p in sidecars)):
+            raise SetError(f"{path.name} ontbreekt of is beschadigd (checksum klopt niet)")
+        uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+        with contextlib.closing(sqlite3.connect(uri, uri=True)) as db:
+            if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise SetError(f"{path.name} is beschadigd")
+            if rel.startswith("encode/"):
+                have = schema.versions_in(db, "schema_versie", "versie")
+                if have - _encoder_versions(av1_migrations):
+                    raise schema.SchemaTooNew()
+            else:
+                check_schema_versions(path, connection=db)
+    except (OSError, sqlite3.Error) as exc:
+        raise SetError(f"{path.name} is onleesbaar: {exc}") from exc
+
+
+def _manifest(name: str, files: list[dict[str, Any]]) -> str:
+    return hashlib.sha256(json.dumps([name, files], sort_keys=True).encode()).hexdigest()
+
+
 def stage(core_dir: Path, path: Path, *, actor: str) -> dict[str, Any]:
     """Zet de kopieën klaar naast de echte databases; de supervisor wisselt ze om."""
+    db = Database(core_dir / "mediaguard.db")
+    with db.startup_lock():
+        db.require_writable()
+        return _stage(core_dir, path, actor)
+
+
+def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
     config_root = core_dir.parent
-    problems = verify(path)
-    if problems:
-        raise SetError("; ".join(problems))
-    if path.is_file():
-        pairs = [(path, f"{core_dir.name}/mediaguard.db")]
-        name = path.name
-    else:
-        meta = _read_meta(path) or {}
-        pairs = [(path / str(f["name"]), str(f["live"])) for f in meta.get("files") or []]
-        name = path.name
-    need = sum(src.stat().st_size for src, _ in pairs)
+    pairs = _set_files(core_dir, path)
+    migrations = encoder_migrations(os.environ)
+    for rel, (src, size, digest) in pairs.items():
+        _check_restore_copy(src, rel, size, digest, migrations)
+    need = sum(size for _, size, _ in pairs.values())
     free = shutil.disk_usage(config_root).free
     if free < need * 1.1 + 256 * 1024**2:
         raise SetError(f"niet genoeg vrije ruimte in /config (nodig ±{need // 1024**2} MB)",
                        disk=True)
     cancel(core_dir)
-    staged: list[dict[str, str]] = []
+    staged: list[dict[str, Any]] = []
     try:
-        for src, live in pairs:
+        for live, (src, size, digest) in pairs.items():
             dest = _within(config_root, live + STAGED_SUFFIX)
             part = dest.with_name(dest.name + ".part")
             shutil.copyfile(src, part)
             os.replace(part, dest)
-            staged.append({"live": live, "staged": live + STAGED_SUFFIX})
+            staged.append({"live": live, "staged": live + STAGED_SUFFIX,
+                           "size": size, "sha256": digest})
     except OSError as exc:
         for s in staged:
             with contextlib.suppress(OSError):
                 _within(config_root, s["staged"]).unlink()
         raise SetError(f"klaarzetten mislukt: {exc}", disk=True) from exc
-    info = {"set": name, "requested_at": _now(), "by": actor, "files": staged}
+    info = {"set": path.name, "requested_at": _now(), "by": actor, "files": staged,
+            "manifest": _manifest(path.name, staged)}
     marker = core_dir / STAGE_MARKER
     tmp = marker.with_name(marker.name + ".part")
     tmp.write_text(json.dumps(info, indent=2), encoding="utf-8")
@@ -326,58 +388,128 @@ def cancel(core_dir: Path) -> bool:
     if info is None:
         return False
     for f in info.get("files") or []:
-        with contextlib.suppress(OSError, SetError):
-            _within(core_dir.parent, str(f.get("staged"))).unlink()
+        rel = f.get("live") if isinstance(f, dict) else None
+        if isinstance(rel, str) and _live_name(core_dir, rel):
+            with contextlib.suppress(OSError, SetError):
+                (core_dir.parent / (rel + STAGED_SUFFIX)).unlink()
     (core_dir / STAGE_MARKER).unlink(missing_ok=True)
     return True
 
 
 def apply_staged(core_dir: Path, owner: tuple[int, int] | None = None,
-                 max_age_s: float = STAGE_MAX_AGE_S) -> dict[str, Any] | None:
+                 max_age_s: float = STAGE_MAX_AGE_S, *,
+                 av1_migrations: Path | None = None) -> dict[str, Any] | None:
     """Alleen aanroepen als ALLE diensten gestopt zijn (supervisor). Hernoemt de huidige
     databases (met hun -wal/-shm) naar ``voor-terugzetten/<tijd>/`` en de klaargezette
     kopieën naar hun plek. Ontbreekt er iets, dan verandert er niets."""
+    with Database(core_dir / "mediaguard.db").startup_lock():
+        return _apply_staged(core_dir, owner, max_age_s,
+                             av1_migrations or encoder_migrations(os.environ))
+
+
+def _restore_pairs(core_dir: Path, info: dict[str, Any], av1_migrations: Path,
+                   max_age_s: float) -> list[tuple[Path, Path, str]]:
+    name, files = info.get("set"), info.get("files")
+    if not isinstance(name, str) or not is_set_name(name) or not isinstance(files, list):
+        raise SetError("ongeldige markering voor terugzetten")
+    try:
+        requested = datetime.fromisoformat(str(info.get("requested_at")))
+        age = (datetime.now(UTC) - requested).total_seconds()
+    except (TypeError, ValueError) as exc:
+        raise SetError("ongeldige datum in markering voor terugzetten") from exc
+    if age < 0 or age > max_age_s:
+        raise SetError("verlopen of ongeldig tijdstip; zet de back-up opnieuw klaar")
+
+    original = None
+    if "manifest" not in info:
+        # Markering van een vorige release: herleid de checksums uit de oorspronkelijke set.
+        path = find(core_dir / "backups" / FOLDER, name)
+        if path is None:
+            raise SetError("oorspronkelijke back-upset voor de markering ontbreekt")
+        original = _set_files(core_dir, path)
+    elif info["manifest"] != _manifest(name, files):
+        raise SetError("markering voor terugzetten is onvolledig of beschadigd")
+
+    pairs = []
+    seen = set()
+    for entry in files:
+        rel = entry.get("live") if isinstance(entry, dict) else None
+        if (not isinstance(rel, str) or not _live_name(core_dir, rel) or rel in seen
+                or entry.get("staged") != rel + STAGED_SUFFIX):
+            raise SetError("ongeldig databasepad in markering voor terugzetten")
+        seen.add(rel)
+        live = core_dir.parent / rel
+        staged = live.with_name(live.name + STAGED_SUFFIX)
+        if (_within(core_dir.parent, rel) != live.absolute()
+                or _within(core_dir.parent, rel + STAGED_SUFFIX) != staged.absolute()):
+            raise SetError("ongeldig pad naar klaargezette database")
+        if original is None:
+            size, digest = entry.get("size"), entry.get("sha256")
+        elif rel in original:
+            _, size, digest = original[rel]
+        else:
+            raise SetError("ongeldige bestandenlijst in markering voor terugzetten")
+        if not isinstance(size, int) or not isinstance(digest, str):
+            raise SetError("ongeldige metadata in markering voor terugzetten")
+        _check_restore_copy(staged, rel, size, digest, av1_migrations)
+        pairs.append((live, staged, rel))
+    if f"{core_dir.name}/mediaguard.db" not in seen or (
+        original is not None and seen != original.keys()
+    ):
+        raise SetError("klaargezette set is onvolledig")
+    return pairs
+
+
+def _apply_staged(core_dir: Path, owner: tuple[int, int] | None, max_age_s: float,
+                  av1_migrations: Path) -> dict[str, Any] | None:
     info = pending(core_dir)
     if info is None:
         return None
     config_root = core_dir.parent
     marker = core_dir / STAGE_MARKER
-    pairs = []
     try:
-        requested = datetime.fromisoformat(str(info.get("requested_at")))
-        age = (datetime.now(UTC) - requested).total_seconds()
-    except (TypeError, ValueError):
-        age = STAGE_MAX_AGE_S + 1
-    if age > max_age_s:
-        cancel(core_dir)
-        result = {"ok": False, "set": info.get("set"), "at": _now(),
-                  "error": "verlopen: langer dan een dag geleden klaargezet; zet hem opnieuw "
-                           "klaar als je hem nog wilt terugzetten"}
-        _write_result(core_dir, result, owner)
-        return result
-    try:
-        for f in info.get("files") or []:
-            live = _within(config_root, str(f["live"]))
-            staged = _within(config_root, str(f["staged"]))
-            if not staged.is_file():
-                raise SetError(f"klaargezette kopie ontbreekt: {f['staged']}")
-            pairs.append((live, staged, str(f["live"])))
-    except (SetError, KeyError) as exc:
+        pairs = _restore_pairs(core_dir, info, av1_migrations, max_age_s)
+    except (SetError, schema.SchemaTooNew) as exc:
         result = {"ok": False, "set": info.get("set"), "at": _now(), "error": str(exc)}
-        _write_result(core_dir, result, owner)
-        marker.unlink(missing_ok=True)
+        if str(exc).startswith("verlopen"):
+            # Buiten herstelweergave blijft de bestaande afhandeling van verlopen aanvragen.
+            try:
+                inspect_schema(config_root, encoder_migrations=av1_migrations)
+            except (schema.SchemaTooNew, OSError, sqlite3.Error, RuntimeError):
+                return result
+            cancel(core_dir)
+            _write_result(core_dir, result, owner)
         return result
-    aside = core_dir / "backups" / ASIDE_FOLDER / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    aside.mkdir(parents=True, exist_ok=True)
+    base = core_dir / "backups" / ASIDE_FOLDER / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    aside = base
+    suffix = 1
+    while aside.exists():
+        suffix += 1
+        aside = base.with_name(f"{base.name}-{suffix}")
+    aside.mkdir(parents=True)
     moved = []
-    for live, staged, rel in pairs:
-        keep = aside / rel.replace("/", "__")
-        for suffix in ("", "-wal", "-shm", "-journal"):
-            cur = live.with_name(live.name + suffix)
-            if cur.exists():
-                os.replace(cur, keep.with_name(keep.name + suffix))
-        os.replace(staged, live)
-        moved.append(rel)
+    renames: list[tuple[Path, Path]] = []
+    try:
+        for live, staged, rel in pairs:
+            keep = aside / rel.replace("/", "__")
+            for tail in ("", "-wal", "-shm", "-journal"):
+                cur = live.with_name(live.name + tail)
+                if cur.exists():
+                    dest = keep.with_name(keep.name + tail)
+                    os.replace(cur, dest)
+                    renames.append((dest, cur))
+            os.replace(staged, live)
+            renames.append((live, staged))
+            moved.append(rel)
+    except OSError as exc:
+        for src, dst in reversed(renames):
+            try:
+                os.replace(src, dst)
+            except OSError as undo:
+                exc.add_note(f"Terugwisselen van {src.name} mislukt: {undo}")
+        with contextlib.suppress(OSError):
+            aside.rmdir()
+        raise
     _chown([aside.parent, aside, *aside.iterdir(), *(p for p, _s, _r in pairs)], owner)
     marker.unlink(missing_ok=True)
     result = {"ok": True, "set": info.get("set"), "at": _now(), "files": moved,
@@ -416,6 +548,11 @@ def _core_pending(core_db: Path, migrations_dir: Path) -> tuple[str, str] | None
     return (max(map(str, have)), max(pending)) if have and pending else None
 
 
+def _encoder_versions(migrations_dir: Path) -> set[int]:
+    return {int(m.group(1)) for p in migrations_dir.glob("*.sql")
+            if (m := _ENC_VERSION.match(p.name))}
+
+
 def _encoder_pending(encode_dir: Path, migrations_dir: Path | None) -> bool:
     if migrations_dir is None:
         return False
@@ -440,8 +577,7 @@ def encoder_migrations(env: Mapping[str, str]) -> Path:
 
 
 def check_encoder_schema(encode_dir: Path) -> None:
-    if any(encode_dir.glob("*.db")):
-        _encoder_pending(encode_dir, encoder_migrations(os.environ))
+    _encoder_pending(encode_dir, encoder_migrations(os.environ))
 
 
 def has_database(config_root: Path) -> bool:
