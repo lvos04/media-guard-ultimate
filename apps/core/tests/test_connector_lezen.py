@@ -5,15 +5,22 @@ from __future__ import annotations
 import copy
 import sqlite3
 import time
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from mediaguard import health_summary
 from mediaguard.auth import Principal, current_principal
 from mediaguard.db import utcnow
+
+# Alleen de bestaande aanmeldadministratie mag wijzigen: gebruikstijdstippen in
+# bestaande rijen en uitsluitend nieuwe auditregels voor geweigerde sleutels.
+AUTH_TIMESTAMP_COLUMNS = {"api_keys": "last_used_at", "sessions": "last_seen_at"}
+AUTH_NEW_AUDIT_ACTION = "apikey.rejected"
 
 
 @pytest.fixture
@@ -206,19 +213,121 @@ def test_connector_openapi_documents_only_current_routes(app):
         assert paths[path]["get"]["security"] == []
 
 
-def test_action_payloads_never_dispatch_or_change_progress(client, machine, ctx):
+def database_snapshot(ctx, *, allow_auth=False):
+    snapshot = {}
+    for table in ctx.db.fetch_all("SELECT name, sql FROM sqlite_schema WHERE type='table'"):
+        name = table["name"]
+        quoted_name = '"' + name.replace('"', '""') + '"'
+        ignored = AUTH_TIMESTAMP_COLUMNS.get(name) if allow_auth else None
+        snapshot[name, table["sql"]] = Counter(
+            tuple((column, value) for column, value in row.items() if column != ignored)
+            for row in ctx.db.fetch_dicts(f"SELECT * FROM {quoted_name}")
+        )
+    return snapshot
+
+
+def assert_database_preserved(ctx, before, *, allow_auth=False):
+    after = database_snapshot(ctx, allow_auth=allow_auth)
+    assert before.keys() == after.keys(), "Tabellen of hun schema gewijzigd"
+    changed = []
+    for table, old in before.items():
+        new = after[table]
+        if allow_auth and table[0] == "audit_events":
+            for row, count in (new - old).items():
+                if dict(row)["action"] == AUTH_NEW_AUDIT_ACTION:
+                    new[row] -= count
+        if new != old:
+            changed.append(table[0])
+    assert changed == [], "Onverwachte databasewijzigingen"
+
+
+@pytest.fixture
+def populated_database(ctx):
+    now = utcnow()
+    ctx.db.execute("INSERT INTO jobs(job_type,status,progress,created_at) "
+                   "VALUES ('library.sync','running',0.5,?)", (now,))
+    ctx.db.execute("INSERT INTO encoding_jobs(source_path,status,policy_json,created_at,updated_at)"
+                   " VALUES ('/fixture/film.mkv','running','{}',?,?)", (now, now))
+    ctx.db.execute(
+        "INSERT INTO instances(id,app,media_type,name,url,suspended,created_at,updated_at) "
+        "VALUES ('fixture','radarr','movie','Fixture','http://fixture.invalid',1,?,?)", (now, now)
+    )
+    ctx.db.execute("INSERT INTO lib_items(instance_id,kind,provider_id,title,synced_at) "
+                   "VALUES ('fixture','movie',1,'Testfilm',?)", (now,))
+    # Ook een eerste gezondheidsmeting wordt uitgevoerd, met een lokale encoderrespons.
+    ctx.services["encoder_transport"] = httpx.MockTransport(lambda _: httpx.Response(200, json={}))
+    return ctx
+
+
+@pytest.mark.parametrize(("method", "route"), [
+    ("GET", "discover"), ("GET", "health"), ("POST", "propose"), ("POST", "apply"),
+    ("POST", "rollback"),
+])
+def test_action_payloads_never_dispatch_or_change_progress(client, machine, populated_database,
+                                                           method, route):
+    ctx = populated_database
     headers = key(client)
-    tables = ("jobs", "system_state", "encoding_jobs", "wanted_items", "quarantine_items",
-              "audit_events", "lib_items", "migration_runs")
-    before = {t: [dict(r) for r in ctx.db.fetch_all(f"SELECT * FROM {t} ORDER BY rowid")]
-              for t in tables}
-    for path in ("propose", "apply", "rollback"):
-        response = machine.post("/connector/v1/" + path, headers=headers,
-                                json={"action_id": "wanted:search", "parameters": {"id": 1}})
-        error(response, 501, "capability_unavailable")
-    after = {t: [dict(r) for r in ctx.db.fetch_all(f"SELECT * FROM {t} ORDER BY rowid")]
-             for t in tables}
-    assert after == before
+    revoked = key(client, name="ingetrokken")
+    expired = key(client, name="verlopen")
+    scoped = key(client, name="beperkt", scopes=["emergency_stop:on"])
+    old = "2020-01-01T00:00:00+00:00"
+    ctx.db.execute("UPDATE api_keys SET revoked_at=? WHERE name='ingetrokken'", (old,))
+    ctx.db.execute("UPDATE api_keys SET expires_at=? WHERE name='verlopen'", (old,))
+
+    def request(transport, request_headers=None):
+        body = {"action_id": "wanted:search", "parameters": {"id": 1}} if method == "POST" else None
+        return transport.request(
+            method, f"/connector/v1/{route}", headers=request_headers, json=body
+        )
+
+    def check_accepted(response):
+        if method == "POST":
+            error(response, 501, "capability_unavailable")
+        else:
+            assert response.status_code == 200
+
+    sql = "SELECT last_used_at FROM api_keys WHERE name='hub'"
+    for previous in (None, old):
+        ctx.db.execute("UPDATE api_keys SET last_used_at=? WHERE name='hub'", (previous,))
+        before = database_snapshot(ctx, allow_auth=True)
+        check_accepted(request(machine, headers))
+        assert ctx.db.fetch_one(sql)[0] > (previous or "")
+        assert_database_preserved(ctx, before, allow_auth=True)
+
+    ctx.db.execute("UPDATE sessions SET last_seen_at=?", (old,))
+    before = database_snapshot(ctx, allow_auth=True)
+    check_accepted(request(client))
+    assert ctx.db.fetch_one("SELECT last_seen_at FROM sessions")[0] > old
+    assert_database_preserved(ctx, before, allow_auth=True)
+
+    before = database_snapshot(ctx)
+    error(request(machine), 401, "unauthorized")
+    assert_database_preserved(ctx, before)
+
+    audit_sql = "SELECT COUNT(*) FROM audit_events WHERE action=?"
+    for rejected in ({"X-Api-Key": "ongeldig"}, revoked, expired):
+        before = database_snapshot(ctx, allow_auth=True)
+        count = ctx.db.fetch_one(audit_sql, (AUTH_NEW_AUDIT_ACTION,))[0]
+        error(request(client, rejected), 401, "unauthorized")
+        assert ctx.db.fetch_one(audit_sql, (AUTH_NEW_AUDIT_ACTION,))[0] == count + 1
+        assert_database_preserved(ctx, before, allow_auth=True)
+
+    if method == "POST":
+        before = database_snapshot(ctx, allow_auth=True)
+        error(request(machine, scoped), 403, "scope_ontbreekt")
+        assert_database_preserved(ctx, before, allow_auth=True)
+
+
+def test_public_routes_and_oversized_request_do_not_write(client, machine, populated_database):
+    ctx = populated_database
+    headers = key(client)
+    before = database_snapshot(ctx)
+    for path in ("/healthz", "/readyz"):
+        assert machine.get(path, headers={"X-Api-Key": "ongeldig"}).status_code == 200
+        assert_database_preserved(ctx, before)
+    response = machine.post("/connector/v1/apply", headers=headers, content=b"x" * (1048576 + 1))
+    error(response, 413, "payload_too_large")
+    assert_database_preserved(ctx, before)
 
 
 @pytest.mark.asyncio
