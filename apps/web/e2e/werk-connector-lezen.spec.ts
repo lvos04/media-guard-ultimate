@@ -3,14 +3,17 @@ import { request as httpRequest } from "node:http";
 
 const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" }; // gitleaks:allow openbare e2e-testfixture, zelfde aanmelding als werk-apikeys-ontwerpreview.spec.ts; geen echt account.
 
-test("connector en minimale healthroutes zijn bereikbaar via de ene webpoort", async ({ request }) => {
+test("connector en minimale healthroutes zijn bereikbaar via de ene webpoort", async ({ request }, testInfo) => {
   const setup = await (await request.get("/api/v1/auth/setup-status")).json();
   if (setup.needs_setup) expect((await request.post("/api/v1/auth/setup", { data: ADMIN })).ok()).toBeTruthy();
   const login = await request.post("/api/v1/auth/login", { data: ADMIN });
   expect(login.status()).toBe(200);
   const me = await (await request.get("/api/v1/auth/me")).json();
   const made = await request.post("/api/v1/auth/api-keys", {
-    data: { name: "connector-e2e", role: "viewer", scopes: ["emergency_stop:on"] },
+    data: {
+      name: `connector-e2e-${testInfo.repeatEachIndex}-${testInfo.retry}`,
+      role: "viewer", scopes: ["emergency_stop:on"],
+    },
     headers: { "X-CSRF-Token": me.csrf_token },
   });
   expect(made.status()).toBe(200);
@@ -23,7 +26,20 @@ test("connector en minimale healthroutes zijn bereikbaar via de ene webpoort", a
   const machine = { Cookie: "", "X-Api-Key": apiKey };
   const discover = await request.get("/connector/v1/discover", { headers: machine });
   expect(discover.status()).toBe(200);
-  expect(await discover.json()).toMatchObject({ capabilities: ["read"], actions: [], item_types: [] });
+  expect(await discover.json()).toMatchObject({
+    capabilities: ["read"], actions: [],
+    item_types: ["wanted", "status", "downloads", "av1_lanes", "incidents"],
+  });
+  const items = await request.get("/connector/v1/items?type=status", { headers: machine });
+  expect(items.status()).toBe(200);
+  expect(items.headers()["etag"]).toMatch(/^"[a-f0-9]{64}"$/);
+  expect(await items.json()).toMatchObject({
+    type: "status", total: 1, next_cursor: null,
+    items: [{ id: "status:installation", deep_link: "/" }],
+  });
+  const evidence = await request.get("/connector/v1/evidence/job:999999", { headers: machine });
+  expect(evidence.status()).toBe(404);
+  expect(await evidence.json()).toMatchObject({ code: "not_found" });
   const health = await request.get("/connector/v1/health", { headers: machine });
   expect(health.status()).toBe(200);
   expect((await health.json()).checks.length).toBeGreaterThan(0);
