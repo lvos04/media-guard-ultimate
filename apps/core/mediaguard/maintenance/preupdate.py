@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -311,10 +312,20 @@ def _set_files(core_dir: Path, path: Path) -> dict[str, tuple[Path, int, str]]:
 def _check_restore_copy(path: Path, rel: str, size: int, digest: str,
                         av1_migrations: Path) -> None:
     try:
-        sidecars = (path.with_name(path.name + tail) for tail in ("-wal", "-shm", "-journal"))
-        if (not path.is_file() or path.is_symlink() or path.stat().st_size != size
-                or _sha256(path) != digest or any(p.exists() for p in sidecars)):
+        if not path.is_file():
+            raise SetError(f"klaargezette kopie ontbreekt: {path.name}")
+        if path.is_symlink() or path.stat().st_size != size or _sha256(path) != digest:
             raise SetError(f"{path.name} ontbreekt of is beschadigd (checksum klopt niet)")
+        # Een eerdere release kon bij het lezen een lege WAL en een SHM achterlaten.
+        # Alleen het gecontroleerde hoofdbestand wordt klaargezet en teruggezet.
+        for suffix in ("-wal", "-shm", "-journal"):
+            try:
+                info = path.with_name(path.name + suffix).lstat()
+            except FileNotFoundError:
+                continue
+            if (not stat.S_ISREG(info.st_mode) or suffix == "-journal"
+                    or (suffix == "-wal" and info.st_size)):
+                raise SetError(f"{path.name} heeft een ongecontroleerd SQLite-journaal")
         uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
         with contextlib.closing(sqlite3.connect(uri, uri=True)) as db:
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -388,11 +399,15 @@ def cancel(core_dir: Path) -> bool:
     info = pending(core_dir)
     if info is None:
         return False
-    for f in info.get("files") or []:
+    files = info.get("files")
+    for f in files if isinstance(files, list) else []:
         rel = f.get("live") if isinstance(f, dict) else None
         if isinstance(rel, str) and _live_name(core_dir, rel):
             with contextlib.suppress(OSError, SetError):
-                (core_dir.parent / (rel + STAGED_SUFFIX)).unlink()
+                staged_name = rel + STAGED_SUFFIX
+                staged = core_dir.parent / staged_name
+                if _within(core_dir.parent, staged_name) == staged.absolute():
+                    staged.unlink()
     (core_dir / STAGE_MARKER).unlink(missing_ok=True)
     return True
 
@@ -466,20 +481,20 @@ def _apply_staged(core_dir: Path, owner: tuple[int, int] | None, max_age_s: floa
     info = pending(core_dir)
     if info is None:
         return None
-    config_root = core_dir.parent
     marker = core_dir / STAGE_MARKER
     try:
         pairs = _restore_pairs(core_dir, info, av1_migrations, max_age_s)
     except (SetError, schema.SchemaTooNew) as exc:
         result = {"ok": False, "set": info.get("set"), "at": _now(), "error": str(exc)}
-        if str(exc).startswith("verlopen"):
-            # Buiten herstelweergave blijft de bestaande afhandeling van verlopen aanvragen.
-            try:
-                inspect_schema(config_root, encoder_migrations=av1_migrations)
-            except (schema.SchemaTooNew, OSError, sqlite3.Error, RuntimeError):
-                return result
-            cancel(core_dir)
-            _write_result(core_dir, result, owner)
+        # Tijdens de herstelweergave moet ook een geweigerde aanvraag appdata ongemoeid laten.
+        # Bij bekende live-schema's kan de app de fout tonen en de aanvraag opruimen.
+        try:
+            check_schema_versions(core_dir / "mediaguard.db")
+            _encoder_pending(schema.encoder_dir(core_dir), av1_migrations)
+        except (OSError, sqlite3.Error, RuntimeError):
+            return result
+        cancel(core_dir)
+        _write_result(core_dir, result, owner)
         return result
     base = core_dir / "backups" / ASIDE_FOLDER / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     aside = base

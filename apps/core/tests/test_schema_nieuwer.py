@@ -211,11 +211,12 @@ def test_herstelroute_weigert_gekozen_nieuwere_kopie(client, ctx) -> None:
         conn.execute("INSERT INTO schema_migrations VALUES ('999_toekomst', 'proef')")
     ctx.db.execute("UPDATE sessions SET last_seen_at='2000-01-01T00:00:00+00:00'")
     voor = ub.meet_db(ctx.db.path, intern=True)
+    bestanden = {p.name for p in folder.iterdir()}
     response = client.post(f"/api/v1/backups/{copy.name}/restore", json={"confirm": copy.name})
     assert response.status_code == 409
     assert response.json()["code"] == "schema_nieuwer"
     assert ub.meet_db(ctx.db.path, intern=True) == voor
-    assert not list(folder.glob("mediaguard-pre-restore-*"))
+    assert {p.name for p in folder.iterdir()} == bestanden
 
 
 def test_noodtoegang_en_backups_weigeren(nieuw_schema: Path, capsys) -> None:

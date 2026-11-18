@@ -479,6 +479,8 @@ def _restore_backup(name: str, body: RestoreBody, request: Request, principal: P
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
         if meta.get("sha256") != _sha256(path):
             raise HTTPException(409, "Checksum klopt niet; back-up is beschadigd")
+    # Een schone geweigerde kopie kan zonder SQLite-hulpbestanden worden gelezen.
+    check_schema_versions(path)
     with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as src:
         # Houd dezelfde leessnapshot vast vanaf de versietoets tot en met het terugzetten.
         src.execute("BEGIN")
