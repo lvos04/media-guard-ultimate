@@ -9,7 +9,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack, closing, contextmanager, nullcontext, suppress
+from contextlib import ExitStack, closing, contextmanager, suppress
 from datetime import UTC, datetime
 from importlib.util import find_spec
 from pathlib import Path
@@ -37,7 +37,7 @@ class SchemaTooNew(MigrationError):
 
 
 @contextmanager
-def _folder_lock(folder: Path) -> Iterator[None]:
+def _folder_lock(folder: Path, *, blocking: bool) -> Iterator[None]:
     folder = folder.resolve()
     folders: set[Path] = getattr(_locked, "folders", set())
     _locked.folders = folders
@@ -46,7 +46,7 @@ def _folder_lock(folder: Path) -> Iterator[None]:
         return
     fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
         folders.add(folder)
         try:
             yield
@@ -65,7 +65,9 @@ def _core_migrations() -> Path:
     return Path(__file__).resolve().parents[3] / "apps" / "core" / "mediaguard" / "migrations"
 
 
-def _applied_versions(path: Path, table: str, column: str) -> set[int | str]:
+def _applied_versions(
+    path: Path, table: str, column: str, *, timeout: float = 30,
+) -> set[int | str]:
     try:
         before = _generation(path)
     except FileNotFoundError:
@@ -75,11 +77,11 @@ def _applied_versions(path: Path, table: str, column: str) -> set[int | str]:
     if not any(p.exists() for p in sidecars):
         # Bij een ongewijzigd hoofdbestand zonder WAL zijn hulpbestanden overbodig.
         with suppress(OSError, sqlite3.DatabaseError):
-            with closing(sqlite3.connect(uri + "&immutable=1", uri=True, timeout=30)) as db:
+            with closing(sqlite3.connect(uri + "&immutable=1", uri=True, timeout=timeout)) as db:
                 versions = _versions_in(db, table, column)
             if not any(p.exists() for p in sidecars) and _generation(path) == before:
                 return versions
-    with closing(sqlite3.connect(uri, uri=True, timeout=30)) as db:
+    with closing(sqlite3.connect(uri, uri=True, timeout=timeout)) as db:
         return _versions_in(db, table, column)
 
 
@@ -111,53 +113,88 @@ class Database:
 
     def connect(self) -> sqlite3.Connection:
         self.require_writable()
-        connection = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+        return self._open_connection(timeout=30)
+
+    def _connect_nowait(self) -> sqlite3.Connection:
+        if self.check_schema(timeout=0):
+            raise SchemaTooNew()
+        return self._open_connection(timeout=0)
+
+    def _open_connection(self, *, timeout: float) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=timeout, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=30000")
         return connection
 
     @contextmanager
-    def connection(self, *, write: bool = True) -> Iterator[sqlite3.Connection]:
+    def connection(
+        self, *, write: bool = True, blocking: bool = True,
+    ) -> Iterator[sqlite3.Connection]:
         """Eén gecontroleerde schrijftransactie, of een alleen-lezende verbinding."""
-        lock = self.startup_lock() if write else nullcontext()
-        with lock, closing(self.connect()) as conn:
-            if write:
-                conn.execute("BEGIN IMMEDIATE")
-                if self.check_schema(conn):
-                    raise SchemaTooNew()
+        if write:
+            with self._writer(exclusive=False, blocking=blocking) as conn:
                 # executescript mag de getoetste transactie niet impliciet committen.
                 conn.autocommit = False
-            else:
+                yield conn
+        else:
+            with closing(self.connect() if blocking else self._connect_nowait()) as conn:
                 conn.execute("PRAGMA query_only=ON")
-            yield conn
+                yield conn
 
     @contextmanager
-    def exclusive_connection(self) -> Iterator[sqlite3.Connection]:
+    def exclusive_connection(self, *, blocking: bool = True) -> Iterator[sqlite3.Connection]:
         """Behoud het SQLite-slot bij bewerkingen die buiten een transactie moeten."""
-        with self.startup_lock(), closing(self.connect()) as conn:
-            conn.execute("PRAGMA locking_mode=EXCLUSIVE")
-            conn.execute("BEGIN EXCLUSIVE")
-            if self.check_schema(conn):
-                raise SchemaTooNew()
+        with self._writer(exclusive=True, blocking=blocking) as conn:
             conn.commit()
             yield conn  # SQLite laat het exclusieve slot pas bij close() los.
 
     @contextmanager
-    def startup_lock(self) -> Iterator[None]:
+    def _writer(self, *, exclusive: bool, blocking: bool) -> Iterator[sqlite3.Connection]:
+        with ExitStack() as held:
+            while True:
+                # Open het juiste bestand onder de mapsloten, wacht op SQLite erbuiten.
+                with self.startup_lock(blocking=blocking):
+                    conn = held.enter_context(closing(
+                        self.connect() if blocking else self._connect_nowait()
+                    ))
+                    opened = self.path.stat()
+                if exclusive:
+                    conn.execute("PRAGMA locking_mode=EXCLUSIVE")
+                conn.execute("BEGIN EXCLUSIVE" if exclusive else "BEGIN IMMEDIATE")
+                try:
+                    held.enter_context(self.startup_lock(blocking=False))
+                except BlockingIOError:
+                    held.close()  # De andere slothouder kan zelf op SQLite wachten.
+                    if not blocking:
+                        raise
+                    continue
+                if self.path.exists() and os.path.samestat(opened, self.path.stat()):
+                    break
+                held.close()  # Een herstelactie verving het bestand tijdens het wachten.
+                if not blocking:
+                    raise BlockingIOError
+            if self.check_schema(conn, timeout=30 if blocking else 0):
+                raise SchemaTooNew()
+            yield conn
+
+    @contextmanager
+    def startup_lock(self, *, blocking: bool = True) -> Iterator[None]:
         # Zelfde volgorde en mappen als kern en AIO-bewaker.
         with ExitStack() as locks:
             for folder in (self._core_database().parent, self.path.parent):
                 if folder.is_dir():
-                    locks.enter_context(_folder_lock(folder))
+                    locks.enter_context(_folder_lock(folder, blocking=blocking))
             yield
 
-    def check_schema(self, connection: sqlite3.Connection | None = None) -> bool:
+    def check_schema(
+        self, connection: sqlite3.Connection | None = None, *, timeout: float = 30,
+    ) -> bool:
         if self.read_only:
             return True
         have = (_versions_in(connection, "schema_versie", "versie") if connection is not None
-                else _applied_versions(self.path, "schema_versie", "versie"))
-        core = _applied_versions(self._core_database(), "schema_migrations", "version")
+                else _applied_versions(self.path, "schema_versie", "versie", timeout=timeout))
+        core = _applied_versions(self._core_database(), "schema_migrations", "version",
+                                 timeout=timeout)
         if (have - {version for version, _ in self.migration_files()}
                 or core - {file.stem for file in _core_migrations().glob("*.sql")}):
             self.read_only = True
@@ -178,10 +215,10 @@ class Database:
                 return
             if prepare is not None:
                 prepare()
-            try:
-                self._initialize()
-            except SchemaTooNew:
-                self.read_only = True
+        try:
+            self._initialize()
+        except SchemaTooNew:
+            self.read_only = True
 
     def _initialize(self) -> None:
         with closing(self.connect()) as connection:
@@ -195,7 +232,7 @@ class Database:
                 "versie INTEGER PRIMARY KEY, naam TEXT NOT NULL, toegepast_op TEXT NOT NULL)"
             )
             connection.commit()
-        self._apply_migrations()
+        self.apply_migrations()
 
     def migration_files(self) -> list[tuple[int, Path]]:
         if not self.migrations_dir.is_dir():
@@ -221,7 +258,7 @@ class Database:
             return
         backup_dir = self.settings.backup_root / "voor-migratie"
         backup_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         target = backup_dir / f"app-{timestamp}.db"
         # SQLite backup voorkomt een inconsistente kopie terwijl WAL actief is.
         with self.connection(write=False) as source, sqlite3.connect(target) as destination:
@@ -229,30 +266,34 @@ class Database:
         target.chmod(0o640)
 
     def apply_migrations(self) -> None:
-        with self.startup_lock():
-            self.require_writable()
-            self._apply_migrations()
-
-    def _apply_migrations(self) -> None:
         files = self.migration_files()
-        with self.connection() as connection:
+        with self.connection(write=False) as connection:
             applied = _versions_in(connection, "schema_versie", "versie")
-            pending = [(v, path) for v, path in files if v not in applied]
-            if pending:
-                self._backup_before_migration()
-        for version, path in pending:
+        backed_up: os.stat_result | None = None
+        while True:
+            pending = next((item for item in files if item[0] not in applied), None)
+            if pending is None:
+                return
+            version, path = pending
             sql = path.read_text(encoding="utf-8")
             try:
                 with self.connection() as connection:
-                    if connection.execute("SELECT 1 FROM schema_versie WHERE versie=?",
-                                          (version,)).fetchone():
+                    # Een andere starter of een terugzetting kan het migratieplan wijzigen.
+                    live_versions = _versions_in(connection, "schema_versie", "versie")
+                    if live_versions != applied:
+                        applied = live_versions
                         continue
+                    live = self.path.stat()
+                    if backed_up is None or not os.path.samestat(backed_up, live):
+                        self._backup_before_migration()
+                        backed_up = live
                     connection.executescript(sql)
                     connection.execute(
                         "INSERT INTO schema_versie(versie, naam, toegepast_op) VALUES (?,?,?)",
                         (version, path.name, datetime.now(UTC).isoformat()),
                     )
                     connection.commit()
+                    applied.add(version)
             except sqlite3.Error as exc:
                 raise MigrationError(f"Migratie {path.name} mislukt: {exc}") from exc
             LOGGER.info("Migratie %s toegepast", path.name)

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -130,6 +133,125 @@ def test_weekonderhoud_en_drie_identieke_fouten(tmp_path: Path) -> None:
     assert record_failure(database, job_id, "zelfde fout", "ExecutionError") == 1
     assert record_failure(database, job_id, "zelfde fout", "ExecutionError") == 2
     assert record_failure(database, job_id, "zelfde fout", "ExecutionError") == 3
+
+
+@pytest.mark.parametrize("transactie", ["BEGIN", "BEGIN IMMEDIATE"])
+def test_weekonderhoud_stelt_bezet_slot_uit_en_haalt_het_in(tmp_path, transactie):
+    database, _, job = _case(tmp_path)
+    database.execute("UPDATE job SET percent=37 WHERE id=?", (job,))
+    with ThreadPoolExecutor(1) as pool, closing(sqlite3.connect(database.path)) as peer:
+        peer.execute(transactie)
+        assert peer.execute("SELECT percent FROM job WHERE id=?", (job,)).fetchone() == (37,)
+        onderhoud = pool.submit(weekly_database_maintenance, database)
+        try:
+            assert onderhoud.result(timeout=3) is False
+            if transactie == "BEGIN":
+                database.execute("UPDATE job SET percent=65 WHERE id=?", (job,))
+                assert database.fetch_one("SELECT percent FROM job WHERE id=?", (job,))[0] == 65
+            assert database.fetch_one(
+                "SELECT 1 FROM onderhoud_status WHERE sleutel='sqlite_weekonderhoud'"
+            ) is None
+        finally:
+            peer.rollback()
+    assert weekly_database_maintenance(database)
+    assert not weekly_database_maintenance(database)
+
+
+def test_wachtende_schrijver_laat_mapsloten_vrij_en_herleest_schema(tmp_path, monkeypatch):
+    import fcntl
+    from threading import Event
+
+    from app.db import SchemaTooNew
+
+    db, _, job = _case(tmp_path)
+    core = tmp_path / "core"
+    core.mkdir()
+    started = Event()
+    connect = db.connect
+
+    def tracked_connect():
+        conn = connect()
+        conn.set_trace_callback(lambda sql: started.set() if sql == "BEGIN IMMEDIATE" else None)
+        return conn
+
+    monkeypatch.setattr(db, "connect", tracked_connect)
+    with ThreadPoolExecutor(1) as pool, closing(sqlite3.connect(db.path)) as migration:
+        migration.execute("BEGIN IMMEDIATE")
+        blocked = pool.submit(db.execute, "UPDATE job SET percent=65 WHERE id=?", (job,))
+        try:
+            assert started.wait(3)
+            for folder in (core, db.path.parent):
+                fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(fd)
+            migration.execute("INSERT INTO schema_versie VALUES (999, 'proef', 'proef')")
+        finally:
+            migration.commit()
+        with pytest.raises(SchemaTooNew):
+            blocked.result(timeout=3)
+        assert migration.execute("SELECT percent FROM job WHERE id=?", (job,)).fetchone() == (0,)
+
+
+def _trace_sql(db, monkeypatch, trace):
+    open_connection = db._open_connection
+
+    def tracked_open(*, timeout):
+        conn = open_connection(timeout=timeout)
+        conn.set_trace_callback(trace)
+        return conn
+
+    monkeypatch.setattr(db, "_open_connection", tracked_open)
+
+
+def test_weekonderhoud_toetst_schema_in_het_exclusieve_slot(tmp_path, monkeypatch):
+    from app.db import SchemaTooNew
+
+    db, _, _ = _case(tmp_path)
+    expected = []
+
+    def trace(sql):
+        if sql == "BEGIN EXCLUSIVE":
+            with closing(sqlite3.connect(db.path)) as migration:
+                migration.execute("INSERT INTO schema_versie VALUES (999, 'proef', 'proef')")
+                migration.commit()
+                expected.extend(migration.iterdump())
+
+    _trace_sql(db, monkeypatch, trace)
+    with pytest.raises(SchemaTooNew):
+        weekly_database_maintenance(db)
+    with closing(sqlite3.connect(db.path)) as check:
+        assert expected and list(check.iterdump()) == expected
+
+
+def test_uurcyclus_neemt_sqlite_slot_buiten_de_mapsloten(tmp_path, monkeypatch):
+    import fcntl
+
+    from app.onderhoud import run_maintenance
+
+    db, configured, _ = _case(tmp_path)
+    db.execute("UPDATE functie SET ingeschakeld=0 WHERE sleutel='automatische_backups'")
+    core = tmp_path / "core"
+    core.mkdir()
+    free_folders = []
+
+    def trace(sql):
+        if sql == "BEGIN EXCLUSIVE":
+            for folder in (core, db.path.parent):
+                fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    free_folders.append(folder)
+                except BlockingIOError:
+                    pass
+                finally:
+                    os.close(fd)
+
+    _trace_sql(db, monkeypatch, trace)
+    run_maintenance(db, configured)
+    assert free_folders == [core, db.path.parent]
+    assert db.fetch_one("SELECT 1 FROM onderhoud_status WHERE sleutel='sqlite_weekonderhoud'")
 
 
 def test_wachtrijindex_blijft_snel_bij_honderdduizend_jobs(tmp_path: Path) -> None:

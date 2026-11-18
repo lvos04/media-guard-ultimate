@@ -101,10 +101,24 @@ def rotate_logs(
 ) -> dict[str, int]:
     with database.startup_lock():
         database.require_writable()
-        return _rotate_logs(database, settings, now)
+        counts = _rotate_log_files(database, settings, now)
+    # Vangnet voor regels die buiten append_job_log zijn geschreven. Eén
+    # vensterfunctie i.p.v. een gecorreleerde COUNT per regel (kwadratisch).
+    database.execute(
+        """
+        DELETE FROM logregel WHERE id IN (
+            SELECT id FROM (
+                SELECT id,ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY id DESC) AS rang
+                FROM logregel
+            ) WHERE rang > ?
+        )
+        """,
+        (MAX_DB_LOG_LINES,),
+    )
+    return counts
 
 
-def _rotate_logs(
+def _rotate_log_files(
     database: Database, settings: Settings, now: datetime | None
 ) -> dict[str, int]:
     current = now or datetime.now(UTC)
@@ -130,19 +144,6 @@ def _rotate_logs(
         if job_id in successful:
             _trim_file(path, MAX_SUCCESS_LOG_LINES)
             trimmed += int(path.stat().st_size < before)
-    # Vangnet voor regels die buiten append_job_log zijn geschreven. Eén
-    # vensterfunctie i.p.v. een gecorreleerde COUNT per regel (kwadratisch).
-    database.execute(
-        """
-        DELETE FROM logregel WHERE id IN (
-            SELECT id FROM (
-                SELECT id,ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY id DESC) AS rang
-                FROM logregel
-            ) WHERE rang > ?
-        )
-        """,
-        (MAX_DB_LOG_LINES,),
-    )
     return {"verwijderd": removed, "ingekort": trimmed}
 
 
@@ -272,33 +273,44 @@ def storage_guard(database: Database, settings: Settings) -> dict[str, int | str
     return {"vrij_bytes": free, "status": status}
 
 
+def _weekonderhoud_nodig(conn: sqlite3.Connection, current: datetime) -> bool:
+    if conn.execute("SELECT 1 FROM job WHERE status IN ('bezig','verifieren') LIMIT 1").fetchone():
+        return False
+    row = conn.execute(
+        "SELECT laatst_op FROM onderhoud_status WHERE sleutel='sqlite_weekonderhoud'"
+    ).fetchone()
+    return (not row or not row["laatst_op"]
+            or current - datetime.fromisoformat(row["laatst_op"]) >= timedelta(days=7))
+
+
 def weekly_database_maintenance(database: Database, now: datetime | None = None) -> bool:
     current = now or datetime.now(UTC)
-    busy = database.fetch_one(
-        "SELECT 1 FROM job WHERE status IN ('bezig','verifieren') LIMIT 1"
-    )
-    if busy is not None:
-        # VACUUM houdt de hele database exclusief vast; voortgang, claims en de
-        # brug zouden dan seconden tot minuten blokkeren. Volgend uur opnieuw.
+    try:
+        with database.connection(write=False, blocking=False) as conn:
+            if not _weekonderhoud_nodig(conn, current):
+                return False
+        with database.exclusive_connection(blocking=False) as conn:
+            # Een claim of een andere onderhoudsronde kan de voorcontrole zijn ingehaald.
+            if not _weekonderhoud_nodig(conn, current):
+                return False
+            conn.execute("PRAGMA optimize")
+            conn.execute("VACUUM")
+            conn.execute(
+                """
+                INSERT INTO onderhoud_status(sleutel,laatst_op,resultaat)
+                VALUES ('sqlite_weekonderhoud',?,'VACUUM en PRAGMA optimize geslaagd')
+                ON CONFLICT(sleutel) DO UPDATE SET laatst_op=excluded.laatst_op,
+                                                   resultaat=excluded.resultaat
+                """,
+                (current.isoformat(),),
+            )
+            conn.commit()
+    except BlockingIOError:
         return False
-    row = database.fetch_one(
-        "SELECT laatst_op FROM onderhoud_status WHERE sleutel='sqlite_weekonderhoud'"
-    )
-    if row is not None and row["laatst_op"]:
-        previous = datetime.fromisoformat(str(row["laatst_op"]))
-        if current - previous < timedelta(days=7):
-            return False
-    database.execute("PRAGMA optimize")
-    database.execute("VACUUM")
-    database.execute(
-        """
-        INSERT INTO onderhoud_status(sleutel,laatst_op,resultaat)
-        VALUES ('sqlite_weekonderhoud',?,'VACUUM en PRAGMA optimize geslaagd')
-        ON CONFLICT(sleutel) DO UPDATE SET laatst_op=excluded.laatst_op,
-                                           resultaat=excluded.resultaat
-        """,
-        (current.isoformat(),),
-    )
+    except sqlite3.OperationalError as exc:
+        if exc.sqlite_errorcode & 0xff in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            return False  # Volgende uur opnieuw, zonder het weekonderhoud af te tekenen.
+        raise
     return True
 
 
@@ -351,24 +363,20 @@ def sweep_finished_job_cache(database: Database, settings: Settings) -> list[int
 
 
 def run_maintenance(database: Database, settings: Settings) -> None:
+    rotate_logs(database, settings)
     with database.startup_lock():
         database.require_writable()
-        _run_maintenance(database, settings)
-
-
-def _run_maintenance(database: Database, settings: Settings) -> None:
-    rotate_logs(database, settings)
-    if settings.replacement_mode == "handoff":
-        removed = sweep_orphan_staging(database, settings)
-        if removed:
-            LOGGER.warning("Verweesde stagingmappen opgeruimd voor jobs: %s", removed)
-    try:
-        cleared = sweep_finished_job_cache(database, settings)
-    except Exception:  # noqa: BLE001 - opruimen mag het onderhoud niet stoppen
-        LOGGER.exception("Opruimen van achtergebleven jobcache mislukt")
-        cleared = []
-    if cleared:
-        LOGGER.warning("Achtergebleven cache opgeruimd voor afgeronde jobs: %s", cleared)
+        if settings.replacement_mode == "handoff":
+            removed = sweep_orphan_staging(database, settings)
+            if removed:
+                LOGGER.warning("Verweesde stagingmappen opgeruimd voor jobs: %s", removed)
+        try:
+            cleared = sweep_finished_job_cache(database, settings)
+        except Exception:  # noqa: BLE001 - opruimen mag het onderhoud niet stoppen
+            LOGGER.exception("Opruimen van achtergebleven jobcache mislukt")
+            cleared = []
+        if cleared:
+            LOGGER.warning("Achtergebleven cache opgeruimd voor afgeronde jobs: %s", cleared)
     storage = storage_guard(database, settings)
     weekly_database_maintenance(database)
     automatic = database.fetch_one(

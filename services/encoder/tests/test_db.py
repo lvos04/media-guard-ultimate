@@ -42,6 +42,40 @@ def test_migraties_zijn_herhaalbaar(tmp_path: Path) -> None:
     )[0] == 1
 
 
+def test_migratie_herleest_plan_na_terugzetten(tmp_path, monkeypatch):
+    from contextlib import closing
+
+    migrations = tmp_path / "migraties"
+    migrations.mkdir()
+    first = migrations / "001_eerste.sql"
+    first.write_text("CREATE TABLE proef (id INTEGER PRIMARY KEY);")
+    cfg = replace(settings, config_root=tmp_path / "encode", database_path=tmp_path / "encode/db",
+                  backup_root=tmp_path / "archief")
+    db = Database(cfg, migrations)
+    db.initialize()
+    restored = tmp_path / "terugzetten.db"
+    with db.connection(write=False) as source, closing(sqlite3.connect(restored)) as copy:
+        source.backup(copy)
+        copy.execute("INSERT INTO proef VALUES (7)")
+        copy.commit()
+    (migrations / "002_naam.sql").write_text("ALTER TABLE proef ADD COLUMN naam TEXT;")
+    db.apply_migrations()
+    third = migrations / "003_vullen.sql"
+    third.write_text("UPDATE proef SET naam='hersteld';")
+    read = Path.read_text
+
+    def replace_before_write(path, *args, **kwargs):
+        if path == third and restored.exists():
+            with db.startup_lock():
+                restored.replace(db.path)
+        return read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", replace_before_write)
+    db.apply_migrations()
+    assert db.applied_versions() == {1, 2, 3}
+    assert db.fetch_one("SELECT naam FROM proef WHERE id=7")[0] == "hersteld"
+
+
 def test_migratie_negen_normaliseert_dubbele_wachtrij_en_cpu_workers(tmp_path: Path) -> None:
     roots = {name: tmp_path / name for name in ("cache", "work", "config", "backups")}
     for path in roots.values():
