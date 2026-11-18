@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import copy
+import json
 import sqlite3
 import time
 from collections import Counter
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID
 
 import httpx
@@ -14,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mediaguard import health_summary
+from mediaguard.app import create_app
 from mediaguard.auth import Principal, current_principal
 from mediaguard.db import utcnow
 
@@ -234,12 +238,12 @@ def test_connector_openapi_documents_only_current_routes(app):
         assert paths[path]["get"]["security"] == []
 
 
-def database_snapshot(ctx, *, allow_auth=False):
+def database_snapshot(ctx, *, allow_auth_timestamps=False):
     snapshot = {}
     for table in ctx.db.fetch_all("SELECT name, sql FROM sqlite_schema WHERE type='table'"):
         name = table["name"]
         quoted_name = '"' + name.replace('"', '""') + '"'
-        ignored = AUTH_TIMESTAMP_COLUMNS.get(name) if allow_auth else None
+        ignored = AUTH_TIMESTAMP_COLUMNS.get(name) if allow_auth_timestamps else None
         snapshot[name, table["sql"]] = Counter(
             tuple((column, value) for column, value in row.items() if column != ignored)
             for row in ctx.db.fetch_dicts(f"SELECT * FROM {quoted_name}")
@@ -247,46 +251,65 @@ def database_snapshot(ctx, *, allow_auth=False):
     return snapshot
 
 
-def assert_database_preserved(ctx, before, *, allow_auth=False):
-    after = database_snapshot(ctx, allow_auth=allow_auth)
+def assert_database_preserved(ctx, before, *, allow_auth_timestamps=False,
+                              allow_rejection_audit=False):
+    after = database_snapshot(ctx, allow_auth_timestamps=allow_auth_timestamps)
     assert before.keys() == after.keys(), "Tabellen of hun schema gewijzigd"
     changed = []
     for table, old in before.items():
         new = after[table]
-        if allow_auth and table[0] == "audit_events":
+        if allow_rejection_audit and table[0] == "audit_events":
             for row, count in (new - old).items():
                 if dict(row)["action"] == AUTH_NEW_AUDIT_ACTION:
                     new[row] -= count
         if new != old:
             changed.append(table[0])
-    assert changed == [], "Onverwachte databasewijzigingen"
+    assert not changed, f"Onverwachte databasewijzigingen in {', '.join(changed)}"
 
 
 @pytest.fixture
-def populated_database(ctx):
-    now = utcnow()
-    ctx.db.execute("INSERT INTO jobs(job_type,status,progress,created_at) "
-                   "VALUES ('library.sync','running',0.5,?)", (now,))
-    ctx.db.execute("INSERT INTO encoding_jobs(source_path,status,policy_json,created_at,updated_at)"
-                   " VALUES ('/fixture/film.mkv','running','{}',?,?)", (now, now))
-    ctx.db.execute(
-        "INSERT INTO instances(id,app,media_type,name,url,suspended,created_at,updated_at) "
-        "VALUES ('fixture','radarr','movie','Fixture','http://fixture.invalid',1,?,?)", (now, now)
-    )
-    ctx.db.execute("INSERT INTO lib_items(instance_id,kind,provider_id,title,synced_at) "
-                   "VALUES ('fixture','movie',1,'Testfilm',?)", (now,))
-    # Ook een eerste gezondheidsmeting wordt uitgevoerd, met een lokale encoderrespons.
-    ctx.services["encoder_transport"] = httpx.MockTransport(lambda _: httpx.Response(200, json={}))
-    return ctx
+def populated_installation(settings):
+    fixtures = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "aio"
+    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(settings.db_path)) as db:
+        db.executescript((fixtures / "core-1.2.2.sql").read_text(encoding="utf-8"))
+    meta = json.loads((fixtures / "core-1.2.2.json").read_text(encoding="utf-8"))
+
+    app = create_app(settings)
+    ctx = app.state.ctx
+    with closing(ctx.db), TestClient(app) as client, TestClient(app) as machine:
+        response = client.post("/api/v1/auth/login",
+                               json={"username": meta["user"], "password": meta["password"]})
+        assert response.status_code == 200
+        client.headers["X-CSRF-Token"] = response.json()["csrf_token"]
+
+        snapshot = database_snapshot(ctx)
+        filled = {name for (name, _), rows in snapshot.items() if rows}
+        empty = {name for name, _ in snapshot} - filled
+        # De releasefixture zelf bevat 105 gevulde tabellen vóór migratie en aanmelding.
+        assert len(filled) >= 105, f"Slechts {len(filled)} tabellen gevuld, leeg: {sorted(empty)}"
+        progress_tables = {
+            "jobs", "job_logs", "wanted_items", "quarantine_items", "encoding_jobs",
+            "optimization_plans", "replacement_transactions", "mediaserver_pending",
+            "mediaserver_watch", "migration_runs", "outbox_events", "lib_items", "lib_episodes",
+            "lib_files", "delivery_items", "backfill_runs", "settings_values", "system_state",
+        }
+        missing = progress_tables - filled
+        assert not missing, f"Ongevulde of ontbrekende voortgangstabellen: {sorted(missing)}"
+
+        # De eerste gezondheidsmeting gebruikt een lokale encoderrespons.
+        ctx.services["encoder_transport"] = httpx.MockTransport(
+            lambda _: httpx.Response(200, json={})
+        )
+        yield ctx, client, machine
 
 
 @pytest.mark.parametrize(("method", "route"), [
     ("GET", "discover"), ("GET", "health"), ("POST", "propose"), ("POST", "apply"),
     ("POST", "rollback"),
 ])
-def test_action_payloads_never_dispatch_or_change_progress(client, machine, populated_database,
-                                                           method, route):
-    ctx = populated_database
+def test_action_payloads_never_dispatch_or_change_progress(populated_installation, method, route):
+    ctx, client, machine = populated_installation
     headers = key(client)
     revoked = key(client, name="ingetrokken")
     expired = key(client, name="verlopen")
@@ -310,16 +333,16 @@ def test_action_payloads_never_dispatch_or_change_progress(client, machine, popu
     sql = "SELECT last_used_at FROM api_keys WHERE name='hub'"
     for previous in (None, old):
         ctx.db.execute("UPDATE api_keys SET last_used_at=? WHERE name='hub'", (previous,))
-        before = database_snapshot(ctx, allow_auth=True)
+        before = database_snapshot(ctx, allow_auth_timestamps=True)
         check_accepted(request(machine, headers))
         assert ctx.db.fetch_one(sql)[0] > (previous or "")
-        assert_database_preserved(ctx, before, allow_auth=True)
+        assert_database_preserved(ctx, before, allow_auth_timestamps=True)
 
     ctx.db.execute("UPDATE sessions SET last_seen_at=?", (old,))
-    before = database_snapshot(ctx, allow_auth=True)
+    before = database_snapshot(ctx, allow_auth_timestamps=True)
     check_accepted(request(client))
-    assert ctx.db.fetch_one("SELECT last_seen_at FROM sessions")[0] > old
-    assert_database_preserved(ctx, before, allow_auth=True)
+    assert ctx.db.fetch_one("SELECT MAX(last_seen_at) FROM sessions")[0] > old
+    assert_database_preserved(ctx, before, allow_auth_timestamps=True)
 
     before = database_snapshot(ctx)
     error(request(machine), 401, "unauthorized")
@@ -327,20 +350,20 @@ def test_action_payloads_never_dispatch_or_change_progress(client, machine, popu
 
     audit_sql = "SELECT COUNT(*) FROM audit_events WHERE action=?"
     for rejected in ({"X-Api-Key": "ongeldig"}, revoked, expired):
-        before = database_snapshot(ctx, allow_auth=True)
+        before = database_snapshot(ctx)
         count = ctx.db.fetch_one(audit_sql, (AUTH_NEW_AUDIT_ACTION,))[0]
         error(request(client, rejected), 401, "unauthorized")
         assert ctx.db.fetch_one(audit_sql, (AUTH_NEW_AUDIT_ACTION,))[0] == count + 1
-        assert_database_preserved(ctx, before, allow_auth=True)
+        assert_database_preserved(ctx, before, allow_rejection_audit=True)
 
     if method == "POST":
-        before = database_snapshot(ctx, allow_auth=True)
+        before = database_snapshot(ctx, allow_auth_timestamps=True)
         error(request(machine, scoped), 403, "scope_ontbreekt")
-        assert_database_preserved(ctx, before, allow_auth=True)
+        assert_database_preserved(ctx, before, allow_auth_timestamps=True)
 
 
-def test_public_routes_and_oversized_request_do_not_write(client, machine, populated_database):
-    ctx = populated_database
+def test_public_routes_and_oversized_request_do_not_write(populated_installation):
+    ctx, client, machine = populated_installation
     headers = key(client)
     before = database_snapshot(ctx)
     for path in ("/healthz", "/readyz"):
