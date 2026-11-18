@@ -167,15 +167,19 @@ def test_public_health_has_no_information(machine, path):
 
 
 def test_readiness_pending_migration_and_database_failure(machine, ctx, monkeypatch):
+    assert "retry-after" not in machine.get("/readyz").headers
     ctx.db.execute("DELETE FROM schema_migrations WHERE version='005_api_key_scopes'")
     r = machine.get("/readyz")
     assert r.status_code == 503 and r.json() == {"status": "unavailable"}
+    assert r.headers["retry-after"] == "5"
 
     def broken(*args, **kwargs):
         raise sqlite3.OperationalError("privaat pad met instelling")
 
     monkeypatch.setattr(ctx.db, "fetch_all", broken)
-    assert machine.get("/readyz").json() == {"status": "unavailable"}
+    r = machine.get("/readyz")
+    assert r.status_code == 503 and r.json() == {"status": "unavailable"}
+    assert r.headers["retry-after"] == "5"
     assert machine.get("/healthz").json() == {"status": "ok"}
 
 

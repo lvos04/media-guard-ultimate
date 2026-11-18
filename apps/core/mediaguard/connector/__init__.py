@@ -155,8 +155,11 @@ def readyz(ctx: AppContext = Depends(get_app_context)) -> JSONResponse:
         ready = {f.stem for f in MIGRATIONS_DIR.glob("*.sql")} <= applied
     except (sqlite3.Error, OSError):
         ready = False
+    headers = {"Cache-Control": "no-store"}
+    if not ready:
+        headers["Retry-After"] = "5"  # Zelfde wachttijd als de webproxy bij uitval van core.
     return JSONResponse(
         {"status": "ok" if ready else "unavailable"},
         status_code=200 if ready else 503,
-        headers={"Cache-Control": "no-store"},
+        headers=headers,
     )
