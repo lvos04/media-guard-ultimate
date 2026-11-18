@@ -12,6 +12,15 @@ from mediaguard.db import Database
 from mediaguard.maintenance import preupdate
 
 
+def test_set_bevat_geen_sqlite_hulpbestanden_van_tijdelijke_kopie(tmp_path):
+    core = tmp_path / "core"
+    db = Database(core / "mediaguard.db")
+    db.initialize()
+    db.close()
+    made = preupdate.make_set(core / "backups" / preupdate.FOLDER, db.path, encode_dir=None)
+    assert {p.name for p in made.iterdir()} == {"mediaguard.db", "meta.json"}
+
+
 @pytest.mark.parametrize("gebrek", ["verlopen", "beschadigd", "onvolledig", "ongeldige-markering"])
 def test_geweigerd_herstel_laat_appdata_gelijk(tmp_path, monkeypatch, gebrek):
     core = tmp_path / "core"

@@ -269,7 +269,9 @@ en 3. Fork-configs gaan zo niet mee terug (die zitten alleen in de snapshot).
 Als de kern of de AV1-engine een onbekende schemaversie vindt, toont de web-URL:
 “database is van een nieuwere MediaGuard-versie; zet de bijpassende versie of de set van vóór de update terug”.
 Aanmelden en het dashboard zijn tijdelijk niet beschikbaar. MediaGuard pauzeert de automatische acties en
-weigert nieuwe downloads. De databases blijven ongewijzigd en MediaGuard maakt geen nieuwe back-upset.
+weigert nieuwe downloads. De database-inhoud blijft ongewijzigd en MediaGuard maakt geen nieuwe
+back-upset. Bij het lezen van een actief SQLite-journaal kunnen de hulpbestanden `-wal` en `-shm`
+naast de database ontstaan of wijzigen.
 Kies in het formulier van de TrueNAS Custom App de image-versie die bij de gegevens hoort, of zet de
 snapshot van vóór de update terug. Een terugzetting die je al in MediaGuard had klaargezet, kan de app
 nog uitvoeren. Een ontbrekende, bekende schemaversie volgt bij normaal starten het gewone upgradepad.

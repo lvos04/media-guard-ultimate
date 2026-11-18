@@ -7,7 +7,7 @@ import os
 import sqlite3
 import threading
 from collections.abc import Iterator
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager, suppress
 from pathlib import Path
 
 EXIT_CODE = 79
@@ -63,13 +63,27 @@ def applied_versions(path: Path, table: str, column: str, *,
                      timeout: float = 30) -> set[str | int]:
     """Een verse database of een database zonder migratietabel heeft nul versies."""
     try:
-        path.stat()
+        before = _generation(path)
     except FileNotFoundError:
         return set()
 
     uri = f"{path.resolve().as_uri()}?mode=ro"
+    sidecars = tuple(path.with_name(path.name + tail) for tail in ("-wal", "-shm", "-journal"))
+    if not any(p.exists() for p in sidecars):
+        # Een schoon hoofdbestand kan zonder SQLite-hulpbestanden gelezen worden.
+        # Bij een gelijktijdige wijziging of een aanwezige WAL is SQLite-locking nodig.
+        with suppress(OSError, sqlite3.DatabaseError):
+            with closing(sqlite3.connect(uri + "&immutable=1", uri=True, timeout=timeout)) as db:
+                versions = versions_in(db, table, column)
+            if not any(p.exists() for p in sidecars) and _generation(path) == before:
+                return versions
     with closing(sqlite3.connect(uri, uri=True, timeout=timeout)) as db:
         return versions_in(db, table, column)
+
+
+def _generation(path: Path) -> tuple[int, int, int, int, int]:
+    info = path.stat()
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def versions_in(db: sqlite3.Connection, table: str, column: str) -> set[str | int]:

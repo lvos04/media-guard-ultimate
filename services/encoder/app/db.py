@@ -64,16 +64,35 @@ def _core_migrations() -> Path:
 
 
 def _applied_versions(path: Path, table: str, column: str) -> set[int | str]:
-    if not path.exists():
+    try:
+        before = _generation(path)
+    except FileNotFoundError:
         return set()
     uri = f"{path.resolve().as_uri()}?mode=ro"
+    sidecars = tuple(path.with_name(path.name + tail) for tail in ("-wal", "-shm", "-journal"))
+    if not any(p.exists() for p in sidecars):
+        # Bij een ongewijzigd hoofdbestand zonder WAL zijn hulpbestanden overbodig.
+        with suppress(OSError, sqlite3.DatabaseError):
+            with closing(sqlite3.connect(uri + "&immutable=1", uri=True, timeout=30)) as db:
+                versions = _versions_in(db, table, column)
+            if not any(p.exists() for p in sidecars) and _generation(path) == before:
+                return versions
     with closing(sqlite3.connect(uri, uri=True, timeout=30)) as db:
-        exists = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
-        ).fetchone()
-        if not exists:
-            return set()
-        return {row[0] for row in db.execute(f"SELECT {column} FROM {table}")}  # noqa: S608
+        return _versions_in(db, table, column)
+
+
+def _generation(path: Path) -> tuple[int, int, int, int, int]:
+    info = path.stat()
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _versions_in(db: sqlite3.Connection, table: str, column: str) -> set[int | str]:
+    exists = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
+    ).fetchone()
+    if not exists:
+        return set()
+    return {row[0] for row in db.execute(f"SELECT {column} FROM {table}")}  # noqa: S608
 
 
 class Database:
@@ -154,6 +173,8 @@ class Database:
         self._apply_migrations()
 
     def migration_files(self) -> list[tuple[int, Path]]:
+        if not self.migrations_dir.is_dir():
+            raise MigrationError("Migratiemap van de AV1-engine ontbreekt")
         migrations: list[tuple[int, Path]] = []
         for path in sorted(self.migrations_dir.glob("*.sql")):
             match = MIGRATION_NAME.match(path.name)

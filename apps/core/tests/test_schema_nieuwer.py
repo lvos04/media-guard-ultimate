@@ -106,6 +106,38 @@ def test_verbinding_weigert_onbekend_schema_zonder_initialize(nieuw_schema: Path
     assert ub.meet_db(nieuw_schema, intern=True) == voor
 
 
+@pytest.mark.parametrize("in_wal", [False, True])
+def test_voorcontrole_leest_ook_wal_en_maakt_geen_hulpbestanden(
+    tmp_path: Path, in_wal: bool,
+) -> None:
+    db_path = tmp_path / "mediaguard.db"
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE schema_migrations (version TEXT PRIMARY KEY)")
+        conn.commit()
+        conn.execute("INSERT INTO schema_migrations VALUES ('999_toekomst')")
+        conn.commit()
+        if in_wal:
+            assert db_path.with_suffix(".db-wal").stat().st_size > 0
+            with pytest.raises(SchemaTooNew):
+                Database(db_path).require_writable()
+            return
+    files = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    with pytest.raises(SchemaTooNew):
+        Database(db_path).require_writable()
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == files
+
+
+def test_ontbrekende_av1_migratiemap_heeft_eigen_melding(tmp_path: Path) -> None:
+    from mediaguard.maintenance import preupdate
+
+    with closing(sqlite3.connect(tmp_path / "app.db")) as conn, conn:
+        conn.execute("CREATE TABLE schema_versie (versie INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO schema_versie VALUES (1)")
+    with pytest.raises(RuntimeError, match="Migratiemap van de AV1-engine ontbreekt"):
+        preupdate._encoder_pending(tmp_path, tmp_path / "ontbreekt")
+
+
 def test_schema_verandert_tussen_twee_processen(tmp_path: Path) -> None:
     app = create_app(Settings(data_dir=tmp_path, start_background=False))
     db = app.state.ctx.db

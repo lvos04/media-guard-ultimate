@@ -215,3 +215,28 @@ def test_draaiende_av1_gaat_blijvend_naar_herstelweergave(tmp_path: Path) -> Non
             assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='proef'").fetchone()
             conn.execute("DELETE FROM schema_versie WHERE versie=999")
         assert client.get("/livez").status_code == 503
+
+
+@pytest.mark.parametrize("in_wal", [False, True])
+def test_av1_voorcontrole_leest_ook_wal_en_maakt_geen_hulpbestanden(tmp_path, in_wal):
+    from contextlib import closing
+
+    from app.db import SchemaTooNew
+
+    path = tmp_path / "app.db"
+    instance = replace(settings, config_root=tmp_path, database_path=path)
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE schema_versie (versie INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.execute("INSERT INTO schema_versie VALUES (999)")
+        conn.commit()
+        if in_wal:
+            assert path.with_suffix(".db-wal").stat().st_size > 0
+            with pytest.raises(SchemaTooNew):
+                Database(instance).require_writable()
+            return
+    files = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    with pytest.raises(SchemaTooNew):
+        Database(instance).require_writable()
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == files

@@ -93,7 +93,8 @@ def _copy_sqlite(src: Path, dest: Path) -> dict[str, Any]:
         finally:
             d.close()
             s.close()
-        check = sqlite3.connect(f"file:{part}?mode=ro", uri=True)
+        # De SQLite-back-up is gesloten en staat op een uniek tijdelijk pad.
+        check = sqlite3.connect(f"{part.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
         try:
             ok = check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         finally:
@@ -549,18 +550,22 @@ def _core_pending(core_db: Path, migrations_dir: Path) -> tuple[str, str] | None
 
 
 def _encoder_versions(migrations_dir: Path) -> set[int]:
+    if not migrations_dir.is_dir():
+        raise RuntimeError("Migratiemap van de AV1-engine ontbreekt")
     return {int(m.group(1)) for p in migrations_dir.glob("*.sql")
             if (m := _ENC_VERSION.match(p.name))}
 
 
-def _encoder_pending(encode_dir: Path, migrations_dir: Path | None) -> bool:
+def _encoder_pending(encode_dir: Path, migrations_dir: Path | None, *, timeout: float = 30) -> bool:
     if migrations_dir is None:
         return False
-    wanted = {int(m.group(1)) for p in migrations_dir.glob("*.sql")
-              if (m := _ENC_VERSION.match(p.name))}
+    databases = sorted(encode_dir.glob("*.db"))
+    if not databases:
+        return False
+    wanted = _encoder_versions(migrations_dir)
     pending = False
-    for db in sorted(encode_dir.glob("*.db")):
-        have = schema.applied_versions(db, "schema_versie", "versie")
+    for db in databases:
+        have = schema.applied_versions(db, "schema_versie", "versie", timeout=timeout)
         if have - wanted:
             raise schema.SchemaTooNew()
         pending |= bool(have and wanted - have)
@@ -576,8 +581,8 @@ def encoder_migrations(env: Mapping[str, str]) -> Path:
     return root / "app" / "migrations"
 
 
-def check_encoder_schema(encode_dir: Path) -> None:
-    _encoder_pending(encode_dir, encoder_migrations(os.environ))
+def check_encoder_schema(encode_dir: Path, *, timeout: float = 30) -> None:
+    _encoder_pending(encode_dir, encoder_migrations(os.environ), timeout=timeout)
 
 
 def has_database(config_root: Path) -> bool:

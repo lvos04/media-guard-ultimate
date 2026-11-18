@@ -368,6 +368,28 @@ def test_kapotte_database_na_de_upgrade_is_een_fout(meting: dict[str, Any]) -> N
     assert any("integrity_check" in f for f in ub.vergelijk(meting, na, UITZ)[0])
 
 
+def test_schemaproef_staat_alleen_sqlite_hulpbestanden_toe(tmp_path):
+    root = tmp_path / "config"
+    core = root / "core"
+    core.mkdir(parents=True)
+    db = core / "mediaguard.db"
+    db.write_bytes(b"database")
+    voor = ub.mapboom({"config": root})
+    db.with_name("mediaguard.db-wal").touch()
+    db.with_name("mediaguard.db-shm").touch()
+    db.with_name("onverwacht.db-shm").touch()
+    db.write_bytes(b"anders")
+    backups = core / "backups"
+    backups.mkdir()
+    geblokkeerd, sqlite = ub.boomverschillen(
+        voor, ub.mapboom({"config": root}), {"core/mediaguard.db"},
+    )
+    assert set(geblokkeerd) == {
+        "config/core/mediaguard.db", "config/core/onverwacht.db-shm", "config/core/backups",
+    }
+    assert set(sqlite) == {"config/core/mediaguard.db-wal", "config/core/mediaguard.db-shm"}
+
+
 def test_back_ups_tellen_niet_als_live_database(tmp_path: Path) -> None:
     for rel in ("core/mediaguard.db", "core/backups/voor-update/set1/mediaguard.db",
                 "encode/backups/app-1.db", "encode/app.db"):

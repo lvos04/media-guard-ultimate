@@ -45,6 +45,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -330,6 +331,34 @@ def meet(map_: Path, *, intern: bool = False) -> dict[str, Any]:
     return {"databases": {
         p.relative_to(map_).as_posix(): meet_db(p, intern=intern) for p in live_databases(map_)
     }}
+
+
+def mapboom(roots: dict[str, Path]) -> dict[str, list[Any]]:
+    """Meet de paden, rechten en bytes op de wegwerpkopie."""
+    entries: dict[str, list[Any]] = {}
+    for name, root in roots.items():
+        for path in [root, *root.rglob("*")]:
+            info = path.lstat()
+            key = f"{name}/{path.relative_to(root).as_posix()}"
+            data = [info.st_mode, info.st_uid, info.st_gid]
+            if stat.S_ISREG(info.st_mode):
+                with path.open("rb") as handle:
+                    data += [info.st_size, hashlib.file_digest(handle, "sha256").hexdigest()]
+            elif stat.S_ISLNK(info.st_mode):
+                data.append(os.readlink(path))
+            entries[key] = data
+    return entries
+
+
+def boomverschillen(voor: dict[str, Any], na: dict[str, Any],
+                    databases: set[str]) -> tuple[list[str], list[str]]:
+    sidecars = {f"config/{db}{tail}" for db in databases
+                if db == "core/mediaguard.db" or db.startswith("encode/")
+                for tail in ("-wal", "-shm")}
+    changed = {path for path in voor.keys() | na.keys() if voor.get(path) != na.get(path)}
+    allowed = {path for path in changed & sidecars
+               if all(stat.S_ISREG(tree[path][0]) for tree in (voor, na) if path in tree)}
+    return sorted(changed - allowed), sorted(allowed)
 
 
 def gewijzigde_tabellen(voor: dict[str, Any], na: dict[str, Any]) -> list[str]:
@@ -653,6 +682,15 @@ class Poort:
         meting: dict[str, Any] = json.loads((self.werk / uit).read_text("utf-8"))
         return meting
 
+    def schema_mapboom(self) -> dict[str, Any]:
+        data = self.hulp(
+            "-c", "import json, sys; from pathlib import Path; sys.path.insert(0, '/s'); "
+            "from upgradebewijs import mapboom; "
+            "print(json.dumps(mapboom({naam: Path(f'/mnt/{naam}-schemaproef') "
+            "for naam in ('config', 'work', 'data')})))",
+        )
+        return json.loads(data)
+
     def schema_probe(self, image: str, schema: str) -> tuple[str, dict[str, Any], int]:
         """Start een wegwerpkopie zonder netwerkaansluiting. Meet via de eigen loopback."""
         config = self.werk / "config-schemaproef"
@@ -715,9 +753,7 @@ class Poort:
                           "db.execute(sys.argv[2]); db.commit(); db.close()",
                           f"/mnt/config-schemaproef/{pad}", sql, als=str(APP_UID))
             voor = self.meet("config-schemaproef", f"meting-schema-{proef}-voor.json", intern=True)
-            lijst_backups = ("find /mnt/config-schemaproef -path '*/backups/*' "
-                             "-type f -print | sort")
-            backups = self.shell(lijst_backups)
+            boom_voor = self.schema_mapboom() if proef != "vorige" else {}
             image = self.a.vorige if proef == "vorige" else self.a.nieuw
             state, body, restarts = self.schema_probe(image, proef)
             na = self.meet("config-schemaproef", f"meting-schema-{proef}-na.json", intern=True)
@@ -737,9 +773,16 @@ class Poort:
                     fouten.append("1.2.2 veranderde migratieversies op de wegwerpkopie")
                 _, open_fouten = open_werk_regel(voor, na)
                 fouten += open_fouten
-            elif (body.get("reason_code") != "schema_nieuwer" or voor != na
-                  or self.shell(lijst_backups) != backups):
-                fouten.append(f"schemabescherming {proef}: onjuiste health, tabelinhoud of back-ups")
+            else:
+                veranderd, sqlite = boomverschillen(
+                    boom_voor, self.schema_mapboom(), set(voor["databases"]),
+                )
+                regels.append(f"  SQLite-hulpbestanden gewijzigd: {', '.join(sqlite) or 'geen'}.")
+                if veranderd:
+                    fouten.append(f"schemabescherming {proef}: gewijzigde paden: "
+                                  + ", ".join(veranderd))
+                if body.get("reason_code") != "schema_nieuwer" or voor != na:
+                    fouten.append(f"schemabescherming {proef}: onjuiste health of tabelinhoud")
         return fouten, "\n".join(regels) + "\n"
 
     def run(self) -> tuple[list[str], str]:
