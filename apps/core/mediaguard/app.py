@@ -60,6 +60,7 @@ MODULES: list[str] = [
     # bewaking op de achtergrond: pusht problemen ook als niemand de app openheeft
     "mediaguard.monitor",
     "mediaguard.health_summary",
+    "mediaguard.connector",
     "mediaguard.automation",
     "mediaguard.encoding.resources",
     "mediaguard.activity.api",
@@ -149,12 +150,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(ValueError)
     async def _value_error(_: Request, exc: ValueError) -> JSONResponse:
+        if _.url.path.startswith("/connector/v1/"):
+            from mediaguard.connector.errors import failure
+
+            return failure(422, "validation_error", "Ongeldige invoer", {"fouten": []})
         return JSONResponse(status_code=422, content={"detail": redact(str(exc))})
 
     for module in modules:
         router = getattr(module, "router", None)
         if router is not None:
             app.include_router(router)
+    from mediaguard.connector.errors import InputLimit, install
+
+    install(app)
+    app.add_middleware(InputLimit)
     _document_security(app)
     _admin_docs(app)
     return app

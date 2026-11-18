@@ -48,6 +48,7 @@ async def _encoder_state(ctx: AppContext) -> dict[str, Any]:
         note_encoder_reachability,
     )
 
+    measured_at = utcnow()
     try:
         h = await asyncio.wait_for(get_encoder_client(ctx).health(), 10)
         note_encoder_reachability(ctx, True)
@@ -57,10 +58,12 @@ async def _encoder_state(ctx: AppContext) -> dict[str, Any]:
         if not note_encoder_reachability(ctx, False) and last is not None:
             state = last  # laatste bekende toestand houden tot de engine echt weg is
         else:
+            ctx.services["health_summary_encoder_observed_at"] = measured_at
             state = {"state": "offline", "reasons": [f"AV1-engine reageert niet ({exc})"],
                      "lanes_paused": 0}
         ctx.services["health_summary_encoder"] = (time.monotonic(), state)
         return state
+    ctx.services["health_summary_encoder_observed_at"] = measured_at
     ctx.services["health_summary_encoder_last_ok"] = state
     ctx.services["health_summary_encoder"] = (time.monotonic(), state)
     return state
@@ -199,7 +202,27 @@ async def build(ctx: AppContext) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - encoder-bron optioneel
         enc_items = []
     # SQLite-werk buiten de event loop: andere verzoeken blijven snel
-    return await asyncio.to_thread(compose, ctx, act, encoder, enc_items)
+    result = await asyncio.to_thread(compose, ctx, act, encoder, enc_items)
+    # Alleen interne herkomst voor de connector: het bestaande UI-antwoord blijft gelijk.
+    # Een bewaarde encoderwaarde krijgt bij een mislukte probe geen nieuwe meettijd.
+    activity_meta = ctx.services.get("activity_observation")
+    activity_at = activity_meta[1] if activity_meta and activity_meta[0] is act else None
+    job_row = await asyncio.to_thread(ctx.db.fetch_one,
+        "SELECT SUM(status IN ('queued','retry_scheduled')) AS waiting, "
+        "SUM(status='running') AS busy, "
+        "MAX(CASE WHEN status='succeeded' THEN finished_at END) AS finished, "
+        "MIN(CASE WHEN status IN ('queued','retry_scheduled') "
+        "AND (run_after IS NULL OR run_after<=?) THEN created_at END) AS oldest FROM jobs",
+        (utcnow(),))
+    ctx.services["health_summary_observations"] = (result, {
+        "encoder": ctx.services.get("health_summary_encoder_observed_at"),
+        "instances": activity_at,
+        "jobs": {"wachtrij": int(job_row["waiting"] or 0),
+                 "bezig": int(job_row["busy"] or 0),
+                 "laatste_job_klaar": job_row["finished"]},
+        "oldest_queued_at": job_row["oldest"],
+    })
+    return result
 
 
 def local(ctx: AppContext) -> dict[str, Any]:

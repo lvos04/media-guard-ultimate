@@ -12,6 +12,7 @@ import { createServer } from "node:http";
 import { connect as netConnect } from "node:net";
 import { connect as tlsConnect } from "node:tls";
 import zlib from "node:zlib";
+import { randomUUID } from "node:crypto";
 
 import next from "next";
 
@@ -27,6 +28,8 @@ const HOP_BY_HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "p
 const STRIP = new Set(["x-mediaguard-token", "x-mediaguard-hook-key", "x-mediaguard-gateway", "x-mg-peer", "x-mg-tls"]);
 
 function target(pathname) {
+  if (pathname === "/connector/v1" || pathname.startsWith("/connector/v1/") ||
+      pathname === "/healthz" || pathname === "/readyz") return { base: coreUrl, path: pathname };
   if (pathname === "/api/v1" || pathname.startsWith("/api/v1/")) return { base: coreUrl, path: pathname };
   // AV1-engine alleen via core (login + intern token): oude /api/encoder/*-paden blijven werken
   if (pathname.startsWith("/api/encoder/")) return { base: coreUrl, path: "/api/v1/encoder/" + pathname.slice("/api/encoder/".length) };
@@ -77,6 +80,19 @@ function coreDownDetail() {
 
 function proxy(req, res, dest) {
   const url = new URL(req.url ?? "/", "http://placeholder");
+  const connector = url.pathname === "/connector/v1" || url.pathname.startsWith("/connector/v1/") ||
+    url.pathname === "/healthz" || url.pathname === "/readyz";
+  // Een directe 413 van core kan komen terwijl Node de body nog doorstuurt.
+  // Weiger een bekende overschrijding hier en lees de rest zonder opslag uit:
+  // zo ontvangt de client de contractfout in plaats van een verbindingsreset.
+  // Zonder Content-Length blijft de tellende ASGI-laag in core bepalend.
+  if (connector && Number(req.headers["content-length"] ?? 0) > 1048576) {
+    req.resume();
+    res.writeHead(413, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    res.end(JSON.stringify({ code: "payload_too_large", message: "Verzoek is te groot",
+      details: { max_bytes: 1048576 }, trace_id: randomUUID() }));
+    return;
+  }
   const send = dest.base.protocol === "https:" ? httpsRequest : httpRequest;
   const upstream = send({
     protocol: dest.base.protocol,
@@ -98,8 +114,17 @@ function proxy(req, res, dest) {
   upstream.setTimeout(0);
   upstream.on("error", () => {
     if (!res.headersSent) {
-      res.writeHead(502, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      res.end(JSON.stringify(coreDownDetail()));
+      if (url.pathname === "/healthz" || url.pathname === "/readyz") {
+        res.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "retry-after": "5" });
+        res.end(JSON.stringify({ status: "unavailable" }));
+      } else if (url.pathname === "/connector/v1" || url.pathname.startsWith("/connector/v1/")) {
+        res.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "retry-after": "5" });
+        res.end(JSON.stringify({ code: "dependency_unavailable", message: "Kern niet bereikbaar",
+          details: {}, trace_id: randomUUID() }));
+      } else {
+        res.writeHead(502, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        res.end(JSON.stringify(coreDownDetail()));
+      }
     } else {
       res.destroy();
     }

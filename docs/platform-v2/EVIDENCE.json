@@ -11,13 +11,13 @@
  },
  {
   "id": "B04-002",
-  "status": "Niet gestart",
-  "validatie": "NIET GEVALIDEERD (echte NAS)",
-  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); INVENTARIS.md §4.2 en §4.4; DELTA_MATRIX.md §B04-002, §D en §K (A-35, N-15, N-24)",
-  "blokkade": "",
-  "opmerking": "Nieuw werk nog niet gebouwd. Hiaat: /connector/v1 (discover/health/items/evidence/events), /healthz, /readyz, cursor/ETag, contractfoutformaat en OpenAPI-export (P3-01, P3-03). Daarbij uit de tweede lezing: 'cursor_expired' als de cursor ouder is dan de outbox-bewaartermijn (standaard 14 dagen) en een stabiele event_id. Bestaand deel (1.2.2): alle leesroutes geven 200 met een viewer-sleutel (in-process probe). De Hub-adapter zelf hoort bij ai-server-manager.",
+  "status": "Bezig",
+  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "S-P3-610; apps/core/tests/test_connector_lezen.py (toegang, vaste 501, versheid, slechtste check, minimale healthroutes, invoergrens en behoud van voortgang); apps/core/tests/test_api_keys.py::test_sleutel_met_rechten_krijgt_403_op_elke_andere_schrijvende_route (alle routes, beide foutformaten); apps/core/tests/test_openapi_export.py; docs/CONNECTOR.md; apps/web/e2e/werk-connector-lezen.spec.ts (beide tests via de webpoort: sleutelrechten, minimale healthroutes, 413 met Content-Length en chunked, precies 1 MiB doorgelaten naar authenticatie)",
+  "blokkade": "Echte Hub tegen MediaGuard op de NAS nog nodig (N-P6-05); NIET GEVALIDEERD (echte NAS). Items en vijf datasets volgen in S-P3-615; events in S-P3-620.",
+  "opmerking": "Connector deel 1 gebouwd en Unit-getest: discover, health, healthz, readyz en vaste weigering van propose/apply/rollback. Webdoorgifte Sim-getest, inclusief herstel van een verbindingsreset bij vroege 413; de gerichte verbindingstest ook vijfmaal zonder herkansing groen. Alleen dit deel is aangetoond; onafhankelijke reviews staan open. Items, evidence/cursor/ETag, vergelijking van vijf datasets en events zijn nog niet geleverd. Bestaande API-foutvorm, centrale sleutelrechten en container-healthcheck behouden; geen migratie en geen gereserveerde acties.",
   "repo": "media-guard-ultimate",
-  "bijgewerkt": "2026-11-09"
+  "bijgewerkt": "2026-11-18"
  },
  {
   "id": "B04-003",
@@ -151,13 +151,13 @@
  },
  {
   "id": "C1.3-MGU-06",
-  "status": "Niet gestart",
-  "validatie": "Niet getest",
-  "bewijs": "CONTRACT_1.3_CONFORMITEIT.md §6 (moment P3)",
-  "blokkade": "",
-  "opmerking": "Nieuwe routes /connector/v1/* (alleen-lezen), /healthz, /readyz met foutcatalogus, health-regels, observed_at/max_age en events in domein media. Fase P3 (zie ook B04-002).",
+  "status": "Bezig",
+  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "S-P3-610; apps/core/tests/test_connector_lezen.py (toegang, vaste 501, versheid, slechtste check, minimale healthroutes, invoergrens en behoud van voortgang); apps/core/tests/test_api_keys.py::test_sleutel_met_rechten_krijgt_403_op_elke_andere_schrijvende_route (alle routes, beide foutformaten); apps/core/tests/test_openapi_export.py; docs/CONNECTOR.md; apps/web/e2e/werk-connector-lezen.spec.ts (beide tests via de webpoort: sleutelrechten, minimale healthroutes, 413 met Content-Length en chunked, precies 1 MiB doorgelaten naar authenticatie)",
+  "blokkade": "Echte Hub tegen MediaGuard op de NAS nog nodig (N-P6-05); NIET GEVALIDEERD (echte NAS). Items en vijf datasets volgen in S-P3-615; events in S-P3-620.",
+  "opmerking": "Connector deel 1 gebouwd en Unit-getest: discover, health, healthz, readyz en vaste weigering van propose/apply/rollback. Webdoorgifte Sim-getest, inclusief herstel van een verbindingsreset bij vroege 413; de gerichte verbindingstest ook vijfmaal zonder herkansing groen. Alleen dit deel is aangetoond; onafhankelijke reviews staan open. Items, evidence/cursor/ETag, vergelijking van vijf datasets en events zijn nog niet geleverd. Bestaande API-foutvorm, centrale sleutelrechten en container-healthcheck behouden; geen migratie en geen gereserveerde acties.",
   "repo": "media-guard-ultimate",
-  "bijgewerkt": "2026-11-10"
+  "bijgewerkt": "2026-11-18"
  },
  {
   "id": "C1.3-MGU-07",

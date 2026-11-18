@@ -9,6 +9,7 @@ import re
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -319,7 +320,8 @@ def test_wie_de_noodstop_mag_zetten() -> None:
 def test_sleutel_met_rechten_krijgt_403_op_elke_andere_schrijvende_route(  # type: ignore[no-untyped-def]
         app, client, machine, ctx):
     """(b) Elke route uit de routetabel (scripts/platform-v2-routes.py) met een andere methode
-    dan GET/HEAD: 403 met de vaste tekst. Routes zonder aanmelding (rol 'geen': inloggen,
+    dan GET/HEAD: 403 met de vaste tekst, of de volledige contractfout voor connectorroutes.
+    Routes zonder aanmelding (rol 'geen': inloggen,
     hooks) kijken niet naar X-Api-Key: daar geeft de sleutel precies hetzelfde als zonder."""
     routes = _routes_script().collect(app)
     h = {"X-Api-Key": _hub(client)["key"]}
@@ -339,7 +341,17 @@ def test_sleutel_met_rechten_krijgt_403_op_elke_andere_schrijvende_route(  # typ
                 openbaar += 1
             else:
                 assert got.status_code == 403, (method, r["path"], got.status_code, got.text)
-                assert got.json() == DENIED, (method, r["path"])
+                if r["path"].startswith("/connector/v1/"):
+                    body = got.json()
+                    assert str(UUID(body["trace_id"])) == body["trace_id"]
+                    assert body == {
+                        "code": "scope_ontbreekt",
+                        "message": "Deze API-sleutel mist het vereiste recht",
+                        "details": {"reason": "scope_ontbreekt"},
+                        "trace_id": body["trace_id"],
+                    }, (method, r["path"])
+                else:
+                    assert got.json() == DENIED, (method, r["path"])
                 getoetst += 1
     assert opened == [("POST", ESTOP, [SCOPE])]
     # ondergrens (V-005): de routetabel had op 2026-11-17 ruim 230 schrijvende routes met aanmelding

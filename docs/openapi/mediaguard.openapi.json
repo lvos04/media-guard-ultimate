@@ -25511,6 +25511,156 @@
           "wanted"
         ]
       }
+    },
+    "/connector/v1/apply": {
+      "post": {
+        "description": "Geen acties; de bestaande centrale scope- en sessiecontrole blijft van toepassing.",
+        "operationId": "unavailable_connector_v1_apply_post",
+        "responses": {
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Unavailable",
+        "tags": [
+          "connector"
+        ]
+      }
+    },
+    "/connector/v1/discover": {
+      "get": {
+        "description": "Alleen aanwezige leesmogelijkheden; items en acties volgen in andere stappen.",
+        "operationId": "discover_connector_v1_discover_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Discover Connector V1 Discover Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Discover",
+        "tags": [
+          "connector"
+        ]
+      }
+    },
+    "/connector/v1/health": {
+      "get": {
+        "description": "Zelfde gezondheidsbron als de UI; geen ruwe foutteksten, paden of kijkgedrag.",
+        "operationId": "health_connector_v1_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Health Connector V1 Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "connector"
+        ]
+      }
+    },
+    "/connector/v1/propose": {
+      "post": {
+        "description": "Geen acties; de bestaande centrale scope- en sessiecontrole blijft van toepassing.",
+        "operationId": "unavailable_connector_v1_propose_post",
+        "responses": {
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Unavailable",
+        "tags": [
+          "connector"
+        ]
+      }
+    },
+    "/connector/v1/rollback": {
+      "post": {
+        "description": "Geen acties; de bestaande centrale scope- en sessiecontrole blijft van toepassing.",
+        "operationId": "unavailable_connector_v1_rollback_post",
+        "responses": {
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Unavailable",
+        "tags": [
+          "connector"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "description": "Proces leeft; geen versie of andere installatiegegevens.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [],
+        "summary": "Healthz",
+        "tags": [
+          "connector"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "description": "Alleen lezen: database bereikbaar en alle meegeleverde migraties toegepast.",
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [],
+        "summary": "Readyz",
+        "tags": [
+          "connector"
+        ]
+      }
     }
   },
   "security": [

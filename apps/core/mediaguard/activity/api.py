@@ -521,7 +521,9 @@ async def activity_cached(ctx: AppContext) -> dict[str, Any]:
         cached = ctx.services.get("activity_cache")
         if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
             return cached[1]  # type: ignore[no-any-return]
+        observed_at = datetime.now(UTC).isoformat()
         result = await _collect(ctx)
+        ctx.services["activity_observation"] = (result, observed_at)
         ctx.services["activity_cache"] = (time.monotonic(), result)
         return result
 
