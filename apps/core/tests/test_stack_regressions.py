@@ -369,3 +369,33 @@ def test_losse_webcontainer_wacht_niet_op_een_gezonde_kern() -> None:
         "\n  mediaguard-core:\n", 1,
     )[0]
     assert "mediaguard-core: {condition: service_started}" in web
+
+
+def test_losse_schrijvers_zien_beide_schemas() -> None:
+    from pathlib import Path
+
+    import yaml
+
+    compose = Path(__file__).resolve().parents[3] / "deploy" / "truenas" / "compose.yaml"
+    services = yaml.safe_load(compose.read_text())["services"]
+    for naam, peer, pad, migraties in (
+        ("core", "encode", "/encode", "/opt/mediaguard-encode/app/migrations"),
+        ("recovery", "encode", "/encode", "/opt/mediaguard-encode/app/migrations"),
+        ("encode", "core", "/core", "/opt/mediaguard-core/migrations"),
+    ):
+        dienst = services[f"mediaguard-{naam}"]
+        mounts = {mount["target"]: mount for mount in dienst["volumes"]}
+        assert mounts[pad]["source"] == "mg_appdata"
+        assert mounts[pad]["volume"]["subpath"] == peer
+        assert mounts[pad]["read_only"] is True
+        assert mounts[migraties]["read_only"] is True
+    for naam in ("core", "recovery"):
+        assert services[f"mediaguard-{naam}"]["environment"]["MG_SCHEMA_ENCODER_DIR"] == "/encode"
+    assert services["mediaguard-encode"]["environment"]["MG_SCHEMA_CORE_MIGRATIONS"] == (
+        "/opt/mediaguard-core/migrations"
+    )
+    for naam, dienst in services.items():
+        if naam == "mediaguard-encode" or naam.startswith(
+            ("mediaguard-sonarr-", "mediaguard-radarr-")
+        ):
+            assert dienst["depends_on"]["mediaguard-core"]["condition"] == "service_healthy"

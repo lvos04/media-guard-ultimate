@@ -372,6 +372,59 @@ def test_start_leest_schema_opnieuw_na_wachten_op_startslot(
     assert not (core.parent / "backups").exists()
 
 
+@pytest.mark.parametrize("ingang", ["execute", "execute_insert", "transaction"])
+@pytest.mark.parametrize("startslot", [False, True])
+def test_wachtende_schrijver_weigert_nieuw_schema(
+    tmp_path: Path, monkeypatch, ingang: str, startslot: bool,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import nullcontext
+    from threading import Event
+
+    db = Database(tmp_path / "mediaguard.db")
+    db.initialize()
+    db.close()
+    gestart, gelezen = Event(), Event()
+    echte_toets = db.check_schema
+
+    def toets():
+        result = echte_toets()
+        gelezen.set()
+        return result
+
+    def schrijf():
+        gestart.set()
+        sql = "INSERT INTO system_state VALUES ('proef', '1', 'proef')"
+        try:
+            if ingang == "transaction":
+                with db.transaction() as conn:
+                    conn.execute(sql)
+            else:
+                getattr(db, ingang)(sql)
+        finally:
+            db.close()
+
+    monkeypatch.setattr(db, "check_schema", toets)
+    slot = db.startup_lock() if startslot else nullcontext()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with slot, closing(sqlite3.connect(db.path)) as migratie:
+            migratie.execute("BEGIN IMMEDIATE")
+            migratie.execute("INSERT INTO schema_migrations VALUES ('999_toekomst', 'proef')")
+            toekomst = pool.submit(schrijf)
+            assert gestart.wait(2)
+            gelezen.wait(0.2)  # Basiscode heeft de versie al gelezen vóór de schrijfgrens.
+            assert not toekomst.done()
+            migratie.commit()
+            voor = ub.meet_db(db.path, intern=True) if startslot else None
+        with pytest.raises(SchemaTooNew):
+            toekomst.result(timeout=5)
+    with closing(sqlite3.connect(db.path)) as conn:
+        rij = conn.execute("SELECT count(*) FROM system_state WHERE key='proef'").fetchone()
+        assert rij == (0,)
+    if voor is not None:
+        assert ub.meet_db(db.path, intern=True) == voor
+
+
 def test_bewaker_onderscheidt_ongezond_van_vastgelopen(tmp_path: Path, monkeypatch) -> None:
     import io
     import urllib.error

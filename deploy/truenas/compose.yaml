@@ -53,6 +53,9 @@ x-common: &common
 x-after-init: &after-init
   mediaguard-init: {condition: service_completed_successfully}
 
+x-after-core: &after-core
+  mediaguard-core: {condition: service_healthy}
+
 x-fork-env: &fork-env
   TZ: ${TZ:-Europe/Amsterdam}
   HOME: /config
@@ -67,6 +70,7 @@ x-fork-limits: &fork-limits
 x-core-env: &core-env
   TZ: ${TZ:-Europe/Amsterdam}
   MG_DATA_DIR: /config
+  MG_SCHEMA_ENCODER_DIR: /encode
   MG_SECRETS_DIR: /run/mediaguard
   # de hele data-dataset: bestaande mapindelingen werken zonder iets te verplaatsen
   MG_LIBRARY_ROOTS: /data
@@ -104,7 +108,7 @@ services:
       - {type: volume, source: mg_appdata, target: /bootstrap/appdata, volume: {nocopy: true}}
       - {type: volume, source: mg_work, target: /bootstrap/work, volume: {nocopy: true}}
       - {type: volume, source: mg_data, target: /bootstrap/data, volume: {nocopy: true}}
-      - {type: bind, source: ../../services/encoder/app/migrations, target: /opt/mediaguard-encode/app/migrations, read_only: true}
+      - &av1-schema {type: bind, source: ../../services/encoder/app/migrations, target: /opt/mediaguard-encode/app/migrations, read_only: true}
 
   mediaguard-web:
     <<: *common
@@ -146,6 +150,8 @@ services:
       MG_INSTANCE_RADARR_ANIMEFILMS_PUBLIC_PORT: ${MG_PORT_RADARR_ANIMEFILMS:-37879}
     volumes:
       - {type: volume, source: mg_appdata, target: /config, volume: {nocopy: true, subpath: core}}
+      - &av1-db {type: volume, source: mg_appdata, target: /encode, read_only: true, volume: {nocopy: true, subpath: encode}}
+      - *av1-schema
       - {type: volume, source: mg_appdata, target: /run/mediaguard, read_only: true, volume: {nocopy: true, subpath: secrets}}
       - {type: volume, source: mg_work, target: /work/staging, read_only: true, volume: {nocopy: true, subpath: encode/staging}}
       - {type: volume, source: mg_work, target: /work/quarantine, read_only: true, volume: {nocopy: true, subpath: quarantine}}
@@ -163,10 +169,11 @@ services:
     environment:
       <<: *core-env
       MG_ROLE: recovery
-    depends_on:
-      mediaguard-core: {condition: service_healthy}
+    depends_on: *after-core
     volumes:
       - {type: volume, source: mg_appdata, target: /config, volume: {nocopy: true, subpath: core}}
+      - *av1-db
+      - *av1-schema
       - {type: volume, source: mg_appdata, target: /run/mediaguard/internal, read_only: true, volume: {nocopy: true, subpath: secrets/internal}}
       - {type: volume, source: mg_work, target: /work/staging, volume: {nocopy: true, subpath: encode/staging}}
       - {type: volume, source: mg_work, target: /work/quarantine, volume: {nocopy: true, subpath: quarantine}}
@@ -180,7 +187,7 @@ services:
   mediaguard-encode:
     <<: *common
     image: ${MG_ENCODE_IMAGE:-ghcr.io/lvos04/mediaguard-encode:1.2.2}
-    depends_on: *after-init
+    depends_on: *after-core
     group_add: ["${MG_RENDER_GID:-107}", "${MG_VIDEO_GID:-44}"]
     environment:
       TZ: ${TZ:-Europe/Amsterdam}
@@ -190,9 +197,12 @@ services:
       MG_PROTECT_LEGACY_API: "1"
       MG_MEDIA_ROOTS: /data
       MG_STAGING_ROOT: /work/staging
+      MG_SCHEMA_CORE_MIGRATIONS: /opt/mediaguard-core/migrations
       MG_MIN_STABLE_SECONDS: ${MG_ENCODE_MIN_STABLE_SECONDS:-60}
     volumes:
       - {type: volume, source: mg_appdata, target: /config, volume: {nocopy: true, subpath: encode}}
+      - {type: volume, source: mg_appdata, target: /core, read_only: true, volume: {nocopy: true, subpath: core}}
+      - {type: bind, source: ../../apps/core/mediaguard/migrations, target: /opt/mediaguard-core/migrations, read_only: true}
       - {type: volume, source: mg_appdata, target: /run/mediaguard, read_only: true, volume: {nocopy: true, subpath: secrets/internal}}
       # cache/, work/ en staging/ op hetzelfde filesystem (rename i.p.v. kopie)
       - {type: volume, source: mg_work, target: /work, volume: {nocopy: true, subpath: encode}}
@@ -212,7 +222,7 @@ services:
   mediaguard-sonarr-series:
     <<: *common
     image: ${MG_SONARR_IMAGE:-ghcr.io/lvos04/mediaguard-sonarr-fork:4.0.20.3014-mg2}
-    depends_on: *after-init
+    depends_on: *after-core
     entrypoint: &sonarr-entry ["/bin/sh", "-c", "export SONARR__AUTH__APIKEY=\"$$(cat /run/mediaguard/apikey)\" MEDIAGUARD_HOOK_KEY=\"$$(cat /run/mediaguard/hookkey)\"; exec /app/sonarr/bin/Sonarr -nobrowser -data=/config"]
     environment:
       <<: *fork-env
@@ -232,7 +242,7 @@ services:
   mediaguard-sonarr-anime:
     <<: *common
     image: ${MG_SONARR_IMAGE:-ghcr.io/lvos04/mediaguard-sonarr-fork:4.0.20.3014-mg2}
-    depends_on: *after-init
+    depends_on: *after-core
     entrypoint: *sonarr-entry
     environment:
       <<: *fork-env
@@ -251,7 +261,7 @@ services:
   mediaguard-radarr-films:
     <<: *common
     image: ${MG_RADARR_IMAGE:-ghcr.io/lvos04/mediaguard-radarr-fork:6.4.4.10685-mg1}
-    depends_on: *after-init
+    depends_on: *after-core
     entrypoint: &radarr-entry ["/bin/sh", "-c", "export RADARR__AUTH__APIKEY=\"$$(cat /run/mediaguard/apikey)\" MEDIAGUARD_HOOK_KEY=\"$$(cat /run/mediaguard/hookkey)\"; exec /app/radarr/bin/Radarr -nobrowser -data=/config"]
     environment:
       <<: *fork-env
@@ -270,7 +280,7 @@ services:
   mediaguard-radarr-animefilms:
     <<: *common
     image: ${MG_RADARR_IMAGE:-ghcr.io/lvos04/mediaguard-radarr-fork:6.4.4.10685-mg1}
-    depends_on: *after-init
+    depends_on: *after-core
     entrypoint: *radarr-entry
     environment:
       <<: *fork-env

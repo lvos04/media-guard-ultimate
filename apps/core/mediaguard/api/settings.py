@@ -182,8 +182,7 @@ def simulate(body: SimulateBody, _: Principal = Depends(require_viewer),
     keys = body.keys or sorted({c.key for c in body.changes})
     before = {k: ctx.config.effective(k, body.context)["value"] for k in keys}
     after: dict[str, Any] = {}
-    conn = ctx.db._connect()
-    with ctx.db._lock:
+    with ctx.db.transaction() as conn:
         conn.execute("SAVEPOINT simulate")
         try:
             for c in body.changes:

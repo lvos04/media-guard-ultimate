@@ -141,7 +141,7 @@ def apply_reroute(database: Any, job_id: int, decision: Any, route: str, reason:
             inst[f"preset_{klasse}"] = max(int(inst.get(f"preset_{klasse}") or 0),
                                            FAST_CPU_PRESET)
     new_decision = decision.model_copy(update=update)
-    with database._write_lock, database.connection() as connection:  # noqa: SLF001
+    with database.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             "UPDATE besluit SET baan=?,encoder=?,reden=?,payload=? WHERE id=?",

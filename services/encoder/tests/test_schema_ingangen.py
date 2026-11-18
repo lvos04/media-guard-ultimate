@@ -58,3 +58,47 @@ def test_losse_av1_ingangen_toetsen_beide_databases(tmp_path, ingang, onbekend) 
     assert not instance.backup_root.exists()
     assert not instance.work_root.exists()
     assert not (instance.config_root / "logs").exists()
+
+
+def test_wachtende_av1_schrijver_weigert_nieuw_schema(tmp_path, monkeypatch) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import closing
+    from threading import Event
+
+    from app.db import SchemaTooNew
+
+    instance = replace(
+        settings, config_root=tmp_path / "encode", pipeline_root=tmp_path,
+        backup_root=tmp_path / "backups", database_path=tmp_path / "encode" / "app.db",
+    )
+    db = Database(instance)
+    db.initialize()
+    db.execute("CREATE TABLE proef (id INTEGER)")
+    gestart, gelezen = Event(), Event()
+    echte_toets = db.check_schema
+
+    def toets():
+        result = echte_toets()
+        gelezen.set()
+        return result
+
+    def schrijf():
+        gestart.set()
+        with db.connection() as conn:
+            conn.execute("INSERT INTO proef VALUES (1)")
+            conn.commit()
+
+    monkeypatch.setattr(db, "check_schema", toets)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with db.startup_lock(), closing(sqlite3.connect(db.path)) as migratie:
+            migratie.execute("BEGIN IMMEDIATE")
+            migratie.execute("INSERT INTO schema_versie VALUES (999, 'proef', 'proef')")
+            toekomst = pool.submit(schrijf)
+            assert gestart.wait(2)
+            gelezen.wait(0.2)
+            assert not toekomst.done()
+            migratie.commit()
+        with pytest.raises(SchemaTooNew):
+            toekomst.result(timeout=5)
+    with closing(sqlite3.connect(db.path)) as conn:
+        assert conn.execute("SELECT count(*) FROM proef").fetchone() == (0,)

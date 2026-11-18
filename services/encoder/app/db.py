@@ -57,6 +57,8 @@ def _folder_lock(folder: Path) -> Iterator[None]:
 
 
 def _core_migrations() -> Path:
+    if configured := os.environ.get("MG_SCHEMA_CORE_MIGRATIONS"):
+        return Path(configured)
     core = find_spec("mediaguard")
     if core is not None and core.origin is not None:
         return Path(core.origin).parent / "migrations"
@@ -102,7 +104,6 @@ class Database:
         self.settings = settings
         self.path = settings.database_path
         self.migrations_dir = migrations_dir or Path(__file__).with_name("migrations")
-        self._write_lock = threading.RLock()
         self.read_only = False
 
     def _core_database(self) -> Path:
@@ -118,11 +119,9 @@ class Database:
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        connection = self.connect()
-        try:
+        """Houd de schematoets geldig totdat de aanroeper klaar is met schrijven."""
+        with self.startup_lock(), closing(self.connect()) as connection:
             yield connection
-        finally:
-            connection.close()
 
     @contextmanager
     def startup_lock(self) -> Iterator[None]:
@@ -187,7 +186,7 @@ class Database:
         return migrations
 
     def applied_versions(self) -> set[int]:
-        with self.connection() as connection:
+        with closing(self.connect()) as connection:
             rows = connection.execute("SELECT versie FROM schema_versie").fetchall()
         return {int(row["versie"]) for row in rows}
 
@@ -209,44 +208,43 @@ class Database:
             self._apply_migrations()
 
     def _apply_migrations(self) -> None:
-        with self._write_lock:
-            applied = self.applied_versions()
-            pending = [
-                (version, path)
-                for version, path in self.migration_files()
-                if version not in applied
-            ]
-            if pending:
-                self._backup_before_migration()
-            for version, path in pending:
-                sql = path.read_text(encoding="utf-8")
-                applied_at = datetime.now(UTC).isoformat()
-                quoted_name = path.name.replace("'", "''")
-                quoted_time = applied_at.replace("'", "''")
-                script = (
-                    "BEGIN IMMEDIATE;\n"
-                    f"{sql}\n"
-                    "INSERT INTO schema_versie(versie, naam, toegepast_op) "
-                    f"VALUES ({version}, '{quoted_name}', '{quoted_time}');\n"
-                    "COMMIT;"
-                )
-                with self.connection() as connection:
-                    try:
-                        connection.executescript(script)
-                    except sqlite3.Error as exc:
-                        with suppress(sqlite3.Error):
-                            connection.execute("ROLLBACK")
-                        raise MigrationError(f"Migratie {path.name} mislukt: {exc}") from exc
-                LOGGER.info("Migratie %s toegepast", path.name)
+        applied = self.applied_versions()
+        pending = [
+            (version, path)
+            for version, path in self.migration_files()
+            if version not in applied
+        ]
+        if pending:
+            self._backup_before_migration()
+        for version, path in pending:
+            sql = path.read_text(encoding="utf-8")
+            applied_at = datetime.now(UTC).isoformat()
+            quoted_name = path.name.replace("'", "''")
+            quoted_time = applied_at.replace("'", "''")
+            script = (
+                "BEGIN IMMEDIATE;\n"
+                f"{sql}\n"
+                "INSERT INTO schema_versie(versie, naam, toegepast_op) "
+                f"VALUES ({version}, '{quoted_name}', '{quoted_time}');\n"
+                "COMMIT;"
+            )
+            with self.connection() as connection:
+                try:
+                    connection.executescript(script)
+                except sqlite3.Error as exc:
+                    with suppress(sqlite3.Error):
+                        connection.execute("ROLLBACK")
+                    raise MigrationError(f"Migratie {path.name} mislukt: {exc}") from exc
+            LOGGER.info("Migratie %s toegepast", path.name)
 
     def execute(self, sql: str, parameters: Sequence[Any] = ()) -> int:
-        with self._write_lock, self.connection() as connection:
+        with self.connection() as connection:
             cursor = connection.execute(sql, parameters)
             connection.commit()
             return cursor.rowcount
 
     def execute_insert(self, sql: str, parameters: Sequence[Any] = ()) -> int:
-        with self._write_lock, self.connection() as connection:
+        with self.connection() as connection:
             cursor = connection.execute(sql, parameters)
             connection.commit()
             if cursor.lastrowid is None:
@@ -254,17 +252,17 @@ class Database:
             return int(cursor.lastrowid)
 
     def fetch_one(self, sql: str, parameters: Sequence[Any] = ()) -> sqlite3.Row | None:
-        with self.connection() as connection:
+        with closing(self.connect()) as connection:
             row: sqlite3.Row | None = connection.execute(sql, parameters).fetchone()
             return row
 
     def fetch_all(self, sql: str, parameters: Sequence[Any] = ()) -> list[sqlite3.Row]:
-        with self.connection() as connection:
+        with closing(self.connect()) as connection:
             return list(connection.execute(sql, parameters).fetchall())
 
     def reachable(self) -> bool:
         try:
-            with self.connection() as connection:
+            with closing(self.connect()) as connection:
                 return int(connection.execute("SELECT 1").fetchone()[0]) == 1
         except sqlite3.Error:
             return False

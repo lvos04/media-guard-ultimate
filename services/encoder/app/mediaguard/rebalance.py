@@ -89,7 +89,7 @@ def rebalance_waiting_jobs(
         if not plan["approved_for_execution"] or plan["lane"] != target:
             continue
         decision = Besluit.model_validate(plan["decision"])
-        with database._write_lock, database.connection() as connection:  # noqa: SLF001
+        with database.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 "UPDATE job SET baan=?,mg_inst=? WHERE id=? AND status='wacht' AND baan=? "

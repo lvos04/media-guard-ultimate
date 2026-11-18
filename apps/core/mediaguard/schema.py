@@ -24,7 +24,7 @@ class SchemaTooNew(RuntimeError):
 
 
 @contextmanager
-def startup_lock(folder: Path) -> Iterator[None]:
+def startup_lock(folder: Path, *, blocking: bool = True) -> Iterator[None]:
     """Vergrendel de datamap zonder een nieuw bestand bij een geweigerde start."""
     folder = folder.resolve()
     folders: set[Path] = getattr(_locked, "folders", set())
@@ -34,7 +34,7 @@ def startup_lock(folder: Path) -> Iterator[None]:
         return
     fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
         folders.add(folder)
         try:
             yield
@@ -45,16 +45,18 @@ def startup_lock(folder: Path) -> Iterator[None]:
 
 
 @contextmanager
-def startup_locks(core: Path, encode: Path) -> Iterator[None]:
+def startup_locks(core: Path, encode: Path, *, blocking: bool = True) -> Iterator[None]:
     """Alle ingangen nemen de bestaande mappen in dezelfde volgorde."""
     with ExitStack() as locks:
         for folder in (core, encode):
             if folder.is_dir():
-                locks.enter_context(startup_lock(folder))
+                locks.enter_context(startup_lock(folder, blocking=blocking))
         yield
 
 
 def encoder_dir(core: Path) -> Path:
+    if configured := os.environ.get("MG_SCHEMA_ENCODER_DIR"):
+        return Path(configured)
     root = core.parent if core.name == "core" else core
     return root / "encode"
 

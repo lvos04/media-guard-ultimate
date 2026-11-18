@@ -141,7 +141,6 @@ class Database:
             conn = sqlite3.connect(self.path, timeout=30, isolation_level=None,
                                    check_same_thread=False)
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(f"PRAGMA synchronous={self.synchronous}")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("PRAGMA temp_store=MEMORY")
@@ -172,8 +171,10 @@ class Database:
         if self.check_schema():
             raise schema.SchemaTooNew()
 
-    def startup_lock(self) -> contextlib.AbstractContextManager[None]:
-        return schema.startup_locks(self.path.parent, schema.encoder_dir(self.path.parent))
+    def startup_lock(self, *, blocking: bool = True) -> contextlib.AbstractContextManager[None]:
+        return schema.startup_locks(
+            self.path.parent, schema.encoder_dir(self.path.parent), blocking=blocking,
+        )
 
     def initialize(self) -> None:
         if os.environ.get(schema.AIO_RECOVERY_ENV):
@@ -201,6 +202,7 @@ class Database:
         with contextlib.suppress(OSError):
             marker.unlink()
         conn = self._connect()
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations("
             "version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
@@ -284,8 +286,8 @@ class Database:
 
     def maintenance(self, *, vacuum: bool = False) -> None:
         """Dagelijks: statistieken bijwerken en de WAL inkorten; wekelijks ook VACUUM."""
-        conn = self._connect()
-        with self._lock:
+        with self.startup_lock(), self._lock:
+            conn = self._connect()
             # ANALYZE houdt het schrijfslot vast: per index hooguit ~1000 rijen bekijken, zodat
             # het bij een grote bibliotheek een fractie van een seconde duurt (rapport 31)
             conn.execute(f"PRAGMA analysis_limit={ANALYSIS_LIMIT}")
@@ -303,38 +305,63 @@ class Database:
 
     # -- helpers --------------------------------------------------------------------
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
-        conn = self._connect()
-        with self._lock:
-            conn.execute("BEGIN IMMEDIATE")
+    def _write_transaction(self, *, blocking: bool = True) -> Iterator[sqlite3.Connection]:
+        with self.startup_lock(blocking=blocking):
+            if not self._lock.acquire(blocking=blocking):
+                raise BlockingIOError
             try:
-                yield conn
-                conn.execute("COMMIT")
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
+                conn = self._connect()
+                if conn.in_transaction:
+                    yield conn
+                    return
+                if not blocking:
+                    conn.execute("PRAGMA busy_timeout=0")
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                finally:
+                    if not blocking:
+                        conn.execute("PRAGMA busy_timeout=30000")
+                try:
+                    # Ook een migratie die alleen het SQLite-slot gebruikt kan tijdens
+                    # het wachten op BEGIN IMMEDIATE zijn vastgelegd.
+                    try:
+                        check_schema_versions(self.path, connection=conn)
+                    except schema.SchemaTooNew:
+                        self.read_only = True
+                        raise
+                    yield conn
+                    conn.execute("COMMIT")
+                except BaseException:
+                    if conn.in_transaction:
+                        conn.execute("ROLLBACK")
+                    raise
+            finally:
+                self._lock.release()
+
+    def transaction(self) -> contextlib.AbstractContextManager[sqlite3.Connection]:
+        return self._write_transaction()
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
-        with self._lock:
-            cur = self._connect().execute(sql, params)
-            return cur.rowcount
+        if sql.lstrip().upper().startswith(("PRAGMA", "VACUUM")):
+            # SQLite staat sommige instellingen en onderhoud alleen buiten een transactie toe.
+            with self.startup_lock(), self._lock:
+                return self._connect().execute(sql, params).rowcount
+        with self._write_transaction() as conn:
+            return conn.execute(sql, params).rowcount
 
     def try_execute(self, sql: str, params: Sequence[Any] = ()) -> bool:
         """Schrijf alleen als de schrijfvergrendeling nu vrij is (nooit wachten). Voor
         logregels in tijdkritische paden (fork-hooks met 3 s time-out)."""
-        if not self._lock.acquire(blocking=False):
-            return False
         try:
-            self._connect().execute(sql, params)
+            with self._write_transaction(blocking=False) as conn:
+                conn.execute(sql, params)
             return True
-        except sqlite3.OperationalError:
+        except (BlockingIOError, sqlite3.OperationalError):
             return False  # database bezet door een ander proces: later opnieuw
-        finally:
-            self._lock.release()
 
     def execute_insert(self, sql: str, params: Sequence[Any] = ()) -> int:
-        with self._lock:
-            cur = self._connect().execute(sql, params)
+        with self._write_transaction() as conn:
+            cur = conn.execute(sql, params)
             return int(cur.lastrowid or 0)
 
     def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Row | None:
@@ -352,8 +379,7 @@ class Database:
         """Consistente online back-up via de SQLite backup-API (WAL-veilig).
 
         Via een eigen leesverbinding en in één stap (= één leestransactie, dus een
-        consistente momentopname): in WAL-modus blokkeert lezen geen schrijvers, dus core,
-        recovery en de hooks gaan tijdens een back-up van een grote database gewoon door."""
+        consistente momentopname). Het startslot bewaakt de schemaversie tijdens de kopie."""
         with self.startup_lock():
             self.require_writable()
             self._backup_to(target)
