@@ -320,7 +320,7 @@ def _scan_library_locked(
     processed_directories = 0
     telling_herstellen = False
     while True:
-        if telling_herstellen:  # na het sluiten van de afrondingstransactie
+        if telling_herstellen and scan_id is not None:  # na het sluiten van de afrondingstransactie
             _herstel_wijzigingstelling(database, library_id, scan_id, started_at, summary)
             telling_herstellen = False
         restart_with_new_profile = False
