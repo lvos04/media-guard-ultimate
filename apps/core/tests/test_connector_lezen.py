@@ -190,7 +190,8 @@ def test_legacy_error_and_container_health_unchanged(machine):
 
 
 @pytest.mark.parametrize(
-    "path", ["/connector/v1/health", "/connector/v1/niet-bestaand", "/healthz", "/readyz"]
+    "path", ["/connector/v1/health", "/connector/v1/health/", "/connector/v1/niet-bestaand",
+             "/healthz", "/readyz"]
 )
 def test_body_limit_before_auth_with_and_without_content_length(machine, path):
     payload = b"x" * (1048576 + 1)
@@ -203,6 +204,22 @@ def test_body_limit_before_auth_with_and_without_content_length(machine, path):
 def test_unknown_connector_errors_are_contract_errors(machine):
     error(machine.get("/connector/v1/niet-bestaand"), 404, "not_found")
     error(machine.delete("/connector/v1/discover"), 405, "method_not_allowed")
+
+
+@pytest.mark.parametrize(("method", "suffix"), [
+    ("GET", ""), ("GET", "discover/"), ("GET", "health/"),
+    ("POST", "propose/"), ("POST", "apply/"), ("POST", "rollback/"),
+])
+def test_connector_trailing_slash_returns_contract_404(machine, method, suffix):
+    response = machine.request(method, f"/connector/v1/{suffix}", follow_redirects=False)
+    assert "location" not in response.headers
+    error(response, 404, "not_found")
+
+
+def test_legacy_trailing_slash_preserves_redirect(machine):
+    response = machine.get("/api/v1/status/", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == str(machine.base_url) + "/api/v1/status"
 
 
 def test_connector_openapi_documents_only_current_routes(app):

@@ -99,6 +99,11 @@ class InputLimit:
                 413, "payload_too_large", "Verzoek is te groot", {"max_bytes": MAX_BYTES}
             )(scope, receive, send)
             return
+        # Gebruik de contractpaden zonder eindslash. Een routerredirect kan het
+        # interne kernadres van de webproxy in Location terugsturen.
+        if is_connector(path) and path.endswith("/"):
+            await failure(404, "not_found", "Route niet gevonden")(scope, receive, send)
+            return
         consumed = False
 
         async def replay():
