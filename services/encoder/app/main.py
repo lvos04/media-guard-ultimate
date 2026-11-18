@@ -10,15 +10,18 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app import __version__
 from app.ai_controller import AiController, reconcile_safety_fingerprint
 from app.api import create_api_router
 from app.config import ConfigError, Settings, settings
 from app.cpubudget import unify_cpu_percent
-from app.db import Database
+from app.db import SCHEMA_MESSAGE, SCHEMA_REASON, Database
 from app.health import dependency_report
 from app.integraties import IntegrationMonitor
 from app.live import clients_connected, register_websocket
@@ -68,6 +71,34 @@ class WakePlannerMiddleware:
             self.planner.wake()
 
 
+class SchemaRecoveryMiddleware:
+    def __init__(self, app: ASGIApp, database: Database) -> None:
+        self.app = app
+        self.database = database
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not self.database.read_only or scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1013, "reason": SCHEMA_MESSAGE})
+            return
+        if scope["method"] in {"GET", "HEAD"} and scope["path"].rstrip("/") in {
+            "/health", "/livez", "/api/health", "/api/mediaguard/v1/health",
+        }:
+            response = JSONResponse(
+                {"status": "down", "reason_code": SCHEMA_REASON, "message": SCHEMA_MESSAGE},
+                status_code=503, headers={"Cache-Control": "no-store", "Retry-After": "300"},
+            )
+        else:
+            response = JSONResponse(
+                {"code": SCHEMA_REASON, "message": SCHEMA_MESSAGE, "details": {},
+                 "trace_id": str(uuid4())},
+                status_code=409, headers={"Cache-Control": "no-store"},
+            )
+        await response(scope, receive, send)
+
+
 class QuietAccessLog(logging.Filter):
     """Uvicorn-toegangslog alleen voor fouten (>= 400) en wijzigende verzoeken: geen regel
     per healthcheck of per poll van de UI in het containerlog."""
@@ -99,14 +130,18 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         from app import logboek
 
+        database.initialize(
+            prepare=(lambda: prepare_container_storage(app_settings))
+            if app_settings.container_mode else None,
+        )
+        if database.read_only:
+            LOGGER.warning(SCHEMA_MESSAGE)
+            yield
+            return
         # rapport 16: info-regels naar /config/logs/encoder.log (alleen met MG_LOG_DIR)
         log_task = (asyncio.create_task(logboek.volg_loop())
                     if logboek.inrichten(app_settings.log_level) is not None else None)
         storage_error: str | None = None
-        if app_settings.container_mode:
-            # TrueNAS: maak alleen de eigen submappen onder /config en /work aan
-            # (geen chown, niets in de bibliotheek) en een eigen sleutelbestand.
-            prepare_container_storage(app_settings)
         if validate_storage:
             try:
                 app_settings.validate_storage()
@@ -115,7 +150,6 @@ def create_app(
                 # zodat een ontbrekende latere werkschijf via de UI kan worden hersteld.
                 storage_error = str(exc)
                 LOGGER.error("Opslag niet gereed; workers blijven gepauzeerd: %s", exc)
-        database.initialize()
         from app import afstelling
 
         afstelling.refresh(database)
@@ -266,6 +300,7 @@ def create_app(
     if app_settings.container_mode and os.environ.get("MG_PROTECT_LEGACY_API", "1") != "0":
         application.add_middleware(LegacyApiTokenMiddleware)
     application.add_middleware(WakePlannerMiddleware, planner=application.state.planner)
+    application.add_middleware(SchemaRecoveryMiddleware, database=database)
     register_websocket(application)
 
     @application.get("/livez", include_in_schema=False)

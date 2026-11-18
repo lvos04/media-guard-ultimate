@@ -166,8 +166,29 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     _drop_root(db)
     data_dir = db.parent
+    from mediaguard import schema
+    from mediaguard.maintenance import preupdate
+
+    if data_dir.name == "core":
+        with preupdate.config_locks(data_dir.parent):
+            try:
+                preupdate.inspect_schema(data_dir.parent,
+                                         encoder_migrations=preupdate.encoder_migrations(os.environ))
+            except schema.SchemaTooNew as exc:
+                print(str(exc), file=sys.stderr)
+                return schema.EXIT_CODE
+            return _run(args, db, data_dir)
+    with schema.startup_lock(data_dir):
+        return _run(args, db, data_dir)
+
+
+def _run(args: argparse.Namespace, db: Path, data_dir: Path) -> int:
+    from mediaguard import schema
+
     database = _open(db)
     try:
+        database.check_schema()
+        database.require_writable()
         if args.cmd == "status":
             return cmd_status(database, data_dir)
         if args.cmd == "uitloggen":
@@ -208,6 +229,9 @@ def main(argv: list[str] | None = None) -> int:
                    "Noodtoegang: rol beheerder en ingeschakeld")
             print(f"{user['username']} is nu beheerder en ingeschakeld.")
             return 0
+    except schema.SchemaTooNew as exc:
+        print(str(exc), file=sys.stderr)
+        return schema.EXIT_CODE
     finally:
         database.close()
     return 1  # pragma: no cover

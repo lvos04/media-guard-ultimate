@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.db import Database
+from app.db import SCHEMA_EXIT, Database, SchemaTooNew
 from app.media import commandos
 from app.media.beslissen import STANDAARD, Besluit, beslis
 from app.media.probe import probe
@@ -78,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _catalog_command(args: argparse.Namespace) -> object:
     database = Database(settings)
     database.initialize()
+    database.require_writable()
     if args.opdracht == "scan":
         summary = scan_library(database, args.library_id, dry_run=args.dry_run)
         return {
@@ -128,6 +129,7 @@ def _catalog_command(args: argparse.Namespace) -> object:
 def _execution_command(args: argparse.Namespace) -> object:
     database = Database(settings)
     database.initialize()
+    database.require_writable()
     job_id = (
         create_job_from_decision(database, args.besluit_id)
         if args.opdracht == "draai-besluit"
@@ -143,6 +145,7 @@ def _execution_command(args: argparse.Namespace) -> object:
 def _planner_command(args: argparse.Namespace) -> object:
     database = Database(settings)
     database.initialize()
+    database.require_writable()
     if args.opdracht == "wachtrij":
         rows = database.fetch_all(
             "SELECT id,baan,status,prioriteit,percent,fout FROM job "
@@ -186,6 +189,9 @@ def main(arguments: list[str] | None = None) -> int:
                 output = _command(info, decision, profile)
         print(json.dumps(output, indent=2, ensure_ascii=False))
         return 0
+    except SchemaTooNew as exc:
+        print(str(exc), file=sys.stderr)
+        return SCHEMA_EXIT
     except (OSError, ValueError, json.JSONDecodeError, ScanError, ExecutionError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

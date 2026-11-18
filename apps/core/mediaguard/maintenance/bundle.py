@@ -42,6 +42,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
+from mediaguard.maintenance import preupdate
+from mediaguard.schema import SchemaTooNew
+
 if TYPE_CHECKING:
     from mediaguard.context import AppContext
 
@@ -66,6 +69,7 @@ def _code_key(code: str, salt: bytes) -> bytes:
 
 def setup(ctx: AppContext, actor: str) -> dict[str, Any]:
     """Nieuwe herstelcode + sleutelpaar. De code wordt alleen nu teruggegeven."""
+    ctx.db.require_writable()
     code = new_recovery_code()
     priv = X25519PrivateKey.generate()
     pub = priv.public_key().public_bytes(serialization.Encoding.Raw,
@@ -242,6 +246,14 @@ def open_bundle(path: Path, code: str, keyfile: Path) -> tuple[dict[str, Any], b
 def restore(path: Path, code: str, keyfile: Path, target: Path) -> list[str]:
     """Pakt de bundel uit in ``target`` (bv. een lege /config). Bestaande bestanden worden
     niet overschreven maar als ``.voor-herstel`` bewaard."""
+    with preupdate.config_locks(target):
+        preupdate.inspect_schema(
+            target, encoder_migrations=preupdate.encoder_migrations(os.environ),
+        )
+        return _restore(path, code, keyfile, target)
+
+
+def _restore(path: Path, code: str, keyfile: Path, target: Path) -> list[str]:
     _header, payload = open_bundle(path, code, keyfile)
     written = []
     with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
@@ -289,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - CLI
         else:
             for name in restore(a.bundel, code, a.sleutel, a.naar):
                 print(f"hersteld: {name}")
-    except BundleError as exc:
+    except (BundleError, SchemaTooNew) as exc:
         print(f"FOUT: {exc}", file=sys.stderr)
         return 1
     return 0

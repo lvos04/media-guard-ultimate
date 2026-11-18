@@ -44,7 +44,7 @@ class AppContext:
         )
 
     def emergency_stopped(self) -> bool:
-        return bool(self.state_get("emergency_stop", {}).get("active", False))
+        return self.db.read_only or bool(self.state_get("emergency_stop", {}).get("active", False))
 
     # -- hook keys (per instantie, voor fork pre-grab/pre-import hooks) --------------
     def hook_key_owner(self, presented: str) -> str | None:

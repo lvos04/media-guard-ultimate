@@ -138,7 +138,13 @@ def _flag_active(flag: Path | None) -> bool:
 def _db_active(db: Path | None) -> bool:
     if db is None or not db.exists():
         return False
+    from mediaguard import schema
+    from mediaguard.db import MIGRATIONS_DIR
+
     try:
+        applied = schema.applied_versions(db, "schema_migrations", "version", timeout=0.5)
+        if applied - {file.stem for file in MIGRATIONS_DIR.glob("*.sql")}:
+            return True
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
         try:
             row = conn.execute("SELECT value_json FROM system_state WHERE "
@@ -159,9 +165,10 @@ def emergency_active(flag: Path | None, db: Path | None) -> bool:
 
 class Guard:
     def __init__(self, core_host: str, core_port: int, *, timeout: float,
-                 flag: Path | None, db: Path | None) -> None:
+                 flag: Path | None, db: Path | None, schema_recovery: bool = False) -> None:
         self.core_host, self.core_port = core_host, core_port
         self.timeout, self.flag, self.db = timeout, flag, db
+        self.schema_recovery = schema_recovery
 
     def forward(self, method: str, path: str, headers: dict[str, str],
                 body: bytes) -> tuple[int, bytes, str] | None:
@@ -212,7 +219,9 @@ class Guard:
         return status < 300 or not self.guarded(path, body)
 
     def holds(self, path: str, body: bytes = b"") -> bool:
-        return self.guarded(path, body) and emergency_active(self.flag, self.db)
+        return self.guarded(path, body) and (
+            self.schema_recovery or emergency_active(self.flag, self.db)
+        )
 
     def fallback(self, path: str, body: bytes = b"") -> tuple[int, bytes]:
         if self.holds(path, body):
@@ -280,8 +289,10 @@ def serve(env: dict[str, str] | None = None) -> ThreadingHTTPServer:
     timeout_ms = int(env.get("MG_HOOKGUARD_TIMEOUT_MS") or 2500)
     flag = Path(env["MG_HOOKGUARD_FLAG"]) if env.get("MG_HOOKGUARD_FLAG") else None
     db = Path(env["MG_HOOKGUARD_DB"]) if env.get("MG_HOOKGUARD_DB") else None
+    from mediaguard.schema import AIO_RECOVERY_ENV
+
     guard = Guard(host or "127.0.0.1", int(core_port or 38100), timeout=timeout_ms / 1000,
-                  flag=flag, db=db)
+                  flag=flag, db=db, schema_recovery=bool(env.get(AIO_RECOVERY_ENV)))
     server = ThreadingHTTPServer((env.get("MG_HOOKGUARD_BIND", "127.0.0.1"), port),
                                  _handler(guard))
     server.daemon_threads = True

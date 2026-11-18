@@ -120,3 +120,68 @@ def test_migratie_negen_normaliseert_dubbele_wachtrij_en_cpu_workers(tmp_path: P
             "INSERT INTO job(besluit_id,bestand_id,baan,status) VALUES (?,?,'cpu','wacht')",
             (second_decision, active_file),
         )
+
+
+@pytest.fixture
+def toekomstig_schema(tmp_path: Path):
+    from contextlib import closing
+
+    instance = replace(
+        settings, config_root=tmp_path / "config", pipeline_root=tmp_path,
+        work_root=tmp_path / "work", backup_root=tmp_path / "backups",
+        database_path=tmp_path / "config" / "app.db", container_mode=True,
+    )
+    database = Database(instance)
+    database.initialize()
+    shutil.rmtree(instance.backup_root)
+    with closing(sqlite3.connect(instance.database_path)) as conn, conn:
+        # De onbekende versie is kleiner dan de hoogste bekende versie.
+        conn.execute("INSERT INTO schema_versie VALUES (0, 'onbekend', 'fixture')")
+        conn.execute("DELETE FROM schema_versie WHERE versie=25")
+    return instance
+
+
+def test_onbekend_schema_blokkeert_av1_ingangen(toekomstig_schema, monkeypatch, capsys):
+    import sys
+
+    from fastapi.testclient import TestClient
+
+    from app import backups, cli
+    from app.main import create_app
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "scripts"))
+    import upgradebewijs
+
+    path = toekomstig_schema.database_path
+    voor = upgradebewijs.meet_db(path)
+    db = Database(toekomstig_schema)
+    db.initialize()
+    assert upgradebewijs.meet_db(path) == voor
+    assert not toekomstig_schema.backup_root.exists()
+
+    app = create_app(toekomstig_schema, db)
+    with TestClient(app) as client:
+        for route in ("/health", "/livez", "/api/health", "/api/mediaguard/v1/health"):
+            response = client.get(route)
+            assert response.status_code == 503
+            assert response.json()["reason_code"] == "schema_nieuwer"
+        assert client.post("/api/backups").status_code == 409
+    assert not toekomstig_schema.work_root.exists()
+
+    from app.db import SchemaTooNew
+
+    with pytest.raises(SchemaTooNew):
+        backups.create_backup(Database(toekomstig_schema), toekomstig_schema)
+    with pytest.raises(SchemaTooNew):
+        backups.verify_backup(Database(toekomstig_schema), toekomstig_schema, 1)
+    with pytest.raises(SchemaTooNew):
+        backups.enforce_retention(Database(toekomstig_schema))
+    with pytest.raises(SchemaTooNew):
+        Database(toekomstig_schema).apply_migrations()
+    monkeypatch.setattr(cli, "settings", toekomstig_schema)
+    for args in (["scan", "1"], ["draai", "1"], ["planner-start"]):
+        assert cli.main(args) != 0
+        assert "database is van een nieuwere" in capsys.readouterr().err
+    assert upgradebewijs.meet_db(path) == voor
+    assert not toekomstig_schema.backup_root.exists()
+    sys.modules.pop("upgradebewijs", None)

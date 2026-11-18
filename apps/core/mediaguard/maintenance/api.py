@@ -104,6 +104,7 @@ def create_backup(ctx: AppContext, *, kind: str = "manual",
     """Consistente kopie + hersteltest. Eerst naar ``.part``; pas na een geslaagde controle
     krijgt de kopie zijn echte naam en metadata. Bij elke fout verdwijnen de halve
     bestanden en volgt een :class:`BackupError` (een kapotte back-up telt nooit mee)."""
+    ctx.db.require_writable()
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     target = _backup_dir(ctx) / f"mediaguard-{kind}-{stamp}.db"
     part = target.with_name(target.name + ".part")
@@ -444,6 +445,7 @@ def restore_backup(name: str, body: RestoreBody, principal: Principal = Depends(
                    ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
     """Herstelt de core-DB. Maakt eerst een veiligheidsback-up van de huidige staat.
     Geheimen blijven geldig zolang secret.key niet verandert."""
+    ctx.db.require_writable()
     if ".encode-" in name:
         raise HTTPException(422, "Dit is een kopie van de AV1-engine-database, geen "
                                  "MediaGuard-back-up")
@@ -912,6 +914,8 @@ def run_cycle(ctx: AppContext, now: datetime | None = None) -> dict[str, dict[st
     """Eén ronde (in een werkdraad): back-up, herstelbundel en nachtonderhoud, elk los."""
     from mediaguard.maintenance import bundle, housekeeping
 
+    if ctx.db.read_only:
+        return {}
     now = now or datetime.now().astimezone()
     out: dict[str, dict[str, Any]] = {}
     if backup_due(ctx, now):

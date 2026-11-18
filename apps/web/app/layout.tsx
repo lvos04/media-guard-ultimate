@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { SchemaRecovery, schemaRecoveryMessage } from "@/components/shell/schema-recovery";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -17,7 +18,10 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export const dynamic = "force-dynamic";
+
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const recovery = await schemaRecoveryMessage();
   return (
     // Peil O-01: systeemfont en systeem-mono (ontwerptaal.css --font-sans/--font-mono); geen webfonts, geen
     // fontverzoeken (Inter en JetBrains Mono zijn weg sinds fase 2d, PEIL_MIGRATIE §6.5).
@@ -28,7 +32,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
             mg.theme and the per-user choice are unchanged; the setting ui.theme is applied after login. */}
         <script dangerouslySetInnerHTML={{ __html: "(function(){var r=document.documentElement,c='system';try{c=localStorage.getItem('mg.theme')||'system'}catch(e){}if(c!=='dark'&&c!=='light')c='system';var d=c==='dark'||(c==='system'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches);r.dataset.theme=d?'dark':'light';r.dataset.themeChoice=c})()" }} />
       </head>
-      <body>{children}</body>
+      <body>{recovery ? <SchemaRecovery message={recovery} /> : children}</body>
     </html>
   );
 }

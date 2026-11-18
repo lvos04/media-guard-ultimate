@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mediaguard import schema
+
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 # Zolang dit bestand bestaat (met een levend pid) werkt het proces de database bij; de
 # AIO-supervisor herstart het dan niet, ook als de levenscontrole lang niet antwoordt.
@@ -120,9 +122,14 @@ class Database:
         self.synchronous = "FULL" if synchronous.upper() == "FULL" else "NORMAL"
         self._lock = threading.RLock()
         self._local = threading.local()
+        self.read_only = False
+        self._schema_checked = False
 
     # -- verbinding -----------------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
+        if not self._schema_checked:
+            self.check_schema()
+        self.require_writable()
         conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
         if conn is None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,7 +150,30 @@ class Database:
             conn.close()
             self._local.conn = None
 
+    def check_schema(self) -> None:
+        self.read_only = bool(os.environ.get(schema.AIO_RECOVERY_ENV)) or bool(
+            schema.applied_versions(self.path, "schema_migrations", "version")
+            - {file.stem for file in MIGRATIONS_DIR.glob("*.sql")}
+        )
+        self._schema_checked = True
+
+    def require_writable(self) -> None:
+        if self.read_only:
+            raise schema.SchemaTooNew()
+
     def initialize(self) -> None:
+        if os.environ.get(schema.AIO_RECOVERY_ENV):
+            self.check_schema()
+            return
+        folder = self.path.parent
+        if not folder.is_dir():
+            folder.mkdir(parents=True, exist_ok=True)
+        with schema.startup_lock(folder):
+            self.check_schema()
+            if not self.read_only:
+                self._initialize()
+
+    def _initialize(self) -> None:
         folder = self.path.parent
         for old in stale_migrations(folder):  # afgebroken eerdere poging
             with contextlib.suppress(OSError):
@@ -308,6 +338,12 @@ class Database:
         Via een eigen leesverbinding en in één stap (= één leestransactie, dus een
         consistente momentopname): in WAL-modus blokkeert lezen geen schrijvers, dus core,
         recovery en de hooks gaan tijdens een back-up van een grote database gewoon door."""
+        with schema.startup_lock(self.path.parent):
+            self.check_schema()
+            self.require_writable()
+            self._backup_to(target)
+
+    def _backup_to(self, target: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         src = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=30)
         dest = sqlite3.connect(target)

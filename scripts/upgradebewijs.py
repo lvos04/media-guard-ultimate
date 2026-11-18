@@ -53,6 +53,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "aio"
@@ -269,7 +270,7 @@ def _waarde_json(v: Any) -> Any:
     return v
 
 
-def meet_db(pad: Path) -> dict[str, Any]:
+def meet_db(pad: Path, *, intern: bool = False) -> dict[str, Any]:
     """Meting van één database (op een kopie, zodat meten nooit iets verandert)."""
     with tempfile.TemporaryDirectory(prefix="mg-meet-") as tmp:
         kopie = Path(tmp) / "db"
@@ -281,7 +282,12 @@ def meet_db(pad: Path) -> dict[str, Any]:
         try:
             integriteit = conn.execute("PRAGMA integrity_check").fetchone()[0]
             tabellen: dict[str, Any] = {}
-            for tabel in _tabellen(conn):
+            namen = _tabellen(conn)
+            if intern:
+                namen += [r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'sqlite_*'"
+                )]
+            for tabel in namen:
                 info = conn.execute(f'PRAGMA table_info("{tabel}")').fetchall()
                 kolommen = [r[1] for r in info]
                 sleutel = [r[1] for r in sorted((r for r in info if r[5]), key=lambda r: r[5])]
@@ -320,8 +326,23 @@ def live_databases(map_: Path) -> list[Path]:
     return uit
 
 
-def meet(map_: Path) -> dict[str, Any]:
-    return {"databases": {p.relative_to(map_).as_posix(): meet_db(p) for p in live_databases(map_)}}
+def meet(map_: Path, *, intern: bool = False) -> dict[str, Any]:
+    return {"databases": {
+        p.relative_to(map_).as_posix(): meet_db(p, intern=intern) for p in live_databases(map_)
+    }}
+
+
+def gewijzigde_tabellen(voor: dict[str, Any], na: dict[str, Any]) -> list[str]:
+    """Alle wijzigingen in tabelinhoud, inclusief nieuwe en verdwenen tabellen."""
+    uit = []
+    vb, nb = voor["databases"], na["databases"]
+    for db in sorted(vb.keys() | nb.keys()):
+        vt = vb.get(db, {}).get("tabellen", {})
+        nt = nb.get(db, {}).get("tabellen", {})
+        for tabel in sorted(vt.keys() | nt.keys()):
+            if vt.get(tabel) != nt.get(tabel):
+                uit.append(f"{db} / {tabel}")
+    return uit
 
 
 #: databases die de poort vóór de upgrade altijd moet meten (core: de fixture; encode: de vorige
@@ -541,7 +562,7 @@ class Poort:
     def __init__(self, args: argparse.Namespace) -> None:
         self.a = args
         self.werk = Path(args.werkmap).resolve()
-        self.naam = f"mg-upgradebewijs-{os.getpid()}"
+        self.naam = f"mg-upgradebewijs-{uuid4().hex[:12]}"
         self.basis = f"http://127.0.0.1:{args.poort}"
         self.log: list[str] = []
 
@@ -625,10 +646,101 @@ class Poort:
                 problemen.append(f"readback {route}: {code}, ontbreekt {ontbreekt[:3]}")
         return problemen
 
-    def meet(self, config: str, uit: str) -> dict[str, Any]:
-        self.hulp("/s/upgradebewijs.py", "meet", "--map", f"/mnt/{config}", "--uit", f"/mnt/{uit}")
+    def meet(self, config: str, uit: str, *, intern: bool = False) -> dict[str, Any]:
+        opties = ("--intern",) if intern else ()
+        self.hulp("/s/upgradebewijs.py", "meet", "--map", f"/mnt/{config}", "--uit", f"/mnt/{uit}",
+                  *opties)
         meting: dict[str, Any] = json.loads((self.werk / uit).read_text("utf-8"))
         return meting
+
+    def schema_probe(self, image: str, schema: str) -> tuple[str, dict[str, Any], int]:
+        """Start een wegwerpkopie zonder netwerkaansluiting. Meet via de eigen loopback."""
+        config = self.werk / "config-schemaproef"
+        _docker(
+            "run", "-d", "--name", self.naam, "--network", "none", "--restart", "on-failure:3",
+            "--health-start-period", "1s", "--health-interval", "2s", "--health-retries", "1",
+            "-e", "TZ=UTC", "-e", "MG_HOST=127.0.0.1",
+            "-v", f"{config}:/config", "-v", f"{self.werk / 'work-schemaproef'}:/work",
+            "-v", f"{self.werk / 'data-schemaproef'}:/data", image,
+        )
+        verwacht = "healthy" if schema == "vorige" else "unhealthy"
+        http_code = 200 if schema == "vorige" else 503
+        deadline = time.monotonic() + self.a.timeout
+        staat = "onbekend"
+        while time.monotonic() < deadline:
+            staat = _docker("inspect", "-f", "{{.State.Status}} {{.State.Health.Status}} "
+                            "{{.RestartCount}}", self.naam)
+            running, health, restarts = staat.split()
+            if running == "exited" or int(restarts):
+                break
+            if health == verwacht:
+                uit = _docker("exec", self.naam, "/opt/venv/bin/python", "-c",
+                              "import json, urllib.error, urllib.request\n"
+                              "o = urllib.request.build_opener(urllib.request.ProxyHandler({}))\n"
+                              "try:\n"
+                              "    r = o.open('http://127.0.0.1:30080/api/v1/health', timeout=2)\n"
+                              "except urllib.error.HTTPError as exc:\n"
+                              "    r = exc\n"
+                              "print(json.dumps([r.code, json.load(r)]))", check=False,
+                              timeout=10)
+                if uit:
+                    code, body = json.loads(uit)
+                    if code == http_code:
+                        self.stop()
+                        return health, body, int(restarts)
+            time.sleep(2)
+        raise RuntimeError(f"schemaproef {schema}: verwachte toestand {verwacht} ontbreekt "
+                           f"({staat})\n{self.logs()}")
+
+    def schema_proeven(self) -> tuple[list[str], str]:
+        fouten: list[str] = []
+        regels = ["## Schemaproeven op afzonderlijke kopieën", ""]
+        proeven = ["vorige", "core", "encode"] if self.a.vorige_versie == "1.2.2" else [
+            "core", "encode",
+        ]
+        for proef in proeven:
+            self.stap(f"schemaproef {proef} op een wegwerpkopie")
+            self.shell("rm -rf /mnt/config-schemaproef /mnt/work-schemaproef /mnt/data-schemaproef"
+                       " && cp -a /mnt/config /mnt/config-schemaproef"
+                       " && cp -a /mnt/work /mnt/work-schemaproef"
+                       " && cp -a /mnt/data /mnt/data-schemaproef")
+            if proef != "vorige":
+                pad, sql = {
+                    "core": ("core/mediaguard.db", "INSERT INTO schema_migrations VALUES "
+                             "('__upgradebewijs_toekomstig__', 'fixture')"),
+                    "encode": ("encode/app.db", "INSERT INTO schema_versie VALUES "
+                               "(999999, 'toekomstig', 'fixture')"),
+                }[proef]
+                self.hulp("-c", "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); "
+                          "db.execute(sys.argv[2]); db.commit(); db.close()",
+                          f"/mnt/config-schemaproef/{pad}", sql, als=str(APP_UID))
+            voor = self.meet("config-schemaproef", f"meting-schema-{proef}-voor.json", intern=True)
+            lijst_backups = ("find /mnt/config-schemaproef -path '*/backups/*' "
+                             "-type f -print | sort")
+            backups = self.shell(lijst_backups)
+            image = self.a.vorige if proef == "vorige" else self.a.nieuw
+            state, body, restarts = self.schema_probe(image, proef)
+            na = self.meet("config-schemaproef", f"meting-schema-{proef}-na.json", intern=True)
+            wijzigingen = gewijzigde_tabellen(voor, na)
+            regels += [f"- {proef}: Docker {state}, herstarts {restarts}, "
+                       f"gezondheidsstatus {body.get('status')}. "
+                       f"Gewijzigde tabellen: {', '.join(wijzigingen) or 'geen'}."]
+
+            if proef == "vorige":
+                core = voor["databases"]["core/mediaguard.db"]["tabellen"]["schema_migrations"]
+                if json.dumps(["005_api_key_scopes"]) not in core["per_sleutel"]:
+                    fouten.append("1.2.2-proef vereist een geüpgradede kopie met 005_api_key_scopes")
+                if body.get("status") != "ok" or not wijzigingen:
+                    fouten.append("1.2.2-proef toont geen schrijfactie bij een gezonde start")
+                migraties = {"core/mediaguard.db / schema_migrations", "encode/app.db / schema_versie"}
+                if migraties.intersection(wijzigingen):
+                    fouten.append("1.2.2 veranderde migratieversies op de wegwerpkopie")
+                _, open_fouten = open_werk_regel(voor, na)
+                fouten += open_fouten
+            elif (body.get("reason_code") != "schema_nieuwer" or voor != na
+                  or self.shell(lijst_backups) != backups):
+                fouten.append(f"schemabescherming {proef}: onjuiste health, tabelinhoud of back-ups")
+        return fouten, "\n".join(regels) + "\n"
 
     def run(self) -> tuple[list[str], str]:
         fixture_sql, fixture = kies_fixture(Path(self.a.fixtures), self.a.vorige_versie)
@@ -695,13 +807,22 @@ class Poort:
                              "|| true")
         sets = backups or "geen (niets te migreren)"
         tekst += f"\nBack-upsets van vóór de update in core: {sets}\n"
-        return fouten, tekst
+        if not f_upg:
+            tekst += "\nUpgrade: niets verloren\n"
+        if not f_terug:
+            tekst += "\nterugzetten: niets verloren\n"
+        try:
+            schema_fouten, schema_tekst = self.schema_proeven()
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+            schema_fouten, schema_tekst = [str(exc)], ""
+        return fouten + schema_fouten, tekst + "\n" + schema_tekst
 
     def opruimen(self) -> None:
         _docker("rm", "-f", self.naam, check=False)
         if not self.a.bewaar and self.werk.exists():
             with contextlib.suppress(RuntimeError, subprocess.TimeoutExpired):
                 self.shell("rm -rf /mnt/config /mnt/config-snapshot /mnt/work /mnt/data "
+                           "/mnt/config-schemaproef /mnt/work-schemaproef /mnt/data-schemaproef "
                            "/mnt/meting-*.json")
             shutil.rmtree(self.werk, ignore_errors=True)
 
@@ -849,6 +970,7 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--profiel", choices=sorted(OVERSLAAN), required=True)
     v.add_argument("--rijen", type=int, default=2)
     m = sub.add_parser("meet")
+    m.add_argument("--intern", action="store_true", help="meet ook interne SQLite-tabellen")
     m.add_argument("--map", required=True, type=Path)
     m.add_argument("--uit", required=True, type=Path)
     c = sub.add_parser("vergelijk")
@@ -879,7 +1001,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(vul(a.db, a.profiel, a.rijen), ensure_ascii=False))
         return 0
     if a.opdracht == "meet":
-        a.uit.write_text(json.dumps(meet(a.map), ensure_ascii=False), encoding="utf-8")
+        a.uit.write_text(json.dumps(meet(a.map, intern=a.intern), ensure_ascii=False), encoding="utf-8")
         return 0
     if a.opdracht == "volgorde":
         vorige = json.loads(a.vorige_release.read_text("utf-8"))

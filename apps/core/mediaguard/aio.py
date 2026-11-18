@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -31,7 +32,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mediaguard import bootstrap
+from mediaguard import bootstrap, schema
 
 INTERNAL_HOST = "127.0.0.1"
 CORE_PORT = 38100
@@ -333,6 +334,12 @@ def build_specs(env: dict[str, str]) -> list[Spec]:
         cwd=env.get("MG_AIO_WEB_DIR", "/opt/web"),
         health=f"http://{INTERNAL_HOST}:{web_port}/login", grace=60, stop_rank=1,
         user=(web_uid, web_gid)))
+    if env.get(schema.AIO_RECOVERY_ENV):
+        specs = [spec for spec in specs if spec.name in {"core", "web", "hookguard"}]
+        for spec in specs:
+            spec.env[schema.AIO_RECOVERY_ENV] = "1"
+        core = core_specs[0]
+        core.wait_for = []
     return specs
 
 
@@ -503,8 +510,9 @@ class Supervisor:
                  check_interval: float = 30.0, max_fails: int = 3,
                  log_path: Path | None = None, config_dir: Path | None = None,
                  web_state_path: Path | None = None,
-                 stop_budget: float | None = None) -> None:
+                 stop_budget: float | None = None, schema_recovery: bool = False) -> None:
         self.specs = specs
+        self.schema_recovery = schema_recovery
         self.stop_budget = DEFAULT_STOP_BUDGET if stop_budget is None else stop_budget
         self.uid, self.gid = uid, gid
         self.groups = _dri_groups()
@@ -629,7 +637,15 @@ class Supervisor:
             with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310
                 return int(response.status) < 500
         except urllib.error.HTTPError as exc:
-            return exc.code < 500  # 401/404 = het proces antwoordt wel
+            with exc:
+                if exc.code == 503:
+                    try:
+                        body = json.loads(exc.read(4096))
+                    except (OSError, ValueError):
+                        return False
+                    # Dit antwoord is ongezond, maar de webdienst is bereikbaar.
+                    return isinstance(body, dict) and body.get("reason_code") == schema.REASON
+                return exc.code < 500  # 401/404 = het proces antwoordt wel
         except (OSError, ValueError):
             return False
 
@@ -682,6 +698,17 @@ class Supervisor:
         if info and not _marker_is_from(core_db.migration_marker(self.core_dir,
                                                                  spec.proc.pid), spec):
             info = None  # van een eerder proces met hetzelfde pid (vorige containerstart)
+        if info is None:
+            # Core en herstel delen het startslot. De wachtende dienst heeft zelf nog
+            # geen marker en mag tijdens een geldige migratie ook blijven wachten.
+            for other in self.specs:
+                if other is spec or not other.migration_guard or other.proc is None:
+                    continue
+                marker = core_db.migration_marker(self.core_dir, other.proc.pid)
+                if other.proc.poll() is None and _marker_is_from(marker, other):
+                    info = core_db.migration_of(self.core_dir, other.proc.pid)
+                    if info:
+                        break
         if info and not spec.migrating:
             self.log(f"{spec.name} werkt de database bij ({info.get('from') or '?'} → "
                      f"{info.get('to') or '?'}); niet herstarten tot dat klaar is")
@@ -737,10 +764,14 @@ class Supervisor:
                 "loop_nl": spec.loop_nl if restarts_24h(spec) >= LOOP_THRESHOLD else "",
                 "migrating": spec.migrating}
         essential = ("core", "web")
-        healthy = all(services.get(n, {}).get("state") in ("running", "migrating")
-                      for n in essential if n in services)
-        return {"updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "healthy": healthy, "services": services}
+        healthy = not self.schema_recovery and all(
+            services[n]["state"] in ("running", "migrating") for n in essential if n in services
+        )
+        state = {"updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                 "healthy": healthy, "services": services}
+        if self.schema_recovery:
+            state["reason_code"] = schema.REASON
+        return state
 
     def write_state(self) -> None:
         snap = self.snapshot()
@@ -757,7 +788,8 @@ class Supervisor:
         if self.health_path is not None:
             bad = [n for n, v in snap["services"].items()  # type: ignore[union-attr]
                    if v["state"] not in ("running", "migrating")]
-            text = "ok\n" if snap["healthy"] else f"fail {' '.join(bad)}\n"
+            reason = snap.get("reason_code") or " ".join(bad)
+            text = "ok\n" if snap["healthy"] else f"fail {reason}\n"
             with contextlib.suppress(OSError):
                 tmp = self.health_path.with_suffix(".tmp")
                 tmp.write_text(text)
@@ -944,6 +976,15 @@ class _ProblemServer:  # pragma: no cover - netwerk, getest in de image-test
 
 def main() -> int:  # pragma: no cover - integratie (zie tests/integration/aio)
     env = dict(os.environ)
+    config = Path(env.get("MG_AIO_CONFIG", "/config"))
+    if config.is_dir():
+        # Twee bewakers mogen hun diensten nooit tegelijk op dezelfde appdata starten.
+        with schema.startup_lock(config):
+            return _run(env, config)
+    return _run(env, config)
+
+
+def _run(env: dict[str, str], config: Path) -> int:  # pragma: no cover - integratie
     if not env.get("MG_HOST"):
         env["MG_AIO_LAN_IP"] = detect_lan_ip()
     uid = _env_int(env, "PUID", 568)
@@ -954,12 +995,15 @@ def main() -> int:  # pragma: no cover - integratie (zie tests/integration/aio)
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
+    owner = (uid, gid) if os.geteuid() == 0 else None
     fallback: _ProblemServer | None = None
     while True:
-        warnings = prepare(env)
+        warnings = prepare_start(env, config, owner)
         for warning in warnings:
             print(f"[mediaguard] LET OP: {warning}", flush=True)
-        if ready(env):
+        if env.get(schema.AIO_RECOVERY_ENV) or (
+            not env.get("MG_AIO_SCHEMA_CHECK_FAILED") and ready(env)
+        ):
             break
         if fallback is None:
             try:
@@ -974,29 +1018,35 @@ def main() -> int:  # pragma: no cover - integratie (zie tests/integration/aio)
             return 0
     if fallback is not None:
         fallback.close()
-    config = Path(env.get("MG_AIO_CONFIG", "/config"))
-    owner = (uid, gid) if os.geteuid() == 0 else None
+    if not env.get(schema.AIO_RECOVERY_ENV):
+        for line in before_services(env, config, owner):
+            print(f"[mediaguard] {line}", flush=True)
+    recovering = bool(env.get(schema.AIO_RECOVERY_ENV))
     logs_dir = config / "logs"
-    with contextlib.suppress(OSError):
-        logs_dir.mkdir(parents=True, exist_ok=True, mode=0o750)  # niet voor de web-gebruiker
-        if owner is not None:
-            os.chown(logs_dir, uid, gid)
-    for line in before_services(env, config, owner):
-        print(f"[mediaguard] {line}", flush=True)
-    sup = Supervisor(build_specs(env), uid if os.geteuid() == 0 else None, gid,
-                     state_path=config / "core" / "supervisor.json",
-                     health_path=Path(env.get("MG_AIO_HEALTH_FILE", "/tmp/mediaguard-health")),
-                     log_path=logs_dir / "supervisor.log", config_dir=config,
-                     web_state_path=Path(env.get("MG_AIO_WEB_STATE", WEB_STATE)),
-                     stop_budget=stop_budget(env))
+    if not recovering:
+        with contextlib.suppress(OSError):
+            logs_dir.mkdir(parents=True, exist_ok=True, mode=0o750)  # niet voor de web-gebruiker
+            if owner is not None:
+                os.chown(logs_dir, uid, gid)
+    sup = Supervisor(
+        build_specs(env), uid if owner else None, gid,
+        state_path=None if recovering else config / "core" / "supervisor.json",
+        health_path=Path(env.get("MG_AIO_HEALTH_FILE", "/tmp/mediaguard-health")),
+        log_path=None if recovering else logs_dir / "supervisor.log", config_dir=config,
+        web_state_path=Path(env.get("MG_AIO_WEB_STATE", WEB_STATE)),
+        stop_budget=stop_budget(env), schema_recovery=recovering,
+    )
     signal.signal(signal.SIGTERM, sup.stop)
     signal.signal(signal.SIGINT, sup.stop)
     if stop.is_set():
         return 0
     code = sup.run()
     # alle diensten zijn nu gestopt: een in de app klaargezette terugzetting omwisselen
-    for line in apply_staged_restore(config, owner):
-        print(f"[mediaguard] {line}", flush=True)
+    from mediaguard.maintenance.preupdate import config_locks
+
+    with config_locks(config):
+        for line in apply_staged_restore(config, owner):
+            print(f"[mediaguard] {line}", flush=True)
     return code
 
 
@@ -1016,35 +1066,81 @@ def apply_staged_restore(config: Path, owner: tuple[int, int] | None) -> list[st
             f"de vorige databases staan in {result.get('previous')}"]
 
 
-def before_services(env: dict[str, str], config: Path,
-                    owner: tuple[int, int] | None) -> list[str]:
-    """Vóór de start: (1) een klaargezette terugzetting omwisselen; (2) bij een update met
-    openstaande migraties een set van core- én AV1-database maken (MG_PRE_UPDATE_SET)."""
+def _preupdate(command: str, config: Path, encoder_migrations: Path,
+               owner: tuple[int, int] | None) -> Path | None:
     from mediaguard import __version__
     from mediaguard.db import MIGRATIONS_DIR
     from mediaguard.maintenance import preupdate
 
-    out = apply_staged_restore(config, owner)
-    encoder_dir = Path(env.get("MG_AIO_ENCODER_DIR", "/opt/mediaguard-encode"))
+    if owner is not None and os.geteuid() == 0:  # pragma: no cover - vereist root
+        if command == "inspect" and not preupdate.has_database(config):
+            return None  # lege dataset: bootstrap mag de mappen eerst toegankelijk maken
+        # SQLite kan bij lezen WAL-hulpbestanden openen. Die horen van de app-gebruiker te zijn.
+        argv = [
+            sys.executable, "-m", "mediaguard.maintenance.preupdate", command,
+            "--config", str(config), "--core-migrations", str(MIGRATIONS_DIR),
+            "--encoder-migrations", str(encoder_migrations),
+        ]
+        if command == "snapshot":
+            argv += ["--version", __version__]
+        proc = subprocess.run(  # noqa: S603 - vaste argv
+            argv, capture_output=True, text=True, timeout=3600,
+            preexec_fn=_demote(owner[0], owner[1], []), check=False,
+        )
+        if proc.returncode == schema.EXIT_CODE:
+            raise schema.SchemaTooNew()
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip()[-300:] or f"code {proc.returncode}")
+        line = proc.stdout.strip()
+        return Path(line) if line and command == "snapshot" else None
+    if command == "inspect":
+        preupdate.inspect_schema(config, encoder_migrations=encoder_migrations)
+        return None
+    return preupdate.snapshot_before_start(
+        config, core_migrations=MIGRATIONS_DIR, encoder_migrations=encoder_migrations,
+        app_version=__version__, owner=owner,
+    )
+
+
+def prepare_start(env: dict[str, str], config: Path,
+                  owner: tuple[int, int] | None) -> list[str]:
+    """Controleer beide databases vóór de bootstrap. Alleen klaargezet herstel mag ingrijpen."""
+    from mediaguard.maintenance import preupdate
+
+    migrations = preupdate.encoder_migrations(env)
+    with preupdate.config_locks(config):
+        out: list[str] = []
+        try:
+            try:
+                _preupdate("inspect", config, migrations, owner)
+            except schema.SchemaTooNew:
+                out = apply_staged_restore(config, owner)
+                if out:
+                    _preupdate("inspect", config, migrations, owner)
+                else:
+                    raise
+        except schema.SchemaTooNew:
+            env[schema.AIO_RECOVERY_ENV] = "1"
+            return [*out, schema.MESSAGE]
+        except (OSError, RuntimeError, subprocess.TimeoutExpired, sqlite3.Error) as exc:
+            env["MG_AIO_SCHEMA_CHECK_FAILED"] = "1"
+            return [*out, f"Schemavoorcontrole mislukt: {exc}"]
+        env.pop("MG_AIO_SCHEMA_CHECK_FAILED", None)
+        return [*out, *prepare(env)]
+
+
+def before_services(env: dict[str, str], config: Path,
+                    owner: tuple[int, int] | None) -> list[str]:
+    """Verwerk klaargezet herstel en maak zo nodig een set vlak vóór het starten."""
+    from mediaguard.maintenance import preupdate
+
+    with preupdate.config_locks(config):
+        out = apply_staged_restore(config, owner)
     try:
-        if owner is not None and os.geteuid() == 0:  # pragma: no cover - vereist root
-            # als de app-gebruiker: SQLite maakt bij het lezen soms -wal/-shm aan; van root
-            # zouden die core daarna het schrijven beletten (herstartlus)
-            proc = subprocess.run(  # noqa: S603 - vaste argv
-                [sys.executable, "-m", "mediaguard.maintenance.preupdate", "snapshot",
-                 "--config", str(config), "--core-migrations", str(MIGRATIONS_DIR),
-                 "--encoder-migrations", str(encoder_dir / "app" / "migrations"),
-                 "--version", __version__], capture_output=True, text=True, timeout=3600,
-                preexec_fn=_demote(owner[0], owner[1], []), check=False)
-            if proc.returncode != 0:
-                raise RuntimeError(proc.stderr.strip()[-300:] or f"code {proc.returncode}")
-            line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
-            made = Path(line) if line else None
-        else:
-            made = preupdate.snapshot_before_start(
-                config, core_migrations=MIGRATIONS_DIR,
-                encoder_migrations=encoder_dir / "app" / "migrations",
-                app_version=__version__, owner=owner)
+        made = _preupdate("snapshot", config, preupdate.encoder_migrations(env), owner)
+    except schema.SchemaTooNew:
+        env[schema.AIO_RECOVERY_ENV] = "1"
+        return [*out, schema.MESSAGE]
     except Exception as exc:  # noqa: BLE001 - core maakt dan zelf een kopie vóór zijn migratie
         return [*out, f"back-up vóór de update mislukt: {exc}"]
     if made is not None:

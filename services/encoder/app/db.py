@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import fcntl
 import logging
+import os
 import re
 import sqlite3
 import threading
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager, suppress
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import closing, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+
+SCHEMA_REASON = "schema_nieuwer"
+SCHEMA_MESSAGE = ("database is van een nieuwere MediaGuard-versie; zet de bijpassende versie "
+                  "of de set van vóór de update terug")
+SCHEMA_EXIT = 79
 
 LOGGER = logging.getLogger(__name__)
 MIGRATION_NAME = re.compile(r"^(?P<version>\d{3})_[a-z0-9_]+\.sql$")
@@ -20,6 +27,11 @@ MIGRATION_NAME = re.compile(r"^(?P<version>\d{3})_[a-z0-9_]+\.sql$")
 
 class MigrationError(RuntimeError):
     """Een migratiebestand is ongeldig of kon niet atomisch worden toegepast."""
+
+
+class SchemaTooNew(MigrationError):
+    def __init__(self) -> None:
+        super().__init__(SCHEMA_MESSAGE)
 
 
 class Database:
@@ -30,8 +42,13 @@ class Database:
         self.path = settings.database_path
         self.migrations_dir = migrations_dir or Path(__file__).with_name("migrations")
         self._write_lock = threading.RLock()
+        self.read_only = False
+        self._schema_checked = False
 
     def connect(self) -> sqlite3.Connection:
+        if not self._schema_checked:
+            self.check_schema()
+        self.require_writable()
         connection = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
@@ -46,8 +63,45 @@ class Database:
         finally:
             connection.close()
 
-    def initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    @contextmanager
+    def startup_lock(self) -> Iterator[None]:
+        # Zelfde mapvergrendeling als de databasevoorcontrole van de AIO-bewaker.
+        fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
+
+    def check_schema(self) -> None:
+        have: set[int] = set()
+        if self.path.exists():
+            uri = f"{self.path.resolve().as_uri()}?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=30)) as db:
+                table = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_versie'"
+                ).fetchone()
+                if table:
+                    have = {row[0] for row in db.execute("SELECT versie FROM schema_versie")}
+        self.read_only = bool(have - {version for version, _ in self.migration_files()})
+        self._schema_checked = True
+
+    def require_writable(self) -> None:
+        if self.read_only:
+            raise SchemaTooNew()
+
+    def initialize(self, *, prepare: Callable[[], None] | None = None) -> None:
+        if not self.path.parent.is_dir():
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.startup_lock():
+            self.check_schema()
+            if self.read_only:
+                return
+            if prepare is not None:
+                prepare()
+            self._initialize()
+
+    def _initialize(self) -> None:
         with self.connection() as connection:
             # WAL is persistent in het bestand: één keer zetten. Vroeger bij élke verbinding
             # (tientallen per seconde tijdens encodes), wat onnodig locks pakte.
@@ -57,7 +111,7 @@ class Database:
                 "versie INTEGER PRIMARY KEY, naam TEXT NOT NULL, toegepast_op TEXT NOT NULL)"
             )
             connection.commit()
-        self.apply_migrations()
+        self._apply_migrations()
 
     def migration_files(self) -> list[tuple[int, Path]]:
         migrations: list[tuple[int, Path]] = []
@@ -89,6 +143,12 @@ class Database:
         target.chmod(0o640)
 
     def apply_migrations(self) -> None:
+        with self.startup_lock():
+            self.check_schema()
+            self.require_writable()
+            self._apply_migrations()
+
+    def _apply_migrations(self) -> None:
         with self._write_lock:
             applied = self.applied_versions()
             pending = [

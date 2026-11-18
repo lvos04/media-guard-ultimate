@@ -672,6 +672,11 @@ class _NepPoort(ub.Poort):
     mappen van de werkmap zelf (de fixture), met een gevulde AV1-database erbij. ``wijzig`` past
     een meting aan (negatieve proeven)."""
 
+    def schema_proeven(self) -> tuple[list[str], str]:
+        # Deze proef simuleert de bestaande upgrade en terugzetting. De drie
+        # schemaproeven draaien op echte images in de Docker-poort.
+        return [], ""
+
     def __init__(self, args: Any, wijzig: dict[str, Any] | None = None) -> None:
         super().__init__(args)
         self.wijzig = wijzig or {}

@@ -17,8 +17,9 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
-from mediaguard import __version__
+from mediaguard import __version__, schema
 from mediaguard.config import Settings, load_settings
 from mediaguard.context import AppContext
 from mediaguard.db import Database
@@ -117,8 +118,15 @@ def build_context(settings: Settings) -> AppContext:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
-    modules = _load_modules()
     ctx = build_context(settings)
+    if ctx.db.read_only:
+        LOGGER.warning(schema.MESSAGE)
+        app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
+        app.state.ctx = ctx
+        app.add_middleware(SchemaRecovery)
+        return app
+
+    modules = _load_modules()
     runner = JobRunner(ctx)
     ctx.services["jobs"] = runner
 
@@ -167,6 +175,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     _document_security(app)
     _admin_docs(app)
     return app
+
+
+class SchemaRecovery:
+    """Antwoord vóór routering, validatie, authenticatie en sessieverlenging."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        from mediaguard.connector.errors import failure
+
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1013, "reason": schema.MESSAGE})
+            return
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope["path"].rstrip("/")
+        if scope["method"] in {"GET", "HEAD"} and path in {
+            "/api/v1/health", "/healthz", "/readyz", "/connector/v1/health",
+            "/api/v1/health/summary", "/api/v1/admin/health",
+            "/api/v1/downloads/health", "/api/v1/settings/secrets/health",
+        }:
+            health: dict[str, Any] = {
+                "status": "down", "reason_code": schema.REASON, "message": schema.MESSAGE,
+            }
+            if path == "/connector/v1/health":
+                from mediaguard.connector import check, stamp
+
+                at = stamp()
+                health["observed_at"] = at
+                health["checks"] = [
+                    check("database", "down", at, {"reason_code": schema.REASON}),
+                    check("worker", "unknown", None),
+                    check("jobs", "unknown", None),
+                ]
+            response = JSONResponse(
+                health,
+                status_code=503,
+                headers={"Cache-Control": "no-store", "Retry-After": "300"},
+            )
+        else:
+            response = failure(409, schema.REASON, schema.MESSAGE)
+        await response(scope, receive, send)
 
 
 def _admin_docs(app: FastAPI) -> None:

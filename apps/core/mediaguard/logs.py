@@ -43,7 +43,7 @@ def log_dir(settings: Settings | None = None) -> Path:
     return Path(os.environ.get("MG_DATA_DIR", "/config")) / "logs"
 
 
-def configure(role: str, folder: Path, level: str = "info") -> Path | None:
+def configure(role: str, folder: Path | None, level: str = "info") -> Path | None:
     """Root-logger inrichten (idempotent). Geeft het logbestand terug, of None als de map
     niet schrijfbaar is (dan alleen stdout: nooit een reden om niet te starten)."""
     root = logging.getLogger()
@@ -53,16 +53,17 @@ def configure(role: str, folder: Path, level: str = "info") -> Path | None:
         console = logging.StreamHandler(sys.stdout)
         console.setFormatter(formatter)
         root.addHandler(console)
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-            path = folder / f"{role or 'core'}.log"
-            handler = logging.handlers.RotatingFileHandler(
-                path, maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding="utf-8")
-            handler.setFormatter(formatter)
-            root.addHandler(handler)
-        except OSError as exc:
-            path = None
-            root.warning("logbestand niet beschikbaar (%s); alleen het containerlog", exc)
+        if folder is not None:
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                path = folder / f"{role or 'core'}.log"
+                handler = logging.handlers.RotatingFileHandler(
+                    path, maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding="utf-8")
+                handler.setFormatter(formatter)
+                root.addHandler(handler)
+            except OSError as exc:
+                path = None
+                root.warning("logbestand niet beschikbaar (%s); alleen het containerlog", exc)
         setattr(root, _MARK, True)
     # uvicorn-loggers via de root (één opmaak, ook in het bestand)
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):

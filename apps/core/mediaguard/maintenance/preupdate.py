@@ -34,9 +34,13 @@ import re
 import shutil
 import sqlite3
 import time
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from mediaguard import schema
+from mediaguard.db import MIGRATIONS_DIR, Database
 
 FOLDER = "voor-update"
 SET_PREFIX = "voor-update-"
@@ -115,6 +119,9 @@ def make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
              from_version: str | None = None, to_version: str | None = None,
              reason: str = "migratie", owner: tuple[int, int] | None = None) -> Path:
     """Maak een complete set (eerst als ``.part``-map, pas daarna de echte naam)."""
+    db = Database(core_db)
+    db.check_schema()
+    db.require_writable()
     folder.mkdir(parents=True, exist_ok=True)
     _chown([folder.parent, folder], owner)
     base = SET_PREFIX + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -390,40 +397,54 @@ def take_result(core_dir: Path) -> dict[str, Any] | None:
 
 
 # -- supervisor: set vóór de start van een nieuwe versie --------------------------------------
-def _core_pending(core_db: Path, migrations_dir: Path) -> tuple[str | None, str] | None:
-    files = sorted(p.stem for p in migrations_dir.glob("*.sql"))
-    if not files or not core_db.is_file():
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{core_db}?mode=ro", uri=True, timeout=10)
-        try:
-            applied = {r[0] for r in conn.execute("SELECT version FROM schema_migrations")}
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
-    if not applied or set(files) <= applied:
-        return None
-    return max(applied), files[-1]
+def _core_pending(core_db: Path, migrations_dir: Path) -> tuple[str, str] | None:
+    wanted = {p.stem for p in migrations_dir.glob("*.sql")}
+    have = schema.applied_versions(core_db, "schema_migrations", "version")
+    if have - wanted:
+        raise schema.SchemaTooNew()
+    pending = wanted - have
+    return (max(map(str, have)), max(pending)) if have and pending else None
 
 
 def _encoder_pending(encode_dir: Path, migrations_dir: Path | None) -> bool:
-    if migrations_dir is None or not migrations_dir.is_dir():
+    if migrations_dir is None:
         return False
     wanted = {int(m.group(1)) for p in migrations_dir.glob("*.sql")
               if (m := _ENC_VERSION.match(p.name))}
-    for db in encode_dir.glob("*.db"):
-        try:
-            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
-            try:
-                have = {int(r[0]) for r in conn.execute("SELECT versie FROM schema_versie")}
-            finally:
-                conn.close()
-        except sqlite3.Error:
-            continue
-        if have and not wanted <= have:
-            return True
-    return False
+    pending = False
+    for db in sorted(encode_dir.glob("*.db")):
+        have = schema.applied_versions(db, "schema_versie", "versie")
+        if have - wanted:
+            raise schema.SchemaTooNew()
+        pending |= bool(have and wanted - have)
+    return pending
+
+
+def encoder_migrations(env: Mapping[str, str]) -> Path:
+    return Path(env.get("MG_AIO_ENCODER_DIR", "/opt/mediaguard-encode")) / "app" / "migrations"
+
+
+def has_database(config_root: Path) -> bool:
+    return (config_root / "core" / "mediaguard.db").exists() or any(
+        (config_root / "encode").glob("*.db")
+    )
+
+
+def inspect_schema(config_root: Path, *, core_migrations: Path = MIGRATIONS_DIR,
+                   encoder_migrations: Path | None) -> tuple[tuple[str, str] | None, bool]:
+    return (
+        _core_pending(config_root / "core" / "mediaguard.db", core_migrations),
+        _encoder_pending(config_root / "encode", encoder_migrations),
+    )
+
+
+@contextlib.contextmanager
+def config_locks(config_root: Path) -> Iterator[None]:
+    with contextlib.ExitStack() as locks:
+        for folder in (config_root / "core", config_root / "encode"):
+            if folder.is_dir():
+                locks.enter_context(schema.startup_lock(folder))
+        yield
 
 
 def _previous_version(core_db: Path) -> str | None:
@@ -446,16 +467,17 @@ def snapshot_before_start(config_root: Path, *, core_migrations: Path,
                           owner: tuple[int, int] | None = None) -> Path | None:
     """Supervisor, vóór de start van de diensten: staat er een migratie open (core of AV1-
     engine), maak dan een set met beide databases. Een fout blokkeert de start nooit."""
-    core_db = config_root / "core" / "mediaguard.db"
-    core = _core_pending(core_db, core_migrations)
-    enc = _encoder_pending(config_root / "encode", encoder_migrations)
-    if core is None and not enc:
-        return None
-    return make_set(config_root / "core" / "backups" / FOLDER, core_db,
-                    encode_dir=config_root / "encode",
-                    from_schema=core[0] if core else None, to_schema=core[1] if core else None,
-                    from_version=_previous_version(core_db), to_version=app_version,
-                    reason="update", owner=owner)
+    with config_locks(config_root):
+        core, enc = inspect_schema(config_root, core_migrations=core_migrations,
+                                   encoder_migrations=encoder_migrations)
+        if core is None and not enc:
+            return None
+        core_db = config_root / "core" / "mediaguard.db"
+        return make_set(core_db.parent / "backups" / FOLDER, core_db,
+                        encode_dir=config_root / "encode",
+                        from_schema=core[0] if core else None, to_schema=core[1] if core else None,
+                        from_version=_previous_version(core_db), to_version=app_version,
+                        reason="update", owner=owner)
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - aangeroepen door aio
@@ -467,16 +489,25 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - aangeroepe
 
     p = argparse.ArgumentParser(prog="python -m mediaguard.maintenance.preupdate")
     sub = p.add_subparsers(dest="cmd", required=True)
-    snap = sub.add_parser("snapshot")
-    snap.add_argument("--config", required=True, type=Path)
-    snap.add_argument("--core-migrations", required=True, type=Path)
-    snap.add_argument("--encoder-migrations", type=Path)
-    snap.add_argument("--version", required=True)
+    for cmd in ("inspect", "snapshot"):
+        action = sub.add_parser(cmd)
+        action.add_argument("--config", required=True, type=Path)
+        action.add_argument("--core-migrations", required=True, type=Path)
+        action.add_argument("--encoder-migrations", type=Path)
+        if cmd == "snapshot":
+            action.add_argument("--version", required=True)
     a = p.parse_args(argv)
     try:
+        if a.cmd == "inspect":
+            inspect_schema(a.config, core_migrations=a.core_migrations,
+                           encoder_migrations=a.encoder_migrations)
+            return 0
         made = snapshot_before_start(a.config, core_migrations=a.core_migrations,
                                      encoder_migrations=a.encoder_migrations,
                                      app_version=a.version)
+    except schema.SchemaTooNew as exc:
+        print(str(exc), file=sys.stderr)
+        return schema.EXIT_CODE
     except Exception as exc:  # noqa: BLE001
         print(str(exc), file=sys.stderr)
         return 1
