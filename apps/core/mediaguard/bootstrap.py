@@ -130,7 +130,6 @@ def load_secret_files(environ: dict[str, str] | None = None) -> None:
 
 def main() -> int:
     from mediaguard import schema
-    from mediaguard.aio import _preupdate
     from mediaguard.maintenance import preupdate
 
     secrets_dir = Path(os.environ.get("MG_BOOTSTRAP_SECRETS", "/bootstrap/appdata/secrets"))
@@ -139,8 +138,9 @@ def main() -> int:
     data_root = Path(os.environ.get("MG_BOOTSTRAP_DATA", "/bootstrap/data"))
     with preupdate.config_locks(app_root):
         try:
-            _preupdate("inspect", app_root, preupdate.encoder_migrations(os.environ),
-                       _uid_gid() if os.geteuid() == 0 else None)
+            preupdate.inspect_schema(
+                app_root, encoder_migrations=preupdate.encoder_migrations(os.environ),
+            )
         except schema.SchemaTooNew as exc:
             print(str(exc), file=sys.stderr)
             return schema.EXIT_CODE

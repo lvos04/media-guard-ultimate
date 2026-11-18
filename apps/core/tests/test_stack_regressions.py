@@ -359,3 +359,13 @@ def test_compose_volume_mounts_never_copy_image_content():
             for v in svc.get("volumes") or []:
                 if isinstance(v, dict) and v.get("type") == "volume":
                     assert (v.get("volume") or {}).get("nocopy") is True, (f, name, v)
+
+
+def test_losse_webcontainer_wacht_niet_op_een_gezonde_kern() -> None:
+    from pathlib import Path
+
+    compose = Path(__file__).resolve().parents[3] / "deploy" / "truenas" / "compose.yaml"
+    web = compose.read_text().split("\n  mediaguard-web:\n", 1)[1].split(
+        "\n  mediaguard-core:\n", 1,
+    )[0]
+    assert "mediaguard-core: {condition: service_started}" in web

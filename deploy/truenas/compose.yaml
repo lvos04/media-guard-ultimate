@@ -94,7 +94,9 @@ services:
     cap_drop: ["ALL"]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
     network_mode: none
-    entrypoint: ["python", "-m", "mediaguard.bootstrap"]
+    # Code 79 betekent dat de bestaande appdata ongewijzigd is gelaten.
+    # De kern mag dan starten om de herstelweergave aan te bieden.
+    entrypoint: ["python", "-c", "from mediaguard.bootstrap import main; code=main(); raise SystemExit(0 if code == 79 else code)"]
     environment:
       MG_UID: "568"
       MG_GID: "568"
@@ -102,6 +104,7 @@ services:
       - {type: volume, source: mg_appdata, target: /bootstrap/appdata, volume: {nocopy: true}}
       - {type: volume, source: mg_work, target: /bootstrap/work, volume: {nocopy: true}}
       - {type: volume, source: mg_data, target: /bootstrap/data, volume: {nocopy: true}}
+      - {type: bind, source: ../../services/encoder/app/migrations, target: /opt/mediaguard-encode/app/migrations, read_only: true}
 
   mediaguard-web:
     <<: *common
@@ -113,7 +116,7 @@ services:
       HOSTNAME: 0.0.0.0
     ports: ["${MG_WEB_PORT:-30080}:3000"]
     depends_on:
-      mediaguard-core: {condition: service_healthy}
+      mediaguard-core: {condition: service_started}
     read_only: true
     tmpfs: ["/tmp"]
     healthcheck:
