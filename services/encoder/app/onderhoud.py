@@ -99,6 +99,14 @@ def _trim_file(path: Path, maximum: int) -> None:
 def rotate_logs(
     database: Database, settings: Settings, now: datetime | None = None
 ) -> dict[str, int]:
+    with database.startup_lock():
+        database.require_writable()
+        return _rotate_logs(database, settings, now)
+
+
+def _rotate_logs(
+    database: Database, settings: Settings, now: datetime | None
+) -> dict[str, int]:
     current = now or datetime.now(UTC)
     log_dir = settings.config_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -343,6 +351,12 @@ def sweep_finished_job_cache(database: Database, settings: Settings) -> list[int
 
 
 def run_maintenance(database: Database, settings: Settings) -> None:
+    with database.startup_lock():
+        database.require_writable()
+        _run_maintenance(database, settings)
+
+
+def _run_maintenance(database: Database, settings: Settings) -> None:
     rotate_logs(database, settings)
     if settings.replacement_mode == "handoff":
         removed = sweep_orphan_staging(database, settings)

@@ -69,7 +69,12 @@ def _code_key(code: str, salt: bytes) -> bytes:
 
 def setup(ctx: AppContext, actor: str) -> dict[str, Any]:
     """Nieuwe herstelcode + sleutelpaar. De code wordt alleen nu teruggegeven."""
-    ctx.db.require_writable()
+    with ctx.db.startup_lock():
+        ctx.db.require_writable()
+        return _setup(ctx, actor)
+
+
+def _setup(ctx: AppContext, actor: str) -> dict[str, Any]:
     code = new_recovery_code()
     priv = X25519PrivateKey.generate()
     pub = priv.public_key().public_bytes(serialization.Encoding.Raw,
@@ -154,6 +159,12 @@ def _payload(ctx: AppContext) -> tuple[bytes, list[str]]:
 
 def create(ctx: AppContext, *, actor: str = "system") -> dict[str, Any] | None:
     """Maakt een versleutelde bundel als de herstelcode is ingesteld; anders None."""
+    with ctx.db.startup_lock():
+        ctx.db.require_writable()
+        return _create(ctx, actor)
+
+
+def _create(ctx: AppContext, actor: str) -> dict[str, Any] | None:
     st = ctx.state_get(STATE_KEY, {}) or {}
     if not st.get("public"):
         return None

@@ -34,7 +34,7 @@ import re
 import shutil
 import sqlite3
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -119,9 +119,19 @@ def make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
              from_version: str | None = None, to_version: str | None = None,
              reason: str = "migratie", owner: tuple[int, int] | None = None) -> Path:
     """Maak een complete set (eerst als ``.part``-map, pas daarna de echte naam)."""
-    db = Database(core_db)
-    db.check_schema()
-    db.require_writable()
+    peer = encode_dir or schema.encoder_dir(core_db.parent)
+    with schema.startup_locks(core_db.parent, peer):
+        Database(core_db).require_writable()
+        if peer != schema.encoder_dir(core_db.parent):
+            check_encoder_schema(peer)
+        return _make_set(folder, core_db, encode_dir=encode_dir, from_schema=from_schema,
+                         to_schema=to_schema, from_version=from_version, to_version=to_version,
+                         reason=reason, owner=owner)
+
+
+def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
+              from_schema: str | None, to_schema: str | None, from_version: str | None,
+              to_version: str | None, reason: str, owner: tuple[int, int] | None) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     _chown([folder.parent, folder], owner)
     base = SET_PREFIX + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -421,7 +431,17 @@ def _encoder_pending(encode_dir: Path, migrations_dir: Path | None) -> bool:
 
 
 def encoder_migrations(env: Mapping[str, str]) -> Path:
-    return Path(env.get("MG_AIO_ENCODER_DIR", "/opt/mediaguard-encode")) / "app" / "migrations"
+    configured = env.get("MG_AIO_ENCODER_DIR")
+    if configured:
+        return Path(configured) / "app" / "migrations"
+    source = Path(__file__).resolve().parents[4] / "services" / "encoder"
+    root = source if source.is_dir() else Path("/opt/mediaguard-encode")
+    return root / "app" / "migrations"
+
+
+def check_encoder_schema(encode_dir: Path) -> None:
+    if any(encode_dir.glob("*.db")):
+        _encoder_pending(encode_dir, encoder_migrations(os.environ))
 
 
 def has_database(config_root: Path) -> bool:
@@ -438,13 +458,8 @@ def inspect_schema(config_root: Path, *, core_migrations: Path = MIGRATIONS_DIR,
     )
 
 
-@contextlib.contextmanager
-def config_locks(config_root: Path) -> Iterator[None]:
-    with contextlib.ExitStack() as locks:
-        for folder in (config_root / "core", config_root / "encode"):
-            if folder.is_dir():
-                locks.enter_context(schema.startup_lock(folder))
-        yield
+def config_locks(config_root: Path) -> contextlib.AbstractContextManager[None]:
+    return schema.startup_locks(config_root / "core", config_root / "encode")
 
 
 def _previous_version(core_db: Path) -> str | None:
@@ -473,11 +488,11 @@ def snapshot_before_start(config_root: Path, *, core_migrations: Path,
         if core is None and not enc:
             return None
         core_db = config_root / "core" / "mediaguard.db"
-        return make_set(core_db.parent / "backups" / FOLDER, core_db,
-                        encode_dir=config_root / "encode",
-                        from_schema=core[0] if core else None, to_schema=core[1] if core else None,
-                        from_version=_previous_version(core_db), to_version=app_version,
-                        reason="update", owner=owner)
+        return _make_set(core_db.parent / "backups" / FOLDER, core_db,
+                         encode_dir=config_root / "encode",
+                         from_schema=core[0] if core else None, to_schema=core[1] if core else None,
+                         from_version=_previous_version(core_db), to_version=app_version,
+                         reason="update", owner=owner)
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - aangeroepen door aio

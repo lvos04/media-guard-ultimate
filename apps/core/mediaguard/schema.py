@@ -5,8 +5,9 @@ from __future__ import annotations
 import fcntl
 import os
 import sqlite3
+import threading
 from collections.abc import Iterator
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
 
 EXIT_CODE = 79
@@ -14,6 +15,7 @@ REASON = "schema_nieuwer"
 MESSAGE = ("database is van een nieuwere MediaGuard-versie; zet de bijpassende versie "
            "of de set van vóór de update terug")
 AIO_RECOVERY_ENV = "MG_AIO_SCHEMA_RECOVERY"
+_locked = threading.local()
 
 
 class SchemaTooNew(RuntimeError):
@@ -24,12 +26,37 @@ class SchemaTooNew(RuntimeError):
 @contextmanager
 def startup_lock(folder: Path) -> Iterator[None]:
     """Vergrendel de datamap zonder een nieuw bestand bij een geweigerde start."""
+    folder = folder.resolve()
+    folders: set[Path] = getattr(_locked, "folders", set())
+    _locked.folders = folders
+    if folder in folders:
+        yield
+        return
     fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
+        folders.add(folder)
+        try:
+            yield
+        finally:
+            folders.remove(folder)
     finally:
         os.close(fd)
+
+
+@contextmanager
+def startup_locks(core: Path, encode: Path) -> Iterator[None]:
+    """Alle ingangen nemen de bestaande mappen in dezelfde volgorde."""
+    with ExitStack() as locks:
+        for folder in (core, encode):
+            if folder.is_dir():
+                locks.enter_context(startup_lock(folder))
+        yield
+
+
+def encoder_dir(core: Path) -> Path:
+    root = core.parent if core.name == "core" else core
+    return root / "encode"
 
 
 def applied_versions(path: Path, table: str, column: str, *,

@@ -215,6 +215,8 @@ def build_specs(env: dict[str, str]) -> list[Spec]:
     }
     if env.get("MG_RELEASE_MANIFEST"):
         core_env["MG_RELEASE_MANIFEST"] = env["MG_RELEASE_MANIFEST"]
+    if env.get("MG_AIO_ENCODER_DIR"):
+        core_env["MG_AIO_ENCODER_DIR"] = env["MG_AIO_ENCODER_DIR"]
     if env.get("MG_PRE_UPDATE_SET"):
         # de supervisor maakte de set vóór de update al (met de AV1-database erbij)
         core_env["MG_PRE_UPDATE_SET"] = env["MG_PRE_UPDATE_SET"]

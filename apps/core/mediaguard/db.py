@@ -161,6 +161,9 @@ class Database:
                 if os.environ.get(schema.AIO_RECOVERY_ENV):
                     raise schema.SchemaTooNew()
                 check_schema_versions(self.path)
+                from mediaguard.maintenance import preupdate
+
+                preupdate.check_encoder_schema(schema.encoder_dir(self.path.parent))
             except schema.SchemaTooNew:
                 self.read_only = True
         return self.read_only
@@ -169,14 +172,20 @@ class Database:
         if self.check_schema():
             raise schema.SchemaTooNew()
 
+    def startup_lock(self) -> contextlib.AbstractContextManager[None]:
+        return schema.startup_locks(self.path.parent, schema.encoder_dir(self.path.parent))
+
     def initialize(self) -> None:
         if os.environ.get(schema.AIO_RECOVERY_ENV):
             self.check_schema()
             return
         folder = self.path.parent
         if not folder.is_dir():
-            folder.mkdir(parents=True, exist_ok=True)
-        with schema.startup_lock(folder):
+            with self.startup_lock():
+                if self.check_schema():
+                    return
+                folder.mkdir(parents=True, exist_ok=True)
+        with self.startup_lock():
             if not self.check_schema():
                 self._initialize()
 
@@ -345,7 +354,7 @@ class Database:
         Via een eigen leesverbinding en in één stap (= één leestransactie, dus een
         consistente momentopname): in WAL-modus blokkeert lezen geen schrijvers, dus core,
         recovery en de hooks gaan tijdens een back-up van een grote database gewoon door."""
-        with schema.startup_lock(self.path.parent):
+        with self.startup_lock():
             self.require_writable()
             self._backup_to(target)
 

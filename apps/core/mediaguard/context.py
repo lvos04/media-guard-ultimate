@@ -44,7 +44,12 @@ class AppContext:
         )
 
     def emergency_stopped(self) -> bool:
-        return self.db.read_only or bool(self.state_get("emergency_stop", {}).get("active", False))
+        from mediaguard.schema import SchemaTooNew
+
+        try:
+            return bool(self.state_get("emergency_stop", {}).get("active", False))
+        except SchemaTooNew:
+            return True
 
     # -- hook keys (per instantie, voor fork pre-grab/pre-import hooks) --------------
     def hook_key_owner(self, presented: str) -> str | None:

@@ -105,7 +105,12 @@ def create_backup(ctx: AppContext, *, kind: str = "manual",
     """Consistente kopie + hersteltest. Eerst naar ``.part``; pas na een geslaagde controle
     krijgt de kopie zijn echte naam en metadata. Bij elke fout verdwijnen de halve
     bestanden en volgt een :class:`BackupError` (een kapotte back-up telt nooit mee)."""
-    ctx.db.require_writable()
+    with ctx.db.startup_lock():
+        ctx.db.require_writable()
+        return _create_backup(ctx, kind, actor)
+
+
+def _create_backup(ctx: AppContext, kind: str, actor: str) -> dict[str, Any]:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     target = _backup_dir(ctx) / f"mediaguard-{kind}-{stamp}.db"
     part = target.with_name(target.name + ".part")
@@ -920,10 +925,15 @@ def _run_step(ctx: AppContext, step: str, fn: Any, now: datetime) -> dict[str, A
 
 def run_cycle(ctx: AppContext, now: datetime | None = None) -> dict[str, dict[str, Any]]:
     """Eén ronde (in een werkdraad): back-up, herstelbundel en nachtonderhoud, elk los."""
+    with ctx.db.startup_lock():
+        if ctx.db.check_schema():
+            return {}
+        return _run_cycle(ctx, now)
+
+
+def _run_cycle(ctx: AppContext, now: datetime | None) -> dict[str, dict[str, Any]]:
     from mediaguard.maintenance import bundle, housekeeping
 
-    if ctx.db.read_only:
-        return {}
     now = now or datetime.now().astimezone()
     out: dict[str, dict[str, Any]] = {}
     if backup_due(ctx, now):

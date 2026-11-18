@@ -9,8 +9,9 @@ import re
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import closing, contextmanager, suppress
+from contextlib import ExitStack, closing, contextmanager, suppress
 from datetime import UTC, datetime
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ SCHEMA_EXIT = 79
 
 LOGGER = logging.getLogger(__name__)
 MIGRATION_NAME = re.compile(r"^(?P<version>\d{3})_[a-z0-9_]+\.sql$")
+_locked = threading.local()
 
 
 class MigrationError(RuntimeError):
@@ -34,6 +36,46 @@ class SchemaTooNew(MigrationError):
         super().__init__(SCHEMA_MESSAGE)
 
 
+@contextmanager
+def _folder_lock(folder: Path) -> Iterator[None]:
+    folder = folder.resolve()
+    folders: set[Path] = getattr(_locked, "folders", set())
+    _locked.folders = folders
+    if folder in folders:
+        yield
+        return
+    fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        folders.add(folder)
+        try:
+            yield
+        finally:
+            folders.remove(folder)
+    finally:
+        os.close(fd)
+
+
+def _core_migrations() -> Path:
+    core = find_spec("mediaguard")
+    if core is not None and core.origin is not None:
+        return Path(core.origin).parent / "migrations"
+    return Path(__file__).resolve().parents[3] / "apps" / "core" / "mediaguard" / "migrations"
+
+
+def _applied_versions(path: Path, table: str, column: str) -> set[int | str]:
+    if not path.exists():
+        return set()
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=30)) as db:
+        exists = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
+        ).fetchone()
+        if not exists:
+            return set()
+        return {row[0] for row in db.execute(f"SELECT {column} FROM {table}")}  # noqa: S608
+
+
 class Database:
     """Eén SQLite-database; iedere verbinding zet dezelfde veiligheids-PRAGMA's."""
 
@@ -43,6 +85,9 @@ class Database:
         self.migrations_dir = migrations_dir or Path(__file__).with_name("migrations")
         self._write_lock = threading.RLock()
         self.read_only = False
+
+    def _core_database(self) -> Path:
+        return self.settings.config_root.parent / "core" / "mediaguard.db"
 
     def connect(self) -> sqlite3.Connection:
         self.require_writable()
@@ -62,27 +107,20 @@ class Database:
 
     @contextmanager
     def startup_lock(self) -> Iterator[None]:
-        # Zelfde mapvergrendeling als de databasevoorcontrole van de AIO-bewaker.
-        fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+        # Zelfde volgorde en mappen als kern en AIO-bewaker.
+        with ExitStack() as locks:
+            for folder in (self._core_database().parent, self.path.parent):
+                if folder.is_dir():
+                    locks.enter_context(_folder_lock(folder))
             yield
-        finally:
-            os.close(fd)
 
     def check_schema(self) -> bool:
         if self.read_only:
             return True
-        have: set[int] = set()
-        if self.path.exists():
-            uri = f"{self.path.resolve().as_uri()}?mode=ro"
-            with closing(sqlite3.connect(uri, uri=True, timeout=30)) as db:
-                table = db.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_versie'"
-                ).fetchone()
-                if table:
-                    have = {row[0] for row in db.execute("SELECT versie FROM schema_versie")}
-        if have - {version for version, _ in self.migration_files()}:
+        have = _applied_versions(self.path, "schema_versie", "versie")
+        core = _applied_versions(self._core_database(), "schema_migrations", "version")
+        if (have - {version for version, _ in self.migration_files()}
+                or core - {file.stem for file in _core_migrations().glob("*.sql")}):
             self.read_only = True
         return self.read_only
 
@@ -92,7 +130,10 @@ class Database:
 
     def initialize(self, *, prepare: Callable[[], None] | None = None) -> None:
         if not self.path.parent.is_dir():
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.startup_lock():
+                if self.check_schema():
+                    return
+                self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.startup_lock():
             if self.check_schema():
                 return

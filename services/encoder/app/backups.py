@@ -20,7 +20,6 @@ class BackupError(RuntimeError):
 
 def create_backup(database: Database, settings: Settings) -> dict[str, Any]:
     with database.startup_lock():
-        database.check_schema()
         database.require_writable()
         target = settings.backup_root / (
             "app-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ") + ".db"
@@ -41,7 +40,6 @@ def create_backup(database: Database, settings: Settings) -> dict[str, Any]:
 
 def verify_backup(database: Database, settings: Settings, backup_id: int) -> dict[str, Any]:
     with database.startup_lock():
-        database.check_schema()
         database.require_writable()
         row = database.fetch_one("SELECT * FROM backup_status WHERE id=?", (backup_id,))
         if row is None:
@@ -71,7 +69,6 @@ def verify_backup(database: Database, settings: Settings, backup_id: int) -> dic
 
 def enforce_retention(database: Database, keep: int = 8) -> int:
     with database.startup_lock():
-        database.check_schema()
         database.require_writable()
         rows = database.fetch_all("SELECT id,pad FROM backup_status ORDER BY gemaakt_op DESC")
         removed = 0
