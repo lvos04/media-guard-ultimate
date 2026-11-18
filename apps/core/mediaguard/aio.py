@@ -190,6 +190,8 @@ def build_specs(env: dict[str, str]) -> list[Spec]:
     encoder_url = f"http://{INTERNAL_HOST}:{ENCODER_PORT}"
     base = {"TZ": tz, "PATH": env.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "LANG": "C.UTF-8",
             "PYTHONUNBUFFERED": "1"}
+    if env.get("MG_AIO_ENCODER_DIR"):
+        base["MG_AIO_ENCODER_DIR"] = env["MG_AIO_ENCODER_DIR"]
     python = env.get("MG_AIO_CORE_PYTHON", "/opt/venv/bin/python")
 
     core_env = {
@@ -215,8 +217,6 @@ def build_specs(env: dict[str, str]) -> list[Spec]:
     }
     if env.get("MG_RELEASE_MANIFEST"):
         core_env["MG_RELEASE_MANIFEST"] = env["MG_RELEASE_MANIFEST"]
-    if env.get("MG_AIO_ENCODER_DIR"):
-        core_env["MG_AIO_ENCODER_DIR"] = env["MG_AIO_ENCODER_DIR"]
     if env.get("MG_PRE_UPDATE_SET"):
         # de supervisor maakte de set vóór de update al (met de AV1-database erbij)
         core_env["MG_PRE_UPDATE_SET"] = env["MG_PRE_UPDATE_SET"]
@@ -670,8 +670,11 @@ class Supervisor:
                 for reader in self.specs:
                     reader.env[schema.AIO_RECOVERY_ENV] = "1"
                 for writer in previous:
-                    if writer.name not in RECOVERY_SERVICES and writer.proc is not None:
-                        self._terminate(writer.proc, grace=2.0)
+                    if (writer.name not in RECOVERY_SERVICES and writer.proc is not None
+                            and writer.proc.poll() is None):
+                        # De forks hebben geen schemabewaking en schrijven bij een nette stop.
+                        grace = 0.0 if writer.name.startswith(("sonarr-", "radarr-")) else 2.0
+                        self._terminate(writer.proc, grace=grace)
                 self.log(schema.MESSAGE)
                 break
 
@@ -882,6 +885,12 @@ class Supervisor:
     @staticmethod
     def _terminate(proc: subprocess.Popen[bytes], grace: float) -> None:
         """SIGTERM naar de hele procesgroep (ook ffmpeg); bevroren proces eerst ontdooien."""
+        if not grace:
+            with contextlib.suppress(OSError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(0.5)
+            return
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGCONT)
         with contextlib.suppress(OSError):

@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import sqlite3
+import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +19,7 @@ import pytest
 from test_planner import _planner_case
 
 from app import afstelling, noodstop, uitvoerder
+from app.db import SchemaTooNew
 from app.onderhoud import sweep_finished_job_cache
 from app.planner import Planner
 
@@ -70,6 +74,38 @@ async def test_na_noodstop_niet_te_traag(tmp_path: Path,
     assert not task.done()
     noodstop.set_state(database, False)
     assert await asyncio.wait_for(task, timeout=30) is True
+
+
+@pytest.mark.asyncio
+async def test_onbekend_schema_stopt_het_eigen_mediaproces(tmp_path, monkeypatch) -> None:
+    database, job_id = _slow_case(tmp_path, monkeypatch)
+    started = asyncio.Event()
+    processes = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def start(*args, **kwargs):
+        process = await spawn(*args, **kwargs)
+        processes.append(process)
+        started.set()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start)
+    task = asyncio.create_task(uitvoerder._run_process(
+        database, job_id, [sys.executable, "-c", "import time; time.sleep(25)"],
+        tmp_path / "proeflog", 600.0,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        with closing(sqlite3.connect(database.path)) as conn, conn:
+            conn.execute("INSERT INTO schema_versie VALUES (999, 'proef', 'proef')")
+        with pytest.raises(SchemaTooNew):
+            await asyncio.wait_for(task, timeout=8)
+        assert all(process.returncode is not None for process in processes)
+    finally:
+        for process in processes:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
 
 
 @pytest.mark.asyncio

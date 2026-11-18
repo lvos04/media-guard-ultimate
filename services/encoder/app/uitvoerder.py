@@ -21,7 +21,7 @@ from app.bestandsmetadata import MetadataError, capture_metadata
 from app.bronnen import SourceError, validate_registered_source
 from app.config import Settings
 from app.cpubudget import from_database as cpu_budget_from_database
-from app.db import Database
+from app.db import Database, SchemaTooNew
 from app.hostlimits import effective_memory, oom_kill_count
 from app.integraties import refresh_after_replacement
 from app.jobstatus import ACTIVE_SQL, STATUS_WACHT_OP_COMMIT
@@ -829,12 +829,6 @@ async def _run_process(
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
     )
-    await asyncio.to_thread(
-        database.execute,
-        "UPDATE job SET proces_pid=?,commando=? WHERE id=?",
-        (process.pid, json.dumps(arguments), job_id),
-    )
-    _apply_lane_nice(database, job_id, process.pid)
     loop = asyncio.get_running_loop()
     last_progress_write = loop.time()
     last_abort_check = 0.0
@@ -876,13 +870,22 @@ async def _run_process(
     frozen_since = 0.0
     LAST_PROCESS_FAILURE.pop(job_id, None)
 
+    async def schema_checked_call(function: Any, *args: Any) -> Any:
+        try:
+            return await asyncio.to_thread(function, *args)
+        except SchemaTooNew:
+            if process.returncode is None:
+                terminate_process_group(process.pid, signal.SIGKILL)
+                await process.wait()
+            raise
+
     async def db_call(function: Any, *args: Any) -> Any:
         """SQLite buiten de event loop. Onder schijfdruk (zes 4K-bronnen tegelijk) kan
         een commit seconden duren; de API, /livez en de andere encodes mogen daar niet
         op wachten. Een tijdelijk SQLite-probleem doodt de encode nooit."""
         nonlocal last_database_warning
         try:
-            return await asyncio.to_thread(function, *args)
+            return await schema_checked_call(function, *args)
         except sqlite3.OperationalError as exc:
             now = loop.time()
             if now - last_database_warning >= 60:
@@ -891,6 +894,12 @@ async def _run_process(
                 last_database_warning = now
             return None
 
+    await schema_checked_call(
+        database.execute,
+        "UPDATE job SET proces_pid=?,commando=? WHERE id=?",
+        (process.pid, json.dumps(arguments), job_id),
+    )
+    await schema_checked_call(_apply_lane_nice, database, job_id, process.pid)
     with log_path.open("a", encoding="utf-8") as log_handle:
         while True:
             try:
@@ -901,6 +910,8 @@ async def _run_process(
                 )
             except TimeoutError:
                 line_bytes = b""
+            if database.read_only:
+                await db_call(database.require_writable)
             if line_bytes:
                 line = line_bytes.decode("utf-8", errors="replace").rstrip()
                 log_handle.write(line + "\n")

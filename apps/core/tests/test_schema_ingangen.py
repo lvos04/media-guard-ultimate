@@ -17,7 +17,9 @@ from mediaguard.schema import SchemaTooNew
     "context", "database", "set", "kopie", "back-up", "onderhoud", "bootstrap",
     "noodtoegang", "bundel", "bundel-herstel",
 ])
-def test_losse_kern_ingangen_toetsen_beide_databases(tmp_path, monkeypatch, ingang, onbekend) -> None:
+def test_losse_kern_ingangen_toetsen_beide_databases(
+    tmp_path, monkeypatch, ingang, onbekend,
+) -> None:
     from mediaguard import bootstrap, noodtoegang
     from mediaguard.app import build_context
     from mediaguard.maintenance import api, bundle, preupdate
@@ -68,3 +70,19 @@ def test_losse_kern_ingangen_toetsen_beide_databases(tmp_path, monkeypatch, inga
     assert not settings.backup_dir.exists()
     assert ub.meet(tmp_path, intern=True) == before
     ctx.db.close()
+
+
+def test_hookwacht_weigert_bij_onbekend_av1_schema_als_kern_onbereikbaar_is(tmp_path):
+    from mediaguard.hookguard import Guard
+
+    core = tmp_path / "core" / "mediaguard.db"
+    database = Database(core)
+    database.initialize()
+    database.close()
+    av1 = tmp_path / "encode" / "app.db"
+    av1.parent.mkdir()
+    with closing(sqlite3.connect(av1)) as conn, conn:
+        conn.execute("CREATE TABLE schema_versie (versie INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO schema_versie VALUES (999)")
+    guard = Guard("localhost", 1, timeout=0.1, flag=None, db=core)
+    assert guard.fallback("/api/v1/hooks/pre-grab")[0] == 200

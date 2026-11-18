@@ -452,7 +452,13 @@ def restore_backup(name: str, body: RestoreBody, request: Request,
                    ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
     """Herstelt de core-DB. Maakt eerst een veiligheidsback-up van de huidige staat.
     Geheimen blijven geldig zolang secret.key niet verandert."""
-    ctx.db.require_writable()
+    with ctx.db.startup_lock():
+        ctx.db.require_writable()
+        return _restore_backup(name, body, request, principal, ctx)
+
+
+def _restore_backup(name: str, body: RestoreBody, request: Request, principal: Principal,
+                    ctx: AppContext) -> dict[str, Any]:
     touch = getattr(request.state, "touch_restore_session", None)
     if ".encode-" in name:
         raise HTTPException(422, "Dit is een kopie van de AV1-engine-database, geen "

@@ -136,12 +136,16 @@ def _flag_active(flag: Path | None) -> bool:
 
 
 def _db_active(db: Path | None) -> bool:
-    if db is None or not db.exists():
+    if db is None:
         return False
     from mediaguard import schema
     from mediaguard.db import MIGRATIONS_DIR
+    from mediaguard.maintenance.preupdate import check_encoder_schema
 
     try:
+        check_encoder_schema(schema.encoder_dir(db.parent), timeout=0.5)
+        if not db.exists():
+            return False
         applied = schema.applied_versions(db, "schema_migrations", "version", timeout=0.5)
         if applied - {file.stem for file in MIGRATIONS_DIR.glob("*.sql")}:
             return True
@@ -152,7 +156,9 @@ def _db_active(db: Path | None) -> bool:
         finally:
             conn.close()
         data = json.loads(row[0]) if row is not None else None
-    except (sqlite3.Error, ValueError, TypeError):
+    except schema.SchemaTooNew:
+        return True
+    except (sqlite3.Error, RuntimeError, ValueError, TypeError):
         return False
     return isinstance(data, dict) and bool(data.get("active"))
 
@@ -186,6 +192,13 @@ class Guard:
             conn.close()
         if status >= 500:
             return None
+        if status == 409:
+            from mediaguard.schema import REASON
+
+            with contextlib.suppress(ValueError):
+                problem = json.loads(data)
+                if isinstance(problem, dict) and problem.get("code") == REASON:
+                    self.schema_recovery = True
         return status, data, ctype
 
     @staticmethod

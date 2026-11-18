@@ -138,9 +138,22 @@ def test_ontbrekende_av1_migratiemap_heeft_eigen_melding(tmp_path: Path) -> None
         preupdate._encoder_pending(tmp_path, tmp_path / "ontbreekt")
 
 
-def test_schema_verandert_tussen_twee_processen(tmp_path: Path) -> None:
-    app = create_app(Settings(data_dir=tmp_path, start_background=False))
+@pytest.mark.parametrize("gewijzigd", ["core", "encode"])
+def test_schema_verandert_tussen_twee_processen(tmp_path: Path, gewijzigd: str) -> None:
+    core = tmp_path / "core"
+    encode = tmp_path / "encode" / "app.db"
+    encode.parent.mkdir()
+    with closing(sqlite3.connect(encode)) as conn, conn:
+        conn.execute("CREATE TABLE schema_versie (versie INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO schema_versie VALUES (1)")
+    app = create_app(Settings(data_dir=core, start_background=False))
     db = app.state.ctx.db
+    gewijzigd_pad, toevoeging, verwijdering = {
+        "core": (db.path, "INSERT INTO schema_migrations VALUES ('999_toekomst', 'proef')",
+                 "DELETE FROM schema_migrations WHERE version='999_toekomst'"),
+        "encode": (encode, "INSERT INTO schema_versie VALUES (999)",
+                   "DELETE FROM schema_versie WHERE versie=999"),
+    }[gewijzigd]
     with TestClient(app, raise_server_exceptions=False) as client:
         assert client.get("/api/v1/health").status_code == 200
         with subprocess.Popen(  # noqa: S603 - vaste proefcode op een wegwerpdatabase
@@ -163,9 +176,9 @@ sys.exit(1)
         ) as worker:
             try:
                 assert worker.stdout is not None and worker.stdout.readline() == "gereed\n"
-                with closing(sqlite3.connect(db.path)) as conn, conn:
-                    conn.execute("INSERT INTO schema_migrations VALUES ('999_toekomst', 'proef')")
-                voor = ub.meet_db(db.path, intern=True)
+                with closing(sqlite3.connect(gewijzigd_pad)) as conn, conn:
+                    conn.execute(toevoeging)
+                voor = ub.meet(tmp_path, intern=True)
                 assert worker.communicate("schrijf\n", timeout=10)[0] == ""
                 assert worker.returncode == 0
                 for route in ("/api/v1/health", "/healthz", "/readyz", "/connector/v1/health"):
@@ -176,10 +189,10 @@ sys.exit(1)
                 assert response.status_code == 409
                 assert response.json()["code"] == "schema_nieuwer"
                 assert emergency.active(app.state.ctx)
-                assert ub.meet_db(db.path, intern=True) == voor
+                assert ub.meet(tmp_path, intern=True) == voor
                 assert not db.path.with_name("backups").exists()
-                with closing(sqlite3.connect(db.path)) as conn, conn:
-                    conn.execute("DELETE FROM schema_migrations WHERE version='999_toekomst'")
+                with closing(sqlite3.connect(gewijzigd_pad)) as conn, conn:
+                    conn.execute(verwijdering)
                 assert client.get("/api/v1/health").status_code == 503
                 with pytest.raises(SchemaTooNew):
                     db.execute("CREATE TABLE andere_proef (id INTEGER)")
