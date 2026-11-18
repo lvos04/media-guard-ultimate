@@ -17,6 +17,15 @@ from fastapi.testclient import TestClient
 from mediaguard import apikeys
 
 INVALID = {"detail": "Ongeldige of ingetrokken API-sleutel"}
+OPENBARE_SCHRIJVENDE_ROUTES = frozenset({
+    ("POST", "/api/v1/auth/login"),
+    ("POST", "/api/v1/auth/login/2fa"),
+    ("POST", "/api/v1/auth/logout"),
+    ("POST", "/api/v1/auth/setup"),
+    ("POST", "/api/v1/hooks/arr-webhook/{instance_id}"),
+    ("POST", "/api/v1/hooks/pre-grab"),
+    ("POST", "/api/v1/hooks/pre-import"),
+})
 
 
 def _create(client, name="mso", role="operator", **extra):  # type: ignore[no-untyped-def]
@@ -326,10 +335,13 @@ def test_sleutel_met_rechten_krijgt_403_op_elke_andere_schrijvende_route(  # typ
     routes = _routes_script().collect(app)
     h = {"X-Api-Key": _hub(client)["key"]}
     getoetst, openbaar, opened = 0, 0, []
+    openbare_routes = set()
     for r in routes:
         for method in r["methods"]:
             if method in ("GET", "HEAD", "WS"):
                 continue
+            if r["role"] == "geen":
+                openbare_routes.add((method, r["path"]))
             if r["scopes"]:
                 opened.append((method, r["path"], r["scopes"]))
                 continue
@@ -358,6 +370,7 @@ def test_sleutel_met_rechten_krijgt_403_op_elke_andere_schrijvende_route(  # typ
     assert getoetst >= 200 and openbaar >= 5
     assert _estop(ctx)["active"] is False
     assert not ctx.db.fetch_all("SELECT 1 FROM audit_events WHERE actor='apikey:hub'")
+    assert openbare_routes == OPENBARE_SCHRIJVENDE_ROUTES
 
 
 def test_sleutel_met_rechten_leest_als_kijker_en_mag_niet_wat_een_kijker_mag_schrijven(  # type: ignore[no-untyped-def]
