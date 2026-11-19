@@ -16,6 +16,7 @@ from app.backups import create_backup, enforce_retention
 from app.config import DEFAULT_CACHE_PAUSE_GB, DEFAULT_CACHE_WARNING_GB, Settings
 from app.db import Database
 from app.mediaguard.handoff import sweep_orphan_staging
+from app.mediaguard.holds import pause_reason
 
 MAX_DB_LOG_LINES = 500
 MAX_SUCCESS_LOG_LINES = 200
@@ -180,18 +181,14 @@ def lane_pause_state(database: Database) -> dict[str, dict[str, Any]]:
     """Per baan: gepauzeerd ja/nee + (Nederlandse) reden, rechtstreeks uit worker_config."""
 
     state: dict[str, dict[str, Any]] = {}
-    for row in database.fetch_all("SELECT baan,gepauzeerd,pauze_reden FROM worker_config"):
-        paused = bool(int(row["gepauzeerd"]))
-        reason = str(row["pauze_reden"] or "") or None
+    for row in database.fetch_all("SELECT * FROM worker_config"):
+        reason = pause_reason(row)
+        paused = reason is not None
         state[str(row["baan"])] = {
             "paused": paused,
-            "reason": (reason or "handmatig gepauzeerd") if paused else None,
-            "storage_pause": paused
-            and bool(reason)
-            and (
-                str(reason).startswith("automatisch: cache")
-                or str(reason).startswith("automatisch: opslag")
-            ),
+            "reason": reason,
+            "storage_pause": reason is not None and reason.startswith(
+                ("automatisch: cache", "automatisch: opslag")),
         }
     return state
 
@@ -231,10 +228,11 @@ def storage_guard(database: Database, settings: Settings) -> dict[str, int | str
     try:
         free = shutil.disk_usage(settings.cache_root).free
     except OSError as exc:
-        # Een handmatige of MediaGuard-pauze blijft staan met haar eigen reden.
+        # Een handmatige of kijkpauze blijft staan. De platformtermijn blijft bewaard.
         database.execute(
             "UPDATE worker_config SET gepauzeerd=1,pauze_reden=? "
-            "WHERE gepauzeerd=0 OR pauze_reden LIKE 'automatisch:%'",
+            "WHERE gepauzeerd=0 OR pauze_reden LIKE 'automatisch:%' "
+            "OR pauze_reden LIKE 'Platform:%'",
             (f"automatisch: opslag niet bereikbaar: {exc}",),
         )
         return {"vrij_bytes": 0, "status": f"automatisch gepauzeerd: {exc}"}
@@ -253,7 +251,8 @@ def storage_guard(database: Database, settings: Settings) -> dict[str, int | str
             conn.execute(
                 """UPDATE worker_config SET gepauzeerd=1,pauze_reden=?
                    WHERE gepauzeerd=0 OR pauze_reden LIKE 'automatisch: cache%'
-                      OR pauze_reden LIKE 'automatisch: opslag%'""",
+                      OR pauze_reden LIKE 'automatisch: opslag%'
+                      OR pauze_reden LIKE 'Platform:%'""",
                 (reason,),
             )
         else:

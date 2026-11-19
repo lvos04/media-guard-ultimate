@@ -22,6 +22,7 @@ from app.config import Settings
 from app.cpubudget import effective_cpu_percent
 from app.db import Database
 from app.hostlimits import cpu_temperature, effective_memory
+from app.mediaguard.holds import expire_platform_hold, pause_reason
 from app.onderhoud import record_failure, storage_guard
 from app.uitvoerder import (
     MAX_RESTART_INTERRUPTIONS,
@@ -414,7 +415,8 @@ def deliberate_block(reason: str | None) -> bool:
     mediaserver, een eigen pauze, stille uren of de noodstop. Daarvoor geen stilstandmelding
     en geen 'verminderde' engine."""
     text = str(reason or "").strip().lower()
-    return (not text or text.startswith(("kijken:", "jellyfin:", "handmatig", "noodstop"))
+    return (not text or text.startswith(("kijken:", "platform:", "jellyfin:",
+                                         "handmatig", "noodstop"))
             or "stiltevenster" in text or "iemand kijkt" in text)
 
 
@@ -514,14 +516,17 @@ class Planner:
             loop.call_soon_threadsafe(event.set)
 
     def _lane_config(self, lane: Lane) -> Any:
-        return self.database.fetch_one("SELECT * FROM worker_config WHERE baan=?", (lane,))
+        row = self.database.fetch_one("SELECT * FROM worker_config WHERE baan=?", (lane,))
+        if row is not None:
+            expire_platform_hold(self.database, row)
+        return row
 
     def _lane_available(self, lane: Lane) -> tuple[bool, str | None]:
         config = self._lane_config(lane)
         if config is None:
             return False, "workerconfiguratie ontbreekt"
-        if int(config["gepauzeerd"]):
-            return False, str(config["pauze_reden"] or "handmatig gepauzeerd")
+        if reason := pause_reason(config):
+            return False, reason
         if _in_silence_window(config["stilte_start"], config["stilte_einde"], datetime.now()):
             return False, "stiltevenster actief"
         return self.machine_guard(lane)
@@ -575,6 +580,11 @@ class Planner:
         except Exception as exc:
             return None, f"opslagcontrole: {exc}"
         with self.database.connection() as connection:
+            # De baan kan tussen de voorcontrole en het SQLite-schrijversslot zijn gepauzeerd.
+            current = connection.execute(
+                "SELECT * FROM worker_config WHERE baan=?", (lane,)).fetchone()
+            if current is not None and (reason := pause_reason(current)):
+                return None, reason
             active = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM job WHERE status IN ('bezig','verifieren')"

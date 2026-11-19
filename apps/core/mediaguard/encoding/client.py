@@ -177,6 +177,16 @@ class EncoderClient:
                                    {"active": active, "lanes": lanes, "reason": reason},
                                    timeout=5.0)
 
+    async def set_platform_hold(self, reason: str, expires_at: int | None) -> dict[str, Any]:
+        active = expires_at is not None
+        return await self._request("PUT", "/settings/playback-hold", {
+            "source": "platform", "active": active, "lanes": ["cpu", "gpu"] if active else [],
+            "reason": reason, "expires_at": expires_at,
+        }, timeout=5.0)
+
+    async def get_platform_hold(self) -> dict[str, Any]:
+        return await self._request("GET", "/settings/playback-hold", timeout=5.0)
+
     async def trials(self, body: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/trials", body, timeout=3600.0)
 

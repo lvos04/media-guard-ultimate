@@ -15,7 +15,7 @@ from mediaguard.audit import audit
 from mediaguard.auth import Principal, require_operator, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import dumps, loads, utcnow
-from mediaguard.encoding import resources, service
+from mediaguard.encoding import platform_hold, resources, service
 from mediaguard.encoding.client import EncoderError, get_encoder_client
 from mediaguard.settings_registry import REGISTRY
 
@@ -55,6 +55,10 @@ async def _poll_loop(ctx: AppContext) -> None:
             await service.reconcile_engine_commits(ctx)
         except Exception:  # noqa: BLE001
             LOGGER.exception("encoder-instellingen doorzetten mislukt")
+        try:
+            await platform_hold.sync(ctx)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("platformpauze bijwerken mislukt")
         taskwatch.ok(ctx, "encoding_poll")
         try:
             interval = int(ctx.config.value("encoding.poll_interval_seconds"))

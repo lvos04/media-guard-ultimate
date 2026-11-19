@@ -45,6 +45,22 @@ mediaroot/dataset (`scan_interval=0`, de scheduler scant hem nooit; core is de s
 en een eigen profiel `MediaGuard (per-job policy)`; de policy van core zit per job in
 `job.mg_inst` en wordt in `run_job` over het profiel gelegd.
 
+### Begrensde platformpauze (S-P3-670)
+
+MediaGuard kan intern voor back-up of ZFS-scrub nieuwe starts op beide AV1-banen laten
+wachten. De eigenaar bewaart de eindtijd (maximaal zes uur) en weigert een volgende
+handmatige wijziging binnen vijftien minuten. Bij het verlopen van de termijn vervalt
+de platformpauze automatisch. Dit telt niet als een handmatige wijziging.
+
+De bestaande interne encoderbrug verwerkt de pauze onder de reden `Platform:`. De
+planner toetst zelf de eindtijd, ook wanneer core tijdelijk uitvalt. Een lopende
+encode gaat door en een bestaande kijkpauze houdt haar eigen reden `Kijken:`.
+Bij een onbereikbare engine of een niet bevestigde wijziging is de interne stand
+`unknown`.
+
+De connector geeft voor deze actie `501 capability_unavailable` tot de
+Hub-policy-sleutel en de contractronde beschikbaar zijn.
+
 ## 2. Wat behouden is, wat veranderde
 
 | Module | Status | Wijziging |

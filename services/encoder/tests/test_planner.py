@@ -76,6 +76,31 @@ def _planner_case(tmp_path: Path) -> tuple[Database, Settings, list[int]]:
     return database, configured, job_ids
 
 
+def test_platformpauze_laat_voortgang_staan_en_hervat_wachtrij(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mediaguard import holds
+
+    database, configured, _ = _planner_case(tmp_path)
+    now = 2_000_000_000
+    monkeypatch.setattr(holds, "time", lambda: now)
+    planner = Planner(
+        database, configured, storage_validator=lambda: None,
+        machine_guard=lambda _: (True, None),
+    )
+    running, _ = planner.claim_next("cpu", "cpu-1")
+    assert running is not None
+    database.execute("UPDATE job SET percent=42 WHERE id=?", (running,))
+    before = dict(database.fetch_one("SELECT * FROM job WHERE id=?", (running,)))
+    holds.apply_platform_hold(database, now + 100, "scrub")
+    assert planner.claim_next("gpu", "gpu-1") == (None, "Platform: scrub")
+    assert database.fetch_one("SELECT status FROM job WHERE id<>?", (running,))[0] == "wacht"
+    now += 100
+    resumed, _ = planner.claim_next("gpu", "gpu-1")
+    assert resumed is not None and resumed != running
+    assert dict(database.fetch_one("SELECT * FROM job WHERE id=?", (running,))) == before
+
+
 @pytest.mark.asyncio
 async def test_cpu_en_gpu_baan_draaien_werkelijk_gelijktijdig(tmp_path: Path) -> None:
     # Deze test draait een echte av1_qsv-encode op de GPU-baan. Zonder Intel

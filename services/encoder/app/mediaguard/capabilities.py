@@ -646,15 +646,17 @@ def apply_lane_gates(database: Database, capabilities: dict[str, Any],
             # GPU: de gewone-taalstatus ("Geen GPU gevonden — encodes draaien op de CPU").
             reason = (f"{PAUSE_PREFIX} {info['reason']}" if lane == "gpu"
                       else f"{PAUSE_PREFIX} {lane.upper()}-baan uit: {info['reason']}")
-            # Een handmatige pauze van de gebruiker overschrijven we nooit.
-            if not int(row["gepauzeerd"]) or ours:
+            # Een platformpauze bewaart haar eigen eindtijd onder deze blokkade.
+            if not int(row["gepauzeerd"]) or ours or current_reason.startswith("Platform:"):
                 database.execute(
-                    "UPDATE worker_config SET gepauzeerd=1,pauze_reden=? WHERE baan=?",
-                    (reason, lane),
+                    "UPDATE worker_config SET gepauzeerd=1,pauze_reden=? WHERE baan=? "
+                    "AND (gepauzeerd=0 OR pauze_reden LIKE ? OR pauze_reden LIKE 'Platform:%')",
+                    (reason, lane, f"{PAUSE_PREFIX}%"),
                 )
         elif int(row["gepauzeerd"]) and ours:
             database.execute(
-                "UPDATE worker_config SET gepauzeerd=0,pauze_reden=NULL WHERE baan=?", (lane,)
+                "UPDATE worker_config SET gepauzeerd=0,pauze_reden=NULL WHERE baan=? "
+                "AND pauze_reden LIKE ?", (lane, f"{PAUSE_PREFIX}%"),
             )
 
     if settings is not None:

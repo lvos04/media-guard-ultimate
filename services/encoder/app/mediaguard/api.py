@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app import __version__
 from app.config import Settings
@@ -16,6 +16,11 @@ from app.db import Database
 from app.mediaguard import service, trials
 from app.mediaguard.auth import require_token
 from app.mediaguard.capabilities import PAUSE_PREFIX, CapabilityService, apply_lane_gates
+from app.mediaguard.holds import (
+    apply_platform_hold,
+    apply_playback_hold,
+    platform_status,
+)
 from app.mediaguard.importer import ImportError_, import_standalone_db
 from app.mediaguard.policy import DvMode, MediaGuardPolicy, QualityProfileName
 from app.onderhoud import cache_limits, pause_overview, storage_guard
@@ -97,18 +102,24 @@ class ResourceSettingsRequest(BaseModel):
     nice: int = Field(default=10, ge=0, le=19)
 
 
-# Pauze omdat er in de mediaserver gekeken wordt: eigen voorvoegsel, zodat noch de
-# capability-poorten noch een handmatige pauze hem per ongeluk opheffen of overschrijven.
-PLAYBACK_HOLD_PREFIX = "Kijken:"
-
-
 class PlaybackHoldRequest(BaseModel):
-    """Vanuit core: iemand kijkt in Emby/Jellyfin/Plex → nieuwe encodes wachten."""
+    """Vanuit core: nieuwe encodes wachten tijdens kijken of tijdelijk platformwerk."""
 
     model_config = ConfigDict(extra="forbid")
     active: bool
     lanes: list[str] = Field(default_factory=list)
     reason: str = Field(default="", max_length=200)
+    source: Literal["playback", "platform"] = "playback"
+    expires_at: int | None = Field(default=None, gt=0, strict=True)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> PlaybackHoldRequest:
+        if self.source == "platform" and self.active:
+            if self.expires_at is None or not self.reason.strip():
+                raise ValueError("Een platformpauze vraagt een eindtijd en een reden.")
+        elif self.expires_at is not None:
+            raise ValueError("Een eindtijd geldt alleen voor een actieve platformpauze.")
+        return self
 
 
 class EmergencyStopRequest(BaseModel):
@@ -117,33 +128,6 @@ class EmergencyStopRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     active: bool
     reason: str = Field(default="", max_length=500)
-
-
-def apply_playback_hold(database: Any, active: bool, lanes: list[str],
-                        reason: str) -> dict[str, Any]:
-    """Zet alleen pauzes die van ons zijn of op een vrije baan; heft alleen eigen pauzes op.
-    Lopende encodes draaien door (met hun lage prioriteit); alleen nieuwe wachten."""
-
-    out: dict[str, Any] = {}
-    for row in database.fetch_all("SELECT baan,gepauzeerd,pauze_reden FROM worker_config"):
-        lane = str(row["baan"])
-        current = str(row["pauze_reden"] or "")
-        ours = int(row["gepauzeerd"]) and current.startswith(PLAYBACK_HOLD_PREFIX)
-        if active and lane in lanes:
-            if not int(row["gepauzeerd"]) or ours:
-                database.execute(
-                    "UPDATE worker_config SET gepauzeerd=1,pauze_reden=? WHERE baan=?",
-                    (f"{PLAYBACK_HOLD_PREFIX} {reason or 'iemand kijkt'}"[:200], lane))
-                out[lane] = "wacht"
-            else:
-                out[lane] = "al gepauzeerd"
-        elif ours:
-            database.execute(
-                "UPDATE worker_config SET gepauzeerd=0,pauze_reden=NULL WHERE baan=?", (lane,))
-            out[lane] = "hervat"
-        else:
-            out[lane] = "ongewijzigd"
-    return {"active": active, "lanes": out}
 
 
 def _resources_view(database: Any) -> dict[str, Any]:
@@ -322,8 +306,19 @@ def create_mediaguard_router() -> APIRouter:
         return await asyncio.to_thread(noodstop.set_state, _db(request), body.active,
                                        body.reason)
 
+    @router.get("/settings/playback-hold")
+    async def get_playback_hold(request: Request) -> dict[str, Any]:
+        return await asyncio.to_thread(platform_status, _db(request))
+
     @router.put("/settings/playback-hold")
     async def put_playback_hold(body: PlaybackHoldRequest, request: Request) -> dict[str, Any]:
+        if body.source == "platform":
+            from app.planner import wake_planner
+
+            state = await asyncio.to_thread(apply_platform_hold, _db(request), body.expires_at,
+                                            body.reason.strip())
+            wake_planner()
+            return state
         lanes = [lane for lane in body.lanes if lane in ("cpu", "gpu")]
         return await asyncio.to_thread(apply_playback_hold, _db(request), body.active, lanes,
                                        body.reason)

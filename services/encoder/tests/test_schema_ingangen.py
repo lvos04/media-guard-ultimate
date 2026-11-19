@@ -120,7 +120,9 @@ def test_sqlite_schrijfslot_bewaakt_av1(tmp_path, monkeypatch, ingang, startslot
     db.execute("UPDATE job SET status='bezig', percent=37 WHERE id=?", (job,))
     if ingang == "migratie":
         db.migrations_dir = shutil.copytree(db.migrations_dir, tmp_path / "migraties")
-        (db.migrations_dir / "027_proef.sql").write_text("CREATE TABLE proef (id INTEGER);")
+        versie = db.migration_files()[-1][0] + 1
+        (db.migrations_dir / f"{versie:03d}_proef.sql").write_text(
+            "CREATE TABLE proef (id INTEGER);")
     gestart, bij_sqlite = Event(), Event()
     connect = db.connect
 

@@ -162,7 +162,7 @@ jobs:
           tests/test_opslag.py tests/test_onderhoud.py
           tests/test_mediaguard_storage_guard.py tests/test_scanscheduler.py
           tests/test_smb_helper.py tests/test_ai_controller.py tests/test_integraties.py
-          tests/test_verificatie.py tests/test_systeem.py
+          tests/test_verificatie.py tests/test_systeem.py tests/test_playback_hold.py
 
   encoder-image:
     name: encoder volledige suite in toolchain-image (traag)

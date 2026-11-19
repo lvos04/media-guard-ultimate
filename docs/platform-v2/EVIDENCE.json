@@ -41,13 +41,13 @@
  },
  {
   "id": "B04-005",
-  "status": "Niet gestart",
-  "validatie": "NIET GEVALIDEERD (hardware)",
-  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); DELTA_MATRIX.md §B04-005 en §K.2 (005a, 005b): test_mediaserver.py::test_watching_holds_encodes_and_marks_recent, test_encoding_lanes.py::test_gpu_idle_benign_pauses_and_no_work_do_not_alert, services/encoder/tests/test_mediaguard_resources.py, services/encoder/tests/test_playback_hold.py",
-  "blokkade": "Eindacceptatie (kijken stopt zware transcode zonder vals GPU-alarm) vraagt de echte Arc A310 en een echte client op de NAS.",
-  "opmerking": "Nieuw werk nog niet gebouwd. Bestaand deel (1.2.2): kijkpauze, geen vals GPU-alarm en CPU-, temperatuur- en tijdvenstergrens (unit-getest). Hiaat: alleen een begrensde pauze voor NAS-back-up/ZFS-scrub via de Hub, met het bestaande patroon 'eigen pauze met voorvoegsel' (apply_playback_hold) en een TTL en frequentiegrens (P3-10).",
+  "status": "Bezig",
+  "validatie": "Unit-getest; NIET GEVALIDEERD (hardware)",
+  "bewijs": "S-P3-670: apps/core/tests/test_platformpauze.py, apps/core/tests/test_mediaserver.py, apps/core/tests/test_encoding_lanes.py, services/encoder/tests/test_playback_hold.py en services/encoder/tests/test_planner.py::test_platformpauze_laat_voortgang_staan_en_hervat_wachtrij",
+  "blokkade": "Eindacceptatie vraagt een echte Arc A310 en een echte stream (S-P6, N-P6-05). De connectoractie wacht op de Hub-policy-sleutel en een contractronde.",
+  "opmerking": "Eigenaarlogica: Platform:-pauze voor back-up en scrub van hooguit zes uur, maximaal één handmatige wijziging per vijftien minuten. De kijkpauze behoudt voorrang; een onbereikbare engine geeft unknown. De aanroep via de connector wacht op de Hub-policy-sleutel en een contractronde; propose/apply blijven 501 capability_unavailable.",
   "repo": "media-guard-ultimate",
-  "bijgewerkt": "2026-11-09"
+  "bijgewerkt": "2026-11-19"
  },
  {
   "id": "B04-006",

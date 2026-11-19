@@ -34,7 +34,8 @@ def test_migraties_zijn_herhaalbaar(tmp_path: Path) -> None:
     # 019 = indexen voor de snelle joblijst (GET /api/jobs).
     # 022 = afstelling (instelbaar in de app) + kwaliteitsmeting per job.
     # 023 = noodstop in de engine + vastloperstatistiek (rapport 6).
-    assert database.applied_versions() == set(range(1, 27))
+    # 027 = additieve termijn en reden voor de platformpauze.
+    assert database.applied_versions() == set(range(1, 28))
     assert database.fetch_one("PRAGMA journal_mode")[0] == "wal"
     assert database.fetch_one("SELECT COUNT(*) FROM functie")[0] == 13
     assert database.fetch_one(
@@ -286,7 +287,8 @@ def test_av1_migratiescript_blijft_in_de_getoetste_transactie(tmp_path, monkeypa
 
     db, _, _ = _case(tmp_path)
     db.migrations_dir = shutil.copytree(db.migrations_dir, tmp_path / "migraties")
-    script = db.migrations_dir / "027_proef.sql"
+    versie = db.migration_files()[-1][0] + 1
+    script = db.migrations_dir / f"{versie:03d}_proef.sql"
     sql = "CREATE TABLE proef (id INTEGER);"
     if fout == "ongeldige_sql":
         sql += " INSERT INTO ontbrekende_tabel VALUES (1);"
@@ -318,6 +320,8 @@ def test_av1_migratiescript_blijft_in_de_getoetste_transactie(tmp_path, monkeypa
         db.apply_migrations()
     with closing(sqlite3.connect(db.path)) as conn:
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='proef'").fetchone() is None
-        assert conn.execute("SELECT 1 FROM schema_versie WHERE versie=27").fetchone() is None
+        assert conn.execute(
+            "SELECT 1 FROM schema_versie WHERE versie=?", (versie,),
+        ).fetchone() is None
         toekomst = conn.execute("SELECT 1 FROM schema_versie WHERE versie=999").fetchone()
         assert toekomst == ((1,) if fout == "nieuwer_schema" else None)

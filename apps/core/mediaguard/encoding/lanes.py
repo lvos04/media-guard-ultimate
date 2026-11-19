@@ -188,6 +188,7 @@ def _benign_reason(ctx: AppContext) -> str | None:
     """Waarom een lege GPU nu bewust is (dan geen melding)."""
     from mediaguard.encoding import service as enc
     from mediaguard.encoding.autopilot import blocked_reason
+    from mediaguard.encoding.platform_hold import suppress_gpu_idle
 
     reason = blocked_reason(ctx)
     if reason:
@@ -198,6 +199,8 @@ def _benign_reason(ctx: AppContext) -> str | None:
         return "voorzichtige start"
     if ctx.state_get("mediaserver_hold_active"):
         return "iemand kijkt"
+    if suppress_gpu_idle(ctx):
+        return "platformpauze"
     if _outside_encode_window(ctx):
         return "buiten het tijdvenster"
     return None
