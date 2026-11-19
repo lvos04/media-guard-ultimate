@@ -147,12 +147,18 @@ eerste vastgelegde constatering. Bij ontbrekende brontijd is de pagina
 open rijen bepaalt de versheid op elke pagina. Een actuele nul vereist een
 geslaagde synchronisatie die de ontbrekende media werkelijk heeft geteld.
 
-Voor een eenduidige download blijft de combinatie van protocol en download-ID
-de identiteit bij een upgrade vanaf schema 154 of ouder. Schema 156 gebruikte
-ook de clientnaam en behoudt die berekening. Bij hetzelfde download-ID op twee
-clients onderscheidt de connector beide clients. De door MediaGuard ingestelde
-Arr-naam en de lokale clientnaam tellen samen als één download zodra hun
-protocol en bron-ID overeenkomen. Een onleesbare configuratie of een
+Twee downloadclients kunnen hetzelfde bron-ID melden. Elke client houdt haar
+connector-ID wanneer de andere download verschijnt of verdwijnt, ook na een
+herstart. Bij een upgrade vanaf schema 154 of ouder behoudt de enige ingerichte
+client van een protocol de historische sleutel uit protocol en bron-ID. MediaGuard
+legt die toewijzing vast bij het opslaan van de inrichting. Ze blijft gelden
+als een andere client wordt toegevoegd of de eerste uit de inrichting verdwijnt.
+Zijn vanaf het begin meerdere clients voor dat protocol ingericht, dan krijgt
+elke client een sleutel op basis van protocol, bron-ID en clientnaam. Een oud ID
+dat al voor twee verschillende clients is uitgegeven, wijst geen eigenaar aan.
+Schema 156 gebruikte de clientnaam bij benoemde downloads. De door MediaGuard
+ingestelde Arr-naam en de lokale clientnaam verwijzen naar dezelfde download.
+Een onleesbare configuratie of een
 wachtrijrij zonder identiteit geeft een onbekend totaal. De AV1-meting vereist
 één CPU-rij en één GPU-rij, elk met capaciteit, actieve jobs en pauzetoestand.
 Een gemeten capaciteit van nul is geldig.
@@ -185,6 +191,13 @@ van de bestaande job- en auditbewijzen. Onderhoud mag de operationele rijen
 opruimen. Hun bewijs-ID’s blijven opvraagbaar. Bij hervatting krijgt de
 afgesloten poging een afzonderlijk audit-ID met actie `job.finished`, eindtijd,
 status en de beschikbare resultaattellers. De wachtrij houdt de actuele voortgang bij.
+Ook een planpauze die een wachtende job annuleert, legt een eigen
+`job.finished` vast met de job als doel. De planpauze, annulering en het
+eindbewijs worden samen opgeslagen. Het historische jobpakket en het eindbewijs
+blijven na onderhoud onder hun eigen ID leesbaar. Bij herplannen of opruimen
+van een eerder geannuleerde job bewaart MediaGuard een nog aanwezige eindtijd
+en status onder een eigen audit-ID als dit eindbewijs ontbreekt. De versie
+van die eerdere annulering blijft onbekend.
 Een historisch bewijsstuk zonder vastgelegde versie heeft `app_version: null`
 en `details.app_version: "onbekend"`.
 
@@ -194,12 +207,15 @@ Bij een al toegepaste migratie 155 blijft het toen afgegeven jobpakket beschikba
 Verschilt het nog aanwezige eindresultaat van het pakket, dan komt dat resultaat
 onder een eigen `audit:<nummer>` met de job als doel in de audittijdlijn.
 
-Meerdere kernrevisies gebruikten schema 155. Bij een opgeslagen profielbewijs
+De nooit uitgebrachte tussenrevisies `324d935` en `2393f52` gebruikten
+hetzelfde schema 155. Bij een opgeslagen profielbewijs
 met toegestane booleans, een geconfigureerde downloadclient of een beschikbare
 Arr-wachtrij kan hetzelfde
 schema twee verschillende antwoorden hebben gegeven. De upgrade stopt in dat
 geval vóór wijzigingen aan het schema. De herstelset bevat de oorspronkelijke
-database. Voor voortzetting is de oorspronkelijke kernrevisie nodig.
+database. Deze beperking geldt voor zulke lokale ontwikkelkopieën. Voor
+voortzetting is hun oorspronkelijke kernrevisie nodig. De gepubliceerde
+release 1.2.2 gebruikt schema 100.
 
 ## Grenzen en vervolg
 
