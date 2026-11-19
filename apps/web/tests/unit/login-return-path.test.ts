@@ -61,11 +61,17 @@ function fillInput(input: HTMLInputElement, value: string) {
 }
 
 it.each([
-  { flow: "wachtwoord", next: "//evil.example", destination: "/", twoFactor: false },
-  { flow: "wachtwoord", next: "/overzicht?tab=1#deel", destination: "/overzicht?tab=1#deel", twoFactor: false },
-  { flow: "tweestapsverificatie", next: "/login?next=/", destination: "/", twoFactor: true },
-  { flow: "tweestapsverificatie", next: "/overzicht?tab=1#deel", destination: "/overzicht?tab=1#deel", twoFactor: true },
-])("navigeert na $flow voor $next uitsluitend naar $destination", async ({ next, destination, twoFactor }) => {
+  { next: "//evil.example", destination: "/" },
+  { next: "/%252Foverzicht", destination: "/" },
+  { next: "/%", destination: "/" },
+  { next: "/login?next=/", destination: "/" },
+  { next: "/logout?bron=web#deel", destination: "/" },
+  { next: "/anders/../api/v1/auth/%256cogout#deel", destination: "/" },
+  { next: "/overzicht?tab=1#deel", destination: "/overzicht?tab=1#deel" },
+].flatMap((test) => [
+  { ...test, flow: "wachtwoord", twoFactor: false },
+  { ...test, flow: "tweestapsverificatie", twoFactor: true },
+]))("navigeert na $flow voor $next uitsluitend naar $destination", async ({ next, destination, twoFactor }) => {
   window.history.replaceState(null, "", `/login?${new URLSearchParams({ next })}`);
   const initialUrl = window.location.href;
   const browserNavigation = observeBrowserNavigation();

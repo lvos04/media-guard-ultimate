@@ -5,10 +5,23 @@ export function returnPath(value: string | null): string {
   }
 
   try {
-    const path = decodeURIComponent(new URL(value, "http://local.invalid").pathname);
-    if (/^\/login\/*$/i.test(path)) return "/";
+    // Controleer alleen het pad en geef een geldige bestemming ongewijzigd terug.
+    let path = value.split(/[?#]/, 1)[0];
+    for (let round = 0; round < 4 && path.includes("%"); round++) {
+      path = decodeURIComponent(path);
+    }
+    if (path.includes("%") || path.startsWith("//") || path.includes("\\") || path.includes("://")) {
+      return "/";
+    }
+
+    const normalized = new URL("http://local.invalid");
+    normalized.pathname = path;
+    const { pathname } = normalized;
+    if (pathname.startsWith("//") || /^\/(?:login|logout|api\/+v1\/+auth\/+logout)\/*$/i.test(pathname)) {
+      return "/";
+    }
   } catch {
-    // Ongeldige procentcodering verandert het pad niet in de loginroute.
+    return "/";
   }
   return value;
 }
