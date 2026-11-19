@@ -423,7 +423,10 @@ def rollback_cancel(principal: Principal = Depends(require_admin),
     from mediaguard.maintenance import preupdate
 
     info = preupdate.pending(ctx.settings.data_dir)
-    done = preupdate.cancel(ctx.settings.data_dir)
+    try:
+        done = preupdate.cancel(ctx.settings.data_dir)
+    except preupdate.SetError as exc:
+        raise HTTPException(409, str(exc)) from exc
     if done:
         audit(ctx.db, actor=principal.actor, action="backup.rollback_cancel",
               target_type="backup", target_id=(info or {}).get("set"))

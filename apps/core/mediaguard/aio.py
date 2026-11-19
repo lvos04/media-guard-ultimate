@@ -1312,14 +1312,13 @@ def prepare_start(env: dict[str, str], config: Path,
     with preupdate.config_locks(config):
         out: list[str] = []
         try:
-            try:
-                _preupdate("inspect", config, migrations, owner)
-            except schema.SchemaTooNew:
+            core = config / "core"
+            if (core / preupdate.STAGE_MARKER).exists():
                 out = apply_staged_restore(config, owner, migrations)
-                if out:
-                    _preupdate("inspect", config, migrations, owner)
-                else:
-                    raise
+                # Open geen SQLite-lezer op een half verplaatste combinatie van database en WAL.
+                if preupdate.swapping(core):
+                    raise RuntimeError("de begonnen omwisseling kon niet worden hervat")
+            _preupdate("inspect", config, migrations, owner)
         except schema.SchemaTooNew:
             env[schema.AIO_RECOVERY_ENV] = "1"
             return [*out, schema.MESSAGE]

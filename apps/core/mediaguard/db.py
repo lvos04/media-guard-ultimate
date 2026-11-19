@@ -289,10 +289,11 @@ class Database:
                 if encoder_migrations is not None:
                     if used_set is None:
                         raise RuntimeError("de volledige herstelset voor de AV1-migratie ontbreekt")
-                    preupdate.migrate_encoders(engines, encoder_migrations)
-                    preupdate.record_commit(folder, used_set)
-            if encoder_migrations is not None:
-                (folder / preupdate.COMMIT_MARKER).unlink()
+                    preupdate.migrate_encoders(list(engines.encoders.values()), encoder_migrations)
+                if used_set is not None and (supervised or encoder_migrations is not None):
+                    engines.begin(folder, used_set, conn)
+            if used_set is not None and (supervised or encoder_migrations is not None):
+                preupdate.finish_commit(folder)
         except schema.SchemaTooNew:
             raise  # normale herstelweergave, geen mislukte migratie
         except BaseException as exc:

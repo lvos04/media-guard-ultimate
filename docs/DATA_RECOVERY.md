@@ -282,11 +282,46 @@ bestaande bundels niet te openen — dat is precies de bedoeling.
 
 ### 8.1 Proefgevallen voor de update en terugval
 
+**Volgorde vóór de dienststart**
+
+1. De supervisor neemt de mapsloten van kern en encoder. Onder de SQLite-schrijfsloten
+   verifieert hij de laatste volledige herstelset. De bestanden, het manifest en de
+   archiefmap zijn gesynchroniseerd voordat de set voor migratie mag worden gebruikt.
+2. Vóór de eerste databasecommit publiceert hij de setnaam in `update-in-uitvoering`
+   en alle beoogde schemaversies in `update-commitstap.json`. Iedere nieuwe markering
+   gaat eerst naar een tijdelijk bestand. Na `fsync` op dat bestand volgen een atomaire
+   hernoeming en `fsync` op de bovenliggende map.
+3. Eerst commit de kern, daarna iedere encoder. Elke SQLite-commit gebruikt volledige
+   synchronisatie. Na elke commit publiceert de supervisor de bereikte stap. Bij
+   herstart controleert hij de werkelijke databases. Als alle doelversies en
+   integriteitscontroles kloppen, rondt hij af. Als de oorspronkelijke stand nog
+   aanwezig is, mag de update opnieuw beginnen. Ook bij een oude lege of afgeknotte
+   setnaam vergt dat een volledige vergelijking met een geverifieerde herstelset,
+   inclusief SHA-256, SQLite-integriteit en wijzigingen in het WAL-logboek.
+   Bij een gedeeltelijke commit blijft de oorspronkelijke set beschikbaar voor terugzetten.
+4. Bij een terugzetverzoek controleert de app elke gekozen kopie. Ze synchroniseert de
+   klaargezette bestanden en hun mappen en publiceert dan `terugzetten.json`.
+   Pas na deze publicatie mag de supervisor de omwisseling beginnen.
+5. Met gestopte diensten legt de supervisor de vorige bestandsnamen, hun SHA-256,
+   de bewaarmap en het stapnummer duurzaam vast in dezelfde aanvraag. Voor elke
+   database verplaatst hij eerst het vorige bestand en de aanwezige `-wal`, `-shm`
+   en `-journal` naar de bewaarmap. Dan plaatst hij de klaargezette kopie op de
+   actieve naam. Na elke hernoeming synchroniseert hij beide mappen en publiceert
+   hij het volgende stapnummer. Na uitval controleert hij de hele tussenstand,
+   ook als de laatste hernoeming al op schijf staat en het stapnummer nog achterloopt.
+6. Na de laatste omwisseling controleert hij de grootte, SHA-256, SQLite-integriteit,
+   schemaversie en hulpbestanden van de actieve set en de bewaarde vorige bestanden.
+   Hij publiceert het resultaat met de bewaarmap voordat hij de aanvraag verwijdert
+   en de map synchroniseert. Een reeds uitgevoerde aanvraag van een oudere schrijver
+   kan zo ook na de oorspronkelijke aanvraagtermijn worden afgerond. Bij ontbrekende
+   of tegenstrijdige bestanden blijven de aanvraag en de gegevens voor herstel bewaard.
+
 | Geval | Wat de lokale proef moet aantonen | Controle in de repo |
 |---|---|---|
 | Laatste transactie | Een kern- of encoderschrijver legt 75% en een auditregel vast. Precies de gemelde set herstelt beide, ook bij uitsluitend een encodermigratie. Een tussentijdse kernpublicatie komt mee. | `test_event_herstel.py`, `test_updatevolgorde.py` |
 | Volledigheid en rotatie | Volle opslag, een verdwenen of beschadigde set en te ruime rechten blokkeren de update. Bij een vaste en een lopende klok overleeft de actuele set de rotatie. | `test_event_herstel.py`, `test_updatevolgorde.py` |
 | Onderbroken omwisseling | Een onderbreking tussen de commits van kern en encoder geeft een startweigering met de oorspronkelijke set. Een onvolledige terugzetaanvraag blijft bij herstart geweigerd. Na expliciet herstel of annulering kan de bewaker opnieuw starten. | `test_updatevolgorde.py`, `test_schema_klaargezet.py` |
+| Uitval per stap | Twee herstarts controleren gebruikers, taken, voortgang en events. Bij terugzetten blijven ook de latere voortgang en het laatste WAL-event in de vorige databases leesbaar. | `test_herstartpunten.py` |
 | Oud beheer en oude supervisor | Na weigering of onderbreking blijft schema 155 zijn events lezen. De oude beheerroute biedt een set met sleutelverwijzing niet aan. De oude supervisors kunnen een expliciet klaargezette set toepassen. | `test_updatevolgorde.py`, `test_event_herstel.py`, herstelcode van schema 155 en release 1.2.2 |
 | Sleutelpublicatie | Twee herstarts behouden dezelfde sleutel na uitval bij publicatie. De herkende tijdelijke naam van de vorige schrijver is herstelbaar. Een onbekende koppeling of ontbrekende uitgegeven sleutel blokkeert de vrijgave. | `test_updatevolgorde.py` |
 | Wachtende terugval | Tijdens het klaarzetten blijft de eventroute bereikbaar. Zeven nevendiensten krijgen een leesweigering op de wachtende kernkopie. Na de omwisseling levert de oude leespositie de juiste vervolgpagina. | `test_updatevolgorde.py`, `test_aio.py`, beheer-API van schema 155 |
