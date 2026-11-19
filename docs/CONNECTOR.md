@@ -173,6 +173,9 @@ bijbehorende Arr-rij verandert dat ID niet. Melden twee clients dezelfde
 torrent, dan kan de Hub de voortgang van elk afzonderlijk blijven volgen.
 Meldt Arr die torrent zonder clientnaam, dan houdt de later eenduidig herkende
 client haar eigen ID wanneer de activiteit de twee meldingen samenvoegt.
+De downloadclient bevestigt een overdracht via haar eigen wachtrij. Is die
+wachtrij leeg, dan behoudt een herkenbare Arr-rij haar ID, ook als ze de
+clientnaam van een inmiddels vertrokken Arr-rij gaat melden.
 
 Bij de eerste meting gebruikt de connector de historische ID-vorm van de
 installatie. De oorspronkelijke enige client van een protocol kan het ID uit

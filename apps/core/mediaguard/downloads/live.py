@@ -200,6 +200,10 @@ async def source_queues(ctx: AppContext) -> tuple[list[tuple[Any, list[dict[str,
     return out, errors
 
 
+class ClientDownload(dict[str, Any]):
+    """Activiteitsrij die de clientwachtrij zelf bevestigt. De herkomst blijft buiten de JSON."""
+
+
 def merge(arr_items: list[dict[str, Any]], client_items: list[dict[str, Any]]
           ) -> list[dict[str, Any]]:
     """Voeg clientdownloads toe die geen enkele Sonarr/Radarr-wachtrij kent, en vul bij
@@ -208,7 +212,7 @@ def merge(arr_items: list[dict[str, Any]], client_items: list[dict[str, Any]]
     for client in client_items:
         by_id[client["download_id"]].append(client)
     linked: set[tuple[str, str, str]] = set()
-    out = list(arr_items)
+    out = []
     for hit in arr_items:
         candidates = [
             c for c in by_id.get(str(hit.get("download_id") or "").upper(), [])
@@ -216,6 +220,7 @@ def merge(arr_items: list[dict[str, Any]], client_items: list[dict[str, Any]]
             and (not hit.get("client") or hit["client"] in (c["client"], owned_name(c["client"])))
         ]
         if len(candidates) != 1:
+            out.append(hit)
             continue
         c = candidates[0]
         if hit.get("progress") is None:
@@ -226,11 +231,12 @@ def merge(arr_items: list[dict[str, Any]], client_items: list[dict[str, Any]]
         # Een reeds benoemde Arr-rij houdt haar bronnaam, ook wanneer de client haar ziet.
         hit["client"] = hit.get("client") or c["client"]
         hit["protocol"] = c["protocol"]
+        out.append(ClientDownload(hit))
         linked.add((c["protocol"], c["download_id"], c["client"]))
     for c in client_items:
         if (c["protocol"], c["download_id"], c["client"]) in linked:
             continue
-        out.append({
+        out.append(ClientDownload({
             "id": None, "instance_id": None, "instance_name": None,
             "title": c["release"], "release": c["release"], "protocol": c["protocol"],
             "client": c["client"], "status": c["status"], "state": c["status"],
@@ -239,5 +245,5 @@ def merge(arr_items: list[dict[str, Any]], client_items: list[dict[str, Any]]
             "quality": None, "warning": False, "messages": [], "messages_nl": [],
             "link": None, "awaiting_import": False, "download_id": c["download_id"],
             "movie_id": None, "series_id": None, "episode_id": None, "can_import": False,
-            "category": c["category"], "only_in_client": True})
+            "category": c["category"], "only_in_client": True}))
     return out

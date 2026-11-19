@@ -14,6 +14,7 @@ from tempfile import NamedTemporaryFile
 from typing import Any, NamedTuple
 
 from mediaguard.context import AppContext
+from mediaguard.downloads.live import ClientDownload
 from mediaguard.provisioning import store
 from mediaguard.provisioning.templates import DC_IMPLEMENTATIONS, PREFIX
 from mediaguard.recovery.fsops import fsync_dir
@@ -137,14 +138,13 @@ def download_ids(ctx: AppContext, rows: list[dict[str, Any]], measured: datetime
         # Een bekende wachtrijrij is specifieker dan dezelfde torrent in de instantie.
         visible_arr_ids = {previous.get(queue) or previous.get(instance)
                            for queue, instance in zip(*arr_columns, strict=True)}
-        # Bij splitsen volgt het ID de expliciet gemelde client. Bij samenvoegen
-        # mag een Arr-rij dit ID alleen volgen als geen andere zichtbare Arr-rij
-        # het al herkent. Een oude wachtrijkoppeling is geen actuele claim.
+        # Alleen een meting van de downloadclient kan bij splitsen of samenvoegen
+        # voorrang krijgen op de Arr-rij. Een door Arr gemelde naam is een aanwijzing.
         confirmed = []
         inferred = []
         for kind in ("adres", "client"):
             column = columns[kind]
-            reported = [alias if row.get("client") else None
+            reported = [alias if isinstance(row, ClientDownload) else None
                         for alias, row in zip(column, rows, strict=True)]
             report_counts = Counter(reported)
             confirmed.append([
@@ -154,8 +154,8 @@ def download_ids(ctx: AppContext, rows: list[dict[str, Any]], measured: datetime
             ])
             counts = Counter(column)
             inferred.append([key if counts[key] == 1 else None for key in column])
-        # Eerst unieke clientmeldingen (adres vóór naam), dan de eigen wachtrij
-        # of instantie en pas daarna een eenduidig afgeleide clientkoppeling.
+        # Eerst bevestigde clientitems (adres vóór naam), dan de eigen wachtrij
+        # of instantie en pas daarna een eenduidige aanwijzing voor de client.
         for column in (*confirmed, *arr_columns, *inferred):
             for i, alias in enumerate(column):
                 identity = previous.get(alias) if alias else None
@@ -181,20 +181,27 @@ def download_ids(ctx: AppContext, rows: list[dict[str, Any]], measured: datetime
         old_keys = {(identity, alias.split(":", 1)[0]): alias
                     for alias, identity in previous.items()}
         remembered: dict[str, list[str]] = defaultdict(list)
+        arr_names: dict[str, list[str]] = defaultdict(list)
         observed: dict[str, list[str]] = defaultdict(list)
         for i, source in enumerate(sources):
             identity = assigned[i]
+            row = rows[i]
+            from_client = isinstance(row, ClientDownload)
             for kind, alias in zip(_KINDS, source.aliases, strict=True):
                 old = old_keys.get((identity, kind))
-                if old and kind in ("adres", "client") and not rows[i].get("client"):
+                if old and kind in ("adres", "client") and not row.get("client"):
                     alias = old  # Een naamloze Arr-rij bewijst geen wisseling van client.
                 if key := alias or old:
-                    direct = alias and (kind in ("wachtrij", "instantie") or rows[i].get("client"))
-                    claims = observed if direct else remembered
+                    claims = remembered
+                    if alias and (kind in ("wachtrij", "instantie") or from_client):
+                        claims = observed
+                    elif alias and row.get("client"):
+                        claims = arr_names
                     claims[key].append(identity)
-        # Een gemeten koppeling gaat voor een oude of afgeleide. Bij meerdere
-        # gelijkwaardige rijen kan deze alias bij de volgende meting geen ID bewijzen.
-        current = {key: ids[0] for key, ids in (remembered | observed).items() if len(ids) == 1}
+        # Een actuele clientmeting gaat voor een Arr-naam, daarna volgen oude en
+        # afgeleide koppelingen. Gelijkwaardige claims maken de alias meerduidig.
+        current = {key: ids[0] for key, ids in (remembered | arr_names | observed).items()
+                   if len(ids) == 1}
         if current != previous:
             stamp = measured.isoformat(timespec="microseconds")
             if stamp < last:

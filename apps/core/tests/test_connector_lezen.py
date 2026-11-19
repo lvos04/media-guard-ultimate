@@ -21,7 +21,7 @@ from mediaguard import health_summary
 from mediaguard.app import create_app
 from mediaguard.auth import Principal, current_principal
 from mediaguard.db import utcnow
-from mediaguard.provisioning.templates import owned_name
+from mediaguard.provisioning.templates import PREFIX, owned_name
 
 # Alleen de bestaande aanmeldadministratie mag wijzigen: gebruikstijdstippen in
 # bestaande rijen en uitsluitend nieuwe auditregels voor geweigerde sleutels.
@@ -524,6 +524,12 @@ _RESTANT = {"tweede": 14}
                              ("tweede", (), _RESTANT, {14: "B"})], id="clientwissel-na-herstart"),
     pytest.param(100, "eerste", [
         ("beide", (), _EEN, {37: "A"}),
+        ("beide", (), _TWEE, {37: "A", 14: "B"}),
+        ("beide", (), _EEN, {37: "A"}),
+        ("beide", (), _RESTANT, {14: "B"}),
+    ], id="clientwissel-vaste-inrichting"),
+    pytest.param(100, "eerste", [
+        ("beide", (), _EEN, {37: "A"}),
         ("beide", (), {"eerste": 37, "tweede": 82}, {37: "A", 82: "B"}),
         ("beide", (), {"tweede": 82}, {82: "B"}),
     ], id="clientvertrek"),
@@ -584,12 +590,19 @@ _RESTANT = {"tweede": 14}
         ("eerste", (_BEHEERD, ("arr-b", 7, "eerste", 82)), {}, {37: "A", 82: "B"}),
         ("eerste", (("arr-b", 7, "eerste", 82),), {}, {82: "B"}),
     ], id="vertrek-bij-gedeelde-clientnaam"),
+    pytest.param(100, None, [
+        ("eerste", (_ARR,), {}, {37: "A"}),
+        ("eerste", (_ARR, ("arr-b", 7, "eerste", 82)), {}, {37: "A", 82: "B"}),
+        ("eerste", (("arr-a", 7, "eerste", 37),), {}, {37: "A"}),
+        ("eerste", (("arr-a", 7, "eerste", 37),), {}, {37: "A"}),
+    ], id="vertrek-met-arr-naam"),
 ])
 def test_uitgegeven_download_id(populated_installation, settings, monkeypatch,
                                  schema, historische_naam, metingen):
     from test_arr_fakes import FakeArr, wire
 
     from mediaguard.connector.items import content_hash
+    from mediaguard.downloads.live import ClientDownload
     from mediaguard.instances.registry import create_instance
     from mediaguard.provisioning import store
 
@@ -613,6 +626,7 @@ def test_uitgegeven_download_id(populated_installation, settings, monkeypatch,
                "beide": [second, first], "tweede": [second]}
     torrent = "ab" * 20
     issued = {}
+    clients_by_host = {}
     for config, arr_rows, visible, expected in metingen:
         path = "/api/v1/provisioning/config"
         if config == "geweigerd":
@@ -627,6 +641,8 @@ def test_uitgegeven_download_id(populated_installation, settings, monkeypatch,
                 assert response.status_code == 503 and int(response.headers["Retry-After"]) > 0
         else:
             admin.put(path, json={"download_clients": configs[config]}).raise_for_status()
+            clients_by_host = {c["host"]: c["name"] for c in configs[config]
+                               if c.get("enabled", True)}
 
         # Iedere meting begint met een nieuwe kern en een lege activiteitencache.
         app = create_app(settings)
@@ -641,9 +657,12 @@ def test_uitgegeven_download_id(populated_installation, settings, monkeypatch,
                     "sizeleft": 100 - pct if pct is not None else 0,
                 })
 
-            def queue(request, visible=visible):
+            called = []
+
+            def queue(request, visible=visible, called=called):
                 address = request.url.host.removesuffix(".invalid")
                 assert request.method == "GET" and request.url.path == "/api/v2/torrents/info"
+                called.append(request.url.host)
                 return httpx.Response(200, json=[{"hash": torrent, "state": "downloading",
                                                   "progress": visible[address] / 100}]
                                       if address in visible else [])
@@ -652,7 +671,14 @@ def test_uitgegeven_download_id(populated_installation, settings, monkeypatch,
             before = database_snapshot(current, allow_auth_timestamps=True)
             page = viewer.get("/connector/v1/items?type=downloads", headers=headers).json()
             assert_database_preserved(current, before, allow_auth_timestamps=True)
+            assert sorted(called) == sorted(clients_by_host)
+            activity = current.services["activity_observation"][0]
+            confirmed = {r["client"].removeprefix(PREFIX) for r in activity["downloads"]
+                         if isinstance(r, ClientDownload)}
+            assert confirmed == {clients_by_host[f"{address}.invalid"] for address in visible}
             assert (page["status"], page["total"]) == ("ok", len(expected))
+            assert page["next_cursor"] is None
+            assert len(page["items"]) == len(expected)
             rows = {r["progress"]: r["id"] for r in page["items"]}
             assert rows.keys() == expected.keys()
             if not issued:
@@ -661,8 +687,15 @@ def test_uitgegeven_download_id(populated_installation, settings, monkeypatch,
                     source.append(historische_naam)
                 assert rows[37] == content_hash(source)
             for pct, label in expected.items():
-                assert rows[pct] == issued.setdefault(label, rows[pct]), (config, arr_rows, label)
+                issued.setdefault(label, rows[pct])
             assert len(set(issued.values())) == len(issued)
+            progress_by_id = {r["id"]: r["progress"] for r in page["items"]}
+            expected_by_label = {label: pct for pct, label in expected.items()}
+            for label, identity in issued.items():
+                if label in expected_by_label:
+                    assert progress_by_id[identity] == expected_by_label[label], (config, label)
+                else:
+                    assert identity not in progress_by_id, (config, arr_rows, label)
 
 
 def test_onvolledige_downloadmeting_behoudt_de_uitgegeven_ids(client, ctx, monkeypatch):
