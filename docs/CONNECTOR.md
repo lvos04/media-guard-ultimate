@@ -55,19 +55,39 @@ pagina zijn verwerkt. Stuur de waarde letterlijk mee bij de volgende aanvraag.
 Ook een lege pagina geeft een cursor en houdt de leespositie vast.
 
 De outbox bewaart gebeurtenissen standaard 14 dagen via
-`maintenance.retention_days_events`. Verwijdering legt in dezelfde transactie de
-hoogste verwijderde positie en een revisie vast. Een ongeldige parameter geeft
-`422 validation_error`. Als sinds een cursor een verwijdering op of voorbij de
-leespositie kan zijn opgetreden, volgt `409 cursor_expired` met
-`details.restart: true`. Laat de cursor dan weg en dedupliceer de opnieuw gelezen
-gebeurtenissen op `event_id`. De controle is ook geldig bij een lege outbox en bij
-gaten tussen bewaarde rijen. Begin na herstel van een oudere databasesnapshot
-opnieuw zonder cursor of eerder opgebouwde deduplicatiestand van die bron.
+`maintenance.retention_days_events`. De cursor bindt de laatste positie, de
+bron van die rij en de retentierevisie aan een handtekening. Verwijdert retentie
+sinds die revisie een rij op of voorbij de leespositie, dan volgt
+`409 cursor_expired` met `details.restart: true`. Dit antwoord geldt ook voor
+een oude ongetekende cursor, een vervalste combinatie of een cursor die na
+snapshotherstel bij een andere geschiedenis hoort. Begin dan zonder cursor en
+behoud de eerder verwerkte event-ID's voor deduplicatie.
 
-`source_app` is `mediaguard` in de envelop. `source_event_id` bevat het bron-ID
-als tekenreeks. `event_id` is UUIDv5 in de URL-naamruimte met de naam
-`mediaguard:<bron-id>`. Migratie 151 bewaart bestaande bron-ID's en voorkomt
-heruitgifte van automatisch toegekende ID's binnen dezelfde databasegeschiedenis.
+De query accepteert uitsluitend één `cursor` en één `limit`, beide optioneel.
+Onbekende, dubbele en ongeldige velden geven `422 validation_error`. Bij een
+tijdelijk onbereikbare database geeft de route `503 database_unavailable`.
+Wacht het aantal seconden uit `Retry-After` en gebruik dezelfde leespositie.
+
+`source_app` is `mediaguard`. Bewaar `source_event_id` als tekenreeks. De
+connector leidt `event_id` af als UUIDv5 in de URL-naamruimte uit
+`mediaguard:<bron-id>`. Migratie 151 behoudt de SQLite-rijposities. Bij een
+eerste overgang krijgt iedere bewaarde rij een reproduceerbare bronidentiteit
+uit de oorspronkelijke rij. Een installatie die 151 al toepaste behoudt haar
+eerder uitgegeven numerieke bron-ID's. Voor nieuwe rijen legt migratie 153 per
+publicatie een willekeurig kenmerk vast in dezelfde transactie. Het
+bron-ID combineert dit kenmerk met de positie en blijft gelijk bij herlezing.
+
+Een oude schrijver legde de tijd tot op de seconde vast. Als hij vóór twee
+afzonderlijke upgrades op dezelfde rijpositie precies dezelfde gebeurtenisgegevens
+schrijft, kan een kale snapshot de twee publicaties niet onderscheiden. Voor
+dit historische geval kan de afnemer na een expliciete cursorherstart dezelfde
+deduplicatiesleutel ontvangen. De garantie voor rijen met een bij publicatie
+vastgelegd kenmerk geldt vanaf migratie 153.
+
+De SSE-route `/api/v1/events/stream` koppelt `Last-Event-ID` aan de database
+waarin die leespositie is uitgegeven. Na een tweede upgrade van een oude
+snapshot leest een bestaande client alle bewaarde gebeurtenissen opnieuw.
+
 De classificatie is `internal`. Bekende brontopics krijgen een vast eventtype en
 een vast onderwerp binnen MediaGuard. Overige records krijgen
 `media.event.recorded` met ernst `info`. `payload` bevat uitsluitend `ernst`.

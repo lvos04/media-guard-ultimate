@@ -222,6 +222,32 @@ def vul(db: Path, profiel: str, rijen: int = 2) -> dict[str, Any]:
                 if al != 1:
                     mislukt[tabel] = "de door de migratie gevulde retentiestand ontbreekt"
                 continue
+            if (profiel, tabel) == ("core", "outbox_deletions"):
+                # Laat de echte trigger de grens en bijbehorende revisie samen vastleggen.
+                proef = conn.execute("INSERT INTO outbox_events(ts,topic,payload) VALUES (?,?,?)",
+                                     (NU, "fixture.retentie", "{}"))
+                conn.execute("DELETE FROM outbox_events WHERE id=?", (proef.lastrowid,))
+                grens = conn.execute(
+                    "SELECT event_id FROM outbox_deletions d JOIN outbox_retention r "
+                    "ON r.revision=d.revision AND r.deleted_through=d.event_id WHERE r.singleton=1"
+                ).fetchone()
+                if not grens or grens[0] != proef.lastrowid:
+                    mislukt[tabel] = "retentiegrens van de fixture komt niet overeen"
+                conn.commit()
+                continue
+            if (profiel, tabel) == ("core", "outbox_source"):
+                # De inserttrigger vult één herkomst per nieuwe fixture-gebeurtenis.
+                geldig = conn.execute(
+                    "SELECT COUNT(*) FROM outbox_source s JOIN outbox_events e ON e.id=s.event_id "
+                    "WHERE typeof(s.birth)='blob' AND length(s.birth)=17"
+                ).fetchone()[0]
+                nieuwe = conn.execute(
+                    "SELECT COUNT(*) FROM (SELECT id FROM outbox_events ORDER BY id DESC LIMIT ?)"
+                    " AS e JOIN outbox_source s ON s.event_id=e.id", (rijen,),
+                ).fetchone()[0]
+                if geldig != al or nieuwe != rijen:
+                    mislukt[tabel] = "nieuwe fixture-events missen een geldige bronidentiteit"
+                continue
             sql = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (tabel,)).fetchone()[0]
             checks = _checks(sql)
             info = conn.execute(f'PRAGMA table_info("{tabel}")').fetchall()

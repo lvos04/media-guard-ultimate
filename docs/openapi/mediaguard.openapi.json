@@ -26545,8 +26545,8 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 42,
-                  "pattern": "^v1\\.(0|[1-9][0-9]{0,18})\\.(0|[1-9][0-9]{0,18})$",
+                  "maxLength": 107,
+                  "pattern": "^(?:v1\\.(?:0|[1-9][0-9]{0,18})\\.(?:0|[1-9][0-9]{0,18})|v2\\.(?:0|[1-9][0-9]{0,18})\\.(?:0|[1-9][0-9]{0,18})\\.[a-f0-9]{64})$",
                   "type": "string"
                 },
                 {
@@ -26619,7 +26619,26 @@
                 }
               }
             },
-            "description": "Ongeldige cursor of limiet."
+            "description": "Onbekend, dubbel of ongeldig queryveld."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "De database is tijdelijk niet beschikbaar.",
+            "headers": {
+              "Retry-After": {
+                "description": "Wachttijd in seconden.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Poll",

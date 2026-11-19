@@ -9,6 +9,15 @@ from typing import Any
 from mediaguard.db import Database, dumps, utcnow
 
 
+def source_id(position: int, birth: bytes | None) -> str:
+    """Bewaar uitgegeven numerieke ID's. Nieuwe ID's sorteren op hun SQLite-positie."""
+    if birth is None:
+        return str(position)
+    # Het lage deel bevat 128 bits plus één bit voor het verschil tussen een
+    # geïmporteerde rij en een publicatie met eigen willekeurig kenmerk.
+    return str((position << 129) + int.from_bytes(birth, "big"))
+
+
 class EventBus:
     def __init__(self, db: Database) -> None:
         self.db = db

@@ -23,7 +23,12 @@ def publish(ctx, *, age=0, topic="library.synced", payload=None, instance_id=Non
     if age:
         stamp = (datetime.now(UTC) - timedelta(days=age)).isoformat(timespec="seconds")
         ctx.db.execute("UPDATE outbox_events SET ts=? WHERE id=?", (stamp, event_id))
-    return event_id
+    mark = ctx.db.fetch_one("SELECT birth FROM outbox_source WHERE event_id=?", (event_id,))
+    return (event_id << 129) + int.from_bytes(mark[0], "big") if mark else event_id
+
+
+def row_position(identifier):
+    return identifier >> 129 if identifier > 2**63 - 1 else identifier
 
 
 def page(transport, headers=None, **params):
@@ -77,7 +82,8 @@ def test_new_gap_below_the_previous_deletion_boundary_expires_cursor(client, ctx
     restarted = page(client, limit=1)
     assert ids(restarted) == [oldest]
 
-    ctx.db.execute("UPDATE outbox_events SET ts=? WHERE id=?", ("2020-01-01T00:00:00Z", later))
+    ctx.db.execute("UPDATE outbox_events SET ts=? WHERE id=?",
+                   ("2020-01-01T00:00:00Z", row_position(later)))
     assert prune(ctx)["events"] == 1
     expired(client.get(PATH, params={"cursor": restarted["next_cursor"]}))
 
@@ -87,7 +93,7 @@ def test_rolled_back_delete_does_not_expire_a_cursor(client, ctx):
     latest = publish(ctx)
     cursor = page(client, limit=1)["next_cursor"]
     with pytest.raises(RuntimeError, match="terugrollen"), ctx.db.transaction() as conn:
-        conn.execute("DELETE FROM outbox_events WHERE id=?", (latest,))
+        conn.execute("DELETE FROM outbox_events WHERE id=?", (row_position(latest),))
         raise RuntimeError("terugrollen")
     assert ids(page(client, cursor=cursor)) == [latest]
 
@@ -99,18 +105,21 @@ def test_ids_survive_cleanup_of_highest_row_and_empty_outbox(client, ctx):
     assert ids(first) == [oldest, highest]
     assert prune(ctx)["events"] == 1
     next_id = publish(ctx, age=20)
+    assert row_position(oldest) < row_position(highest) < row_position(next_id)
     assert oldest < highest < next_id
     before_empty = page(client)
     assert ids(before_empty) == [oldest, next_id]
 
     ctx.config.set("global", "", "maintenance.retention_days_events", 1, "test")
-    ctx.db.execute("UPDATE outbox_events SET ts=? WHERE id=?", ("2020-01-01T00:00:00Z", oldest))
+    ctx.db.execute("UPDATE outbox_events SET ts=? WHERE id=?",
+                   ("2020-01-01T00:00:00Z", row_position(oldest)))
     assert prune(ctx)["events"] == 2
     expired(client.get(PATH, params={"cursor": before_empty["next_cursor"]}))
     empty = page(client)
     assert ids(empty) == []
     assert page(client, cursor=empty["next_cursor"]) == empty
     fresh = publish(ctx)
+    assert row_position(fresh) > row_position(next_id)
     assert fresh > next_id
     last = page(client, cursor=empty["next_cursor"])
     assert ids(last) == [fresh]
@@ -131,6 +140,8 @@ def test_pages_are_bounded_stable_and_empty_page_keeps_position(client, ctx):
     events = first["events"] + second["events"]
     source_ids = ids(first) + ids(second)
     assert source_ids == sorted(set(source_ids))
+    positions = [row_position(identifier) for identifier in source_ids]
+    assert positions == sorted(set(positions))
     assert [UUID(event["event_id"]) for event in events] == [
         uuid5(NAMESPACE_URL, f"mediaguard:{event_id}") for event_id in source_ids
     ]
@@ -200,7 +211,7 @@ def test_migration_and_snapshot_restore_preserve_every_existing_row(tmp_path, mo
     previous = tmp_path / "vorige-migraties"
     previous.mkdir()
     for path in migrations.glob("*.sql"):
-        if not path.name.startswith("151_"):
+        if not path.name.startswith(("151_", "153_")):
             (previous / path.name).symlink_to(path)
 
     db_path = tmp_path / "config" / "core.sqlite"

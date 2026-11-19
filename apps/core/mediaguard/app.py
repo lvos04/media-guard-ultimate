@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from types import ModuleType
@@ -221,9 +222,20 @@ class SchemaRecovery:
         self.database = database
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] not in {"http", "websocket"} or not await run_in_threadpool(
-            self.database.check_schema,
-        ):
+        if scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+        try:
+            recovery = await run_in_threadpool(self.database.check_schema)
+        except sqlite3.OperationalError as exc:
+            from mediaguard.connector.errors import event_database_failure
+
+            response = event_database_failure(scope["path"], exc)
+            if scope["type"] != "http" or response is None:
+                raise
+            await response(scope, receive, send)
+            return
+        if not recovery:
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":

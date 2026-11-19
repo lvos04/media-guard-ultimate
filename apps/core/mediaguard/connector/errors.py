@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 from uuid import uuid4
 
@@ -33,6 +34,24 @@ def failure(
         status_code=status,
         headers={**(headers or {}), "Cache-Control": "no-store"},
     )
+
+
+def event_database_failure(path: str, exc: Exception) -> JSONResponse | None:
+    if path != "/connector/v1/events" or not isinstance(exc, sqlite3.OperationalError):
+        return None
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is None:
+        transient = str(exc) in {
+            "database is locked", "database table is locked", "unable to open database file",
+        }
+    else:
+        transient = (code & 0xff) in (
+            sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_CANTOPEN,
+        )
+    if transient:
+        return failure(503, "database_unavailable", "De database is tijdelijk niet beschikbaar",
+                       headers={"Retry-After": "5"})
+    return None
 
 
 def install(app: FastAPI) -> None:
@@ -127,9 +146,10 @@ class InputLimit:
 
         try:
             await self.app(scope, replay, track)
-        except Exception:  # noqa: BLE001 - geen interne fouttekst naar de connector
+        except Exception as exc:  # noqa: BLE001 - geen interne fouttekst naar de connector
             if started:
                 raise
-            await failure(500, "internal_error", "Interne fout bij het lezen van de toestand")(
-                scope, receive, send
+            response = event_database_failure(path, exc) or failure(
+                500, "internal_error", "Interne fout bij het lezen van de toestand",
             )
+            await response(scope, receive, send)

@@ -10,6 +10,7 @@ staan in ``migrations/README.md`` zodat parallel werk niet botst.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -278,6 +279,8 @@ class Database:
             if conn.execute("SELECT 1 FROM schema_migrations WHERE version=?",
                             (version,)).fetchone() is not None:
                 return
+            if version == "151_outbox_event_identity":
+                conn.create_function("mg_legacy_event", 5, _legacy_event, deterministic=True)
             for statement in _split_sql(sql):
                 conn.execute(statement)
             conn.execute(
@@ -418,6 +421,11 @@ class Database:
         finally:
             dest.close()
             src.close()
+
+
+def _legacy_event(*fields: str | int | None) -> bytes:
+    # Het aflevervlaggetje kan wijzigen en hoort daarom niet bij de identiteit.
+    return b"\x00" + hashlib.sha256(dumps(fields).encode("utf-8")).digest()[:16]
 
 
 def _begin_immediate_waiting(conn: sqlite3.Connection,

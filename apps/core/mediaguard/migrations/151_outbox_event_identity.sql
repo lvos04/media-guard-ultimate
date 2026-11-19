@@ -29,3 +29,12 @@ BEGIN
     SET deleted_through = MAX(deleted_through, OLD.id), revision = revision + 1
     WHERE singleton = 1;
 END;
+
+-- De oude schrijver kende alleen een rijpositie. Geef bewaarde gebeurtenissen
+-- in deze overgang een reproduceerbaar kenmerk uit hun onveranderlijke bronrij.
+CREATE TABLE outbox_source (
+    event_id INTEGER PRIMARY KEY REFERENCES outbox_events(id) ON DELETE CASCADE,
+    birth BLOB NOT NULL
+);
+INSERT INTO outbox_source(event_id, birth)
+SELECT id, mg_legacy_event(id, ts, topic, instance_id, payload) FROM outbox_events;

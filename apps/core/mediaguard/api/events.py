@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
-from collections.abc import AsyncIterator
+import re
+from collections.abc import AsyncIterator, Iterator
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -12,25 +14,67 @@ from fastapi.responses import StreamingResponse
 from mediaguard.auth import Principal, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import loads
+from mediaguard.events import source_id
 
 router = APIRouter(prefix="/api/v1/events", tags=["events"])
+
+
+def _resume_id(key: bytes, position: int, birth: bytes | None) -> str:
+    identity = source_id(position, birth).encode("ascii")
+    signature = hmac.digest(key, b"sse/" + identity, "sha256").hex()
+    return f"v2.{position}.{signature}"
+
+
+def _resume_position(ctx: AppContext, key: bytes, value: str) -> int:
+    # Een oud numeriek ID kan na de overgang inmiddels een andere rij aanwijzen.
+    match = re.fullmatch(r"v2\.([1-9][0-9]{0,18})\.[a-f0-9]{64}", value)
+    if match and (position := int(match[1])) <= 2**63 - 1:
+        row = ctx.db.fetch_one(
+            "SELECT e.id, s.birth FROM outbox_events e LEFT JOIN outbox_source s "
+            "ON s.event_id=e.id WHERE e.id=?", (position,),
+        )
+        if row and hmac.compare_digest(value, _resume_id(key, position, row["birth"])):
+            return position
+    return 0
+
+
+def _latest(ctx: AppContext) -> int:
+    return ctx.db.fetch_one("SELECT COALESCE(MAX(id), 0) FROM outbox_events")[0]
+
+
+def _replay(ctx: AppContext, key: bytes, after: int, through: int) -> Iterator[str]:
+    while after < through:
+        rows = ctx.db.fetch_all(
+            "SELECT e.*, s.birth FROM outbox_events e LEFT JOIN outbox_source s "
+            "ON s.event_id=e.id WHERE e.id>? AND e.id<=? ORDER BY e.id LIMIT 500",
+            (after, through),
+        )
+        if not rows:
+            return
+        for row in rows:
+            after = row["id"]
+            data = {"topic": row["topic"], "instance_id": row["instance_id"],
+                    "payload": loads(row["payload"]), "ts": row["ts"]}
+            receipt = _resume_id(key, after, row["birth"])
+            yield f"id: {receipt}\ndata: {json.dumps(data)}\n\n"
 
 
 @router.get("/stream")
 async def stream(request: Request, _: Principal = Depends(require_viewer),
                  ctx: AppContext = Depends(get_app_context)) -> StreamingResponse:
     last_id = request.headers.get("Last-Event-ID") or request.query_params.get("last_id")
+    key = ctx.db.fetch_one("SELECT cursor_key FROM outbox_retention WHERE singleton=1")[0]
+    initial = _resume_position(ctx, key, last_id) if last_id else _latest(ctx)
     queue = ctx.events.subscribe()
 
     async def gen() -> AsyncIterator[str]:
+        position = initial
         try:
-            if last_id and last_id.isdigit():
-                for row in ctx.db.fetch_all(
-                    "SELECT * FROM outbox_events WHERE id>? ORDER BY id LIMIT 500", (int(last_id),)
-                ):
-                    data = {"topic": row["topic"], "instance_id": row["instance_id"],
-                            "payload": loads(row["payload"]), "ts": row["ts"]}
-                    yield f"id: {row['id']}\ndata: {json.dumps(data)}\n\n"
+            if last_id:
+                end = _latest(ctx)
+                for frame in _replay(ctx, key, position, end):
+                    yield frame
+                position = end
             yield "retry: 3000\n\n"
             while True:
                 if await request.is_disconnected():
@@ -38,9 +82,26 @@ async def stream(request: Request, _: Principal = Depends(require_viewer),
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15)
                 except TimeoutError:
+                    # Ook een volle wachtrij of een schrijver in een ander proces mag
+                    # een bewaard event niet onzichtbaar maken.
+                    end = _latest(ctx)
+                    for frame in _replay(ctx, key, position, end):
+                        yield frame
+                    position = end
                     yield ": keepalive\n\n"
                     continue
-                prefix = f"id: {event['id']}\n" if "id" in event else ""
+                prefix = ""
+                if "id" in event:
+                    target = event["id"]
+                    if target <= position:
+                        continue
+                    for frame in _replay(ctx, key, position, target - 1):
+                        yield frame
+                    mark = ctx.db.fetch_one(
+                        "SELECT birth FROM outbox_source WHERE event_id=?", (target,),
+                    )
+                    prefix = f"id: {_resume_id(key, target, mark[0] if mark else None)}\n"
+                    position = target
                 yield f"{prefix}data: {json.dumps(event, default=str)}\n\n"
         finally:
             ctx.events.unsubscribe(queue)
