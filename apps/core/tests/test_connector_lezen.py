@@ -475,6 +475,165 @@ def test_geweigerde_inrichting_behoudt_sleutel_en_voortgang(
     ]
 
 
+@pytest.mark.parametrize(("schema", "metingen"), [
+    # Per meting: inrichting, Arr-rij en zichtbare clients. None = geen Arr-rij,
+    # "" = naamloos op 37%, "zonder meting" = naamloos zonder eigen voortgang.
+    pytest.param(100, [("eerste", None, ("eerste",))] * 2, id="basis"),
+    pytest.param(100, [("eerste", "", ()), ("eerste", "", ("eerste",)),
+                       ("eerste", "", ())], id="wachtrij"),
+    pytest.param(100, [("eerste", None, ("eerste",)), ("geweigerd", None, ("eerste",))],
+                 id="opslag"),
+    pytest.param(100, [("eerste", "", ()), ("reserve-uit", "", ()), ("eerste", "", ())],
+                 id="reserveclient"),
+    pytest.param(100, [("eerste", "", ()), ("beide", "", ()), ("tweede", "", ())],
+                 id="andere-inrichting"),
+    pytest.param(156, [("eerste", None, ("eerste",)), ("eerste", "eerste", ("eerste",)),
+                       ("eerste", None, ("eerste",))], id="arrkoppeling156"),
+    pytest.param(156, [("eerste", "eerste", ()), ("eerste", None, ("eerste",)),
+                       ("reserve-uit", "eerste", ())], id="arrkoppeling156-omgekeerd"),
+    pytest.param(100, [("eerste", None, ("eerste",)), ("beide", None, ("eerste", "tweede")),
+                       ("tweede", None, ("tweede",))], id="clientwissel"),
+    pytest.param(156, [("beide", None, ("eerste",)), ("beide", "eerste", ("eerste", "tweede")),
+                       ("beide", None, ("tweede",))], id="samenloop156"),
+    pytest.param(156, [("eerste", None, ("eerste",)), ("hernoemd", None, ("eerste",))],
+                 id="clientnaam"),
+    pytest.param(156, [("beide", None, ("eerste", "tweede")),
+                       ("beide", "zonder meting", ("eerste", "tweede")),
+                       ("beide", "zonder meting", ("eerste",))], id="dubbelmelding"),
+    pytest.param(156, [("eerste", "zonder meting", ("eerste",)),
+                       ("beide", "zonder meting", ("eerste", "tweede")),
+                       ("beide", None, ("eerste", "tweede"))], id="dubbelmelding-omgekeerd"),
+])
+def test_uitgegeven_download_id(populated_installation, settings, monkeypatch, schema, metingen):
+    from test_arr_fakes import FakeArr, wire
+
+    from mediaguard.connector.items import content_hash
+    from mediaguard.instances.registry import create_instance
+    from mediaguard.provisioning import store
+    from mediaguard.provisioning.templates import owned_name
+
+    ctx, admin, _ = populated_installation
+    headers = key(admin)
+    ctx.db.execute("UPDATE instances SET suspended=1")
+    if schema == 156:
+        ctx.db.execute(
+            "UPDATE connector_evidence_origin SET schema_version='156_outbox_cursor_history'"
+        )
+    inst = create_instance(ctx, {"id": "id-proef", "app": "radarr", "media_type": "movie",
+                                 "url": "http://wachtrij.invalid"})
+    first, second = [
+        {"name": name, "implementation": "QBittorrent", "host": name + ".invalid", "port": 8080}
+        for name in ("eerste", "tweede")
+    ]
+    configs = {"eerste": [first], "hernoemd": [dict(first, name="Andere naam")],
+               "reserve-uit": [first, dict(second, enabled=False)],
+               "beide": [second, first], "tweede": [second]}
+    torrent = "ab" * 20
+    progress = {"eerste": 37, "tweede": 14}
+    issued = {}
+    for config, arr_name, visible in metingen:
+        path = "/api/v1/provisioning/config"
+        if config == "geweigerd":
+            def refuse(name, data):
+                assert name == store.DOWNLOAD_ID_OWNERS
+                raise sqlite3.OperationalError("Proefopslag vol")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(ctx, "state_set", refuse)
+                change = [dict(first, enabled=False), dict(second, implementation="Sabnzbd")]
+                response = admin.put(path, json={"download_clients": change})
+                assert response.status_code == 503 and int(response.headers["Retry-After"]) > 0
+        else:
+            admin.put(path, json={"download_clients": configs[config]}).raise_for_status()
+
+        # Iedere meting begint met een nieuwe kern en een lege activiteitencache.
+        app = create_app(settings)
+        current = app.state.ctx
+        with closing(current.db), closing(TestClient(app)) as viewer:
+            arr = wire(current, inst.id, FakeArr("radarr"))
+            ambiguous = arr_name == "zonder meting"
+            if arr_name is not None:
+                arr.queue = [{"id": 7, "downloadId": torrent, "protocol": "torrent",
+                              "downloadClient": owned_name(arr_name) if arr_name and not ambiguous
+                              else None, "status": "downloading", "size": 0 if ambiguous else 100,
+                              "sizeleft": 0 if ambiguous else 63}]
+
+            def queue(request, visible=visible):
+                name = request.url.host.split(".")[0]
+                assert request.method == "GET" and request.url.path == "/api/v2/torrents/info"
+                return httpx.Response(200, json=[{"hash": torrent, "state": "downloading",
+                                                  "progress": progress[name] / 100}]
+                                      if name in visible else [])
+
+            current.services["live_download_transport"] = httpx.MockTransport(queue)
+            expected = {progress[name] for name in visible}
+            if ambiguous and len(visible) > 1:
+                expected.add(None)  # De bron bewaart ook de nog niet toewijsbare Arr-rij.
+            elif arr_name is not None:
+                expected.add(37)
+            before = database_snapshot(current, allow_auth_timestamps=True)
+            page = viewer.get("/connector/v1/items?type=downloads", headers=headers).json()
+            assert_database_preserved(current, before, allow_auth_timestamps=True)
+            assert (page["status"], page["total"]) == ("ok", len(expected))
+            rows = {r["progress"]: r["id"] for r in page["items"]}
+            assert rows.keys() == expected
+            if not issued:
+                source = ["torrent", torrent.upper()]
+                if schema == 156:
+                    source.append(owned_name(arr_name) if arr_name and not ambiguous
+                                  else first["name"])
+                assert rows[37] == content_hash(source)
+            for pct, connector_id in rows.items():
+                assert issued.setdefault(pct, connector_id) == connector_id
+            assert len(set(issued.values())) == len(issued)
+
+
+def test_onvolledige_downloadmeting_behoudt_de_uitgegeven_ids(client, ctx, monkeypatch):
+    from mediaguard.connector import download_ids
+    from mediaguard.provisioning.templates import owned_name
+
+    ctx.db.execute("UPDATE connector_evidence_origin SET schema_version='156'")
+    transfer = {"download_id": "proefrij", "protocol": "torrent", "progress": 37}
+    arr = {**transfer, "client": owned_name("Bron"), "instance_id": "wachtrij", "id": 7}
+
+    def read(rows, when, *, errors=False):
+        data = {"downloads": rows, "errors": errors, "summary": {}}
+
+        async def activity(context):
+            context.services["activity_observation"] = (data, when.isoformat())
+            return data
+
+        monkeypatch.setattr("mediaguard.connector.items.activity_cached", activity)
+        ctx.services.pop("connector_items:downloads:admin", None)
+        return client.get("/connector/v1/items?type=downloads").raise_for_status().json()
+
+    now = datetime.now(UTC)
+    first, = read([arr], now)["items"]
+    path = ctx.settings.download_index_path
+    original = path.read_bytes()
+    assert b"proefrij" not in original and b"Bron" not in original
+    for stale, errors in ((False, True), (True, False)):
+        page = read([], now - timedelta(hours=2) if stale else now, errors=errors)
+        assert (page["status"], page["total"]) == ("unknown", None)
+        assert path.read_bytes() == original
+
+    def refuse(*args):
+        raise OSError("Proefopslag vol")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(download_ids, "_write_index", refuse)
+        other = {**arr, "id": 8, "download_id": "ander"}
+        assert read([arr, other], datetime.now(UTC))["status"] == "unknown"
+        assert path.read_bytes() == original
+    visible, = read([{**transfer, "client": "Bron"}], datetime.now(UTC))["items"]
+    assert visible["id"] == first["id"] and visible["progress"] == 37
+    # Een andere database in dezelfde datamap heeft een eigen uitgiftegeschiedenis.
+    ctx.db.execute("UPDATE outbox_generation SET generation=randomblob(16)")
+    other, = read([{**transfer, "client": "Bron"}], datetime.now(UTC))["items"]
+    assert other["id"] == download_ids.content_hash(["torrent", "PROEFRIJ", "Bron"])
+    assert other["id"] != first["id"]
+
+
 @pytest.mark.parametrize(("method", "route"), [
     ("GET", "discover"), ("GET", "health"), ("POST", "propose"), ("POST", "apply"),
     ("POST", "rollback"), ("GET", "events"),

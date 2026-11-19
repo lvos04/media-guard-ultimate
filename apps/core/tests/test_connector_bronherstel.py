@@ -365,6 +365,22 @@ def test_schema_156_behoudt_de_naam_van_een_arr_download(client, ctx):
     assert page["items"][0]["id"] == content_hash(["torrent", torrent.upper(), name])
 
 
+def test_twee_arr_instanties_behouden_beide_historische_download_ids(ctx):
+    from mediaguard.connector.download_ids import content_hash, download_ids
+
+    download_source(ctx, "QBittorrent")
+    torrent = "ab" * 20
+    first, second = [
+        {"instance_id": name, "id": 7, "download_id": torrent, "protocol": "torrent"}
+        for name in ("a", "b")
+    ]
+    historical = content_hash(["torrent", torrent.upper()])
+    second_id = content_hash([historical, "b", 7, "Proefbron"])
+    for rows, expected in (([first, second], [historical, second_id]),
+                           ([second], [second_id]), ([first, second], [historical, second_id])):
+        assert download_ids(ctx, rows, datetime.now(UTC)) == expected
+
+
 @pytest.mark.parametrize("controle", ["samenloop", "overname", "herstart", "inrichting"])
 def test_download_id_blijft_bij_dezelfde_client(client, ctx, settings, controle):
     headers = key(client)

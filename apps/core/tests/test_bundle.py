@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from mediaguard.app import create_app
+from mediaguard.connector.download_ids import download_ids
 from mediaguard.maintenance import bundle
+from mediaguard.provisioning.templates import owned_name
 
 
 def _encoder_db(root: Path) -> None:
@@ -28,6 +34,10 @@ def test_bundle_roundtrip_needs_recovery_code(client, ctx, tmp_path, monkeypatch
     (sec / "apikey").write_text("abc123\n")
     monkeypatch.setenv("MG_SECRETS_DIR", str(root / "secrets"))
     ctx.secrets.set("test.secret", "geheim", "t")  # zorgt dat secret.key bestaat
+    ctx.db.execute("UPDATE connector_evidence_origin SET schema_version='156'")
+    transfer = {"download_id": "proefrij", "protocol": "torrent"}
+    arr = {**transfer, "instance_id": "wachtrij", "id": 7, "client": owned_name("Bron")}
+    before = download_ids(ctx, [arr], datetime.now(UTC))
 
     assert client.get("/api/v1/backups/bundle").json()["enabled"] is False
     assert client.post("/api/v1/backups/bundle").status_code == 409
@@ -48,6 +58,9 @@ def test_bundle_roundtrip_needs_recovery_code(client, ctx, tmp_path, monkeypatch
     target = tmp_path / "hersteld"
     names = bundle.restore(file, code.lower().replace("-", " "), keyfile, target)
     assert "core/secret.key" in names
+    restored = create_app(replace(ctx.settings, data_dir=target / "core")).state.ctx
+    with closing(restored.db):
+        assert download_ids(restored, [{**transfer, "client": "Bron"}], datetime.now(UTC)) == before
     assert (target / "secrets/sonarr-series/apikey").read_text() == "abc123\n"
     conn = sqlite3.connect(target / "encode/app.db")
     assert conn.execute("SELECT pad FROM job").fetchone()[0] == "/data/x.mkv"

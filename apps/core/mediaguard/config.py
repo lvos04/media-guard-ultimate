@@ -60,6 +60,10 @@ class Settings:
         return self.data_dir / "mediaguard.db"
 
     @property
+    def download_index_path(self) -> Path:
+        return self.data_dir / "connector-download-ids.json"
+
+    @property
     def secret_key_path(self) -> Path:
         return self.data_dir / "secret.key"
 

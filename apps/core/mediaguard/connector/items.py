@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import hashlib
 import json
 import re
 import time
@@ -27,13 +26,12 @@ from mediaguard.db import utcnow
 from mediaguard.encoding import resources
 from mediaguard.encoding.client import EncoderError
 from mediaguard.instances.registry import INSTANCE_ID_RE
-from mediaguard.provisioning import store
-from mediaguard.provisioning.templates import PREFIX
 from mediaguard.read_observation import instant, observation_read
 from mediaguard.secrets_store import redact
 from mediaguard.storage_forecast import POOL_STATE, pool_observed_at
 from mediaguard.wanted.engine import open_wanted_page
 
+from .download_ids import content_hash, download_ids
 from .errors import DATABASE_UNAVAILABLE, ConnectorError, failure, query_faults
 from .events import MAX_SQLITE_ID
 
@@ -110,11 +108,6 @@ class ItemPage(BaseModel):
     observed_at: AwareDatetime | None
     total: int | None
     next_cursor: str | None
-
-
-def content_hash(value: Any) -> str:
-    body = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    return hashlib.sha256(body.encode()).hexdigest()
 
 
 def _stale(observed: datetime) -> bool:
@@ -202,47 +195,19 @@ def _system(ctx: AppContext, measured: datetime) -> SystemItem:
     )
 
 
-def _downloads(value: dict[str, Any], measured: datetime, *,
-               single_clients: dict[str, str | None],
-               legacy_owners: dict[str, str | None] | None) -> list[DownloadItem]:
-    items: dict[str, DownloadItem] = {}
-    rows = value["downloads"]
-    for row in sorted(rows, key=lambda d: (str(d.get("instance_id")), str(d.get("id")))):
-        download_id = str(row.get("download_id") or "").upper()
-        protocol = str(row.get("protocol") or "").lower()
-        client = row.get("client")
-        if download_id:
-            source = [protocol, download_id]
-            # Een lege clientwachtrij verandert de identiteit van dezelfde Arr-rij niet.
-            client = client or single_clients.get(protocol)
-            if client is not None and not isinstance(client, str):
-                raise ValueError("Ongeldige downloadclient")
-            if legacy_owners is None:
-                # Schema 156 gebruikte de clientnaam wanneer de bron die leverde.
-                if client:
-                    source.append(client)
-            else:
-                name = (client or "").removeprefix(PREFIX)
-                if not name or name != legacy_owners.get(protocol):
-                    source.append(name)
-            identity = content_hash(source)
-        elif row.get("id") is not None and row.get("instance_id"):
-            identity = content_hash([row["instance_id"], row["id"]])
-        else:
-            raise ValueError("Downloadrij zonder identiteit")
-        if identity in items:
-            # Een tweede bronrij voor hetzelfde cliënt-ID behoudt haar eigen wachtrij-identiteit.
-            identity = content_hash([identity, row.get("instance_id"), row.get("id"),
-                                     client])
+def _downloads(ctx: AppContext, value: dict[str, Any], measured: datetime) -> list[DownloadItem]:
+    rows = sorted(value["downloads"], key=lambda d: (str(d.get("instance_id")), str(d.get("id"))))
+    items = []
+    for row, identity in zip(rows, download_ids(ctx, rows, measured), strict=True):
         status = row.get("status")
         progress = row.get("progress")
-        items[identity] = DownloadItem(
+        items.append(DownloadItem(
             id=identity, observed_at=measured, deep_link="/activiteit?tab=downloads",
             status=status if isinstance(status, str) and status in DOWNLOAD_STATUSES else "unknown",
             progress=progress if type(progress) in (int, float) and 0 <= progress <= 100 else None,
             awaiting_import=bool(row.get("awaiting_import")),
-        )
-    return list(items.values())
+        ))
+    return items
 
 
 async def _lanes(ctx: AppContext, measured: datetime) -> list[LaneItem]:
@@ -349,13 +314,8 @@ async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
                 reason = "meting_ontbreekt"
             elif value["errors"] or not value["summary"].get("download_clients_ok", True):
                 reason = "bron_onbereikbaar"
-            else:
-                origin = ctx.db.fetch_one("SELECT schema_version FROM connector_evidence_origin")
-                clients = store.single_download_clients(store.load(ctx).download_clients)
-                owners = (store.download_id_owners(ctx, clients) if origin["schema_version"] < "156"
-                          else None)
-                rows.extend(_downloads(value, measured, single_clients=clients,
-                                       legacy_owners=owners))
+            elif not _stale(measured) and measured <= datetime.now(UTC):
+                rows.extend(await asyncio.to_thread(_downloads, ctx, value, measured))
         elif kind == "av1_lanes":
             rows.extend(await _lanes(ctx, measured))
         else:

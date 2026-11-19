@@ -148,6 +148,12 @@ def _payload(ctx: AppContext) -> tuple[bytes, list[str]]:
         if key.exists():
             _add(tar, "core/secret.key", key.read_bytes())
             names.append("core/secret.key")
+        index = ctx.settings.download_index_path
+        if index.is_symlink():
+            raise BundleError("Ongeldig bestand voor download-ID's")
+        if index.is_file():
+            _add(tar, f"core/{index.name}", index.read_bytes())
+            names.append(f"core/{index.name}")
         sec = Path(os.environ.get("MG_SECRETS_DIR") or root / "secrets")
         if sec.is_dir():
             for f in sorted(p for p in sec.rglob("*") if p.is_file()):

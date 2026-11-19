@@ -19,10 +19,11 @@ Een download houdt zijn ID bij dezelfde client wanneer een andere client dezelfd
 torrent meldt. Een planpauze bewaart ook voor een wachtende job de annulering
 met eindtijd. Het oorspronkelijke jobbewijs en het eindbewijs blijven afzonderlijk
 opvraagbaar na onderhoud en herstart.
-Een Arr-download houdt ook zijn ID als hij afwisselend wel en niet in de
-wachtrij van de enige ingerichte downloadclient zichtbaar is. Bij geweigerde
-opslag van de inrichting blijven de vorige sleutels en de downloadvoortgang
-na herstart beschikbaar.
+Zolang een overdracht zichtbaar blijft, houdt zij haar uitgegeven ID bij een
+gewijzigde clientinrichting, een lege clientwachtrij en het verschijnen of
+verdwijnen van de bijbehorende Arr-rij. Dit blijft gelden na een kernherstart.
+Bij geweigerde opslag van de inrichting blijven de vorige sleutels en de
+downloadvoortgang na herstart beschikbaar.
 
 Rechten (scopes) op API-sleutels (S-P3-600; contract 1.3 §2.3 regels 2 en 3, C1.3-MGU-05). Eén migratie
 (`005_api_key_scopes`, voegt alleen een kolom toe); sleutels zonder rechten (MSO, de Android-app) werken precies als

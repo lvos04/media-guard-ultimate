@@ -166,22 +166,28 @@ eerste vastgelegde constatering. Bij ontbrekende brontijd is de pagina
 open rijen bepaalt de versheid op elke pagina. Een actuele nul vereist een
 geslaagde synchronisatie die de ontbrekende media werkelijk heeft geteld.
 
-Twee downloadclients kunnen hetzelfde bron-ID melden. Elke client houdt haar
-connector-ID wanneer de andere download verschijnt of verdwijnt, ook na een
-herstart. Bij een upgrade vanaf schema 154 of ouder behoudt de enige ingerichte
-client van een protocol de historische sleutel uit protocol en bron-ID. MediaGuard
-legt die toewijzing vast bij het opslaan van de inrichting. Ze blijft gelden
-als een andere client wordt toegevoegd of de eerste uit de inrichting verdwijnt.
-Zijn vanaf het begin meerdere clients voor dat protocol ingericht, dan krijgt
-elke client een sleutel op basis van protocol, bron-ID en clientnaam. Een oud ID
-dat al voor twee verschillende clients is uitgegeven, wijst geen eigenaar aan.
-Schema 156 gebruikte de clientnaam bij benoemde downloads. De door MediaGuard
-ingestelde Arr-naam en de lokale clientnaam verwijzen naar dezelfde download.
-Bij één ingerichte client voor het protocol houdt een Arr-rij hetzelfde ID als
-de overdracht uit de clientwachtrij verdwijnt of er weer in verschijnt.
-De beheerder slaat de inrichting, de bijbehorende sleutels, de ID-toewijzing
-en de auditregel in één transactie op. Bij een opslagfout geeft de PUT een
-503 en blijft de oorspronkelijke inrichting beschikbaar.
+Een zichtbare download houdt haar uitgegeven connector-ID. MediaGuard herkent
+de overdracht aan de Arr-wachtrijrij, de instantie met het bron-ID, of het
+clientitem. Een gewijzigde inrichting of het verschijnen of verdwijnen van de
+bijbehorende Arr-rij verandert dat ID niet. Melden twee clients dezelfde
+torrent, dan kan de Hub de voortgang van elk afzonderlijk blijven volgen.
+Meldt Arr die torrent zonder clientnaam, dan houdt de later eenduidig herkende
+client haar eigen ID wanneer de activiteit de twee meldingen samenvoegt.
+
+Bij de eerste meting gebruikt de connector de historische ID-vorm van de
+installatie. De oorspronkelijke enige client van een protocol kan het ID uit
+protocol en bron-ID behouden. Voor benoemde downloads op schema 156 hoorde de
+oorspronkelijk gemelde clientnaam bij het ID. De lokale clientnaam en de door
+MediaGuard ingestelde Arr-naam herkennen daarna dezelfde overdracht.
+
+De kern bewaart de ID's, de meettijd en hashes van de herkenningsgegevens
+van de actuele overdrachten in `connector-download-ids.json` in de kerndatamap.
+Dit bestand is gedeeld door de kernprocessen en gaat mee in de versleutelde
+herstelbundel. Een onvolledige of verouderde meting behoudt de laatste koppelingen.
+Na een volledige actuele meting vervallen de koppelingen van verdwenen downloads.
+De beheerder slaat de inrichting, de bijbehorende sleutels, de historische
+toewijzing per protocol en de auditregel in één transactie op. Bij een opslagfout
+geeft de PUT een 503 en blijft de oorspronkelijke inrichting beschikbaar.
 Een onleesbare configuratie of een wachtrijrij zonder identiteit geeft een
 onbekend totaal. De AV1-meting vereist één CPU-rij en één GPU-rij, elk met
 capaciteit, actieve jobs en pauzetoestand.
