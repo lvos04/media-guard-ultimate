@@ -1,6 +1,6 @@
--- Een handtekening bindt de leespositie aan de uitgegeven retentierevisie.
+-- De sleutel zelf staat in de geheimenmap. Bewaar uitsluitend de vaste bestandsverwijzing.
 ALTER TABLE outbox_retention ADD COLUMN cursor_key BLOB;
-UPDATE outbox_retention SET cursor_key = randomblob(32) WHERE singleton = 1;
+UPDATE outbox_retention SET cursor_key = 'core/outbox.key' WHERE singleton = 1;
 
 -- Voor elke oude cursor telt de grootste verwijdering sinds zijn eigen revisie.
 -- Een latere verwijdering op een hoger ID vervangt alle lagere grenspunten.

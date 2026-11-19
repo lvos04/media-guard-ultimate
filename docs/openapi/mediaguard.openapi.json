@@ -10797,11 +10797,42 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "De cursorsleutel is onbruikbaar."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "De database is tijdelijk niet beschikbaar.",
+            "headers": {
+              "Retry-After": {
+                "description": "Wachttijd in seconden.",
+                "schema": {
+                  "minimum": 1.0,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Stream",
@@ -26638,7 +26669,7 @@
                 }
               }
             },
-            "description": "cursor_expired bij retentie, een onbekende leespositie of een andere generatie. Herlees zonder cursor en verwerk de gebeurtenissen idempotent."
+            "description": "cursor_expired bij een onbruikbare sleutel, retentiegat of onbekende leespositie. Herlees zonder cursor en verwerk de gebeurtenissen idempotent."
           },
           "422": {
             "content": {

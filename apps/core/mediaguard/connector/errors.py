@@ -67,22 +67,22 @@ def cursor_expired() -> JSONResponse:
                    {"restart": True})
 
 
-def database_failure(path: str, exc: Exception) -> JSONResponse | None:
-    if not isinstance(exc, sqlite3.OperationalError) or not (
-        path in ("/connector/v1/events", "/connector/v1/items")
-        or path.startswith("/connector/v1/evidence/")
-    ):
-        return None
+def temporary_database_error(exc: Exception) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
     code = getattr(exc, "sqlite_errorcode", None)
     if code is None:
-        transient = str(exc) in {
+        return str(exc) in {
             "database is locked", "database table is locked", "unable to open database file",
         }
-    else:
-        transient = (code & 0xff) in (
-            sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_CANTOPEN,
-        )
-    if transient:
+    return (code & 0xff) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_CANTOPEN)
+
+
+def database_failure(path: str, exc: Exception) -> JSONResponse | None:
+    if temporary_database_error(exc) and (
+        path in ("/connector/v1/events", "/connector/v1/items", "/api/v1/events/stream")
+        or path.startswith("/connector/v1/evidence/")
+    ):
         return failure(503, "database_unavailable", "De database is tijdelijk niet beschikbaar",
                        headers={"Retry-After": "5"})
     return None

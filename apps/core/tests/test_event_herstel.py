@@ -611,7 +611,9 @@ def test_aio_migreert_voor_de_start_van_de_schrijvers(settings, old_schema):
 
 
 @pytest.mark.parametrize("schrijver", ["kern", "encoder"])
-def test_ander_sqlite_schrijfslot_blijft_bezet_tot_151(settings, old_schema, monkeypatch, schrijver):
+def test_ander_sqlite_schrijfslot_blijft_bezet_tot_151(
+    settings, old_schema, monkeypatch, schrijver,
+):
     kern = settings.db_path
     encoder = settings.data_dir / "encode" / "app.db"
     encoder.parent.mkdir()

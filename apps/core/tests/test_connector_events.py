@@ -215,7 +215,7 @@ def test_migration_and_snapshot_restore_preserve_every_existing_row(tmp_path, mo
     previous = tmp_path / "vorige-migraties"
     previous.mkdir()
     for path in migrations.glob("*.sql"):
-        if not path.name.startswith(("151_", "153_", "154_")):
+        if "_outbox_" not in path.name:
             (previous / path.name).symlink_to(path)
 
     db_path = tmp_path / "config" / "core.sqlite"

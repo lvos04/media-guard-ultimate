@@ -3,117 +3,126 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
-import re
-from collections.abc import AsyncIterator, Iterator
+import sqlite3
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from mediaguard.auth import Principal, require_viewer
-from mediaguard.connector.errors import cursor_expired
+from mediaguard.connector.errors import (
+    DATABASE_UNAVAILABLE,
+    ConnectorError,
+    cursor_expired,
+    database_failure,
+    temporary_database_error,
+)
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import loads
-from mediaguard.events import source_id
+from mediaguard.event_cursor import CursorUnavailable, EventBatch, ExpiredCursor, read_batch
 
 router = APIRouter(prefix="/api/v1/events", tags=["events"])
 
 
-def _resume_id(key: bytes, generation: bytes, position: int, birth: bytes | None) -> str:
-    identity = source_id(position, generation, birth).encode("ascii")
-    signature = hmac.digest(key, b"sse/" + identity, "sha256").hex()
-    return f"v3.{position}.{generation.hex()}.{signature}"
-
-
-def _resume_position(ctx: AppContext, key: bytes, generation: bytes, value: str) -> int | None:
-    # Een oud numeriek ID kan na de overgang inmiddels een andere rij aanwijzen.
-    match = re.fullmatch(r"v3\.([1-9][0-9]{0,18})\.[a-f0-9]{32}\.[a-f0-9]{64}", value)
-    if match and (position := int(match[1])) <= 2**63 - 1:
-        row = ctx.db.fetch_one(
-            "SELECT e.id, s.birth FROM outbox_events e LEFT JOIN outbox_source s "
-            "ON s.event_id=e.id WHERE e.id=?", (position,),
-        )
-        if row and hmac.compare_digest(value, _resume_id(key, generation, position, row["birth"])):
-            return position
-    return None
+def _reset() -> str:
+    return f"event: reset\nid:\ndata: {cursor_expired().body.decode()}\n\n"
 
 
 def _latest(ctx: AppContext) -> int:
     return ctx.db.fetch_one("SELECT COALESCE(MAX(id), 0) FROM outbox_events")[0]
 
 
-def _replay(
-    ctx: AppContext, key: bytes, generation: bytes, after: int, through: int,
-) -> Iterator[str]:
-    while after < through:
-        rows = ctx.db.fetch_all(
-            "SELECT e.*, s.birth FROM outbox_events e LEFT JOIN outbox_source s "
-            "ON s.event_id=e.id WHERE e.id>? AND e.id<=? ORDER BY e.id LIMIT 500",
-            (after, through),
-        )
-        if not rows:
-            return
-        for row in rows:
-            after = row["id"]
-            data = {"topic": row["topic"], "instance_id": row["instance_id"],
-                    "payload": loads(row["payload"]), "ts": row["ts"]}
-            receipt = _resume_id(key, generation, after, row["birth"])
-            yield f"id: {receipt}\ndata: {json.dumps(data)}\n\n"
-
-
-@router.get("/stream")
+@router.get("/stream", response_model=None, response_class=StreamingResponse, responses={
+    200: {"content": {"text/event-stream": {"schema": {"type": "string"}}}},
+    409: {"model": ConnectorError, "description": "De cursorsleutel is onbruikbaar."},
+    503: DATABASE_UNAVAILABLE,
+})
 async def stream(request: Request, _: Principal = Depends(require_viewer),
-                 ctx: AppContext = Depends(get_app_context)) -> StreamingResponse:
+                 ctx: AppContext = Depends(get_app_context)) -> StreamingResponse | JSONResponse:
     """Stuur bij een verlopen Last-Event-ID eerst een reset en herlees daarna de outbox."""
     last_id = request.headers.get("Last-Event-ID") or request.query_params.get("last_id")
-    key, generation = ctx.db.fetch_one(
-        "SELECT cursor_key, generation FROM outbox_retention "
-        "JOIN outbox_generation USING (singleton)"
-    )
-    initial = _resume_position(ctx, key, generation, last_id) if last_id else _latest(ctx)
+    cursor = last_id
+    reset = False
+    try:
+        end = _latest(ctx)
+        try:
+            first = read_batch(ctx.db, cursor, channel="sse", through=end,
+                               limit=500 if last_id else 1, newest=not last_id)
+        except ExpiredCursor:
+            reset = True
+            cursor = None
+            first = read_batch(ctx.db, None, channel="sse", through=end, limit=500)
+    except CursorUnavailable:
+        return cursor_expired()
+    except sqlite3.OperationalError as exc:
+        if response := database_failure("/api/v1/events/stream", exc):
+            return response
+        raise
+
+    async def replay(through: int, batch: EventBatch | None = None,
+                     live_id: int | None = None) -> AsyncIterator[str]:
+        nonlocal cursor
+        while True:
+            try:
+                if batch is None:
+                    batch = read_batch(ctx.db, cursor, channel="sse", through=through, limit=500)
+            except ExpiredCursor:
+                cursor = None
+                yield _reset()
+                continue
+            except sqlite3.OperationalError as exc:
+                if not temporary_database_error(exc):
+                    raise
+                yield ": keepalive\n\n"
+                await asyncio.sleep(1)
+                continue
+            for row in batch.rows:
+                data = {"topic": row["topic"], "instance_id": row["instance_id"],
+                        "payload": loads(row["payload"]), "ts": row["ts"]}
+                if row["id"] == live_id:
+                    data["id"] = live_id
+                cursor = batch.receipt(row)
+                yield f"id: {cursor}\ndata: {json.dumps(data)}\n\n"
+            if len(batch.rows) < 500 or batch.rows[-1]["id"] >= through:
+                cursor = batch.next_cursor()
+                return
+            batch = None
+
     queue = ctx.events.subscribe()
 
     async def gen() -> AsyncIterator[str]:
-        position = initial or 0
+        nonlocal cursor
         try:
-            if initial is None:
-                # Een lege id-regel wist ook bij een lege outbox de oude browsercursor.
-                yield f"event: reset\nid:\ndata: {cursor_expired().body.decode()}\n\n"
+            if reset:
+                yield _reset()
             if last_id:
-                end = _latest(ctx)
-                for frame in _replay(ctx, key, generation, position, end):
+                async for frame in replay(end, first):
                     yield frame
-                position = end
+            else:
+                cursor = first.next_cursor()
             yield "retry: 3000\n\n"
-            while True:
-                if await request.is_disconnected():
-                    return
+            while not await request.is_disconnected():
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15)
                 except TimeoutError:
-                    # Ook een volle wachtrij of een schrijver in een ander proces mag
-                    # een bewaard event niet onzichtbaar maken.
-                    end = _latest(ctx)
-                    for frame in _replay(ctx, key, generation, position, end):
-                        yield frame
-                    position = end
+                    try:
+                        # Ook events van andere processen en een gemiste wachtrijmelding ophalen.
+                        async for frame in replay(_latest(ctx)):
+                            yield frame
+                    except sqlite3.OperationalError as exc:
+                        if not temporary_database_error(exc):
+                            raise
                     yield ": keepalive\n\n"
                     continue
-                prefix = ""
                 if "id" in event:
-                    target = event["id"]
-                    if target <= position:
-                        continue
-                    for frame in _replay(ctx, key, generation, position, target - 1):
+                    async for frame in replay(event["id"], live_id=event["id"]):
                         yield frame
-                    mark = ctx.db.fetch_one(
-                        "SELECT birth FROM outbox_source WHERE event_id=?", (target,),
-                    )
-                    receipt = _resume_id(key, generation, target, mark[0] if mark else None)
-                    prefix = f"id: {receipt}\n"
-                    position = target
-                yield f"{prefix}data: {json.dumps(event, default=str)}\n\n"
+                else:
+                    yield f"data: {json.dumps(event, default=str)}\n\n"
+        except CursorUnavailable:
+            # De headers zijn al verstuurd. Wis de browserpositie vóór het opnieuw verbinden.
+            yield _reset()
         finally:
             ctx.events.unsubscribe(queue)
 

@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from mediaguard import schema
+from mediaguard import event_keys, schema
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 # Zolang dit bestand bestaat (met een levend pid) werkt het proces de database bij; de
@@ -233,7 +233,8 @@ class Database:
             marker.write_text(json.dumps(info), encoding="utf-8")
         try:
             protected = {"151_outbox_event_identity", "152_connector_evidence_version",
-                         "154_outbox_generation", "155_job_evidence_snapshot"}
+                         "154_outbox_generation", "155_job_evidence_snapshot",
+                         "156_outbox_cursor_history"}
             first_protected = next((f for f in pending if f.stem in protected), None)
             with contextlib.ExitStack() as locks:
                 if applied and first_protected:
@@ -302,6 +303,8 @@ class Database:
                 return
             if version == "151_outbox_event_identity":
                 conn.create_function("mg_legacy_event", 5, _legacy_event, deterministic=True)
+            if version == "156_outbox_cursor_history":
+                event_keys.ensure_key(event_keys.key_path(self.path.parent))
             for statement in _split_sql(sql):
                 conn.execute(statement)
             conn.execute(

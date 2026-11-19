@@ -60,7 +60,16 @@ de laatste positie en de retentierevisie en is gebonden aan de bronrij. Verwijde
 sinds die revisie een rij op of voorbij de leespositie, dan volgt
 `409 cursor_expired` met `details.restart: true`. Dit antwoord geldt ook voor
 een cursor uit een andere generatie, een cursor zonder generatie of een
-ongeldige handtekening. Begin dan zonder cursor bij de oudste bewaarde rij.
+ongeldige handtekening. Ook een lege pagina is gebonden aan de geschiedenis van
+haar retentierevisie. Wijkt die na terugzetten af, begin dan zonder cursor bij
+de oudste bewaarde rij.
+
+Vanaf migratie 156 staat de ondertekeningssleutel in het bestand
+`secrets/core/outbox.key` op de appdata-opslag. SQLite bewaart de
+bestandsverwijzing en de publieke revisiekenmerken. Oude leesposities vervallen
+eenmalig bij deze migratie. Zolang de sleutel ontbreekt of een ongeldige lengte
+heeft, geven polling en het openen van een SSE-verbinding `409 cursor_expired`.
+Controleer dan de geheimenopslag voordat je opnieuw begint.
 
 De query accepteert uitsluitend één `cursor` en één `limit`, beide optioneel.
 Onbekende, dubbele en ongeldige velden geven `422 validation_error`. Bij een
@@ -74,7 +83,11 @@ connector berekent `event_id` als UUIDv5 in de URL-naamruimte uit
 gelijk bij herlezing en bij een gewone herstart.
 
 Bij een bestaande installatie verifieert MediaGuard vóór de migratie de actuele
-back-up. Elke uitvoering van migratie 151 legt een nieuwe willekeurige
+back-up van kern en encoder, inclusief hun WAL. De alles-in-één-app houdt de
+schrijvers stil tot de kernmigratie is afgerond. Elke poging krijgt een unieke
+archiefnaam. Rotatie bewaart de set van de lopende upgrade.
+
+Elke uitvoering van migratie 151 legt een nieuwe willekeurige
 generatie vast. Zet je een snapshot van vóór 151 terug en voer je
 de upgrade opnieuw uit, dan krijgen **alle** bewaarde gebeurtenissen nieuwe
 bron-ID’s en UUID’s. Ook twee afzonderlijke publicaties op dezelfde rijpositie,
@@ -93,7 +106,10 @@ stream direct met `event: reset`, ook bij een lege outbox. De lege `id:` wist
 de laatst ontvangen positie. Het veld `data` bevat de §5-fout met
 `code: cursor_expired`, `message`, `details.restart: true` en `trace_id`.
 Op dezelfde verbinding volgen alle bewaarde gebeurtenissen vanaf de oudste
-rij. Een geldige leespositie hervat bij de eerstvolgende gebeurtenis.
+rij. Een geldige leespositie hervat bij de eerstvolgende gebeurtenis. Ook
+retentie van een ongelezen rij veroorzaakt eerst een reset. Bij een tijdelijk
+bezette database houdt een geopende stream de laatst geleverde positie vast en
+leest na herstel verder.
 
 De classificatie is `internal`. Bekende brontopics krijgen een vast eventtype en
 een vast onderwerp binnen MediaGuard. Overige records krijgen

@@ -230,6 +230,15 @@ def vul(db: Path, profiel: str, rijen: int = 2) -> dict[str, Any]:
                 if al != 1 or geldig != 1:
                     mislukt[tabel] = "de door de migratie vastgelegde generatie ontbreekt of is ongeldig"
                 continue
+            if (profiel, tabel) == ("core", "outbox_cursor_history"):
+                geldig = conn.execute(
+                    "SELECT COUNT(*) FROM outbox_cursor_history h JOIN outbox_retention r "
+                    "ON h.revision=r.revision WHERE h.last_position IS NULL "
+                    "AND typeof(h.witness)='blob' AND length(h.witness)=16"
+                ).fetchone()[0]
+                if geldig != 1:
+                    mislukt[tabel] = "het kenmerk van de actuele retentierevisie ontbreekt"
+                continue
             if (profiel, tabel) == ("core", "outbox_deletions"):
                 # Laat de echte trigger de grens en bijbehorende revisie samen vastleggen.
                 proef = conn.execute("INSERT INTO outbox_events(ts,topic,payload) VALUES (?,?,?)",
