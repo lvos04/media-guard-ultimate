@@ -113,7 +113,7 @@ def classify(ctx: AppContext, path: Path, item: dict[str, Any] | None,
 
 def sweep(ctx: AppContext, *, remove: bool = True) -> dict[str, Any]:
     """Zoek (en ruim waar veilig op) weesbestanden. Idempotent."""
-    from mediaguard.recovery.service import immediate_mode, safety_net
+    from mediaguard.recovery.service import immediate_mode, purge_paused_reason, safety_net
 
     # bewust vervangen originelen pas weg na het vangnet (direct) of de bewaartermijn
     hours = safety_net(ctx)[0] if immediate_mode(ctx) else \
@@ -144,7 +144,13 @@ def sweep(ctx: AppContext, *, remove: bool = True) -> dict[str, Any]:
                          item["id"] if item else None, "reason_nl": reason, "removed": False}
                 if safe and remove:
                     try:
-                        os.unlink(path)
+                        with ctx.db.startup_lock():
+                            if paused := purge_paused_reason(ctx):
+                                remove = False
+                                entry["reason_nl"] = paused
+                                found.append(entry)
+                                continue
+                            os.unlink(path)
                     except OSError as exc:
                         entry["reason_nl"] = f"{reason}; verwijderen mislukte: {exc}"
                     else:
@@ -163,8 +169,8 @@ def sweep(ctx: AppContext, *, remove: bool = True) -> dict[str, Any]:
         # lege txn-mappen (bv. na verwijderen door een oudere versie)
         if remove:
             for child in root.glob("txn-*"):
-                with contextlib.suppress(OSError):
-                    if child.is_dir() and not any(child.iterdir()):
+                with ctx.db.startup_lock(), contextlib.suppress(OSError):
+                    if child.is_dir() and not any(child.iterdir()) and not purge_paused_reason(ctx):
                         child.rmdir()
     left = [f for f in found if not f["removed"]]
     result = {"checked_at": utcnow(), "items": found,
@@ -252,6 +258,8 @@ def discard_item_files(ctx: AppContext, txn: dict[str, Any]) -> None:
     """Bij annuleren/terugdraaien: verwijder de eigen quarantainekopieën van deze
     transactie — maar alleen als het origineel aantoonbaar nog op zijn plek staat
     (hardlink met dezelfde inode, of een even groot bestand op het bibliotheekpad)."""
+    from mediaguard.storage_forecast import pool_cleanup_pause_reason
+
     lib = Path(str(txn["library_path"]))
     try:
         lst = os.stat(lib)
@@ -273,6 +281,9 @@ def discard_item_files(ctx: AppContext, txn: dict[str, Any]) -> None:
             or lst.st_size == qst.st_size)
         if not same:
             continue  # niet aantoonbaar dubbel: de kopie blijft (wees-controle meldt hem)
-        os.unlink(qp)
+        with ctx.db.startup_lock():
+            if pool_cleanup_pause_reason(ctx):
+                return  # een latere weescontrole kan deze kopieën opnieuw beoordelen
+            os.unlink(qp)
         with contextlib.suppress(OSError):
             qp.parent.rmdir()

@@ -325,7 +325,7 @@ def quota_exceeded(ctx: AppContext) -> bool:
     ook als er genoeg gecontroleerde originelen klaarstonden om op te ruimen. Is er wél iets
     op te ruimen, dan plannen we die opruiming en laten de wachtrij doorlopen."""
     from mediaguard.recovery.service import effective_cap_bytes, purge_candidates
-    from mediaguard.storage_forecast import pool_degraded
+    from mediaguard.storage_forecast import pool_cleanup_pause_reason
 
     used, cap = quarantine_usage_bytes(ctx), effective_cap_bytes(ctx)
     if used < cap:
@@ -333,7 +333,7 @@ def quota_exceeded(ctx: AppContext) -> bool:
     # verbeterlijst 37: zolang een TrueNAS-pool niet gezond is, wordt niets opgeruimd. Dan kan
     # opruimen ook geen ruimte maken: de AV1-wachtrij pauzeert in plaats van boven het
     # maximum door te gaan.
-    candidates = [] if pool_degraded(ctx) else purge_candidates(ctx)
+    candidates = [] if pool_cleanup_pause_reason(ctx, quarantine=True) else purge_candidates(ctx)
     freeable = sum(int(c["size"] or 0) for c in candidates)
     if used - freeable < cap:
         request_purge(ctx)

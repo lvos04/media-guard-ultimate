@@ -23,6 +23,7 @@ from mediaguard.auth import Principal, require_admin, require_operator, require_
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import loads, utcnow
 from mediaguard.recovery import executor, orphans, probe, release_check, service, zfs
+from mediaguard.recovery.service import purge_paused_reason
 from mediaguard.settings_registry import REGISTRY
 
 LOGGER = logging.getLogger(__name__)
@@ -59,8 +60,7 @@ async def startup(ctx: AppContext) -> None:
     if results:
         LOGGER.warning("journal replay: %s", results)
     try:  # rapport 6 / N9: achtergebleven kopieën van geannuleerde vervangingen
-        swept = await asyncio.to_thread(
-            lambda: orphans.sweep(ctx, remove=purge_paused_reason(ctx) is None))
+        swept = await asyncio.to_thread(orphans.sweep, ctx)
         if swept["removed"]:
             LOGGER.warning("quarantaine: %s weesbestand(en) opgeruimd", swept["removed"])
     except Exception:  # noqa: BLE001 - mag het opstarten nooit blokkeren
@@ -138,23 +138,6 @@ async def _job_refresh(jc: jobs.JobContext) -> dict[str, Any]:
 _PURGE_LOCK = asyncio.Lock()
 
 
-def purge_paused_reason(ctx: AppContext) -> str | None:
-    """Verbeterlijst 37: zolang een TrueNAS-pool niet gezond is, ruimt MediaGuard geen
-    originelen op. Ze blijven bewaard tot de pool weer gezond is. Tijdens een noodstop ook
-    niet (verbeterlijst 15): dan geldt dit voor de weescontrole, het uurlijkse onderhoud en
-    de knop Opruimen tegelijk."""
-    from mediaguard.storage_forecast import pool_degraded, pool_names_nl
-
-    if ctx.emergency_stopped():
-        return "Noodstop actief: originelen opruimen gepauzeerd"
-
-    degraded = pool_degraded(ctx)
-    if not degraded:
-        return None
-    return (f"TrueNAS-pool {pool_names_nl(degraded)} is niet gezond: originelen blijven "
-            "bewaard tot de pool weer gezond is")
-
-
 @jobs.job_handler("quarantine.purge")
 async def _job_purge(jc: jobs.JobContext) -> dict[str, Any]:
     if not jc.app.config.value("quarantine.auto_purge") and not jc.payload.get("manual"):
@@ -180,15 +163,19 @@ async def _purge_round(jc: jobs.JobContext) -> dict[str, Any]:
             continue
         if is_rejected_av1(item):
             # rapport 3 / R11: dit is de afgekeurde AV1-versie (het origineel staat terug)
-            _delete_item_file(jc.app, item, rejected_av1_reason(jc.app, item))
-            purged += 1
-            continue
-        reason = {"quotum": "Quarantaine boven het maximum (opgeruimd tot onder de grens)",
-                  "vangnet vol": "Vangnet boven het maximum (opgeruimd tot onder de grens)",
-                  "vangnet verlopen": "Vangnettermijn verlopen",
-                  "direct": "Direct verwijderen"}.get(str(item.get("purge_reason")),
-                                                      "Bewaartermijn verlopen")
-        _delete_item_file(jc.app, item, f"{reason}; vrijgavecontrole geslaagd")
+            reason = rejected_av1_reason(jc.app, item)
+        else:
+            reason = {"quotum": "Quarantaine boven het maximum (opgeruimd tot onder de grens)",
+                      "vangnet vol": "Vangnet boven het maximum (opgeruimd tot onder de grens)",
+                      "vangnet verlopen": "Vangnettermijn verlopen",
+                      "direct": "Direct verwijderen"}.get(str(item.get("purge_reason")),
+                                                          "Bewaartermijn verlopen")
+            reason += "; vrijgavecontrole geslaagd"
+        with jc.app.db.startup_lock():
+            if paused := purge_paused_reason(jc.app):
+                jc.log(f"Opruimen gepauzeerd: {paused}", "warning")
+                return {"purged": purged, "paused": True, "reason": paused}
+            _delete_item_file(jc.app, item, reason)
         purged += 1
     return {"purged": purged}
 
@@ -316,8 +303,7 @@ async def _maintenance_loop(ctx: AppContext) -> None:
         else:
             try:
                 # pool niet gezond: alleen tellen, niets weghalen (verbeterlijst 37)
-                await asyncio.to_thread(
-                    lambda: orphans.sweep(ctx, remove=purge_paused_reason(ctx) is None))
+                await asyncio.to_thread(orphans.sweep, ctx)
             except Exception:  # noqa: BLE001
                 LOGGER.exception("weesbestanden in quarantaine controleren mislukt")
         try:
@@ -362,11 +348,16 @@ def storage_probe_run(principal: Principal = Depends(require_operator),
 
 @jobs.job_handler("quarantine.delete")
 async def _job_delete(jc: jobs.JobContext) -> dict[str, Any]:
+    from mediaguard.storage_forecast import pool_cleanup_pause_reason
+
     row = jc.app.db.fetch_one("SELECT * FROM quarantine_items WHERE id=?",
                               (int(jc.payload["item_id"]),))
     if row is None or row["status"] in ("held", "pending", "purged"):
         return {"deleted": False}
-    _delete_item_file(jc.app, dict(row), jc.payload.get("reason") or "handmatig verwijderd")
+    with jc.app.db.startup_lock():
+        if paused := pool_cleanup_pause_reason(jc.app):
+            return {"deleted": False, "paused": True, "reason": paused}
+        _delete_item_file(jc.app, dict(row), jc.payload.get("reason") or "handmatig verwijderd")
     return {"deleted": True}
 
 

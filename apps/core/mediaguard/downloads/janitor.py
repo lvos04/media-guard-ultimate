@@ -295,7 +295,13 @@ def _plan_orphans(ctx: AppContext, snap: Snapshot, roots: list[tuple[Path, Root]
 
 # -- uitvoeren -------------------------------------------------------------------------------
 class _PoolPaused(Exception):
-    """De poolmeting geeft geen toestemming meer tijdens het voorbereiden van een verplaatsing."""
+    """De poolmeting geeft geen toestemming meer tijdens het opruimen."""
+
+
+def _pool_paused(ctx: AppContext, paused: Callable[[], bool] | None) -> bool:
+    if paused is not None:
+        return paused()
+    return storage_forecast.pool_cleanup_pause_reason(ctx) is not None
 
 
 def _trash(ctx: AppContext, path: Path, root: Path, reason: str, *, actor: str,
@@ -305,14 +311,17 @@ def _trash(ctx: AppContext, path: Path, root: Path, reason: str, *, actor: str,
     if not inside(real(path), root) or real(path).name.startswith("."):
         raise PermissionError(f"{path} ligt niet binnen {root}")
     size, freed, _ = _stat_tree(path)
-    if paused is not None and paused():
+    if _pool_paused(ctx, paused):
         raise _PoolPaused
     dest_dir = root / TRASH_DIR / now.strftime("%Y-%m-%d")
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest, n = dest_dir / path.name, 2
     while dest.exists() or dest.is_symlink():
         dest, n = dest_dir / f"{path.name}-{n}", n + 1
-    os.rename(path, dest)  # zelfde bestandssysteem: atomair, niets gekopieerd
+    with ctx.db.startup_lock():
+        if _pool_paused(ctx, paused):
+            raise _PoolPaused
+        os.rename(path, dest)  # zelfde bestandssysteem: atomair, niets gekopieerd
     tid = ctx.db.execute_insert(
         "INSERT INTO download_janitor_trash(root,original_path,trash_path,size,freed,reason,"
         "client,download_id,moved_at) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -330,7 +339,7 @@ async def execute(ctx: AppContext, p: Plan, clients: dict[str, Any], *, actor: s
     done: list[dict[str, Any]] = []
     errors: list[str] = []
     for a in p.actions:
-        if paused is not None and paused():
+        if _pool_paused(ctx, paused):
             break
         try:
             if a.kind == "torrent" and a.item is not None:
@@ -355,7 +364,7 @@ async def execute(ctx: AppContext, p: Plan, clients: dict[str, Any], *, actor: s
                 if a.item is not None and a.item.kind == "nzb":
                     sab = clients.get(a.item.client)
                     if sab is not None:
-                        if paused is not None and paused():
+                        if _pool_paused(ctx, paused):
                             break
                         with contextlib.suppress(Exception):  # alleen lijst opschonen
                             await sab.delete_history(a.item.id)
@@ -367,13 +376,28 @@ async def execute(ctx: AppContext, p: Plan, clients: dict[str, Any], *, actor: s
     return {"done": done, "errors": errors}
 
 
-def _rm(path: str) -> None:
-    p = Path(path)
-    if p.is_dir() and not p.is_symlink():
-        shutil.rmtree(p, ignore_errors=True)
-    else:
-        with contextlib.suppress(FileNotFoundError):
-            p.unlink()
+def _rm(ctx: AppContext, path: Path, paused: Callable[[], bool] | None) -> None:
+    # Alleen de controle en één verwijdering delen het slot met de schrijvers van de meting.
+    def remove(operation, name, dir_fd=None):
+        with ctx.db.startup_lock():
+            if _pool_paused(ctx, paused):
+                raise _PoolPaused
+            with contextlib.suppress(FileNotFoundError):
+                operation(name, dir_fd=dir_fd)
+
+    if path.is_symlink() or not path.is_dir():
+        remove(os.unlink, path)
+        return
+    # Blijf binnen geopende mappen en volg nooit een symbolische verwijzing naar een map.
+    for _, dirs, files, fd in os.fwalk(path, topdown=False, follow_symlinks=False):
+        for name in files:
+            remove(os.unlink, name, fd)
+        for name in dirs:
+            try:
+                remove(os.rmdir, name, fd)
+            except NotADirectoryError:  # verwijzing naar een map
+                remove(os.unlink, name, fd)
+    remove(os.rmdir, path)
 
 
 def purge(ctx: AppContext, now: datetime | None = None, *, actor: str = "svc:downloads",
@@ -400,9 +424,13 @@ def purge(ctx: AppContext, now: datetime | None = None, *, actor: str = "svc:dow
         trash = Path(r["trash_path"])
         if TRASH_DIR not in trash.parts:
             continue  # nooit buiten de prullenbak verwijderen
-        if paused is not None and paused():
+        try:
+            _rm(ctx, trash, paused)
+        except _PoolPaused:
             return {"purged": purged, "freed": freed}
-        _rm(str(trash))
+        except OSError as exc:
+            LOGGER.info("prullenbakitem %s blijft open: %s", trash, exc)
+            continue
         ctx.db.execute("UPDATE download_janitor_trash SET purged_at=? WHERE id=?",
                        (now.isoformat(timespec="seconds"), r["id"]))
         audit(ctx.db, actor=actor, action="downloads.purged", target_type="download_path",
@@ -414,9 +442,9 @@ def purge(ctx: AppContext, now: datetime | None = None, *, actor: str = "svc:dow
     for root in {r["root"] for r in rows}:
         base = Path(root) / TRASH_DIR
         for d in base.glob("*") if base.is_dir() else []:
-            if paused is not None and paused():
-                return {"purged": purged, "freed": freed}
-            with contextlib.suppress(OSError):
+            with ctx.db.startup_lock(), contextlib.suppress(OSError):
+                if _pool_paused(ctx, paused):
+                    return {"purged": purged, "freed": freed}
                 d.rmdir()
     return {"purged": purged, "freed": freed}
 
@@ -455,10 +483,11 @@ def own_leftovers(ctx: AppContext, now: datetime | None = None, *,
         temp = Path(r["temp_path"])
         if not temp.name.startswith(".mg-replace-") or not temp.name.endswith(".part"):
             continue
-        if paused is not None and paused():
-            break
         try:
-            temp.unlink()
+            with ctx.db.startup_lock():
+                if _pool_paused(ctx, paused):
+                    break
+                temp.unlink()
         except FileNotFoundError:
             continue
         except OSError as exc:
@@ -638,7 +667,7 @@ async def run_once(ctx: AppContext, *, actor: str = "svc:downloads",
 
     def paused() -> bool:
         nonlocal pause_reason
-        pause_reason = pause_reason or storage_forecast.download_cleanup_pause_reason(ctx)
+        pause_reason = pause_reason or storage_forecast.pool_cleanup_pause_reason(ctx)
         return pause_reason is not None
 
     try:

@@ -8,9 +8,11 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 
-from mediaguard.recovery import release_check, service
+from mediaguard import jobs, storage_forecast
+from mediaguard.recovery import api, release_check, service
 
 FFMPEG = shutil.which("ffmpeg") is not None
 
@@ -79,6 +81,44 @@ def test_good_file_passes_and_is_purged_after_retention(ctx, tmp_path):
     assert result["status"] == "passed", result
     assert any(c["name"] == "volledige-decode" for c in result["checks"])
     assert [c["id"] for c in service.purge_candidates(ctx)] == [item]
+
+
+@pytest.mark.skipif(not FFMPEG, reason="ffmpeg nodig voor de vrijgavecontrole")
+async def test_gemengde_poolmeting_beschermt_quarantaine(ctx, tmp_path, monkeypatch):
+    item = _seed(ctx, tmp_path)
+    assert release_check.run_check(ctx, item)["status"] == "passed"
+    original = Path(ctx.db.fetch_one(
+        "SELECT quarantine_path FROM quarantine_items WHERE id=?", (item,))[0])
+    ctx.config.set("global", "", "recovery.truenas_url", "https://pool.invalid", "test")
+    ctx.secrets.set("truenas:apikey", "sleutel", "test")
+    healthy = {"name": "eerste", "status": "ONLINE", "healthy": True}
+    sick = {"name": "tweede", "status": "DEGRADED", "healthy": False}
+    rows = [healthy]
+    ctx.services["truenas_transport"] = httpx.MockTransport(
+        lambda _: httpx.Response(200, json=rows))
+    await storage_forecast.refresh_pool(ctx)
+    rows = [sick, {**healthy, "healthy": None}]
+    await storage_forecast.refresh_pool(ctx)
+    job = jobs.enqueue(ctx.db, "quarantine.purge", {})
+    jc = jobs.JobContext(job, "quarantine.purge", {}, None, None, ctx)
+    result = await api._job_purge(jc)
+    assert result.get("paused") and result["purged"] == 0 and original.is_file()
+    assert storage_forecast.pool_degraded(ctx) == [{"name": "tweede", "status": "DEGRADED"}]
+    rows = [healthy]
+    await storage_forecast.refresh_pool(ctx)
+    check = release_check.run_check_async
+
+    async def lost_during_check(ctx, item_id):
+        result = await check(ctx, item_id)
+        storage_forecast.record_pool(ctx, {"error_nl": "Meting verloren tijdens vrijgave"})
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(release_check, "run_check_async", lost_during_check)
+        result = await api._job_purge(jc)
+    assert result.get("paused") and result["purged"] == 0 and original.is_file()
+    await storage_forecast.refresh_pool(ctx)
+    assert (await api._job_purge(jc))["purged"] == 1 and not original.exists()
 
 
 @pytest.mark.skipif(not FFMPEG, reason="ffmpeg ontbreekt")

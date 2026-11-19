@@ -314,6 +314,15 @@ def _cap_overflow(ctx: AppContext, chosen: list[dict[str, Any]], usage: int,
     return int(left + reserve - cap * purge_target_fraction(ctx))
 
 
+def purge_paused_reason(ctx: AppContext) -> str | None:
+    """Bewaar originelen bij een noodstop, een bekende zieke pool of een onzekere meting."""
+    from mediaguard.storage_forecast import pool_cleanup_pause_reason
+
+    if ctx.emergency_stopped():
+        return "Noodstop actief: originelen opruimen gepauzeerd"
+    return pool_cleanup_pause_reason(ctx, quarantine=True)
+
+
 def purge_candidates(ctx: AppContext, *, now: datetime | None = None) -> list[dict[str, Any]]:
     """Automatisch op te ruimen originelen. Altijd vereist: afgeronde transactie, niet
     vastgezet, geslaagde vrijgavecontrole. Daarnaast óf de bewaartermijn verstreken, óf

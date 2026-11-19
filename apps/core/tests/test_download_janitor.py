@@ -3,14 +3,18 @@ prullenbak, en nooit buiten de downloadmappen of in de bibliotheek."""
 
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
 
+from mediaguard import monitor
 from mediaguard import storage_forecast as storage
+from mediaguard.app import create_app
 from mediaguard.downloads import janitor as J
 from mediaguard.downloads.clients import ClientItem, Root, SabClient, seeding_status
 
@@ -390,6 +394,161 @@ async def test_run_once_rechecks_pool_after_gathering(ctx, cleanup_round, pool_c
 
     assert result["status"] == "skipped" and result["trashed"] == result["purged"] == 0
     assert source.exists() and trash.exists() and sab.deleted == []
+
+
+def _pool_response(ctx, healthy, expected_host=None):
+    row = {"name": "proef", "healthy": healthy, "status": "ONLINE" if healthy else "DEGRADED"}
+
+    def response(request):
+        if expected_host:
+            assert request.url.host == expected_host
+        return httpx.Response(200, json=[row])
+
+    ctx.services["truenas_transport"] = httpx.MockTransport(response)
+
+
+async def _expect_pause(ctx, cleanup_round):
+    gatherer, source, trash, sab = cleanup_round
+    result = await J.run_once(ctx, gatherer=gatherer)
+    assert (result["status"], result["trashed"], result["purged"]) == ("skipped", 0, 0)
+    assert source.is_dir() and trash.is_dir() and not sab.deleted
+
+
+async def _resume_with_healthy_pool(ctx, cleanup_round, expected_host=None):
+    _pool_response(ctx, True, expected_host)
+    await storage.refresh_pool(ctx)
+    result = await J.run_once(ctx, gatherer=cleanup_round[0])
+    assert (result["status"], result["trashed"], result["purged"]) == ("ok", 1, 1)
+
+
+@pytest.mark.parametrize("change", ["adres", "heen-en-terug", "sleutel", "tls"])
+async def test_pool_bronwisseling(ctx, cleanup_round, pool_configured, change):
+    # De werker heeft een eigen instellingencache en leest dezelfde database als de kern.
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        _pool_response(worker, True)
+        await storage.refresh_pool(worker)
+        if change == "sleutel":
+            ctx.secrets.set("truenas:apikey", os.urandom(16).hex(), "test")
+        elif change == "tls":
+            ctx.config.set("global", "", "recovery.truenas_verify_tls", False, "test")
+        else:
+            url = ctx.config.value("recovery.truenas_url")
+            ctx.config.set("global", "", "recovery.truenas_url", "https://tweede.invalid", "test")
+            if change == "heen-en-terug":
+                ctx.config.set("global", "", "recovery.truenas_url", url, "test")
+        await _expect_pause(worker, cleanup_round)
+        host = "tweede.invalid" if change == "adres" else "truenas.invalid"
+        await _resume_with_healthy_pool(worker, cleanup_round, host)
+
+
+async def test_pool_meting_van_voor_upgrade(ctx, cleanup_round, pool_configured):
+    # Opslagvorm van de oude lezer: de tekstwaarde "false" werd toen healthy=True.
+    ctx.state_set(storage.POOL_STATE, {
+        "reachable": True, "checked_at": datetime.now(UTC).isoformat(), "degraded": [],
+        "degraded_since": None, "pools": [{"name": "proef", "status": "ONLINE", "healthy": True}],
+    })
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        await _expect_pause(worker, cleanup_round)
+        await _resume_with_healthy_pool(worker, cleanup_round)
+
+
+async def test_pool_volgorde_bewaking_en_prognose(ctx, cleanup_round, pool_configured):
+    received, deliver = asyncio.Event(), asyncio.Event()
+
+    async def delayed(_):
+        received.set()
+        await deliver.wait()
+        return httpx.Response(200, json=[{"name": "proef", "status": "ONLINE", "healthy": True}])
+
+    ctx.services["truenas_transport"] = httpx.MockTransport(delayed)
+    first = asyncio.create_task(storage.refresh_pool(ctx))
+    try:
+        await asyncio.wait_for(received.wait(), 5)
+        worker = create_app(ctx.settings).state.ctx
+        with closing(worker.db):
+            _pool_response(worker, False)
+            forecast = await storage.storage_forecast(None, worker)
+            assert forecast["truenas"]["pools"][0]["healthy"] is False
+            await _expect_pause(ctx, cleanup_round)
+    finally:
+        deliver.set()
+        await first
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+async def test_pool_versheid_telt_vanaf_meetstart(ctx, cleanup_round, pool_configured, monkeypatch):
+    current = storage.utcnow
+    old = (datetime.now(UTC) - timedelta(minutes=16)).isoformat()
+
+    def delayed(_):
+        monkeypatch.setattr(storage, "utcnow", current)
+        return httpx.Response(200, json=[{"name": "proef", "status": "ONLINE", "healthy": True}])
+
+    monkeypatch.setattr(storage, "utcnow", lambda: old)
+    ctx.services["truenas_transport"] = httpx.MockTransport(delayed)
+    await storage.refresh_pool(ctx)
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+async def test_pool_publicatiefout(ctx, cleanup_round, pool_configured, monkeypatch):
+    _pool_response(ctx, True)
+    await storage.refresh_pool(ctx)
+    _pool_response(ctx, False)
+    ctx.config.set("global", "", "monitor.enabled", False, "test")
+    save = ctx.state_set
+    failed = False
+
+    def fail_publication(key, value):
+        nonlocal failed
+        if key == storage.POOL_STATE and value.get("degraded"):
+            failed = True
+            raise OSError("Gesimuleerde schrijffout")
+        save(key, value)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ctx, "state_set", fail_publication)
+        await monitor.run_once(ctx)
+    assert failed
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        await _expect_pause(worker, cleanup_round)
+        await _resume_with_healthy_pool(worker, cleanup_round)
+
+
+async def test_pool_pauze_binnen_prullenbakmap(ctx, cleanup_round, pool_configured, monkeypatch):
+    _, source, trash, _ = cleanup_round
+    nested = trash / "delen"
+    nested.mkdir()
+    files = [trash / "video.mkv", nested / "twee.mkv", nested / "drie.mkv"]
+    for path in files[1:]:
+        path.write_bytes(b"deel")
+    ctx.config.set("global", "", "downloads.cleanup_enabled", False, "test")
+    _pool_response(ctx, True)
+    await storage.refresh_pool(ctx)
+    unlink = os.unlink
+    removed = []
+
+    def lose_measurement(path, *args, **kwargs):
+        unlink(path, *args, **kwargs)
+        removed.append(Path(path).name)
+        if len(removed) == 1:
+            storage.record_pool(ctx, {"error_nl": "Poolmeting weggevallen"})
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "unlink", lose_measurement)
+        result = await J.run_once(ctx)
+    assert (len(removed), result["status"], result["purged"]) == (1, "skipped", 0)
+    assert sum(path.is_file() for path in files) == 2
+    assert ctx.db.fetch_one("SELECT purged_at FROM download_janitor_trash")[0] is None
+    assert not ctx.db.fetch_one("SELECT 1 FROM audit_events WHERE action='downloads.purged'")
+    (trash / "verwijzing").symlink_to(source, target_is_directory=True)
+    await storage.refresh_pool(ctx)
+    assert (await J.run_once(ctx))["purged"] == 1
+    assert not trash.exists() and (source / "video.mkv").is_file()
 
 
 @pytest.mark.asyncio

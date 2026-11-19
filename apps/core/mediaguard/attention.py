@@ -248,10 +248,10 @@ def _recovery(ctx: AppContext) -> list[dict[str, Any]]:
                               confirm="MediaGuard mag daarna bestanden vervangen (origineel "
                                       "gaat altijd eerst naar de quarantaine).")]))
     if quota_exceeded(ctx):
-        from mediaguard.storage_forecast import pool_degraded
+        from mediaguard.storage_forecast import pool_cleanup_pause_reason
 
         # pool niet gezond: opruimen pauzeert (verbeterlijst 37), dus geen knop die toch faalt
-        paused = bool(pool_degraded(ctx))
+        paused = pool_cleanup_pause_reason(ctx, quarantine=True) is not None
         out.append(_item("quarantine.full", "error", "Quarantaine vol: AV1 staat stil",
                          "De quarantaine heeft het ingestelde maximum bereikt. " + (
                              "Zolang de TrueNAS-pool niet gezond is, ruimt MediaGuard geen "
