@@ -1,29 +1,16 @@
 # Installatie op TrueNAS SCALE — technische referentie
 
-> **Installeren = gewone *Custom App*** met het alles-in-één-image
-> `ghcr.io/lvos04/mediaguard-core:<versie>-aio` — zie README §3.2. Upgraden en terugdraaien van het
-> alles-in-één-image: §6.1 en §8.1.
->
-> **De losse containers met *Install via YAML* hieronder zijn GEEN installatiemethode** (contract 1.3 §1 en
-> §2.3 regel 4; vaste keuze van de gebruiker: nooit *Install via YAML*, `custom_compose_config` of docker
-> compose). `deploy/truenas/compose.yaml` blijft alleen voor ontwikkeling, CI en de integratietests, en als
-> naslag voor wie het al zo draaide.
+> Gebruik voor TrueNAS uitsluitend het [standaard Custom App-formulier](../deploy/truenas/CUSTOM_APP.md)
+> met het alles-in-één-image `ghcr.io/lvos04/mediaguard-core:<versie>-aio`.
+> De gids bevat de stappen voor installatie, upgrade en terugzetten via de TrueNAS-webinterface.
 
-Deze pagina beschrijft precies wat `deploy/truenas/compose.yaml` verwacht en doet. De
-stap-voor-stapgids voor eindgebruikers staat in de README; hier staan datasets, rechten,
-poorten, GPU, upgrade, back-up/restore, rollback en verwijderen.
-
-**Uitgangspunt:** je typt geen sleutels of tokens. De container `mediaguard-init` maakt bij
-elke start ontbrekende mappen en **alle** geheimen aan (interne token, API-sleutel en
-hook-sleutel per instantie) en bewaart ze in de appdata-dataset. Je vult alleen drie
-dataset-paden in (plus optioneel `MG_HOST` en de GPU-groepen).
-
-Vereist: TrueNAS SCALE **24.10 (Electric Eel) of nieuwer** (Docker-apps; de compose gebruikt
-Docker volume-*subpaden*), een pool (hieronder `<pool>`: de naam uit jouw TrueNAS → *Datasets*), x86-64.
+Deze pagina beschrijft de indeling en onderdelen van de afzonderlijke containers voor
+ontwikkeling en tests. In die opstelling maakt `mediaguard-init` ontbrekende mappen en
+geheimen aan in de appdata-map.
 
 ## 1. Images (eenmalig, door de ontwikkelaar)
 
-TrueNAS bouwt niets zelf: de images moeten in een registry staan (voor de Custom App alleen `<versie>-aio`).
+De bouw- en publicatiestappen hieronder zijn voor releasebeheerders. TrueNAS haalt voor de standaard Custom App uitsluitend de AIO-image op.
 
 1. Maak op GitHub een release-tag `v1.0.0` (de versie moet gelijk zijn aan
    `deploy/release-manifest.json`).
@@ -137,16 +124,15 @@ de grootste bron die je wilt hercoderen.
 | 37878 | `MG_PORT_RADARR_FILMS` | radarr-films:7878 | Radarr-API voor Seerr |
 | 37879 | `MG_PORT_RADARR_ANIMEFILMS` | radarr-animefilms:7878 | idem |
 
-Core (8100), recovery (8100) en encoder (8000) hebben geen hostpoort. Controleer vooraf dat
-de poorten vrij zijn (`ss -ltnp | grep -E ':(30080|38989|38990|37878|37879)\b'` in de
-TrueNAS-shell).
+Core (8100), recovery (8100) en encoder (8000) hebben in de ontwikkelstack geen hostpoort.
+Zie het [Custom App-formulier](../deploy/truenas/CUSTOM_APP.md#formulier) voor de AIO-poorten.
 
-## 4. GPU (Intel iGPU/Arc, QSV)
+## 4. GPU in de lokale ontwikkelstack (Intel iGPU/Arc, QSV)
 
 De encoder krijgt alleen het device `/dev/dri` en de groepen van de rendernodes; nooit
 `privileged`.
 
-1. TrueNAS-shell:
+1. Op de lokale ontwikkelhost:
    ```sh
    ls -ln /dev/dri                    # kolom 4 = numerieke groep van card* en renderD*
    stat -c '%g %G %n' /dev/dri/*      # zelfde, met groepsnaam
@@ -164,77 +150,30 @@ De encoder krijgt alleen het device `/dev/dri` en de groepen van de rendernodes;
    (group_add render/video ontbreekt?)"). AV1-encode in hardware vraagt Intel Arc of nieuwer;
    UHD 770 kan geen AV1 encoderen.
 
-## 5. Losse containers starten (alleen ontwikkeling/CI; geen installatiemethode)
+## 5. Losse containers starten
 
-> Installeren doe je als standaard **Custom App** (README §3.2). Deze stappen zijn naslag voor ontwikkeling, CI en
-> wie MediaGuard al zo draaide.
+> **Alleen voor ontwikkeling, geen installatieweg.**
 
-1. Datasets + ACL zoals in §2.
-2. Apps → **Discover Apps** → ⋮ (rechtsboven) → **Install via YAML**; naam `mediaguard`.
-3. Plak `deploy/truenas/compose.yaml`. Vul **alleen** het blok `volumes:` onderaan in: de
-   drie `device:`-paden (`MG_APPDATA`, `MG_WORK`, `MG_DATA_ROOT`; er is geen standaardpad). Optioneel:
-   - `MG_HOST` (hostnaam/IP zoals Seerr de forks bereikt; zonder waarde vult MediaGuard het
-     adres in waarmee je de UI opent),
-   - de GPU-regels uit §4.
-   Geen sleutels invullen.
-4. **Save.** TrueNAS haalt de images op, `mediaguard-init` draait (mappen + sleutels) en stopt
-   met status *exited (0)*; daarna starten core, recovery, encoder, web en de vier forks.
-5. Open `http://<truenas>:30080`, maak de eerste beheerder aan en volg **Instellingen ›
-   Koppelingen inrichten**
-   (instanties, Prowlarr, downloadclient, Seerr: zie `docs/AUTOMATISCHE_INRICHTING.md` en
-   `docs/SEERR_INSTELLEN.md`). Met automatische Seerr-inrichting koppelt MediaGuard de
-   instanties zelf; de API-sleutel per instantie staat in
-   `${MG_APPDATA}/secrets/<instantie>/apikey` als je hem ergens handmatig nodig hebt.
-
-Optionele variabelen (tijdzone, poorten, GPU-groepen, hook-time-out, fail policy,
-schaduwmodus, resourcelimieten, image-versies) staan — allemaal uitgecommentarieerd, want
-niets is verplicht behalve de drie paden — met uitleg in `deploy/truenas/env.example`. Zonder `.env`
-wijzig je de standaardwaarde in de YAML zelf (het deel na `:-` in `${VAR:-waarde}`; bij de drie paden het hele
-`${…}`-deel). Lokaal valideren kan met
-`MG_APPDATA=… MG_WORK=… MG_DATA_ROOT=… docker compose --env-file deploy/truenas/env.example -f deploy/truenas/compose.yaml config -q`.
+Gebruik de [ontwikkelinstellingen](../.env.example) met lokale testmappen voor `MG_APPDATA`,
+`MG_WORK` en `MG_DATA_ROOT`. Aanvullende instellingen staan in
+[`deploy/truenas/env.example`](../deploy/truenas/env.example). Zie [README §9](../README.md#9-lokaal-starten-ontwikkeling)
+voor de lokale opdrachten. Lokaal kun je de ontwikkelconfiguratie met
+`docker compose --env-file .env -f deploy/truenas/compose.yaml config -q` controleren.
 
 ## 6. Upgraden
 
-### 6.1 Alles-in-één (Custom App, aanbevolen installatie)
+### 6.1 Alles-in-één (Custom App)
 
-1. Lees de release notes. Huidige versie en schemaversies: UI → Instellingen › Systeem &
-   back-ups → *Technische details tonen* → *MediaGuard-core* (of `GET /api/v1/admin/version`).
-   MediaGuard meldt een nieuwe versie ook zelf (dagelijkse controle op GitHub, instelling
-   `updates.check_enabled`); bijwerken doe je altijd zelf.
-2. Maak een **ZFS-snapshot van de appdata-dataset** (de Host Path op `/config`, bv.
-   `<pool>/apps/mediaguard`): Datasets → dataset kiezen → kaart *Data Protection* →
-   **Create Snapshot**, naam bv. `voor-1.2.2`.
-3. Apps → mediaguard → **Edit** → *Image* → **Tag** naar `<nieuwe versie>-aio` → **Update**.
-   Bij de start maakt MediaGuard eerst een back-up *vóór update* en voert dan de additieve
-   DB-migraties uit.
-4. Controle: Instellingen › Systeem & back-ups → *Technische details tonen*: nieuwe versie bij
-   *MediaGuard-core*, alle *Componenten* groen of met een begrepen reden.
-
-Elke release is vóór publicatie één keer echt gestart: het AIO-image is in de release-pipeline
-opgestart op een gevulde database van een eerdere versie (health, versie, inloggen, migraties
-en nette stop; `scripts/aio-smoke.py`), en het **upgradebewijs** (HARDE EIS, contract 1.3 §2.3
-regel 7b) start de direct vorige release op een gevulde database, upgradet naar het kandidaat-image
-en bewijst per tabel dat er niets verloren is, plus terugzetten met vorige image en snapshot
-(`scripts/upgradebewijs.py`). Zonder groen bewijs geen release. Releasetags worden nooit overschreven: `1.2.2-aio` is
-altijd precies het geteste image.
-
-### 6.2 Losse containers (alleen ontwikkeling/CI)
-
-1. Zelfde controle als hierboven (versie, schemaversies).
-2. Maak een **ZFS-snapshot van `mg_appdata`** (Datasets → dataset → *Data Protection* →
-   **Create Snapshot**, bijv. `voor-1.2.2`) en een core-back-up (UI → Instellingen › Systeem &
-   back-ups → Back-ups → **Nu back-uppen**).
-3. Apps → mediaguard → **Edit** → vervang de image-tags (`ghcr.io/lvos04/mediaguard-*:1.2.2` →
-   nieuwe versie; fork-tags alleen als de release ze noemt) → **Save**. TrueNAS haalt de nieuwe
-   images op en herstart de containers. Init voert niets destructiefs uit; core voert bij de
-   start de additieve DB-migraties uit (met back-up vooraf); recovery start pas als core gezond is.
-4. Controle: zelfde als bij 6.1.
+Volg [Back-up en upgrade](../deploy/truenas/CUSTOM_APP.md#back-up-en-upgrade).
+Voor elke release vereist de publicatiepipeline een geslaagde rooktest op een gevulde
+database en upgradebewijs vanaf de direct vorige release, inclusief terugzetten.
+Zie `scripts/aio-smoke.py` en `scripts/upgradebewijs.py`.
 
 ## 7. Back-up en herstel
 
 | Wat | Hoe | Herstel |
 |---|---|---|
-| Alles behalve media | periodieke ZFS-snapshots + replicatie van `mg_appdata` (Data Protection → Periodic Snapshot Tasks) | app stoppen → dataset terugrollen naar snapshot → app starten |
+| Gehele appdata | periodieke ZFS-snapshots en replicatie van de appdata-dataset (Data Protection → Periodic Snapshot Tasks) | Stop MediaGuard en herstel de bijpassende snapshot én image volgens §8.1 |
 | Core-DB (consistent, online) | automatisch dagelijks (`backup.daily_enabled`, `backup.retention_count` = 14) en handmatig in de UI; bestanden in `${MG_APPDATA}/core/backups/` met sha256 en integriteitscontrole | UI → Instellingen › Systeem & back-ups → Back-ups → ⋮ → *Terugzetten* (typ de back-upnaam; maakt eerst een veiligheidsback-up) |
 | Encoder-DB | automatische back-ups van de encoder in `${MG_APPDATA}/encode/` (functie `automatische_backups`) | via snapshot van `mg_appdata` |
 | Forks | native Sonarr/Radarr-back-ups in `${MG_APPDATA}/<instantie>/Backups/` | Sonarr/Radarr → System → Backup → Restore |
@@ -246,67 +185,25 @@ wachtwoorden.
 
 ## 8. Rollback van de app-versie
 
-DB-migraties zijn additief maar niet omkeerbaar (oude code kent nieuwe kolommen/tabellen
-niet altijd). Rollback is daarom altijd **eerst appdata terug, dan de oude image-tag**:
+### 8.1 Alles-in-één (Custom App)
 
-### 8.1 Alles-in-één
+Volg [Terugzetten na een mislukte upgrade](../deploy/truenas/CUSTOM_APP.md#terugzetten-na-een-mislukte-upgrade).
+Herstel de bijpassende snapshot via de TrueNAS-webinterface en daarna de vorige
+imageversie en digest. Bewaar de toestand van na de update vóór de terugzetting.
 
-1. Apps → mediaguard → **Stop**; wacht tot de app op *Stopped* staat.
-2. Datasets → de appdata-dataset (Host Path op `/config`) → *Data Protection* →
-   **Manage Snapshots** → snapshot van vóór de update (bv. `voor-1.2.2`) openklappen →
-   **Rollback**. Dit zet core-DB, encoder-DB, fork-configs (ook hun eigen databases) en sleutels
-   samen en consistent terug. Nieuwere snapshots van die dataset gaan daarbij verloren.
-3. Apps → mediaguard → **Edit** → *Image* → **Tag** terug naar de vorige versie (bv.
-   `1.2.1-aio`) → **Update**; de app start met de oude versie.
-4. Controle: Instellingen › Systeem & back-ups → *Technische details tonen* toont de oude
-   versie en de oude schemaversies; *Componenten* zijn groen.
-
-Zonder snapshot: Instellingen › Systeem & back-ups → Back-ups → de back-up *vóór update* →
-⋮ → **Klaarzetten** (typ de naam). MediaGuard wisselt core- en encoder-database om zodra de app
-stopt; de databases van daarvoor blijven in `core/backups/voor-terugzetten/`. Daarna stap 1
-en 3. Fork-configs gaan zo niet mee terug (die zitten alleen in de snapshot).
-
-Als de kern of de AV1-engine een onbekende schemaversie vindt, toont de web-URL:
-“database is van een nieuwere MediaGuard-versie; zet de bijpassende versie of de set van vóór de update terug”.
-Aanmelden en het dashboard zijn tijdelijk niet beschikbaar. MediaGuard pauzeert de automatische acties en
-weigert nieuwe downloads. De database-inhoud blijft ongewijzigd en MediaGuard maakt geen nieuwe
-back-upset. Bij het lezen van een actief SQLite-journaal kunnen de hulpbestanden `-wal` en `-shm`
-naast de database ontstaan of wijzigen.
-Kies in het formulier van de TrueNAS Custom App de image-versie die bij de gegevens hoort, of zet de
-snapshot van vóór de update terug. Een terugzetting die je al in MediaGuard had klaargezet, kan de app
-nog uitvoeren. Een ontbrekende, bekende schemaversie volgt bij normaal starten het gewone upgradepad.
-
-### 8.2 Losse containers (alleen ontwikkeling/CI)
-
-1. Apps → mediaguard → **Stop**.
-2. Datasets → `mg_appdata` → *Data Protection* → **Manage Snapshots** → de snapshot van vóór
-   de upgrade → **Rollback** (zelfde effect als bij 8.1). Alternatief zonder snapshot: na het
-   terugzetten van de tags de core-back-up van vóór de upgrade herstellen.
-3. Apps → mediaguard → **Edit** → oude image-tags terug → **Save** (start de app).
-4. Controle: zelfde als bij 8.1.
-
-Zet nooit de media-dataset (`mg_data` / `/data`) of de werkmap (`mg_work` / `/work`) terug.
-Media en quarantaine worden door een rollback niet geraakt. Activeringen die ná de snapshot
-zijn gedaan staan nog in `quarantine/` maar niet meer in het journaal van de teruggerolde DB;
-controleer die map handmatig voordat je hem opruimt.
+Als de kern of de AV1-engine in de huidige bronstand een onbekende schemaversie vindt,
+meldt de web-URL dat een bijpassende versie of herstelset nodig is. MediaGuard
+pauzeert de automatische acties en weigert nieuwe downloads. De database-inhoud
+blijft bewaard. Bij het lezen van een actief SQLite-journaal kunnen de hulpbestanden
+`-wal` en `-shm` naast de database ontstaan of wijzigen.
 
 ## 9. Verwijderen zonder media te raken
 
-1. Apps → mediaguard → **Delete**. De volumes zijn bind-mounts (`driver: local`, `type: none`,
-   `o: bind`); verwijderen van de app of de Docker-volumes wist **niet** de inhoud van de
-   datasets.
-2. Wil je MediaGuard volledig weg: verwijder daarna alleen `mg_appdata` en `mg_work` (eerst
-   `quarantine/` controleren: daar staan originelen van vervangen bestanden).
-3. **Verwijder de dataset `mg_data` niet**: daarin staan je bibliotheek en downloads. Alleen
-   de lege mappen die init aanmaakte (`media/{tv,anime,movies,animefilms}`,
-   `downloads/{tv,tv-anime,movies,movies-anime}`) kun je desgewenst handmatig weghalen.
-4. Optioneel: TrueNAS-registry-credential voor ghcr.io en de images opruimen
-   (Apps → Configuration → Manage Container Images).
+Bewaar de datasets en herstelpunten bij het verwijderen van de app. In de werkdataset
+kunnen originelen staan die nodig zijn om een eerdere vervanging te herstellen. Behoud
+ook de mediabibliotheek, downloads en de bestaande mediaserver.
 
-## 10. Niet fysiek getest
+## 10. Echte NAS
 
-Deze referentie is gecontroleerd tegen `deploy/truenas/compose.yaml` en `env.example` en de
-compose is lokaal gevalideerd (`docker compose config`) en in de stacktest met echte containers
-gedraaid, maar **niet** op een echte TrueNAS-host: ACL-editor, volume-subpaden op TrueNAS,
-`/dev/dri`/Intel Arc/QSV, ZFS-snapshot-rollback en het ophalen van privé GHCR-images zijn niet
-fysiek uitgeprobeerd. Zie `docs/PROGRESS.md`.
+Formulier, ACL-editor, GPU-doorgifte, snapshot-terugzetting en registry-login zijn
+**NIET GEVALIDEERD (echte NAS)**. Zie de [Custom App-gids](../deploy/truenas/CUSTOM_APP.md).

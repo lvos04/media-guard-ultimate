@@ -191,13 +191,13 @@
  },
  {
   "id": "C1.3-MGU-09",
-  "status": "Niet gestart",
-  "validatie": "Niet getest",
-  "bewijs": "CONTRACT_1.3_CONFORMITEIT.md §6 (moment P3)",
-  "blokkade": "",
-  "opmerking": "Manifest deploy/manifest/mediaguard.manifest.yaml (P3-07): backup.db_export stopped_snapshot of accepted_findings voor SQLite, healthcheck.monitor, geen HUB_*. Fase P3.",
+  "status": "Bezig",
+  "validatie": "Sim-getest; NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "S-P3-660: deploy/manifest/mediaguard.manifest.yaml strikt gevalideerd met jl-manifest (appstore-en-fork a994c2a). Proefkopieën met HUB_URL en compose geweigerd. Formulier en upgrade- en herstelroute: deploy/truenas/CUSTOM_APP.md.",
+  "blokkade": "Vrijgave van deze bronstand met registerdigest (BLOK-06). Installeren via het formulier op de echte NAS blijft open (STAPPEN_P6.md, N-P6-05).",
+  "opmerking": "De gepubliceerde image 1.2.2-aio gebruikt de oude healthcheck. Het manifest beschrijft de nieuwe bronstand. Maak vóór de migratie een volledige snapshot met MediaGuard gestopt en herstel bij terugval de passende snapshot en image samen.",
   "repo": "media-guard-ultimate",
-  "bijgewerkt": "2026-11-10"
+  "bijgewerkt": "2026-11-19"
  },
  {
   "id": "C1.3-ALG-05",

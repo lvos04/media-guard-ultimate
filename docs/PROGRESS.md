@@ -38,7 +38,7 @@ Dit bestand is het hervatpunt bij onderbreking. Elke fase: status, bewijs, open 
 
 ## Nog niet fysiek getest
 
-- echte TrueNAS SCALE-host (24.10+): "Install via YAML", ACL's, Docker volume-subpaden, `mediaguard-init` op ZFS-datasets
+- echte TrueNAS SCALE-host: standaard Custom App, dataset-ACL's en AIO-mounts op ZFS. Zie de [Custom App-gids](../deploy/truenas/CUSTOM_APP.md).
 - Intel Arc / QSV-encode (GPU-baan; alleen fail-closed detectie is getest), `/dev/dri`-groepen
 - ZFS-snapshots en snapshot-rollback (app-rollback-procedure in `docs/INSTALL_TRUENAS.md` §8)
 - Dolby Vision profiel 7 (MEL/FEL) en HDR10+ op echte bronnen (alleen synthetische fixtures)

@@ -1,19 +1,6 @@
-# MediaGuard Ultimate — losse containers (ALLEEN ontwikkeling, CI en integratietests)
-#
-# GEEN INSTALLATIEMETHODE (contract 1.3 §1 en §2.3 regel 4; vaste keuze van de gebruiker: nooit
-# "Install via YAML", custom_compose_config of docker compose). Installeren = de standaard
-# TrueNAS Custom App met het alles-in-één-image ghcr.io/lvos04/mediaguard-core:<versie>-aio
-# (README §3.2). Dit bestand blijft voor tests/integration/stack/run.sh en als naslag voor wie
-# het al zo draaide; de stappen hieronder zijn historisch.
-#
-# ┌─ INSTALLEREN ────────────────────────────────────────────────────────────────────────────┐
-# │ 1. Maak in TrueNAS drie datasets aan (bv. <pool>/apps/mediaguard, <pool>/mediaguard-work,│
-# │    <pool>/data) en geef de gebruiker 'apps' (568) daar lees+schrijfrechten (ACL).        │
-# │ 2. Apps → Discover Apps → ⋮ → Install via YAML → naam "mediaguard" → plak dit bestand.   │
-# │ 3. Vul ALLEEN de drie paden onder 'volumes:' helemaal onderaan in (er is geen standaard).│
-# │ Sleutels, mappen en rechten maakt de container 'mediaguard-init' zelf aan.               │
-# │ Open daarna http://<truenas>:30080                                                       │
-# └──────────────────────────────────────────────────────────────────────────────────────────┘
+# MediaGuard Ultimate — losse containers voor ontwikkeling, CI en integratietests.
+# Gebruik voor productie het standaard TrueNAS Custom App-formulier (CUSTOM_APP.md).
+# Gebruik hier drie lokale testmappen via MG_APPDATA, MG_WORK en MG_DATA_ROOT.
 #
 # Containers (B1, K1, DEEL R):
 #   mediaguard-init       eenmalig per start: mappen, rechten en ALLE sleutels, stopt daarna
@@ -209,7 +196,7 @@ services:
       - {type: volume, source: mg_data, target: /data, read_only: true, volume: {nocopy: true}}
     read_only: true
     tmpfs: ["/tmp"]
-    # GPU (Intel iGPU/Arc, QSV). Heeft je TrueNAS geen /dev/dri, verwijder dan deze regel;
+    # GPU (Intel iGPU/Arc, QSV). Heeft de ontwikkelhost geen /dev/dri, verwijder dan deze regel;
     # de encoder gebruikt dan alleen de CPU (SVT-AV1).
     devices: ["/dev/dri:/dev/dri"]
     deploy:

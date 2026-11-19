@@ -117,55 +117,21 @@ Indeling (`<pool>` = de naam van jouw pool in TrueNAS → **Datasets**; de datas
 
 Details, ACL-plan en GPU: [`docs/INSTALL_TRUENAS.md`](docs/INSTALL_TRUENAS.md).
 
-### 3.2 Installeren als gewone Custom App (aanbevolen, geen YAML)
+### 3.2 Installeren als standaard Custom App
 
-MediaGuard is **één image** met alles erin (web-UI, core, recovery, AV1-engine en de vier
-Sonarr/Radarr-instanties). Je installeert het met het normale TrueNAS-formulier; mappen kies
-je met de mappenkiezer, dus tikfouten in paden kunnen niet.
+Gebruik het [Custom App-formulier](deploy/truenas/CUSTOM_APP.md#formulier) voor de
+alles-in-één-image `ghcr.io/lvos04/mediaguard-core:1.2.2-aio`. De gids beschrijft ook de
+imagecontrole, eerste start, back-up vóór migratie en terugval. Controle van het formulier
+op een echte NAS staat open.
 
-TrueNAS → **Apps → Discover Apps → Custom App** en vul in:
+### 3.3 Losse containers
 
-| Veld | Waarde |
-|---|---|
-| **Application Name** | `mediaguard` |
-| **Image → Repository** | `ghcr.io/lvos04/mediaguard-core` |
-| **Image → Tag** | `1.2.2-aio` |
-| **Restart Policy** | *Unless Stopped* |
-| **Stop Grace Period** (indien aanwezig, bij *Container Configuration*) | `60` seconden: ruimte om lopende encodes en databases netjes af te sluiten. MediaGuard gebruikt daarvan 55 s. Kies je een andere waarde, zet dan ook de omgevingsvariabele `MG_STOP_TIMEOUT` op hetzelfde aantal seconden |
-| **Network → Host Network** | **aan** (dan hoef je geen poorten in te vullen) |
-| **Storage → Host Path 1** | Mount Path `/config` → Host Path: je appdata-dataset (kies met de mappenkiezer, bv. `/mnt/<pool>/apps/mediaguard`) |
-| **Storage → Host Path 2** | Mount Path `/work` → Host Path: je werkmap (bv. `/mnt/<pool>/mediaguard-work`) |
-| **Storage → Host Path 3** | Mount Path `/data` → Host Path: je media-dataset (bv. `/mnt/<pool>/data`) |
-| **Resources → GPU** (optioneel) | je Intel-GPU aanvinken voor snelle AV1 |
+> **Alleen voor ontwikkeling, geen installatieweg.**
 
-Alles andere laat je leeg of op de standaardwaarde. **Install**. Na 1–2 minuten staat de app op
-*Running*; open **`http://<truenas>:30080`**.
-
-- Sleutels, mappen en rechten maakt MediaGuard zelf aan (in `/config/secrets`). Er is geen
-  aparte init-container meer die de installatie kan laten mislukken: ontbreekt er een recht,
-  dan start de app toch en zie je de melding in de UI en in de app-logs (*Apps → mediaguard →
-  Logs*, regels met `LET OP`).
-- Poorten (met Host Network direct op je TrueNAS-adres): **30080** UI, **38989** Sonarr Series,
-  **38990** Sonarr Anime, **37878** Radarr Films, **37879** Radarr Animefilms. Ze botsen niet met
-  een bestaande Sonarr (8989) of Radarr (7878). Liever geen Host Network? Voeg dan deze vijf
-  poorten toe onder *Ports* (container- en hostpoort gelijk).
-- Andere UI-poort of het TrueNAS-adres voor Seerr vastleggen kan met de omgevingsvariabelen
-  `MG_WEB_PORT` en `MG_HOST`; meestal niet nodig.
-
-**Updaten:** maak eerst een snapshot van je appdata-dataset, dan *Apps → mediaguard → Edit* →
-*Tag* naar de nieuwe versie → **Update**. Terugdraaien: hoofdstuk 10.2.
-
-### 3.3 Losse containers (alleen ontwikkeling, CI en integratietests)
-
-> **Geen installatiemethode.** Het platform installeert uitsluitend als standaard TrueNAS Custom App
-> (§3.2, contract 1.3 §1 en §2.3 regel 4; vaste keuze van de gebruiker: nooit *Install via YAML*,
-> `custom_compose_config` of docker compose). Dit compose-bestand blijft alleen voor ontwikkeling, CI en de
-> integratietests (`tests/integration/stack/run.sh`) en voor wie het al zo draaide.
-
-[`deploy/truenas/compose.yaml`](deploy/truenas/compose.yaml) start elk onderdeel als aparte container
-(ontwikkeling en `tests/integration/stack/`); de drie paden zijn daar verplicht en hebben geen standaardwaarde.
-Technische naslag (ook voor wie MediaGuard al zo draaide): [`docs/INSTALL_TRUENAS.md`](docs/INSTALL_TRUENAS.md).
-Nieuwe installaties en overstappen gaan via de Custom App van §3.2.
+[`deploy/truenas/compose.yaml`](deploy/truenas/compose.yaml) start de onderdelen als losse
+containers voor ontwikkeling, CI en integratietests. Gebruik lokale testmappen uit het
+[rootvoorbeeld](.env.example) en zie [de technische referentie](docs/INSTALL_TRUENAS.md#5-losse-containers-starten).
+Installeer of vervang een bestaande installatie via het formulier uit §3.2.
 
 ---
 
@@ -359,6 +325,9 @@ bouwen met `--secret id=ca_bundle,src=/pad/naar/ca.crt`.
 
 ## 9. Lokaal starten (ontwikkeling)
 
+Gebruik voor de ontwikkelstack een lokale `.env` op basis van [het voorbeeld](.env.example).
+Vul daarin drie eigen testmappen in en voer het Compose-commando uit vanuit de repositoryroot.
+
 ```bash
 # Core (API op :8100)
 cd apps/core && python -m venv .venv && .venv/bin/pip install -e '.[test]'
@@ -368,7 +337,7 @@ MG_DATA_DIR=$(mktemp -d) MG_INTERNAL_TOKEN=dev .venv/bin/python -m mediaguard
 cd apps/web && npm ci && MG_CORE_URL=http://localhost:8100 npm run dev
 
 # Of de hele stack met nep-indexer/-downloadclient
-docker compose -f deploy/truenas/compose.yaml -f deploy/dev/compose.dev.yaml --env-file <env> up
+docker compose -f deploy/truenas/compose.yaml -f deploy/dev/compose.dev.yaml --env-file .env up
 ```
 
 Forks bouwen: `forks/sonarr/build.sh`, `forks/radarr/build.sh` (gepinde upstream + patches,
@@ -396,38 +365,16 @@ nooit automatisch uitrollen) — [`docs/FORK_UPSTREAM_SYNC.md`](docs/FORK_UPSTRE
 
 ### 10.1 Updaten (alles-in-één)
 
-1. Maak een **snapshot van de appdata-dataset** (die op `/config` staat, bv.
-   `<pool>/apps/mediaguard`): TrueNAS → **Datasets** → kies de dataset → kaart *Data Protection*
-   → **Create Snapshot**, naam bv. `voor-1.2.2`.
-2. *Apps → mediaguard → Edit* → **Image → Tag** naar de nieuwe versie (bv. `1.2.2-aio`) →
-   **Update**. Migraties lopen automatisch bij de start.
-3. Controle: *Instellingen › Systeem & back-ups → Technische details tonen*: de nieuwe versie
-   staat bij *MediaGuard-core* en alle *Componenten* zijn groen.
+Volg [Back-up en upgrade](deploy/truenas/CUSTOM_APP.md#back-up-en-upgrade). Stop MediaGuard
+en verifieer een volledige appdata-snapshot vóór de migratie. Behoud de bestaande datasets,
+de MediaGuard-voortgang en alle kijkgegevens. Hervat het gebruik pas na de vergelijking
+vóór en na de update.
 
 ### 10.2 Terugdraaien na een mislukte update
 
-Start de nieuwe versie niet goed, of gaat er iets mis? Zet eerst de appdata terug en daarna de
-oude tag. Alleen de oude tag terugzetten is niet genoeg: de database is al bijgewerkt.
-
-1. *Apps → mediaguard* → **Stop**. Wacht tot de app op *Stopped* staat.
-2. TrueNAS → **Datasets** → de appdata-dataset → *Data Protection* → **Manage Snapshots** →
-   klap de snapshot van vóór de update open (bv. `voor-1.2.2`) → **Rollback**. Dit zet
-   core-database, AV1-database, Sonarr/Radarr-instellingen en sleutels samen terug. Vraagt
-   TrueNAS naar nieuwere snapshots, dan gaan die verloren; dat is nodig om terug te gaan.
-3. *Apps → mediaguard → Edit* → **Image → Tag** terug naar de vorige versie (bv. `1.2.1-aio`)
-   → **Update**. De app start met de oude versie.
-4. Controle: *Instellingen › Systeem & back-ups → Technische details tonen* toont de oude
-   versie en alle *Componenten* zijn groen.
-
-Zet **nooit** de media-dataset (`/data`) of de werkmap (`/work`) terug: daar staan je
-bibliotheek en de bewaarde originelen (*Ruimte → Terugzetten*). Een rollback van de appdata
-raakt je media niet.
-
-**Geen snapshot gemaakt?** Gebruik de automatische back-up van vóór de update: *Instellingen ›
-Systeem & back-ups → Back-ups* → de back-up *vóór update* → ⋮ → **Klaarzetten** (typ de naam
-ter bevestiging). MediaGuard wisselt de databases om zodra de app stopt. Doe daarna stap 1 en 3
-hierboven. Sonarr/Radarr-instellingen gaan zo niet mee terug; die zitten alleen in de snapshot.
-Technische details: [`docs/INSTALL_TRUENAS.md`](docs/INSTALL_TRUENAS.md) §8.
+Volg [Terugzetten na een mislukte upgrade](deploy/truenas/CUSTOM_APP.md#terugzetten-na-een-mislukte-upgrade).
+Bewaar ook de actuele gegevens, herstel eerst de bijpassende appdata-snapshot via de TrueNAS-webinterface
+en kies vervolgens de vorige imageversie en digest in het Custom App-formulier.
 
 Herstel na stroomuitval, half geïmporteerde bestanden en mislukte encodes:
 [`docs/DATA_RECOVERY.md`](docs/DATA_RECOVERY.md).
@@ -469,8 +416,7 @@ oude installaties uitzet:
 |---|---|
 | "Bibliotheek nog vergrendeld" | Normaal tot de overstap; bij een verse start: *Overzicht → Bibliotheek vrijgeven* |
 | UI toont "MediaGuard kan nog niet starten" | De pagina noemt de map. Geef gebruiker `apps` (568) schrijfrechten (*Datasets → Edit Permissions*); de app gaat binnen 30 s vanzelf verder |
-| Eén Sonarr/Radarr-poort bezet (Host Network) | Zet in de app een omgevingsvariabele, bv. `MG_PORT_SONARR_SERIES=38999` (ook `MG_WEB_PORT` voor de UI) |
-| (alleen losse containers, §3.3 — geen installatiemethode) `mediaguard-init` stopt met exit 1 | Paden zijn hoofdlettergevoelig: controleer `/mnt/<pool>/<Dataset>` exact zoals in *Datasets*. Bekijk `sudo docker logs ix-mediaguard-mediaguard-init-1`; de regel `FOUT:` noemt het pad. Bestaan er al volumes met een verkeerd pad: app verwijderen, `sudo docker volume rm ix-mediaguard_mg_appdata ix-mediaguard_mg_work ix-mediaguard_mg_data`, opnieuw installeren |
+| Hostpoort bezet | Kies bij bridge een vrije hostpoort in het Custom App-formulier. Controleer daarna de portal en betrokken koppelingen |
 | "Hostactie nodig" bij een map | Geef gebruiker `apps` (568) schrijfrechten op de dataset via de TrueNAS-ACL |
 | Instantie "Offline" | *Instellingen › Sonarr- en Radarr-instanties → Test*; controleer in TrueNAS of de container draait |
 | Pre-grab-meldingen `MEDIAGUARD_UNAVAILABLE` in Sonarr | Core was even niet bereikbaar; met fail policy `open` gaat downloaden gewoon door |
