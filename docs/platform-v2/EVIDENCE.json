@@ -35,7 +35,7 @@
   "validatie": "Unit-getest; NIET GEVALIDEERD (echte NAS)",
   "bewijs": "S-P3-630: apps/core/tests/test_correlatie.py en apps/core/tests/test_api_keys.py; docs/CONNECTOR.md. Bestaand bewijs: commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); DELTA_MATRIX.md §B04-004 en §K.2 (004b)",
   "blokkade": "Diagnoseketen in de Hub (S-P3-075) en integrale E2E met MSO (S-P6-16) staan buiten dit bouwdeel.",
-  "opmerking": "S-P3-630 dekt de MediaGuard-kant: X-Correlation-Id in en uit, en koppeling aan de audit voor sleutelmutaties en noodstop. Bestaand deel (1.2.2): diagnose per item en zoekquotum zijn unit-getest; correlatie core↔AV1-engine gebruikt het veld correlation_id in de body.",
+  "opmerking": "S-P3-630 dekt de MediaGuard-kant: X-Correlation-Id in en uit, en koppeling aan de audit voor sleutelmutaties en noodstop. Kopfilter van de encodergateway Sim-getest met gewone tekst, een dubbele kop en tekst met een accent. Bestaand deel (1.2.2): diagnose per item en zoekquotum zijn unit-getest; correlatie core↔AV1-engine gebruikt het veld correlation_id in de body.",
   "repo": "media-guard-ultimate",
   "bijgewerkt": "2026-11-19"
  },

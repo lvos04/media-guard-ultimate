@@ -27,7 +27,7 @@ router = APIRouter(prefix="/api/v1/encoder", tags=["encoder-gateway"])
 _HOP = {"connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade",
         "proxy-authorization", "proxy-authenticate", "content-length", "content-encoding",
         "host", "cookie", "x-csrf-token", "x-mediaguard-token", "authorization",
-        "x-mediaguard-gateway", "x-mediaguard-hook-key", "x-api-key"}
+        "x-mediaguard-gateway", "x-mediaguard-hook-key", "x-api-key", "x-correlation-id"}
 _READ_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 

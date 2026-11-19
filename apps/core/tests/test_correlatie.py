@@ -6,6 +6,7 @@ import logging
 from contextlib import closing
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from test_schema_nieuwer import nieuw_schema  # noqa: F401 - gedeelde pytest-fixture
@@ -60,6 +61,30 @@ def test_dubbele_kop_krijgt_een_nieuwe_uuid(anon_client):
     effective, = response.headers.get_list(HEADER)
     assert str(UUID(effective, version=4)) == effective
     assert effective not in {first, second}
+
+
+@pytest.mark.parametrize("values", [
+    pytest.param((b"gewone-tekst",), id="gewone-tekst"),
+    pytest.param((str(uuid4()).encode(), str(uuid4()).encode()), id="dubbel"),
+    pytest.param(("café".encode("latin-1"),), id="accent"),
+])
+def test_encodergateway_filtert_ongeldige_correlatiekop(client, ctx, values):
+    received: list[httpx.Request] = []
+
+    def encoder(request: httpx.Request) -> httpx.Response:
+        received.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    ctx.services["encoder_transport"] = httpx.MockTransport(encoder)
+    response = client.get("/api/v1/encoder/systeem/hardware",
+                          headers=[(HEADER.encode(), value) for value in values])
+
+    assert response.status_code == 200
+    effective, = response.headers.get_list(HEADER)
+    assert str(UUID(effective, version=4)) == effective
+    assert effective.encode() not in values
+    request, = received
+    assert request.headers.get_list(HEADER) == []
 
 
 def test_sleutelmutaties_delen_antwoordkop_met_audit(client, ctx):
