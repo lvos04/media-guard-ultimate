@@ -125,6 +125,11 @@ elke 4 uur, zonder dat je iets hoeft te doen (`mediaguard/downloads/janitor.py`,
 (`downloads.trashed`, `downloads.torrent_removed`, `downloads.purged`, `downloads.restored`,
 `downloads.temp_removed`). De vrijgemaakte ruimte telt mee in *Waarom veranderden de aantallen?*.
 
+Met een ingestelde TrueNAS-sleutel ruimt MediaGuard alleen op als alle gemeten pools gezond zijn
+en de meting hooguit 15 minuten oud is. Bij een zieke, onbereikbare of onbekende poolstatus blijven
+downloads en prullenbak staan. De reden staat bij de laatste opruimronde. Zonder TrueNAS-sleutel
+gelden de gewone opruimregels hierboven.
+
 API: `GET /api/v1/downloads/cleanup` (laatste ronde, totaal vrijgemaakt, prullenbak met reden),
 `POST /api/v1/downloads/cleanup/run` (operator), `POST /api/v1/downloads/cleanup/trash/{id}/restore` (beheerder).
 

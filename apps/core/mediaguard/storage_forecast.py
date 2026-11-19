@@ -136,7 +136,12 @@ async def truenas_health(ctx: AppContext) -> dict[str, Any] | None:
                 headers={"Authorization": f"Bearer {key}"}) as client:
             resp = await client.get("/api/v2.0/pool")
             resp.raise_for_status()
-            pools = resp.json() or []
+            pools = resp.json()
+            if not isinstance(pools, list) or any(
+                    not isinstance(p, dict) or not isinstance(p.get("healthy"), bool)
+                    or (p.get("scan") is not None and not isinstance(p["scan"], dict))
+                    for p in pools):
+                return {"ok": False, "error_nl": "Ongeldige TrueNAS-poolmeting", "pools": []}
     except (httpx.HTTPError, ValueError) as exc:
         return {"ok": False, "error_nl": f"TrueNAS niet bereikbaar: {type(exc).__name__}",
                 "pools": []}
@@ -152,6 +157,7 @@ async def truenas_health(ctx: AppContext) -> dict[str, Any] | None:
 
 
 POOL_STATE = "truenas_pool"
+POOL_MAX_AGE = timedelta(seconds=900)
 
 
 def pool_observed_at(state: dict[str, Any]) -> str | None:
@@ -190,13 +196,49 @@ async def refresh_pool(ctx: AppContext) -> dict[str, Any]:
     return record_pool(ctx, await truenas_health(ctx))
 
 
-def pool_degraded(ctx: AppContext) -> list[dict[str, Any]]:
+def pool_degraded(ctx: AppContext, *, state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Pools die bij de laatste meting niet gezond waren (leeg = gezond of niet ingesteld)."""
-    try:
-        state = ctx.state_get(POOL_STATE, {}) or {}
-    except Exception:  # noqa: BLE001 - nooit het opruimen laten crashen op de meting
-        return []
+    if state is None:
+        try:
+            state = ctx.state_get(POOL_STATE, {}) or {}
+        except Exception:  # noqa: BLE001 - nooit het opruimen laten crashen op de meting
+            return []
     return degraded_pools(state)
+
+
+def download_cleanup_pause_reason(ctx: AppContext) -> str | None:
+    """Bij een ingestelde sleutel is alleen een verse, gezonde poolmeting voldoende."""
+    unknown = "De TrueNAS-poolstatus is onbekend doordat een recente, geldige meting ontbreekt."
+    try:
+        if not ctx.secrets.exists("truenas:apikey"):
+            return None  # losse installatie: bestaand gedrag
+        if not ctx.secrets.get("truenas:apikey") or not ctx.config.value("recovery.truenas_url"):
+            return unknown
+        state = ctx.state_get(POOL_STATE, {})
+    except Exception:  # noqa: BLE001 - een onleesbare meting geeft geen toestemming
+        LOGGER.exception("poolstatus voor downloadopruimer lezen mislukt")
+        return unknown
+    if not isinstance(state, dict) or state.get("reachable") is not True:
+        return unknown
+    checked_at = pool_observed_at(state)
+    if not isinstance(checked_at, str):
+        return unknown
+    try:
+        measured = datetime.fromisoformat(checked_at)
+    except ValueError:
+        return unknown
+    if measured.tzinfo is None or not timedelta() <= datetime.now(UTC) - measured <= POOL_MAX_AGE:
+        return unknown
+    if not isinstance(state.get("degraded"), list):
+        return unknown
+    if pool_degraded(ctx, state=state):
+        return "TrueNAS-pool niet gezond."
+    pools = state.get("pools")
+    if state["degraded"] or not isinstance(pools, list) or not pools or not all(
+            isinstance(p, dict) and p.get("healthy") is True and p.get("status") == "ONLINE"
+            for p in pools):
+        return unknown
+    return None
 
 
 def pool_names_nl(pools: list[dict[str, Any]]) -> str:

@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from mediaguard import storage_forecast as storage
 from mediaguard.downloads import janitor as J
 from mediaguard.downloads.clients import ClientItem, Root, SabClient, seeding_status
 
@@ -278,6 +279,117 @@ async def test_run_once_summary_and_status_api(ctx, client, layout):
     tid = data["trash"][0]["id"]
     assert client.post(f"/api/v1/downloads/cleanup/trash/{tid}/restore").status_code == 200
     assert (layout["tv"] / "done.s01e03").exists()
+
+
+@pytest.fixture
+def cleanup_round(ctx, layout):
+    previous = _nzb(layout, "oude-prullenbak")
+    item = _nzb(layout, "nieuwe-download")
+    root = layout["tv"].resolve()
+    trashed = J._trash(ctx, Path(previous.path), root, "test", actor="test",
+                       now=datetime.now(UTC) - timedelta(days=8))
+    sab = FakeSab()
+
+    async def gatherer(_ctx):
+        return _snap(layout, [item], imported_ids={item.id}), {"sab": sab}
+
+    row = ctx.db.fetch_one("SELECT trash_path FROM download_janitor_trash WHERE id=?",
+                           (trashed["id"],))
+    return gatherer, Path(item.path), Path(row["trash_path"]), sab
+
+
+def _healthy_pool(ctx):
+    return storage.record_pool(ctx, {"pools": [{"name": "voorbeeldpool", "status": "ONLINE",
+                                               "healthy": True}]})
+
+
+@pytest.fixture
+def pool_configured(ctx):
+    ctx.config.set("global", "", "recovery.truenas_url", "https://truenas.invalid", "test")
+    ctx.secrets.set("truenas:apikey", "sleutel", actor="test")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("measurement", ["degraded", "missing", "unreachable", "stale", "future",
+                                         "empty", "malformed", "bad-response", "read-error"])
+async def test_run_once_pauses_on_unhealthy_or_unknown_pool(
+        ctx, client, cleanup_round, pool_configured, measurement, monkeypatch):
+    gatherer, source, trash, sab = cleanup_round
+    if measurement == "degraded":
+        storage.record_pool(ctx, {"pools": [{"name": "voorbeeldpool", "status": "DEGRADED",
+                                            "healthy": False}]})
+    elif measurement == "unreachable":
+        _healthy_pool(ctx)
+        storage.record_pool(ctx, {"error_nl": "Onbereikbaar"})
+    elif measurement in {"stale", "future"}:
+        state = _healthy_pool(ctx)
+        delta = -16 if measurement == "stale" else 5
+        state["checked_at"] = (datetime.now(UTC) + timedelta(minutes=delta)).isoformat()
+        ctx.state_set(storage.POOL_STATE, state)
+    elif measurement == "empty":
+        storage.record_pool(ctx, {"pools": []})
+    elif measurement == "malformed":
+        ctx.state_set(storage.POOL_STATE, {**_healthy_pool(ctx), "pools": [None]})
+    elif measurement == "bad-response":
+        _healthy_pool(ctx)
+        ctx.services["truenas_transport"] = httpx.MockTransport(lambda _req: httpx.Response(
+            200, json=[{"name": "voorbeeldpool", "status": "ONLINE", "healthy": "false"}]))
+        await storage.refresh_pool(ctx)
+    elif measurement == "read-error":
+        state_get = type(ctx).state_get
+
+        def broken_state(self, key, default=None):
+            if key == storage.POOL_STATE:
+                raise OSError("test")
+            return state_get(self, key, default)
+
+        monkeypatch.setattr(type(ctx), "state_get", broken_state)
+
+    result = await J.run_once(ctx, gatherer=gatherer)
+
+    assert result["status"] == "skipped"
+    assert result["trashed"] == result["purged"] == result["temp_removed"] == 0
+    assert (source / "video.mkv").exists() and (trash / "video.mkv").exists()
+    assert sab.deleted == []
+    message = "niet gezond" if measurement == "degraded" else "onbekend"
+    assert message in result["summary_nl"]
+    assert client.get("/api/v1/downloads/cleanup").json()["last_run"]["summary_nl"] == (
+        result["summary_nl"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured", [True, False])
+async def test_run_once_cleans_with_healthy_pool_or_without_key(ctx, cleanup_round, configured,
+                                                               request):
+    gatherer, source, trash, sab = cleanup_round
+    if configured:
+        request.getfixturevalue("pool_configured")
+        _healthy_pool(ctx)
+    else:
+        # Een eerder opgeslagen meting mag een losse installatie zonder sleutel niet blokkeren.
+        storage.record_pool(ctx, {"pools": [{"status": "DEGRADED", "healthy": False}]})
+
+    result = await J.run_once(ctx, gatherer=gatherer)
+
+    assert result["status"] == "ok" and result["trashed"] == result["purged"] == 1
+    assert not source.exists() and not trash.exists()
+    assert sab.deleted == [source.name.upper()]
+
+
+@pytest.mark.asyncio
+async def test_run_once_rechecks_pool_after_gathering(ctx, cleanup_round, pool_configured):
+    gatherer, source, trash, sab = cleanup_round
+    _healthy_pool(ctx)
+
+    async def pool_went_offline(_ctx):
+        snapshot = await gatherer(_ctx)
+        storage.record_pool(ctx, {"error_nl": "Onbereikbaar"})
+        return snapshot
+
+    result = await J.run_once(ctx, gatherer=pool_went_offline)
+
+    assert result["status"] == "skipped" and result["trashed"] == result["purged"] == 0
+    assert source.exists() and trash.exists() and sab.deleted == []
 
 
 @pytest.mark.asyncio

@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from mediaguard import emergency, jobs, taskwatch
+from mediaguard import emergency, jobs, storage_forecast, taskwatch
 from mediaguard.audit import audit
 from mediaguard.auth import Principal, require_admin, require_operator, require_viewer
 from mediaguard.context import AppContext, get_app_context
@@ -44,6 +44,8 @@ from mediaguard.downloads.clients import ClientItem, ClientView, QbitClient, Roo
 from mediaguard.settings_registry import REGISTRY, SettingDef
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from mediaguard.provisioning.store import ProvisioningConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -292,12 +294,19 @@ def _plan_orphans(ctx: AppContext, snap: Snapshot, roots: list[tuple[Path, Root]
 
 
 # -- uitvoeren -------------------------------------------------------------------------------
+class _PoolPaused(Exception):
+    """De poolmeting geeft geen toestemming meer tijdens het voorbereiden van een verplaatsing."""
+
+
 def _trash(ctx: AppContext, path: Path, root: Path, reason: str, *, actor: str,
-           item: ClientItem | None = None, now: datetime | None = None) -> dict[str, Any]:
+           item: ClientItem | None = None, now: datetime | None = None,
+           paused: Callable[[], bool] | None = None) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     if not inside(real(path), root) or real(path).name.startswith("."):
         raise PermissionError(f"{path} ligt niet binnen {root}")
     size, freed, _ = _stat_tree(path)
+    if paused is not None and paused():
+        raise _PoolPaused
     dest_dir = root / TRASH_DIR / now.strftime("%Y-%m-%d")
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest, n = dest_dir / path.name, 2
@@ -315,11 +324,14 @@ def _trash(ctx: AppContext, path: Path, root: Path, reason: str, *, actor: str,
     return {"id": tid, "path": str(path), "size": size, "freed": freed, "reason": reason}
 
 
-async def execute(ctx: AppContext, p: Plan, clients: dict[str, Any], *, actor: str
+async def execute(ctx: AppContext, p: Plan, clients: dict[str, Any], *, actor: str,
+                  paused: Callable[[], bool] | None = None
                   ) -> dict[str, Any]:
     done: list[dict[str, Any]] = []
     errors: list[str] = []
     for a in p.actions:
+        if paused is not None and paused():
+            break
         try:
             if a.kind == "torrent" and a.item is not None:
                 q = clients.get(a.item.client)
@@ -332,19 +344,23 @@ async def execute(ctx: AppContext, p: Plan, clients: dict[str, Any], *, actor: s
                                  "data_to_trash": a.trash_data})
                 if a.trash_data and a.path is not None and a.root is not None:
                     done.append(await asyncio.to_thread(_trash, ctx, a.path, a.root, a.reason,
-                                                        actor=actor, item=a.item))
+                                                        actor=actor, item=a.item, paused=paused))
                 else:
                     done.append({"path": a.item.name, "size": 0, "freed": 0,
                                  "reason": a.reason + " (alleen torrent; bestanden zijn "
                                  "gekoppeld aan de bibliotheek)"})
             elif a.kind == "trash" and a.path is not None and a.root is not None:
                 done.append(await asyncio.to_thread(_trash, ctx, a.path, a.root, a.reason,
-                                                    actor=actor, item=a.item))
+                                                    actor=actor, item=a.item, paused=paused))
                 if a.item is not None and a.item.kind == "nzb":
                     sab = clients.get(a.item.client)
                     if sab is not None:
+                        if paused is not None and paused():
+                            break
                         with contextlib.suppress(Exception):  # alleen lijst opschonen
                             await sab.delete_history(a.item.id)
+        except _PoolPaused:
+            break
         except Exception as exc:  # noqa: BLE001 - per item; de rest gaat door
             errors.append(f"{a.path or (a.item.name if a.item else '?')}: {exc}")
             LOGGER.info("opruimen %s overgeslagen: %s", a.path, exc)
@@ -360,7 +376,8 @@ def _rm(path: str) -> None:
             p.unlink()
 
 
-def purge(ctx: AppContext, now: datetime | None = None, *, actor: str = "svc:downloads"
+def purge(ctx: AppContext, now: datetime | None = None, *, actor: str = "svc:downloads",
+          paused: Callable[[], bool] | None = None
           ) -> dict[str, int]:
     """Prullenbak legen na de bewaartermijn; bij weinig vrije ruimte eerder (oudste eerst)."""
     now = now or datetime.now(UTC)
@@ -383,6 +400,8 @@ def purge(ctx: AppContext, now: datetime | None = None, *, actor: str = "svc:dow
         trash = Path(r["trash_path"])
         if TRASH_DIR not in trash.parts:
             continue  # nooit buiten de prullenbak verwijderen
+        if paused is not None and paused():
+            return {"purged": purged, "freed": freed}
         _rm(str(trash))
         ctx.db.execute("UPDATE download_janitor_trash SET purged_at=? WHERE id=?",
                        (now.isoformat(timespec="seconds"), r["id"]))
@@ -395,6 +414,8 @@ def purge(ctx: AppContext, now: datetime | None = None, *, actor: str = "svc:dow
     for root in {r["root"] for r in rows}:
         base = Path(root) / TRASH_DIR
         for d in base.glob("*") if base.is_dir() else []:
+            if paused is not None and paused():
+                return {"purged": purged, "freed": freed}
             with contextlib.suppress(OSError):
                 d.rmdir()
     return {"purged": purged, "freed": freed}
@@ -419,7 +440,7 @@ def restore(ctx: AppContext, trash_id: int, *, actor: str) -> dict[str, Any]:
 
 
 def own_leftovers(ctx: AppContext, now: datetime | None = None, *,
-                  actor: str = "svc:downloads") -> int:
+                  actor: str = "svc:downloads", paused: Callable[[], bool] | None = None) -> int:
     """MediaGuard's eigen tijdelijke vervangbestanden (.mg-replace-*.part) van afgeronde
     transacties, ouder dan een dag. Het zijn kopieën van een AV1-resultaat, nooit media."""
     from mediaguard.recovery.executor import TERMINAL
@@ -434,6 +455,8 @@ def own_leftovers(ctx: AppContext, now: datetime | None = None, *,
         temp = Path(r["temp_path"])
         if not temp.name.startswith(".mg-replace-") or not temp.name.endswith(".part"):
             continue
+        if paused is not None and paused():
+            break
         try:
             temp.unlink()
         except FileNotFoundError:
@@ -611,40 +634,56 @@ async def run_once(ctx: AppContext, *, actor: str = "svc:downloads",
     summary: dict[str, Any] = {"trashed": 0, "purged": 0, "freed_bytes": 0, "temp_removed": 0,
                                "errors": [], "kept": {}, "refused_roots": []}
     status = "ok"
+    pause_reason: str | None = None
+
+    def paused() -> bool:
+        nonlocal pause_reason
+        pause_reason = pause_reason or storage_forecast.download_cleanup_pause_reason(ctx)
+        return pause_reason is not None
+
     try:
-        summary["temp_removed"] = await asyncio.to_thread(own_leftovers, ctx)
-        if not bool(_v(ctx, "cleanup_enabled")):
-            status = "disabled"
-        else:
-            try:
-                snap, clients = await (gatherer or gather)(ctx)
-            except Exception as exc:  # noqa: BLE001 - zonder volledig beeld: niets weghalen
-                status = "skipped"
-                summary["errors"].append(f"Niet alles bereikbaar, deze ronde niets weggehaald: "
-                                         f"{exc}"[:300])
+        if not paused():
+            summary["temp_removed"] = await asyncio.to_thread(own_leftovers, ctx, paused=paused)
+        if not paused():
+            if not bool(_v(ctx, "cleanup_enabled")):
+                status = "disabled"
             else:
-                # voor het opslaglogboek: welke downloadmappen MediaGuard lokaal ziet
-                ctx.state_set("download_roots_local", [
-                    {"path": r.path, "client": r.client, "kind": r.kind, "category": r.category}
-                    for r in snap.roots])
-                p = await asyncio.to_thread(plan, ctx, snap)
-                res = await execute(ctx, p, clients, actor=actor)
-                summary.update(trashed=len(res["done"]), kept=p.kept,
-                               refused_roots=p.refused_roots, errors=res["errors"],
-                               items=res["done"][:50])
-                summary["freed_bytes"] += sum(int(d.get("freed") or 0) for d in res["done"])
-        pg = await asyncio.to_thread(purge, ctx)
-        summary["purged"] = pg["purged"]
+                try:
+                    snap, clients = await (gatherer or gather)(ctx)
+                except Exception as exc:  # noqa: BLE001 - zonder volledig beeld: niets weghalen
+                    status = "skipped"
+                    summary["errors"].append(f"Niet alles bereikbaar, deze ronde niets weggehaald: "
+                                             f"{exc}"[:300])
+                else:
+                    if not paused():
+                        # voor het opslaglogboek: welke downloadmappen MediaGuard lokaal ziet
+                        ctx.state_set("download_roots_local", [
+                            {"path": r.path, "client": r.client, "kind": r.kind,
+                             "category": r.category} for r in snap.roots])
+                        p = await asyncio.to_thread(plan, ctx, snap)
+                        res = await execute(ctx, p, clients, actor=actor, paused=paused)
+                        summary.update(trashed=len(res["done"]), kept=p.kept,
+                                       refused_roots=p.refused_roots, errors=res["errors"],
+                                       items=res["done"][:50])
+                        summary["freed_bytes"] += sum(int(d.get("freed") or 0) for d in res["done"])
+        if not paused():
+            pg = await asyncio.to_thread(purge, ctx, paused=paused)
+            summary["purged"] = pg["purged"]
     finally:
         for qb in ctx.services.pop("_janitor_open", []):
             with contextlib.suppress(Exception):
                 await qb.__aexit__(None, None, None)
+    if pause_reason:
+        summary["errors"].insert(0, pause_reason)
+        status = "skipped"
     n = summary["trashed"]
     summary["summary_nl"] = (
         f"Opgeruimd: {n} oude download{'s' if n != 1 else ''}, "
         f"{_gb(summary['freed_bytes'])} vrijgemaakt" if n else
         ("Opruimen overgeslagen: " + summary["errors"][0] if status == "skipped"
          else "Niets op te ruimen"))
+    if n and pause_reason:
+        summary["summary_nl"] += f". Verder opruimen is gepauzeerd. {pause_reason}"
     ctx.db.execute(
         "UPDATE download_janitor_runs SET finished_at=?, status=?, trashed=?, purged=?, "
         "freed_bytes=?, summary_json=? WHERE id=?",
