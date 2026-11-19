@@ -287,18 +287,23 @@ bestaande bundels niet te openen — dat is precies de bedoeling.
 1. De supervisor neemt de mapsloten van kern en encoder. Onder de SQLite-schrijfsloten
    verifieert hij de laatste volledige herstelset. De bestanden, het manifest en de
    archiefmap zijn gesynchroniseerd voordat de set voor migratie mag worden gebruikt.
-2. Vóór de eerste databasecommit publiceert hij de setnaam in `update-in-uitvoering`
-   en alle beoogde schemaversies in `update-commitstap.json`. Iedere nieuwe markering
-   gaat eerst naar een tijdelijk bestand. Na `fsync` op dat bestand volgen een atomaire
-   hernoeming en `fsync` op de bovenliggende map.
-3. Eerst commit de kern, daarna iedere encoder. Elke SQLite-commit gebruikt volledige
-   synchronisatie. Na elke commit publiceert de supervisor de bereikte stap. Bij
-   herstart controleert hij de werkelijke databases. Als alle doelversies en
-   integriteitscontroles kloppen, rondt hij af. Als de oorspronkelijke stand nog
-   aanwezig is, mag de update opnieuw beginnen. Ook bij een oude lege of afgeknotte
-   setnaam vergt dat een volledige vergelijking met een geverifieerde herstelset,
-   inclusief SHA-256, SQLite-integriteit en wijzigingen in het WAL-logboek.
-   Bij een gedeeltelijke commit blijft de oorspronkelijke set beschikbaar voor terugzetten.
+2. Vóór de migraties bindt de supervisor de gekozen set aan deze update. In
+   `update-oorsprong.json` staan de setnaam, de manifestcontrole en de geordende
+   lijst van databases. Per database bewaart hij de SHA-256 van het hoofdbestand,
+   het aantal door SQLite herkende gecommitteerde WAL-frames, hun eindpositie, de
+   SHA-256 tot die positie en een hash van het schema en alle rijen. Daarna publiceert
+   hij de setnaam in `update-in-uitvoering`. Elke publicatie synchroniseert eerst het
+   tijdelijke bestand en na de atomaire hernoeming ook de bovenliggende map.
+   Verplaatst SQLite tijdens de bewijscontrole vóór de migratie WAL-pagina's naar het
+   hoofdbestand, dan maakt de supervisor één verse set. Verandert de bron opnieuw,
+   dan stopt deze poging vóór de migratie.
+3. Onder de nog open schrijftransacties legt hij in `update-commitstap.json` de
+   beoogde inhoud van alle databases vast. Eerst commit de kern, daarna iedere encoder.
+   Bij herstart vergelijkt de supervisor de aangetroffen stand met het oorsprongsbewijs
+   en de doelinhoud. Een strijdige of later verschenen set, verloren voortgang of een
+   gedeeltelijke commit houdt de start tegen. Een oude onleesbare setnaam vergt een
+   bijbehorend oorsprongsbewijs of een expliciet terugzetverzoek. Een expliciet
+   teruggezette en opnieuw gecontroleerde set heft de updatemarkering op.
 4. Bij een terugzetverzoek controleert de app elke gekozen kopie. Ze synchroniseert de
    klaargezette bestanden en hun mappen en publiceert dan `terugzetten.json`.
    Pas na deze publicatie mag de supervisor de omwisseling beginnen.
@@ -309,12 +314,16 @@ bestaande bundels niet te openen — dat is precies de bedoeling.
    actieve naam. Na elke hernoeming synchroniseert hij beide mappen en publiceert
    hij het volgende stapnummer. Na uitval controleert hij de hele tussenstand,
    ook als de laatste hernoeming al op schijf staat en het stapnummer nog achterloopt.
-6. Na de laatste omwisseling controleert hij de grootte, SHA-256, SQLite-integriteit,
-   schemaversie en hulpbestanden van de actieve set en de bewaarde vorige bestanden.
-   Hij publiceert het resultaat met de bewaarmap voordat hij de aanvraag verwijdert
-   en de map synchroniseert. Een reeds uitgevoerde aanvraag van een oudere schrijver
-   kan zo ook na de oorspronkelijke aanvraagtermijn worden afgerond. Bij ontbrekende
-   of tegenstrijdige bestanden blijven de aanvraag en de gegevens voor herstel bewaard.
+6. Vóór elke hernoeming en vóór de succesmelding controleert de supervisor alle
+   klaargezette, geïnstalleerde en vorige databases. Hij verzamelt het hoofdbestand,
+   de WAL en een eventueel rollbackjournaal op hun huidige plaatsen en opent per
+   database een afzonderlijke tijdelijke kopie. SQLite voert daar `integrity_check`
+   en een leesproef op de tabellen uit en herbouwt zijn eigen lezersregister.
+   De oorspronkelijke SHM mag dus door een lezer zijn gewijzigd. Bij een
+   onleesbare vorige stand blijven de aanvraag, de wachtende kopieën en de resterende
+   bestanden beschikbaar. Ook een aanvraag van een oudere schrijver doorloopt deze
+   controles. Na de laatste wissel publiceert de supervisor het resultaat met de
+   bewaarmap en verwijdert hij de aanvraag.
 
 | Geval | Wat de lokale proef moet aantonen | Controle in de repo |
 |---|---|---|

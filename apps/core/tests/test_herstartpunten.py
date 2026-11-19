@@ -342,6 +342,242 @@ def test_beschadigde_tussenstand_weigert_zonder_opruimen(tmp_path, installatie, 
         assert bestanden() == voor
 
 
+def bestandsinhoud(config):
+    return {p.relative_to(config): hashlib.sha256(p.read_bytes()).digest()
+            for p in config.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("gebrek", ["wal", "encoder", "oudere-setnaam", "recentere-set"])
+def test_onderbroken_update_blijft_gebonden_aan_de_gekozen_set(tmp_path, installatie, gebrek):
+    core = tmp_path / "core"
+    enc = tmp_path / "encode/app.db"
+    marker = core / preupdate.COMMIT_MARKER
+    aio.before_services(installatie, tmp_path, None)
+    eerste = Path(installatie["MG_PRE_UPDATE_SET"])
+    taak = enc.with_name("tweede.db") if gebrek == "encoder" else enc
+    if taak != enc:
+        shutil.copyfile(enc, taak)
+    code = """
+import os, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("PRAGMA journal_mode=WAL")
+db.execute("PRAGMA wal_autocheckpoint=0")
+db.execute("UPDATE job SET percent=90")
+db.commit()
+os._exit(0)
+"""
+    subprocess.run([sys.executable, "-B", "-c", code, str(taak)], check=True)
+    onderbreek(tmp_path, "update", "setnaam")
+    gekozen = eerste.parent / marker.read_text()
+    assert gekozen != eerste and not preupdate.verify(gekozen)
+    kopie = gekozen / "encode" / taak.name
+    with closing(sqlite3.connect(kopie.as_uri() + "?immutable=1", uri=True)) as db:
+        assert db.execute("SELECT percent FROM job").fetchall() == [(90,)]
+    bewijs = json.loads((core / preupdate.COMMIT_ORIGIN).read_bytes())
+    assert bewijs["set"] == gekozen.name and bewijs["aantal"] == len(bewijs["databases"])
+    origineel, = (r for r in bewijs["databases"] if r["bestand"] == "encode/" + taak.name)
+    wal = taak.with_name(taak.name + "-wal").read_bytes()
+    assert origineel["kern"] == hashlib.sha256(taak.read_bytes()).hexdigest()
+    assert origineel["wal_frames"] > 0 and 32 < origineel["wal_positie"] <= len(wal)
+    assert origineel["wal_sha256"] == hashlib.sha256(wal[:origineel["wal_positie"]]).hexdigest()
+    if gebrek == "recentere-set":
+        nieuw = preupdate.make_set(eerste.parent, core / "mediaguard.db",
+                                   encode_dir=enc.parent, reason="update")
+        assert nieuw.name != gekozen.name
+        assert preupdate.prune_sets(eerste.parent, keep=1) == 0 and gekozen.exists()
+    elif gebrek == "oudere-setnaam":
+        marker.write_text(eerste.name)
+    else:
+        marker.write_bytes(b"")
+        for suffix in ("-wal", "-shm") if gebrek == "wal" else ("", "-wal", "-shm"):
+            taak.with_name(taak.name + suffix).unlink(missing_ok=True)
+    voor = bestandsinhoud(tmp_path)
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            herstart(tmp_path)
+        assert bestandsinhoud(tmp_path) == voor
+    preupdate.stage(core, gekozen, actor="proef")
+    for _ in range(2):
+        herstart(tmp_path)
+        assert stand(core / "mediaguard.db", taak)[3] == [(90,)]
+    assert not marker.exists()
+
+
+def test_lezersregister_van_vorige_wal_mag_wijzigen(tmp_path, installatie):
+    core = tmp_path / "core"
+    _, voor, _ = herstelvraag(tmp_path, installatie)
+    late_wal(core / "mediaguard.db")
+    onderbreek(tmp_path, "omwisselen", "resultaat")
+    aside, = (core / "backups" / preupdate.ASIDE_FOLDER).iterdir()
+    kern, enc = aside / "core__mediaguard.db", aside / "encode__app.db"
+    bestanden = bestandsinhoud(aside)
+    later = stand(kern, enc)
+    assert later[2][-1][1] == "library.laatste" and later[3] == [(90,)]
+    assert {p for p, h in bestandsinhoud(aside).items() if h != bestanden[p]} == {
+        Path("core__mediaguard.db-shm")
+    }
+    twee_starts(tmp_path, voor)
+    assert stand(kern, enc) == later
+    assert Path(preupdate.take_result(core)["previous"]) == aside
+
+
+@pytest.mark.parametrize(("halverwege", "schade"), [
+    (True, "kern"), (False, "encoder"), (True, "wal"), (False, "wal"), (True, "laatste-frame"),
+])
+def test_oude_omwisseling_controleert_alle_vorige_databases(tmp_path, installatie,
+                                                            halverwege, schade):
+    core = tmp_path / "core"
+    info, _, _ = herstelvraag(tmp_path, installatie)
+    late_wal(core / "mediaguard.db")
+    paren = info["files"][:1] if halverwege else info["files"]
+    aside = oude_omwisseling(tmp_path, {"files": paren})
+    if schade == "laatste-frame":
+        pad = aside / "core__mediaguard.db-wal"
+        with pad.open("r+b") as stream:
+            header = stream.read(32)
+            page_size = int.from_bytes(header[8:12])
+            stream.seek(-page_size - 24 + 8, os.SEEK_END)
+            stream.write((int.from_bytes(header[16:20]) ^ 1).to_bytes(4))
+    elif schade == "wal":
+        pad = aside / "core__mediaguard.db-wal"
+        # SQLite kan bij een ongeldige WAL terugvallen op een nog leesbare oudere kern.
+        with pad.open("r+b") as f:
+            f.write(bytes(32))
+    else:
+        pad = aside / ("core__mediaguard.db" if schade == "kern" else "encode__app.db")
+        with pad.open("r+b") as f:
+            f.write(bytes(16))
+    voor = bestandsinhoud(tmp_path)
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            herstart(tmp_path)
+        assert bestandsinhoud(tmp_path) == voor
+        assert not (core / preupdate.RESULT_FILE).exists()
+    resultaat = preupdate.apply_staged(core)
+    assert resultaat and not resultaat["ok"] and bestandsinhoud(tmp_path) == voor
+    with pytest.raises(preupdate.SetError, match="begonnen omwisseling"):
+        preupdate.cancel(core)
+
+
+def test_oude_voortgang_met_de_doelversies_weigert(tmp_path, installatie):
+    core, enc = tmp_path / "core", tmp_path / "encode/app.db"
+    with closing(sqlite3.connect(enc)) as conn, conn:
+        conn.execute("UPDATE job SET percent=90")
+    onderbreek(tmp_path, "update", "na-encode/app.db")
+    with closing(sqlite3.connect(enc)) as conn, conn:
+        assert conn.execute("SELECT max(versie) FROM schema_versie").fetchone() == (2,)
+        assert conn.execute("UPDATE job SET percent=75 WHERE percent=90").rowcount == 1
+    voor = bestandsinhoud(tmp_path)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="deels vastgelegd"):
+            herstart(tmp_path)
+        assert bestandsinhoud(tmp_path) == voor
+    archive = core / "backups" / preupdate.FOLDER / (core / preupdate.COMMIT_MARKER).read_text()
+    preupdate.stage(core, archive, actor="proef")
+    for _ in range(2):
+        herstart(tmp_path)
+        assert stand(core / "mediaguard.db", enc)[3] == [(90,)]
+
+
+def test_schade_tussen_twee_wissels_houdt_de_encoder_op_zijn_plek(tmp_path, installatie,
+                                                                monkeypatch):
+    core = tmp_path / "core"
+    herstelvraag(tmp_path, installatie)
+    publiceren = preupdate._publish_step
+    na_schade = {}
+
+    def na_kern(*args):
+        publiceren(*args)
+        if (core / ("mediaguard.db" + preupdate.STAGED_SUFFIX)).exists() or na_schade:
+            return
+        aside, = (core / "backups" / preupdate.ASIDE_FOLDER).iterdir()
+        with (aside / "core__mediaguard.db").open("r+b") as f:
+            f.write(bytes(16))
+        na_schade.update(bestandsinhoud(tmp_path))
+
+    monkeypatch.setattr(preupdate, "_publish_step", na_kern)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="terugzetten niet gedaan"):
+            start(tmp_path, installatie)
+        assert bestandsinhoud(tmp_path) == na_schade
+        assert (tmp_path / "encode/app.db.terugzetten").is_file()
+        assert not (core / preupdate.RESULT_FILE).exists()
+
+
+def test_sqlite_opent_bij_hervatten_uitsluitend_controlekopieen(tmp_path, installatie, monkeypatch):
+    core = tmp_path / "core"
+    herstelvraag(tmp_path, installatie)
+    late_wal(core / "mediaguard.db")
+    onderbreek(tmp_path, "omwisselen", "opzij-core__mediaguard.db")
+    openen = sqlite3.connect
+    geopend = []
+
+    def op_kopie(pad, *args, **kwargs):
+        pad = Path(pad)
+        assert pad.parent.parent == core and pad.parent.name.startswith(".controle-sqlite-")
+        geopend.append(pad)
+        return openen(pad, *args, **kwargs)
+
+    with monkeypatch.context() as controle:
+        controle.setattr(sqlite3, "connect", op_kopie)
+        resultaat = preupdate.apply_staged(core)
+    assert resultaat["ok"] and geopend and all(not p.exists() for p in geopend)
+    aside = Path(resultaat["previous"])
+    vorige = stand(aside / "core__mediaguard.db", aside / "encode__app.db")
+    assert vorige[2][-1][1] == "library.laatste"
+
+
+def test_succesmelding_wacht_op_de_hervatte_omwisseling(tmp_path, installatie):
+    core = tmp_path / "core"
+    herstelvraag(tmp_path, installatie)
+    onderbreek(tmp_path, "omwisselen", "resultaat")
+    assert json.loads((core / preupdate.RESULT_FILE).read_bytes())["ok"]
+    aside, = (core / "backups" / preupdate.ASIDE_FOLDER).iterdir()
+    with (aside / "encode__app.db").open("r+b") as f:
+        f.write(bytes(16))
+    voor = bestandsinhoud(tmp_path)
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            herstart(tmp_path)
+        assert preupdate.take_result(core) is None
+        assert bestandsinhoud(tmp_path) == voor
+
+
+@pytest.mark.parametrize("moment", ["na-archief", "tijdens-kopie"])
+def test_checkpoint_voor_binding_levert_een_verse_set(tmp_path, installatie, monkeypatch, moment):
+    core, enc = tmp_path / "core", tmp_path / "encode/app.db"
+    archieven = []
+    maken = preupdate._make_set
+    with closing(sqlite3.connect(enc)) as schrijver:
+        assert schrijver.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        schrijver.execute("UPDATE job SET percent=90")
+        schrijver.commit()
+
+        def met_checkpoint(*args, **kwargs):
+            archief = maken(*args, **kwargs)
+            if not archieven and moment == "na-archief":
+                assert schrijver.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() == (0, 0, 0)
+            archieven.append(archief)
+            return archief
+
+        kopieer = shutil.copyfile
+
+        def laatste_verbinding(src, dst, *args, **kwargs):
+            if moment == "tijdens-kopie" and src == enc.with_name("app.db-wal"):
+                schrijver.close()
+            return kopieer(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(preupdate, "_make_set", met_checkpoint)
+        monkeypatch.setattr(shutil, "copyfile", laatste_verbinding)
+        aio.before_services(installatie, tmp_path, None)
+    gekozen = Path(installatie["MG_PRE_UPDATE_SET"])
+    assert len(archieven) == 2 and gekozen == archieven[-1]
+    assert gekozen.name == json.loads((core / preupdate.COMMIT_ORIGIN).read_bytes())["set"]
+    with closing(sqlite3.connect((gekozen / "encode/app.db").as_uri() + "?immutable=1",
+                                 uri=True)) as kopie:
+        assert kopie.execute("SELECT percent FROM job").fetchall() == [(90,)]
+
+
 def test_publicatie_synchroniseert_in_de_juiste_volgorde(tmp_path, monkeypatch):
     marker = tmp_path / preupdate.COMMIT_MARKER
     marker.write_text("vorige")
@@ -377,8 +613,8 @@ if __name__ == "__main__":
         # De schemavoorcontrole en omwisseling draaien ook bij de eerste start in een
         # vers proces. De bootstrap van de container valt onder het image-upgradebewijs.
         with patch.object(aio, "prepare", return_value=[]):
-            aio.prepare_start(env, config, None)
-        assert not env.get("MG_AIO_SCHEMA_CHECK_FAILED")
+            meldingen = aio.prepare_start(env, config, None)
+        assert not env.get("MG_AIO_SCHEMA_CHECK_FAILED"), meldingen
         start(config, env)
         assert not env.get(schema.AIO_RECOVERY_ENV)
     else:

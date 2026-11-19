@@ -260,6 +260,8 @@ class Database:
                             previous if pending else None, info["to"],
                             required=True, archive=pre_update_set,
                         )
+                if used_set is not None and (supervised or encoder_migrations is not None):
+                    engines.origin = preupdate.record_commit(folder, used_set)
                 for file in pending:
                     if applied and file == first_protected:
                         locks.enter_context(self._migration_transaction(conn))
