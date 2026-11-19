@@ -18,7 +18,7 @@ from pathlib import Path
 from app.config import Settings
 
 MARKER_NAME = "geplande-stop"
-PLANNED_STOP_ERROR = "onderbroken door een geplande stop of update; begint opnieuw"
+PLANNED_STOP_ERROR = "onderbroken door een geplande stop of update; wacht op hervatting"
 PLANNED_STOP_TYPE = "GeplandeStop"
 
 

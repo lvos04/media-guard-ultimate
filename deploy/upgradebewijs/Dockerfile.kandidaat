@@ -1,16 +1,11 @@
 # Upgradebewijs op elke push (ci.yml, job upgradebewijs) — GEEN release-image en geen installatiemethode.
 #
-# Een volledige release bouwt het encode-image uit bron (uren). Op elke push maakt deze Dockerfile daarom een
-# "core-kandidaat": de runtime van de vorige release (AV1-engine, web, Sonarr/Radarr-forks) met de core van deze commit
-# en het release-manifest van deze commit. Core is eigenaar van de database met de MediaGuard-voortgang; zo bewijst elke
-# push dat de migraties en de start van deze core niets van de vorige versie verliezen. Het echte releasebewijs draait
-# in release.yml op het echte kandidaat-image (job upgradebewijs, vóór publish).
-#
-#   docker buildx build --load -f deploy/upgradebewijs/Dockerfile.kandidaat \
-#     --build-context core=apps/core --build-context release=deploy \
-#     --build-arg VORIGE=ghcr.io/lvos04/mediaguard-core:1.2.2-aio@sha256:… -t mediaguard/upgrade-kandidaat:ci deploy/upgradebewijs
+# De kandidaat draait de kern en de volledige encoderbron (inclusief migraties) van
+# deze commit op de toolchain van de gepinde vorige release. De releasepoort
+# herhaalt de vergelijking met het te publiceren alles-in-één-image.
 ARG VORIGE=ghcr.io/lvos04/mediaguard-core:1.2.2-aio@sha256:14e540ba9cad0bb7fbda8295bca89496f58462a201361544916f3b16b3a52dc6
 FROM scratch AS core
+FROM scratch AS encoder
 FROM scratch AS release
 FROM ${VORIGE}
 USER root
@@ -24,6 +19,10 @@ RUN --mount=type=bind,from=core,target=/src \
     find "$d" -name __pycache__ -prune -exec rm -rf {} +; \
     /opt/venv/bin/python -c "import mediaguard.aio, mediaguard.app; print(mediaguard.__version__)"; \
     install -d -m 0755 -o 568 -g 568 /run/mediaguard
+# Een eigen applicatiemap voorkomt dat uit de bron verwijderde modules achterblijven.
+COPY --from=encoder / /opt/kandidaat-encoder/app/
+ENV MG_AIO_ENCODER_DIR=/opt/kandidaat-encoder
+RUN test -s /opt/kandidaat-encoder/app/main.py
 COPY --from=release release-manifest.json /usr/share/mediaguard/release-manifest.json
 COPY --from=core --chmod=0755 /mediaguard/aio_healthcheck.py /usr/local/bin/mg-aio-healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \

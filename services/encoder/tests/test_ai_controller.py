@@ -676,6 +676,8 @@ async def test_gewijzigd_beleid_trekt_niet_gestarte_ai_toestemming_in(
         (library_id,),
     )
 
+    before = database.fetch_one("SELECT profiel_fingerprint FROM bestand WHERE id="
+                                "(SELECT bestand_id FROM besluit WHERE id=?)", (decision_id,))[0]
     revoke_ai_consent(database, library_ids=[library_id], reason="beleid gewijzigd")
 
     assert database.fetch_one("SELECT status FROM job WHERE id=?", (job_id,))[0] == (
@@ -685,11 +687,12 @@ async def test_gewijzigd_beleid_trekt_niet_gestarte_ai_toestemming_in(
         "afgewezen"
     )
     file_row = database.fetch_one(
-        "SELECT profiel_fingerprint FROM bestand WHERE id="
+        "SELECT profiel_fingerprint,scan_status FROM bestand WHERE id="
         "(SELECT bestand_id FROM besluit WHERE id=?)",
         (decision_id,),
     )
-    assert file_row is not None and file_row["profiel_fingerprint"] is None
+    assert file_row is not None and file_row["profiel_fingerprint"] == before
+    assert file_row["scan_status"] == "herbeoordelen"
     assert database.fetch_one("SELECT canary_status FROM library WHERE id=?", (library_id,))[0] == (
         "actief"
     )
@@ -701,11 +704,9 @@ async def test_gewijzigd_beleid_trekt_niet_gestarte_ai_toestemming_in(
         "FROM library WHERE id=?",
         (library_id,),
     )
-    assert scan is not None and scan["status"] == "mislukt"
-    assert "ingetrokken AI-toestemming" in str(scan["fout"])
-    assert library is not None and library["scan_cursor"] is None
-    assert library["laatste_scan_status"] == "mislukt"
-    assert "volledige herscan" in str(library["laatste_scan_fout"])
+    assert scan is not None and scan["status"] == "bezig" and scan["fout"] is None
+    assert library is not None and library["scan_cursor"] == "/oude/cursor"
+    assert library["laatste_scan_status"] == "bezig" and library["laatste_scan_fout"] is None
 
 
 @pytest.mark.asyncio
@@ -733,3 +734,38 @@ async def test_controllerloop_overleeft_lock_tijdens_foutregistratie(
     await asyncio.wait_for(controller.run_forever(interval=0.001), timeout=1)
 
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_nieuwe_veiligheidsmeting_trekt_alleen_open_toestemming_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import ai_controller
+
+    db, settings, media, library = _case(tmp_path)
+    actief = _decision(db, media, library)
+    wacht = _decision(db, media, library, name="Volgende.mkv")
+    controller = AiController(db, settings, FakeProvider(_safe_proposal()))
+    await controller.tick()
+    db.execute("UPDATE job SET status='bezig',percent=42 WHERE besluit_id=?", (actief,))
+    db.execute("UPDATE library SET scan_cursor='laatste bestand',laatste_scan_status='bezig'")
+    db.execute("INSERT INTO scan_run(library_id,status,cursor,gevonden,nieuw,gestart_op) "
+               "VALUES (?,'bezig','laatste map',17,5,CURRENT_TIMESTAMP)", (library,))
+
+    def inhoud(sql: str) -> list[tuple]:
+        return [tuple(r) for r in db.fetch_all(sql)]
+
+    scan = inhoud("SELECT * FROM scan_run")
+    actief_sql = f"SELECT * FROM job WHERE besluit_id={actief}"
+    lopend = inhoud(actief_sql)
+    assert len(lopend) == 1 and len(scan) == 1
+    monkeypatch.setattr(ai_controller, "safety_fingerprint", lambda _: "nieuwe-meting")
+    for _ in range(2):
+        assert ai_controller.reconcile_safety_fingerprint(db) == "nieuwe-meting"
+        assert inhoud("SELECT * FROM scan_run") == scan and inhoud(actief_sql) == lopend
+        assert db.fetch_one("SELECT scan_cursor FROM library")[0] == "laatste bestand"
+        assert db.fetch_one("SELECT status FROM job WHERE besluit_id=?", (wacht,))[0] == (
+            "overgeslagen")
+    assert controller.configuration()[1]["veiligheidsfingerprint"] == "nieuwe-meting"
+    audits = db.fetch_one("SELECT COUNT(*) FROM auditlog WHERE onderwerp='veiligheidsfingerprint'")
+    assert audits[0] == 1

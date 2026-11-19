@@ -17,6 +17,7 @@ from app.mediaguard import service, trials
 from app.mediaguard.auth import require_token
 from app.mediaguard.capabilities import PAUSE_PREFIX, CapabilityService, apply_lane_gates
 from app.mediaguard.holds import (
+    PlatformHoldConflict,
     apply_platform_hold,
     apply_playback_hold,
     platform_status,
@@ -315,8 +316,11 @@ def create_mediaguard_router() -> APIRouter:
         if body.source == "platform":
             from app.planner import wake_planner
 
-            state = await asyncio.to_thread(apply_platform_hold, _db(request), body.expires_at,
-                                            body.reason.strip())
+            try:
+                state = await asyncio.to_thread(apply_platform_hold, _db(request), body.expires_at,
+                                                body.reason.strip())
+            except PlatformHoldConflict as exc:
+                raise HTTPException(409, str(exc)) from exc
             wake_planner()
             return state
         lanes = [lane for lane in body.lanes if lane in ("cpu", "gpu")]

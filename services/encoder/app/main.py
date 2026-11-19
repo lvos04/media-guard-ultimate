@@ -37,6 +37,7 @@ from app.mediaguard.capabilities import (
 )
 from app.mediaguard.container import prepare_container_storage
 from app.mediaguard.handoff import sweep_orphan_staging
+from app.mediaguard.holds import set_hold
 from app.metingen import system_metrics_loop
 from app.onderhoud import STORAGE_NOT_READY_PREFIX, maintenance_loop
 from app.opslag import storage_validation_error
@@ -176,11 +177,7 @@ def create_app(
             # 'automatisch:' = door het systeem gezet en weer op te heffen zodra de
             # opslagbewaking ruimte ziet; iedere claim valideert de opslag opnieuw.
             # Een handmatige of MediaGuard-pauze blijft met haar eigen reden staan.
-            database.execute(
-                "UPDATE worker_config SET gepauzeerd=1,pauze_reden=? "
-                "WHERE gepauzeerd=0 OR pauze_reden LIKE 'automatisch:%'",
-                (f"{STORAGE_NOT_READY_PREFIX}{storage_error}",),
-            )
+            set_hold(database, "opslag", f"{STORAGE_NOT_READY_PREFIX}{storage_error}")
         _ensure_default_profile(database)
         unify_cpu_percent(database, container_mode=app_settings.container_mode)
         if app_settings.container_mode:

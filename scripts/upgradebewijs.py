@@ -430,6 +430,29 @@ VERPLICHT_VOOR = ("core/mediaguard.db", "encode/app.db")
 RUNTIME_CORE = frozenset({"sessions", "login_challenges", "locks"})
 
 
+def encoder_dekking(meting: dict[str, Any], *, kandidaat: bool) -> list[str]:
+    """Bewijs met fysieke bibliotheekrijen en de migraties uit de gebouwde bronboom."""
+    tables = meting.get("databases", {}).get("encode/app.db", {}).get("tabellen", {})
+    library = tables.get("library", {})
+    columns = library.get("kolommen", [])
+    if "scan_cursor" not in columns or not any(
+        row[columns.index("scan_cursor")] for row in library.get("per_sleutel", {}).values()
+    ):
+        return ["geen gevulde encoder-scanpositie gemeten"]
+    if not kandidaat:
+        return []
+    schema = tables.get("schema_versie", {})
+    migrations = ROOT / "services" / "encoder" / "app" / "migrations"
+    expected = {(int(p.name.split("_", 1)[0]), p.name) for p in migrations.glob("*.sql")}
+    columns = schema.get("kolommen", [])
+    actual = {(row[columns.index("versie")], row[columns.index("naam")])
+              for row in schema.get("per_sleutel", {}).values()
+              if "versie" in columns and "naam" in columns}
+    if not expected or actual != expected:
+        return ["encodermigraties komen niet overeen met de volledige kandidaatbron"]
+    return []
+
+
 def dekking(voor: dict[str, Any], fixture: dict[str, Any],
             verplicht: tuple[str, ...] = VERPLICHT_VOOR) -> list[str]:
     """Fouten als de meting vóór de upgrade niet bevat wat de fixture gevuld heeft. Zonder deze
@@ -915,6 +938,7 @@ finally:
         voor = self.meet("config", "meting-voor.json")
         # Zonder volledige nulmeting valt er niets te bewijzen.
         fouten += dekking(voor, fixture)
+        fouten += encoder_dekking(voor, kandidaat=False)
         if fouten:
             return fouten, rapport("Nulmeting upgradebewijs", fouten, [], [])
         # zoals een ZFS-snapshot vóór de update (terugzetten = vorige image + deze snapshot)
@@ -926,6 +950,7 @@ finally:
         self.stop()
         na = self.meet("config", "meting-na.json")
         f_upg, toegepast, overzicht = vergelijk(voor, na, uitz)
+        f_upg += encoder_dekking(na, kandidaat=True)
         regel_upg, open_upg = open_werk_regel(voor, na)
         f_upg += open_upg
         fouten += [f"upgrade: {f}" for f in f_upg]

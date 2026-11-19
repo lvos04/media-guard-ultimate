@@ -52,7 +52,7 @@ JELLYFIN = f"http://127.0.0.1:{os.environ.get('MGMS_JELLYFIN_PORT', '38097')}"
 MG_PORT = os.environ.get("MGMS_MG_PORT", "38098")
 MG = f"http://127.0.0.1:{MG_PORT}"
 MG_NAAM = os.environ.get("MGMS_MG_NAAM", "mgms-mediaguard")
-NETWERK = "mgms_mgnet"
+NETWERK = f"{os.environ.get('COMPOSE_PROJECT_NAME', 'mgms')}_mgnet"
 VORIGE = os.environ.get("MGMS_VORIGE", "")
 KANDIDAAT = os.environ.get("MGMS_KANDIDAAT", "")
 VORIGE_VERSIE = os.environ.get("MGMS_VORIGE_VERSIE", "")
@@ -589,10 +589,16 @@ print(json.dumps({
         "('mediaserver.kind','mediaserver.url') ORDER BY key")},
     "meldingen": [list(r) for r in c.execute(
         "SELECT severity,title FROM notifications ORDER BY id")],
+    "onafgeronde_instantiecontroles": [r[0] for r in c.execute(
+        "SELECT i.id FROM instances i LEFT JOIN system_state s "
+        "ON s.key='instance_alert:' || i.id WHERE i.archived=0 AND "
+        "(i.last_check_at IS NULL OR i.status='unknown' OR "
+        "(i.status IN ('offline','degraded') AND COALESCE(json_extract(s.value_json,'$.nid'),0)=0) "
+        "OR (i.status='healthy' AND COALESCE(json_extract(s.value_json,'$.nid'),0)<>0))")],
     "extra_servers": [list(r) for r in c.execute(
         "SELECT id,kind,label,enabled FROM mediaserver_servers ORDER BY id")]
         if "mediaserver_servers" in tabellen else None,
-    "migraties": c.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0],
+    "migraties": [r[0] for r in c.execute("SELECT version FROM schema_migrations ORDER BY version")],
 }))
 """
 _BANEN = ("import json,sqlite3;c=sqlite3.connect('file:/config/encode/app.db?mode=ro',uri=True);"
@@ -789,8 +795,12 @@ def test_b2_upgrade_emby_blijft_gevolgd_zonder_handeling(servers: dict[str, Any]
           na["geheim_server_1"] == voor["geheim_server_1"]
           and na["instellingen"] == voor["instellingen"] and na["geheimen"] == voor["geheimen"],
           {"voor": voor, "na": na})
-    check("migratie 150 is toegepast en er is nog geen extra server",
-          na["migraties"] == voor["migraties"] + 1 and na["extra_servers"] == [],
+    verwacht = sorted(p.stem for p in (ROOT / "apps/core/mediaguard/migrations").glob("*.sql"))
+    servermigratie = "150_mediaserver_servers"
+    check("alle kernmigraties inclusief 150 zijn toegepast en er is nog geen extra server",
+          servermigratie not in voor["migraties"] and servermigratie in na["migraties"]
+          and set(voor["migraties"]) < set(na["migraties"]) and na["migraties"] == verwacht
+          and na["extra_servers"] == [],
           {"migraties": (voor["migraties"], na["migraties"]), "extra": na["extra_servers"]})
     # de eerste ronde van de achtergrondlus: Emby wordt gevolgd zonder dat iemand iets instelde
     nieuw = wacht_op(lambda: [r for r in sessiepolls(luik("emby")[n_voor:], "/emby/Sessions")
@@ -953,7 +963,16 @@ def test_b6_jellyfin_valt_weg_emby_blijft_gevolgd(servers: dict[str, Any]) -> No
 
 def test_b7_emby_losmaken_volgt_alleen_jellyfin(servers: dict[str, Any]) -> None:
     jf = servers["jellyfin"]
-    meldingen_voor = mg.db()["meldingen"]
+
+    def nulmeting() -> dict[str, Any] | None:
+        db = mg.db()
+        return None if db["onafgeronde_instantiecontroles"] else db
+
+    # De synthetische Arr-instanties kunnen offline zijn. Hun melding verschijnt
+    # pas na tien minuten. Meet vóór het losmaken nadat de bewaking is bijgelopen.
+    # De vergelijking hieronder omvat nog steeds alle meldingen van de kern.
+    meldingen_voor = wacht_op(nulmeting, 13 * 60, 10,
+                              wat="nulmeting na de eerste Arr-gezondheidscontroles")["meldingen"]
     n_emby = len(luik("emby"))
     feit("emby_verzoeken_tot_losmaken", n_emby)
     STATE["n_emby_losgemaakt"] = n_emby

@@ -21,8 +21,9 @@ import psutil
 from app.config import Settings
 from app.cpubudget import effective_cpu_percent
 from app.db import Database
+from app.hervatpunten import Hervatfout, Hervatpunt, eerder_geverifieerd
 from app.hostlimits import cpu_temperature, effective_memory
-from app.mediaguard.holds import expire_platform_hold, pause_reason
+from app.mediaguard.holds import LANE_SELECT, expire_platform_hold, pause_reason
 from app.onderhoud import record_failure, storage_guard
 from app.uitvoerder import (
     MAX_RESTART_INTERRUPTIONS,
@@ -238,8 +239,9 @@ def _recover_orphaned_jobs(database: Database, settings: Settings,
 
     recovered = 0
     emergency = bool(noodstop.load(database).get("active"))
+    preserved: set[int] = set()
     rows = database.fetch_all(
-        "SELECT id,proces_pid,pogingen FROM job WHERE status IN ('bezig','verifieren')"
+        "SELECT id,proces_pid,pogingen,percent FROM job WHERE status IN ('bezig','verifieren')"
     )
     for row in rows:
         pid = int(row["proces_pid"] or 0)
@@ -247,21 +249,35 @@ def _recover_orphaned_jobs(database: Database, settings: Settings,
         if _orphan_process(pid, job_id, settings):
             LOGGER.warning("Verweesd mediaproces %s van job %s wordt gestopt", pid, job_id)
             _stop_orphan(pid)
+        cache = settings.cache_root / str(job_id)
         try:
-            remove_job_temporary_output(settings, job_id)
-        except QueueRecoveryError as exc:
+            checkpoint = Hervatpunt.lees(cache)
+            percent = checkpoint.percent if checkpoint else 0.0
+            if checkpoint is not None:
+                preserved.add(job_id)
+            elif eerder_geverifieerd(database, cache, job_id):
+                percent = 99.9
+                preserved.add(job_id)
+            elif row["percent"] and cache.is_dir() and any(cache.glob("*.deel")):
+                # Oud schema zonder fragmentbewijs. Bewaar de oorspronkelijke
+                # meting en het deelbestand tot de worker de bron opnieuw controleert.
+                percent = float(row["percent"])
+                preserved.add(job_id)
+            else:
+                remove_job_temporary_output(settings, job_id)
+        except (QueueRecoveryError, Hervatfout) as exc:
             record_failure(database, job_id, str(exc), type(exc).__name__)
             continue
         if emergency:
             # Herstart terwijl de noodstop actief is: geen poging, geen 'onderbreking'.
-            requeue_for_emergency(database, job_id)
+            requeue_for_emergency(database, job_id, percent)
             recovered += 1
             continue
         if planned_at is not None:
             database.execute(
                 "UPDATE job SET status='wacht',worker_id=NULL,proces_pid=NULL,"
-                "cache_reservering=0,percent=0,fout=? WHERE id=?",
-                (PLANNED_STOP_ERROR, job_id))
+                "cache_reservering=0,percent=?,fout=? WHERE id=?",
+                (percent, PLANNED_STOP_ERROR, job_id))
             database.execute(
                 "UPDATE job_poging SET status='afgebroken',klaar_op=?,fout=?,foutsoort=? "
                 "WHERE job_id=? AND poging=? AND status='bezig'",
@@ -298,10 +314,10 @@ def _recover_orphaned_jobs(database: Database, settings: Settings,
         database.execute(
             """
             UPDATE job SET status='wacht',worker_id=NULL,proces_pid=NULL,
-                           cache_reservering=0,percent=0,fout='hersteld na backendherstart'
+                           cache_reservering=0,percent=?,fout='hersteld na backendherstart'
             WHERE id=?
             """,
-            (job_id,),
+            (percent, job_id,),
         )
         database.execute(
             """
@@ -316,12 +332,26 @@ def _recover_orphaned_jobs(database: Database, settings: Settings,
     # Een job met status 'wacht' kan bij een eerdere handmatige retry nog een
     # deelbestand hebben. Bij backendstart bestaan er nog geen plannertaken,
     # dus deze exacte numerieke jobmappen zijn aantoonbaar tijdelijk.
-    waiting = database.fetch_all("SELECT id FROM job WHERE status='wacht' ORDER BY id")
+    waiting = database.fetch_all("SELECT id,percent,fout FROM job WHERE status='wacht' ORDER BY id")
     for row in waiting:
         job_id = int(row["id"])
+        if job_id in preserved:
+            continue
+        cache = settings.cache_root / str(job_id)
         try:
+            checkpoint = Hervatpunt.lees(cache)
+            if checkpoint is not None:
+                database.execute("UPDATE job SET percent=? WHERE id=?",
+                                 (checkpoint.percent, job_id))
+                continue
+            if eerder_geverifieerd(database, cache, job_id):
+                continue
+            if (row["percent"]
+                    and row["fout"] in (PLANNED_STOP_ERROR, "hersteld na backendherstart")
+                    and cache.is_dir() and any(cache.glob("*.deel"))):
+                continue
             removed = remove_job_temporary_output(settings, job_id)
-        except QueueRecoveryError as exc:
+        except (QueueRecoveryError, Hervatfout) as exc:
             record_failure(database, job_id, str(exc), type(exc).__name__)
             continue
         if removed:
@@ -516,7 +546,7 @@ class Planner:
             loop.call_soon_threadsafe(event.set)
 
     def _lane_config(self, lane: Lane) -> Any:
-        row = self.database.fetch_one("SELECT * FROM worker_config WHERE baan=?", (lane,))
+        row = self.database.fetch_one(LANE_SELECT + " WHERE w.baan=?", (lane,))
         if row is not None:
             expire_platform_hold(self.database, row)
         return row
@@ -582,7 +612,7 @@ class Planner:
         with self.database.connection() as connection:
             # De baan kan tussen de voorcontrole en het SQLite-schrijversslot zijn gepauzeerd.
             current = connection.execute(
-                "SELECT * FROM worker_config WHERE baan=?", (lane,)).fetchone()
+                LANE_SELECT + " WHERE w.baan=?", (lane,)).fetchone()
             if current is not None and (reason := pause_reason(current)):
                 return None, reason
             active = int(
@@ -871,7 +901,7 @@ class Planner:
         grootste stationaire CPU-verbruik van de container."""
 
         reset_shutdown()
-        recover_orphaned_jobs(self.database, self.settings)
+        await asyncio.to_thread(recover_orphaned_jobs, self.database, self.settings)
         self._loop = asyncio.get_running_loop()
         self._wake = asyncio.Event()
         _PLANNERS.append(self)

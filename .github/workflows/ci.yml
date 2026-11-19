@@ -3,11 +3,11 @@
 # push/PR: basisimages op digest, core, encoder unit tests (zonder toolchain), web (Peil-driftcontrole, lint/typecheck/unit/build/e2e),
 # kopieën van contract en Peil tegen hun gepinde bron (C1.3-MGU-01), het Custom App-manifest (C1.3-MGU-09)
 # en het upgradebewijs van de HARDE EIS
-# (vorige release → core van deze commit op een gevulde database, C1.3-MGU-03).
+# (vorige release → kern en encoder van deze commit op een gevulde database, C1.3-MGU-03).
 # Push die het encoder-Dockerfile wijzigt: vergelijk de gepinde FFmpeg-build met de ongewijzigde basis-tag.
 # Nightly (03:17 UTC) + handmatig: encoder-suite in het toolchain-image (--target test),
 # beide fork-images bouwen, de upstream-sync van de forks in rapportmodus en de contracttest mediaservers
-# (echte Emby + Jellyfin 12.x op digest, vorige release → core van deze commit; Δ-MG-AUTH, Δ-MG-DUAL).
+# (echte Emby + Jellyfin 12.x op digest, vorige release → kern en encoder van deze commit; Δ-MG-AUTH, Δ-MG-DUAL).
 # release.yml roept deze workflow aan (workflow_call): zonder groene tests geen release.
 # Niets in deze workflow pusht images of wijzigt de repo; publiceren: release.yml.
 name: ci
@@ -136,11 +136,11 @@ jobs:
 
   # HARDE EIS (contract 1.3 §2.3 regel 7b, §12; C1.3-MGU-03): kijkgeschiedenis en MediaGuard-voortgang blijven altijd
   # beschikbaar. Op elke push: de echte vorige release (op digest) start op de gevulde fixture, daarna de runtime van die
-  # release met de core van deze commit (deploy/upgradebewijs/Dockerfile.kandidaat); per tabel vóór/na vergelijken,
+  # release met de kern en encoder van deze commit (deploy/upgradebewijs/Dockerfile.kandidaat); per tabel vóór/na vergelijken,
   # readback via de API en terugzetten (vorige image + snapshot). Het releasebewijs met het echte kandidaat-image draait
   # in release.yml vóór publish.
   upgradebewijs:
-    name: upgradebewijs (vorige release → core van deze commit)
+    name: upgradebewijs (vorige release → kern en encoder van deze commit)
     # format(): op een push is inputs leeg (null), en null == false in GitHub-expressies
     if: github.event_name != 'schedule' && format('{0}', inputs.upgradebewijs) != 'false'
     runs-on: ubuntu-24.04
@@ -152,7 +152,7 @@ jobs:
       # is dit rood tot vorige-release.json en de fixture van die release zijn bijgewerkt
       - name: vorige release is de laatst gepubliceerde (GHCR-tag en digest)
         run: python3 scripts/upgradebewijs.py volgorde
-      - name: vorige release (op digest) ophalen en core-kandidaat bouwen
+      - name: vorige release (op digest) ophalen en kandidaat met kern en encoder bouwen
         run: |
           VORIGE="$(python3 -c 'import json;d=json.load(open("deploy/upgradebewijs/vorige-release.json"));print(d["image"]+"@"+d["digest"])')"
           VORIGE_VERSIE="$(python3 -c 'import json;print(json.load(open("deploy/upgradebewijs/vorige-release.json"))["versie"])')"
@@ -160,7 +160,7 @@ jobs:
           { echo "VORIGE=$VORIGE"; echo "VORIGE_VERSIE=$VORIGE_VERSIE"; echo "VERSIE=$VERSIE"; } >> "$GITHUB_ENV"
           for i in 1 2 3 4 5; do docker pull -q "$VORIGE" && break; sleep $((2 ** i)); done
           docker buildx build --load -f deploy/upgradebewijs/Dockerfile.kandidaat \
-            --build-context core=apps/core --build-context release=deploy \
+            --build-context core=apps/core --build-context release=deploy --build-context encoder=services/encoder/app \
             --build-arg "VORIGE=$VORIGE" -t mediaguard/upgrade-kandidaat:ci deploy/upgradebewijs
       - name: upgradebewijs (start, meten, upgraden, vergelijken, terugzetten)
         run: >-
@@ -187,9 +187,9 @@ jobs:
           python-version: "3.14"
           cache: pip
           cache-dependency-path: services/encoder/pyproject.toml
-      # Ubuntu 24.04: FFmpeg 6.1 met libsvtav1; geen dovi_tool/mkvmerge/FFmpeg ≥ 7.1.
-      # Daarom alleen de suites die geen DV-/HDR10+-fixtures of echte encodes vragen.
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg acl
+      # Ubuntu 24.04: FFmpeg 6.1 met libsvtav1 en mkvmerge voor HDR-metadata.
+      # De hervatproef gebruikt een korte CPU-encode met de beschikbare AV1-encoder.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg acl mkvtoolnix
       - run: pip install -e "services/encoder[test]"
       - name: ruff + mypy
         working-directory: services/encoder
@@ -204,6 +204,9 @@ jobs:
           tests/test_mediaguard_storage_guard.py tests/test_scanscheduler.py
           tests/test_smb_helper.py tests/test_ai_controller.py tests/test_integraties.py
           tests/test_verificatie.py tests/test_systeem.py tests/test_playback_hold.py
+          tests/test_encodehervatting.py
+          tests/test_uitvoerder.py::test_hdr_wordt_pas_na_verificatie_atomisch_vervangen
+          tests/test_planner.py::test_platformpauze_laat_voortgang_staan_en_hervat_wachtrij
 
   encoder-image:
     name: encoder-image en FFmpeg-bewijs

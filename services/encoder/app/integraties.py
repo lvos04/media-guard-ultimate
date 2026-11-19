@@ -15,6 +15,7 @@ import httpx
 from app.config import Settings
 from app.db import Database
 from app.geheimen import SecretError, SecretStore
+from app.mediaguard.holds import set_hold
 
 LOGGER = logging.getLogger(__name__)
 
@@ -246,17 +247,8 @@ class IntegrationMonitor:
                     self._product = {url: product}
                 playing = await jellyfin_is_playing(client, url, api_key, product)
             if playing:
-                row = self.database.fetch_one(
-                    "SELECT gepauzeerd,pauze_reden FROM worker_config WHERE baan='cpu'"
-                )
-                if row is not None and (
-                    not int(row["gepauzeerd"])
-                    or str(row["pauze_reden"] or "").startswith("Jellyfin:")
-                ):
-                    self.database.execute(
-                        "UPDATE worker_config SET gepauzeerd=1,pauze_reden=? WHERE baan='cpu'",
-                        ("Jellyfin: er wordt momenteel gekeken",),
-                    )
+                set_hold(self.database, "jellyfin", "Jellyfin: er wordt momenteel gekeken",
+                         ("cpu",))
                 return True
             self._release_automatic_pause()
             return False
@@ -266,12 +258,7 @@ class IntegrationMonitor:
             return False
 
     def _release_automatic_pause(self) -> None:
-        self.database.execute(
-            """
-            UPDATE worker_config SET gepauzeerd=0,pauze_reden=NULL
-            WHERE baan='cpu' AND pauze_reden LIKE 'Jellyfin:%'
-            """
-        )
+        set_hold(self.database, "jellyfin", None, ("cpu",))
 
     async def run_forever(self) -> None:
         while not self.stopping:

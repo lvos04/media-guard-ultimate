@@ -16,7 +16,14 @@ from app.backups import create_backup, enforce_retention
 from app.config import DEFAULT_CACHE_PAUSE_GB, DEFAULT_CACHE_WARNING_GB, Settings
 from app.db import Database
 from app.mediaguard.handoff import sweep_orphan_staging
-from app.mediaguard.holds import pause_reason
+from app.mediaguard.holds import (
+    LANE_SELECT,
+    LANES,
+    lane_reasons,
+    pause_reason,
+    set_hold,
+    set_reason,
+)
 
 MAX_DB_LOG_LINES = 500
 MAX_SUCCESS_LOG_LINES = 200
@@ -181,14 +188,13 @@ def lane_pause_state(database: Database) -> dict[str, dict[str, Any]]:
     """Per baan: gepauzeerd ja/nee + (Nederlandse) reden, rechtstreeks uit worker_config."""
 
     state: dict[str, dict[str, Any]] = {}
-    for row in database.fetch_all("SELECT * FROM worker_config"):
+    for row in database.fetch_all(LANE_SELECT):
         reason = pause_reason(row)
         paused = reason is not None
         state[str(row["baan"])] = {
             "paused": paused,
             "reason": reason,
-            "storage_pause": reason is not None and reason.startswith(
-                ("automatisch: cache", "automatisch: opslag")),
+            "storage_pause": "opslag" in lane_reasons(row),
         }
     return state
 
@@ -228,13 +234,7 @@ def storage_guard(database: Database, settings: Settings) -> dict[str, int | str
     try:
         free = shutil.disk_usage(settings.cache_root).free
     except OSError as exc:
-        # Een handmatige of kijkpauze blijft staan. De platformtermijn blijft bewaard.
-        database.execute(
-            "UPDATE worker_config SET gepauzeerd=1,pauze_reden=? "
-            "WHERE gepauzeerd=0 OR pauze_reden LIKE 'automatisch:%' "
-            "OR pauze_reden LIKE 'Platform:%'",
-            (f"automatisch: opslag niet bereikbaar: {exc}",),
-        )
+        set_hold(database, "opslag", f"automatisch: opslag niet bereikbaar: {exc}")
         return {"vrij_bytes": 0, "status": f"automatisch gepauzeerd: {exc}"}
     # Een API-verzoek kan de bodem wijzigen tijdens de schijfmeting. Lees de
     # grenzen en pas de baanstatus toe in dezelfde korte transactie.
@@ -248,21 +248,12 @@ def storage_guard(database: Database, settings: Settings) -> dict[str, int | str
                 f"pauzebodem van {effective_pause} GB; encoderen gepauzeerd tot er weer "
                 "ruimte is"
             )
-            conn.execute(
-                """UPDATE worker_config SET gepauzeerd=1,pauze_reden=?
-                   WHERE gepauzeerd=0 OR pauze_reden LIKE 'automatisch: cache%'
-                      OR pauze_reden LIKE 'automatisch: opslag%'
-                      OR pauze_reden LIKE 'Platform:%'""",
-                (reason,),
-            )
         else:
             status = ("waarschuwing: cache onder waarschuwingsgrens"
                       if free < limits["cache_warning_gb"] * 1024**3 else "voldoende")
-            conn.execute(
-                """UPDATE worker_config SET gepauzeerd=0,pauze_reden=NULL
-                   WHERE pauze_reden LIKE 'automatisch: cache%'
-                      OR pauze_reden LIKE 'automatisch: opslag%'"""
-            )
+            reason = None
+        for lane in LANES:
+            set_reason(conn, lane, "opslag", reason)
     return {"vrij_bytes": free, "status": status}
 
 
@@ -337,7 +328,9 @@ def sweep_finished_job_cache(database: Database, settings: Settings) -> list[int
             if job_id <= 0 or job_id in removed:
                 continue
             row = database.fetch_one(
-                f"SELECT proces_pid FROM job WHERE id=? AND status IN ({marks})",  # noqa: S608
+                f"SELECT proces_pid FROM job WHERE id=? AND status IN ({marks}) "  # noqa: S608
+                "AND NOT (COALESCE(foutsoort,'')='AiToestemmingIngetrokken' "
+                "AND (gestart_op IS NOT NULL OR COALESCE(percent,0)>0))",
                 (job_id, *CACHE_SWEEP_STATUSES))
             if row is None or media_process_alive(int(row["proces_pid"] or 0)):
                 continue

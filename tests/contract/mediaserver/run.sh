@@ -29,7 +29,8 @@ cd "$HERE"
 RUN="$HERE/.run"
 PY="${MG_CORE_PYTHON:-$ROOT/.venv/bin/python}"
 COMPOSE=(docker compose -f docker-compose.yml)
-MG_NAAM="mgms-mediaguard"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-mgms}"
+MG_NAAM="$COMPOSE_PROJECT_NAME-mediaguard"
 
 lees() { python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(sys.argv[2].format(**d))' "$@"; }
 MGMS_VORIGE="$(lees "$ROOT/deploy/upgradebewijs/vorige-release.json" '{image}@{digest}')"
@@ -58,9 +59,9 @@ mkdir -p "$RUN/media/Films/Testfilm (2024)" "$RUN/media/Films/Zonder Ondertitel 
 
 if [[ -z "${MGMS_KANDIDAAT:-}" ]]; then
   MGMS_KANDIDAAT="mediaguard/upgrade-kandidaat:contract"
-  echo ">> kandidaat bouwen: runtime van $MGMS_VORIGE_VERSIE + core van deze werkmap"
+  echo ">> kandidaat bouwen: runtime van $MGMS_VORIGE_VERSIE met kern en encoder uit deze werkmap"
   docker buildx build --load -q -f "$ROOT/deploy/upgradebewijs/Dockerfile.kandidaat" \
-    --build-context "core=$ROOT/apps/core" --build-context "release=$ROOT/deploy" \
+    --build-context "encoder=$ROOT/services/encoder/app" --build-context "core=$ROOT/apps/core" --build-context "release=$ROOT/deploy" \
     --build-arg "VORIGE=$MGMS_VORIGE" -t "$MGMS_KANDIDAAT" "$ROOT/deploy/upgradebewijs"
 fi
 export MGMS_KANDIDAAT

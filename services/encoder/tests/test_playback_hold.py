@@ -16,6 +16,7 @@ class Db:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("CREATE TABLE worker_config(baan TEXT, gepauzeerd INT, pauze_reden TEXT,"
                           " platform_pauze_tot INT, platform_pauze_reden TEXT)")
+        self.conn.execute("CREATE TABLE staat(sleutel TEXT PRIMARY KEY, waarde TEXT, tijd TEXT)")
         self.conn.executemany(
             "INSERT INTO worker_config(baan,gepauzeerd,pauze_reden) VALUES (?,?,?)",
             [("cpu", 0, None), ("gpu", 1, "handmatig gepauzeerd")],
@@ -98,6 +99,13 @@ def test_platformpauze_behoudt_kijkpauze_en_vervalt_zelfstandig(
     database.execute("UPDATE worker_config SET gepauzeerd=0, pauze_reden=NULL")
     planner = Planner(database, settings, machine_guard=lambda _: (True, None))
 
+    # Ook de gezondheidsaanvraag voert de hardwarepoort uit. De simulator heeft
+    # hier twee beschikbare banen, onafhankelijk van de GPU op de testmachine.
+    async def detect(**kwargs: Any) -> dict[str, Any]:
+        return {"lanes": {"cpu": {"enabled": True}, "gpu": {"enabled": True}}, "gpu_status": {}}
+
+    monkeypatch.setattr(client.app.state.capabilities, "detect", detect)
+
     def pause(active: bool, lanes: list[str]) -> None:
         response = client.put(route, headers=HEADERS, json={"active": active, "lanes": lanes})
         assert response.status_code == 200
@@ -116,10 +124,12 @@ def test_platformpauze_behoudt_kijkpauze_en_vervalt_zelfstandig(
     health = client.get("/api/mediaguard/v1/health", headers=HEADERS).json()
     assert any("Platform: back-up" in note for note in health["notes"])
     assert all("Platform: back-up" not in reason for reason in health["reasons"])
+    now += 900
     assert platform(False).status_code == 200
     assert planner._lane_available("gpu") == (False, "Kijken: iemand kijkt")
     assert planner._lane_available("cpu") == (True, None)
 
+    now += 900
     assert platform(True).status_code == 200
     pause(False, [])
     assert planner._lane_available("gpu") == (False, "Platform: back-up")
@@ -162,3 +172,100 @@ def test_platformpauze_laat_opschortende_opslagcontrole_staan(
     assert all(lane["storage_pause"] for lane in lane_pause_state(database).values())
     holds.apply_platform_hold(database, None, "")
     assert all(lane["storage_pause"] for lane in lane_pause_state(database).values())
+
+
+def test_brug_weigert_tweede_wijziging_en_herkent_herlevering(
+    mg_client: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mg_helpers import HEADERS
+
+    from app.mediaguard import holds
+
+    client, _, _ = mg_client
+    route = "/api/mediaguard/v1/settings/playback-hold"
+    now = 2_000_000_000
+    monkeypatch.setattr(holds, "time", lambda: now)
+    body = {"active": True, "source": "platform", "lanes": ["cpu", "gpu"],
+            "reason": "back-up", "expires_at": now + 99_000}
+    stop = {"active": False, "source": "platform", "lanes": []}
+    first = client.put(route, headers=HEADERS, json=body)
+    assert first.status_code == 200 and first.json()["expires_at"] == now + 6 * 3600
+    now += 899
+    assert client.put(route, headers=HEADERS, json=body).json() == first.json()
+    assert client.put(route, headers=HEADERS, json=stop).status_code == 409
+    assert client.get(route, headers=HEADERS).json() == first.json()
+    now += 1
+    assert client.put(route, headers=HEADERS, json=stop).status_code == 200
+    assert client.put(route, headers=HEADERS, json=body).status_code == 409
+    now += 900
+    body["expires_at"] = now + 60
+    assert client.put(route, headers=HEADERS, json=body).status_code == 200
+    now += 60
+    assert client.get(route, headers=HEADERS).json()["expires_at"] is None
+    assert client.put(route, headers=HEADERS, json=stop).status_code == 200
+    body["expires_at"] = now + 60
+    assert client.put(route, headers=HEADERS, json=body).status_code == 409
+
+
+@pytest.mark.usefixtures("ruim_werkgeheugen", "ruime_cache")
+def test_vier_pauzeredenen_bewaken_beide_claims(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_planner import _planner_case
+
+    from app.mediaguard import holds
+    from app.onderhoud import storage_guard
+    from app.planner import Planner
+
+    db, settings, jobs = _planner_case(tmp_path)
+    planner = Planner(db, settings, storage_validator=lambda: None,
+                      machine_guard=lambda _: (True, None))
+    now = 2_000_000_000
+    monkeypatch.setattr(holds, "time", lambda: now)
+
+    def verwacht(*bronnen: str) -> None:
+        for row in db.fetch_all(holds.LANE_SELECT):
+            assert set(holds.lane_reasons(row)) == set(bronnen)
+            if bronnen:
+                assert planner.claim_next(row["baan"], row["baan"])[0] is None
+
+    def opslag(laag: bool) -> None:
+        db.execute("UPDATE instelling SET cache_pauze_gb=?", (999999 if laag else 0,))
+        storage_guard(db, settings)
+
+    verwacht()
+    holds.apply_platform_hold(db, now + 120, "scrub")
+    verwacht("platform")
+    opslag(True)
+    verwacht("platform", "opslag")
+    holds.apply_playback_hold(db, True, ["cpu", "gpu"], "sessie")
+    verwacht("platform", "opslag", "kijken")
+    holds.set_hold(db, "handmatig", "handmatig gepauzeerd")
+    verwacht("platform", "opslag", "kijken", "handmatig")
+    opslag(False)
+    verwacht("platform", "kijken", "handmatig")
+    now += 120
+    verwacht("kijken", "handmatig")
+    holds.apply_playback_hold(db, False, [], "")
+    verwacht("handmatig")
+    holds.apply_playback_hold(db, True, ["cpu", "gpu"], "volgende sessie")
+    verwacht("kijken", "handmatig")
+    holds.set_hold(db, "handmatig", None)
+    verwacht("kijken")
+    holds.apply_playback_hold(db, False, [], "")
+    verwacht()
+    assert {planner.claim_next(lane, lane)[0] for lane in holds.LANES} == set(jobs)
+
+
+def test_handmatig_hervatten_laat_opslagrem_onafhankelijk(mg_client: Any) -> None:
+    from mg_helpers import HEADERS
+
+    from app.mediaguard import holds
+
+    client, db, _ = mg_client
+    holds.set_hold(db, "opslag", "automatisch: opslag onbereikbaar", ("cpu",))
+    route = "/api/workers/cpu"
+    assert client.post(route + "/pauzeren", headers=HEADERS).json()["gepauzeerd"]
+    assert client.post(route + "/hervatten", headers=HEADERS).json()["gepauzeerd"]
+    row = db.fetch_one(holds.LANE_SELECT + " WHERE w.baan='cpu'")
+    assert "opslag" in holds.lane_reasons(row) and "handmatig" not in holds.lane_reasons(row)

@@ -21,6 +21,7 @@ from app.config import Settings
 from app.db import Database
 from app.health import dependency_report
 from app.media import commandos, gpuvarianten
+from app.mediaguard.holds import LANES, set_reason
 from app.systeem import node_host_info, qsv_test
 
 PAUSE_PREFIX = "MediaGuard:"
@@ -633,31 +634,14 @@ def apply_lane_gates(database: Database, capabilities: dict[str, Any],
     Met ``settings`` (containermodus) worden daarna wachtende encodes naar de baan gezet die
     nu beschikbaar is (GPU erbij: naar de GPU; GPU weg: terug naar de CPU)."""
 
-    for lane in ("cpu", "gpu"):
-        info = capabilities["lanes"][lane]
-        row = database.fetch_one(
-            "SELECT gepauzeerd,pauze_reden FROM worker_config WHERE baan=?", (lane,)
-        )
-        if row is None:
-            continue
-        current_reason = str(row["pauze_reden"] or "")
-        ours = current_reason.startswith(PAUSE_PREFIX)
-        if not info["enabled"]:
-            # GPU: de gewone-taalstatus ("Geen GPU gevonden — encodes draaien op de CPU").
-            reason = (f"{PAUSE_PREFIX} {info['reason']}" if lane == "gpu"
-                      else f"{PAUSE_PREFIX} {lane.upper()}-baan uit: {info['reason']}")
-            # Een platformpauze bewaart haar eigen eindtijd onder deze blokkade.
-            if not int(row["gepauzeerd"]) or ours or current_reason.startswith("Platform:"):
-                database.execute(
-                    "UPDATE worker_config SET gepauzeerd=1,pauze_reden=? WHERE baan=? "
-                    "AND (gepauzeerd=0 OR pauze_reden LIKE ? OR pauze_reden LIKE 'Platform:%')",
-                    (reason, lane, f"{PAUSE_PREFIX}%"),
-                )
-        elif int(row["gepauzeerd"]) and ours:
-            database.execute(
-                "UPDATE worker_config SET gepauzeerd=0,pauze_reden=NULL WHERE baan=? "
-                "AND pauze_reden LIKE ?", (lane, f"{PAUSE_PREFIX}%"),
-            )
+    with database.connection() as conn, conn:
+        for lane in LANES:
+            info = capabilities["lanes"][lane]
+            reason = None
+            if not info["enabled"]:
+                reason = (f"{PAUSE_PREFIX} {info['reason']}" if lane == "gpu"
+                          else f"{PAUSE_PREFIX} {lane.upper()}-baan uit: {info['reason']}")
+            set_reason(conn, lane, "capaciteit", reason)
 
     if settings is not None:
         from app.mediaguard.rebalance import maybe_rebalance

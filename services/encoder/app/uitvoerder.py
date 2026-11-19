@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app import noodstop
+from app import hervatpunten, noodstop
 from app.bestandsmetadata import MetadataError, capture_metadata
 from app.bronnen import SourceError, validate_registered_source
 from app.config import Settings
@@ -114,7 +114,7 @@ def _handle_stall(database: Database, job_id: int, decision: Besluit,
     return False
 
 
-def requeue_for_planned_stop(database: Database, job_id: int) -> None:
+def requeue_for_planned_stop(database: Database, job_id: int, percent: float = 0) -> None:
     """Geplande stop of update (verbeterpunt 30): terug in de wachtrij. De poging blijft in
     de geschiedenis als 'GeplandeStop' en telt niet mee voor de herstartlus-grens."""
     from app.geplandestop import PLANNED_STOP_ERROR, PLANNED_STOP_TYPE
@@ -122,16 +122,16 @@ def requeue_for_planned_stop(database: Database, job_id: int) -> None:
     database.execute(
         """
         UPDATE job SET status='wacht',fout=?,foutsoort=NULL,proces_pid=NULL,worker_id=NULL,
-                       cache_reservering=0,percent=0,klaar_op=NULL,noodstop_gepauzeerd=0
+                       cache_reservering=0,percent=?,klaar_op=NULL,noodstop_gepauzeerd=0
         WHERE id=?
         """,
-        (PLANNED_STOP_ERROR, job_id),
+        (PLANNED_STOP_ERROR, percent, job_id),
     )
     _finish_attempt(database, job_id, "afgebroken", error=PLANNED_STOP_ERROR,
                     error_type=PLANNED_STOP_TYPE)
 
 
-def requeue_for_emergency(database: Database, job_id: int) -> None:
+def requeue_for_emergency(database: Database, job_id: int, percent: float = 0) -> None:
     """Noodstop tijdens een stap of een herstart terwijl hij actief is: terug in de wachtrij
     zonder dat het als poging of onderbreking telt (rapport 6, N1)."""
 
@@ -139,11 +139,11 @@ def requeue_for_emergency(database: Database, job_id: int) -> None:
     database.execute(
         """
         UPDATE job SET status='wacht',fout=?,foutsoort=NULL,proces_pid=NULL,worker_id=NULL,
-                       cache_reservering=0,percent=0,klaar_op=NULL,noodstop_gepauzeerd=0,
+                       cache_reservering=0,percent=?,klaar_op=NULL,noodstop_gepauzeerd=0,
                        pogingen=MAX(0,pogingen-1)
         WHERE id=?
         """,
-        ("gepauzeerd (noodstop); start opnieuw zodra de noodstop is opgeheven", job_id),
+        ("gepauzeerd (noodstop); wacht op hervatting", percent, job_id),
     )
     if attempt is not None:
         database.execute(
@@ -706,8 +706,28 @@ def create_job_from_decision(database: Database, decision_id: int) -> int:
         raise ExecutionError(f"Actie {row['actie']} is geen encodejob")
     if int(row["nlink"]) > 1 and not int(row["hardlink_bevestigd"]):
         raise ExecutionError("Hardlink is niet per bestand bevestigd")
-    existing = database.fetch_one("SELECT id FROM job WHERE besluit_id=?", (decision_id,))
+    existing = database.fetch_one("SELECT id,status,foutsoort FROM job WHERE besluit_id=?",
+                                  (decision_id,))
     if existing is not None:
+        if (existing["status"] == "overgeslagen"
+                and existing["foutsoort"] == "AiToestemmingIngetrokken"):
+            # Herbevestiging hervat dezelfde job met hetzelfde fragmentregister.
+            # De schrijvende transactie toetst de toestemming opnieuw.
+            with database.connection() as conn, conn:
+                confirmed = conn.execute(
+                    "SELECT 1 FROM besluit WHERE id=? AND status='goedgekeurd' "
+                    "AND door_mens=1 AND goedkeuringsbron='mens'", (decision_id,)
+                ).fetchone()
+                if not confirmed:
+                    raise ExecutionError("De eerder ingetrokken opdracht vereist herbevestiging")
+                try:
+                    conn.execute("UPDATE job SET status='wacht',klaar_op=NULL,fout=NULL,"
+                                 "foutsoort=NULL "
+                                 "WHERE id=? AND status='overgeslagen' "
+                                 "AND foutsoort='AiToestemmingIngetrokken'", (existing["id"],))
+                except sqlite3.IntegrityError as exc:
+                    raise ExecutionError("Voor dit bestand staat al een andere job klaar") from exc
+                conn.execute("UPDATE besluit SET status='ingepland' WHERE id=?", (decision_id,))
         return int(existing["id"])
     active_for_file = database.fetch_one(
         f"SELECT id FROM job WHERE bestand_id=? AND status IN {ACTIVE_SQL} ORDER BY id LIMIT 1",
@@ -749,6 +769,10 @@ JOB_PHASES: dict[int, tuple[str, str]] = {}
 JOB_PHASE_DETAIL: dict[int, str] = {}
 
 
+# Zolang een job hervat, blijft het gemeten deel ook tijdens korte tussenfasen zichtbaar.
+HERVAT_PERCENT: dict[int, float] = {}
+
+
 def _set_phase(database: Database, job_id: int, phase: str) -> None:
     """Nieuwe fase: voortgang opnieuw vanaf 'onbekend' (NULL), niet vanaf het vorige
     percentage. De UI toont dan een lopende balk tot de eerste meting binnen is."""
@@ -760,8 +784,8 @@ def _set_phase(database: Database, job_id: int, phase: str) -> None:
         append_job_log(database, job_id, "info", f"Fase: {PHASE_LABEL.get(phase, phase)}")
     with suppress(sqlite3.OperationalError):
         database.execute(
-            "UPDATE job SET percent=NULL,fps=NULL,speed=NULL,eta_seconden=NULL WHERE id=?",
-            (job_id,),
+            "UPDATE job SET percent=?,fps=NULL,speed=NULL,eta_seconden=NULL WHERE id=?",
+            (HERVAT_PERCENT.get(job_id), job_id),
         )
 
 
@@ -773,8 +797,9 @@ def _set_detail(database: Database, job_id: int, text: str,
         append_job_log(database, job_id, "info", text)
     if percent is not None:
         with suppress(sqlite3.OperationalError):
+            floor = HERVAT_PERCENT.get(job_id, 0.0)
             database.execute("UPDATE job SET percent=? WHERE id=?",
-                             (round(max(0.0, min(100.0, percent)), 1), job_id))
+                             (round(max(floor, min(100.0, percent)), 1), job_id))
 
 
 ABORT_CHECK_SECONDS = 2.0
@@ -834,7 +859,7 @@ async def _run_process(
     last_progress_log = loop.time()
     last_database_warning = 0.0
     progress: dict[str, str] = {}
-    best_percent = 0.0
+    best_percent = HERVAT_PERCENT.get(job_id, 0.0)
     signal_exit = False
     # Vastloper-detectie (rapport 4, S2): geen voortgang in STALL_SECONDS = stoppen met een
     # duidelijke oorzaak in plaats van uren 'bezig' zonder resultaat.
@@ -995,7 +1020,7 @@ async def _run_process(
                     if current is not None and current[0] in NO_ETA_PHASES:
                         # Proefstuk/meten (rapport 8, B5): geen ETA en geen job-percentage
                         # (gaf "0,0 % · nog 453 uur"); de UI toont fase_detail met deelstap.
-                        eta, percent_shown = None, None
+                        eta, percent_shown = None, HERVAT_PERCENT.get(job_id)
                     else:
                         percent_shown = percent
                     await db_call(
@@ -1522,7 +1547,6 @@ async def run_job(
                 """,
                 (job_id, int(attempt["pogingen"]), started_at),
             )
-    _set_phase(database, job_id, "analyse")
 
     row = database.fetch_one(
         """
@@ -1563,9 +1587,22 @@ async def run_job(
     cache_dir = settings.cache_root / str(job_id)
     work_dir = settings.work_root / str(job_id)
     log_dir = settings.config_root / "logs"
-    if cache_dir.exists() or cache_dir.is_symlink():
-        _clear_leftover_cache(database, settings, job_id, row)
-    cache_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        checkpoint = await asyncio.to_thread(hervatpunten.Hervatpunt.lees, cache_dir)
+        prior_result = checkpoint is None and hervatpunten.eerder_geverifieerd(
+            database, cache_dir, job_id)
+    except hervatpunten.Hervatfout as exc:
+        record_failure(database, job_id, str(exc), "Hervatfout")
+        return False
+    if prior_result:
+        HERVAT_PERCENT[job_id] = 99.9
+    elif checkpoint is None:
+        if cache_dir.exists() or cache_dir.is_symlink():
+            _clear_leftover_cache(database, settings, job_id, row)
+        cache_dir.mkdir(parents=True, exist_ok=False)
+    elif checkpoint.delen:
+        HERVAT_PERCENT[job_id] = checkpoint.percent
+    _set_phase(database, job_id, "analyse")
     work_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     # De jobmap is al uniek. Vaste korte namen voorkomen ENAMETOOLONG bij
@@ -1574,6 +1611,10 @@ async def run_job(
     result_path = cache_dir / "resultaat.mkv"
     try:
         source_stat = source.stat()
+        if prior_result and (source_stat.st_dev, source_stat.st_ino, source_stat.st_size,
+                             source_stat.st_mtime) != (row["bron_device"], row["bron_inode"],
+                                                       row["bron_grootte"], row["bron_mtime"]):
+            raise hervatpunten.Hervatfout("De bron van het geverifieerde resultaat is gewijzigd")
         if source_stat.st_size != int(row["grootte"]) or source_stat.st_mtime != float(
             row["mtime"]
         ):
@@ -1727,6 +1768,7 @@ async def run_job(
                 lookahead=lookahead, rate_factor=factor)
             return [*built[:-1], "-f", "matroska", built[-1]]
 
+        hervat_encode = bool(checkpoint and checkpoint.delen)
         if command_override is not None:
             arguments = command_override
         elif decision.actie == "opschonen":
@@ -1738,7 +1780,13 @@ async def run_job(
                 command_probe, decision, profile, str(encode_source), str(partial)
             )
         elif decision.encoder == "av1_qsv":
-            arguments = gpu_command(base_factor)
+            if hervat_encode and checkpoint and checkpoint.gpu:
+                keuze = checkpoint.gpu
+                gpu_state["factor"] = keuze.factor
+                arguments = gpu_command(keuze.factor, hw=keuze.hardwaredecode,
+                                        lookahead=keuze.vooruitkijken)
+            else:
+                arguments = gpu_command(base_factor)
         else:
             arguments = commandos.encode_cpu(
                 command_probe, decision, profile, str(encode_source), str(partial)
@@ -1750,7 +1798,8 @@ async def run_job(
             arguments = [*arguments[:-1], "-f", "matroska", arguments[-1]]
         # Geen proefstuk voor libaom (0,03×: 60 s proef = ruim een half uur rekenwerk en
         # een voortgang die van 66 % naar 0 % springt; rapport 5, T2).
-        if (decision.actie == "hercoderen" and command_override is None and row["mg_policy"]
+        if (not prior_result and not hervat_encode and decision.actie == "hercoderen"
+                and command_override is None and row["mg_policy"]
                 and decision.encoder != "libaom-av1"
                 and arguments and Path(arguments[0]).name == "ffmpeg"):
             policy = json.loads(str(row["mg_policy"]) or "{}")
@@ -1778,13 +1827,26 @@ async def run_job(
                 shutil.rmtree(cache_dir, ignore_errors=True)
                 return False
         _set_phase(database, job_id, "opschonen" if decision.actie == "opschonen" else "encode")
-        succeeded = await _run_process(
-            database,
-            job_id,
-            arguments,
-            log_dir / f"job-{job_id}.log",
-            float(source_probe["duration"]),
-        )
+        duration = float(source_probe["duration"])
+
+        async def run_media(args: list[str]) -> bool:
+            return await _run_process(database, job_id, args, log_dir / f"job-{job_id}.log",
+                                      duration)
+
+        def vastgelegd(percent: float) -> None:
+            HERVAT_PERCENT[job_id] = percent
+
+        async def encode(args: list[str]) -> bool:
+            if command_override is None and decision.actie == "hercoderen" and duration > 0:
+                gpu = None
+                if decision.encoder == "av1_qsv":
+                    gpu = hervatpunten.GpuKeuze(gpu_state["factor"], "-hwaccel" in args,
+                                                "-look_ahead_depth" in args)
+                return await hervatpunten.encode(args, source, job_id, duration, run_media,
+                                                 vastgelegd, gpu)
+            return await run_media(args)
+
+        succeeded = prior_result or await encode(arguments)
         if (not succeeded and command_override is None and decision.encoder == "av1_qsv"
                 and "-look_ahead_depth" in arguments):
             # Lookahead/extbrc (rapport 7 §4.4) kent niet elke driver: zelfde poging zonder,
@@ -1795,9 +1857,7 @@ async def run_job(
                            "met de gewone instelling (staat voor deze sessie uit).")
             partial.unlink(missing_ok=True)
             arguments = gpu_command(gpu_state["factor"], lookahead=False)
-            succeeded = await _run_process(
-                database, job_id, arguments, log_dir / f"job-{job_id}.log",
-                float(source_probe["duration"]))
+            succeeded = await encode(arguments)
         if (not succeeded and command_override is None and decision.encoder == "av1_qsv"
                 and "-hwaccel" in arguments):
             # Hardwaredecode is op echte hardware niet overal getest: faalt hij, dan
@@ -1808,21 +1868,18 @@ async def run_job(
                            "processor (hardwaredecode staat voor deze sessie uit).")
             partial.unlink(missing_ok=True)
             arguments = gpu_command(gpu_state["factor"], hw=False)
-            succeeded = await _run_process(
-                database, job_id, arguments, log_dir / f"job-{job_id}.log",
-                float(source_probe["duration"]))
+            succeeded = await encode(arguments)
         if not succeeded:
             failure = _step_failed(database, job_id, "encoderproces faalde")
             if isinstance(failure, ExecutionError) and _gpu_hdr_fallback_allowed(row, decision):
                 raise GpuHdrFallback("GPU-encode van HDR10 faalde")
             raise failure
-        if not partial.is_file():
-            raise ExecutionError("encoder meldde succes maar resultaat ontbreekt")
-        # Een meer-gigabytebestand kan bij fsync lang wachten op het lokale
-        # journal. Houd de API-eventloop ook tijdens die duurzame flush vrij.
-        await asyncio.to_thread(_promote_partial, partial, result_path)
+        if not prior_result:
+            if not partial.is_file():
+                raise ExecutionError("encoder meldde succes maar resultaat ontbreekt")
+            await asyncio.to_thread(_promote_partial, partial, result_path)
 
-        if decision.herstel_hdr_na and await asyncio.to_thread(
+        if not prior_result and decision.herstel_hdr_na and await asyncio.to_thread(
                 hdr_metadata_native, source_probe, result_path):
             # Rapport 7 §4.2: met een oneVPL-runtime ≥ 2.11 schrijft av1_qsv mastering display
             # en content light zelf in de bitstream. Dan is de mkvmerge-stap overbodig; de
@@ -1831,7 +1888,7 @@ async def run_job(
                            "HDR10-metadata zat al in de AV1-bitstream (GPU-runtime); "
                            "terugzetten met mkvmerge niet nodig")
             native_hdr_used(database)
-        elif decision.herstel_hdr_na:
+        elif not prior_result and decision.herstel_hdr_na:
             restored = cache_dir / "resultaat-hdr.mkv"
             _set_phase(database, job_id, "hdr_terugzetten")
             hdr_command = commandos.herstel_hdr(
@@ -2201,27 +2258,34 @@ async def run_job(
 
             wake_planner()
         return False
+    except hervatpunten.Hervatfout as exc:
+        record_failure(database, job_id, str(exc), "Hervatfout")
+        return False
     except ProcessInterrupted as exc:
-        # Een beheerherstart of nette systeemstop is geen encodefout. Verwijder
-        # alleen de onvolledige cache en zet dezelfde goedgekeurde job terug in
-        # de wachtrij; bij een echte stroomuitval doet weesherstel dit na boot.
-        shutil.rmtree(cache_dir, ignore_errors=True)
+        try:
+            checkpoint = await asyncio.to_thread(hervatpunten.Hervatpunt.lees, cache_dir)
+        except hervatpunten.Hervatfout as problem:
+            record_failure(database, job_id, str(problem), "Hervatfout")
+            return False
+        percent = checkpoint.percent if checkpoint else HERVAT_PERCENT.get(job_id, 0.0)
+        if not checkpoint and not prior_result:
+            shutil.rmtree(cache_dir, ignore_errors=True)
         if noodstop.active():
-            requeue_for_emergency(database, job_id)
+            requeue_for_emergency(database, job_id, percent)
             return False
         from app.geplandestop import planned_stop
 
         if planned_stop(settings):
             # container-stop/update: geen herstartlus (verbeterpunt 30)
-            requeue_for_planned_stop(database, job_id)
+            requeue_for_planned_stop(database, job_id, percent)
             return False
         database.execute(
             """
             UPDATE job SET status='wacht',fout=?,foutsoort=NULL,proces_pid=NULL,
-                           worker_id=NULL,cache_reservering=0,percent=0,klaar_op=NULL
+                           worker_id=NULL,cache_reservering=0,percent=?,klaar_op=NULL
             WHERE id=?
             """,
-            (str(exc), job_id),
+            (str(exc), percent, job_id),
         )
         _finish_attempt(
             database,
@@ -2290,6 +2354,7 @@ async def run_job(
             type(exc).__name__)
         return False
     finally:
+        HERVAT_PERCENT.pop(job_id, None)
         LAST_PROCESS_FAILURE.pop(job_id, None)
         shutil.rmtree(work_dir, ignore_errors=True)
         database.execute("UPDATE job SET cache_reservering=0 WHERE id=?", (job_id,))

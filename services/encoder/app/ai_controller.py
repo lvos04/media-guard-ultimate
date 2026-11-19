@@ -457,7 +457,12 @@ class AiController:
         )
         if row is None:
             raise AiProviderError("AI-controllerconfiguratie ontbreekt")
-        return bool(row["ingeschakeld"]), _json_object(row["configuratie"])
+        configuration = _json_object(row["configuratie"])
+        measured = self.database.fetch_one(
+            "SELECT waarde FROM staat WHERE sleutel='ai_veiligheidsfingerprint'")
+        if measured is not None:
+            configuration["veiligheidsfingerprint"] = measured["waarde"]
+        return bool(row["ingeschakeld"]), configuration
 
     def _provider(self) -> AiProvider:
         if self.provider is not None:
@@ -1034,6 +1039,7 @@ def safety_fingerprint(configuration: dict[str, Any]) -> str:
         module_root / "media" / "commandos.py",
         module_root / "verificatie.py",
         module_root / "uitvoerder.py",
+        module_root / "hervatpunten.py",
     ]
     sources = {
         str(path.relative_to(module_root)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -1063,33 +1069,30 @@ def safety_fingerprint(configuration: dict[str, Any]) -> str:
 
 
 def reconcile_safety_fingerprint(database: Database) -> str:
-    row = database.fetch_one(
-        "SELECT configuratie FROM functie WHERE sleutel='ai_controller'"
-    )
-    if row is None:
-        raise AiProviderError("AI-controllerconfiguratie ontbreekt")
-    configuration = _json_object(row["configuratie"])
-    current = safety_fingerprint(configuration)
-    previous = str(configuration.get("veiligheidsfingerprint") or "")
-    if previous and previous != current:
-        revoke_ai_consent(
-            database,
-            reason="AI-toestemming ingetrokken door gewijzigde code, FFmpeg of AI-policy",
-        )
-        configuration["hdr10_vrijgegeven"] = False
-        database.execute(
-            "INSERT INTO auditlog(soort,onderwerp,oud,nieuw,tijd) "
-            "VALUES ('ai','veiligheidsfingerprint',?,?,?)",
-            (previous, current, datetime.now(UTC).isoformat()),
-        )
-    configuration["veiligheidsfingerprint"] = current
-    database.execute(
-        "UPDATE functie SET configuratie=?,gewijzigd_op=? WHERE sleutel='ai_controller'",
-        (
-            json.dumps(configuration, ensure_ascii=False, sort_keys=True),
-            datetime.now(UTC).isoformat(),
-        ),
-    )
+    with database.connection() as conn, conn:
+        row = conn.execute(
+            "SELECT configuratie FROM functie WHERE sleutel='ai_controller'").fetchone()
+        if row is None:
+            raise AiProviderError("AI-controllerconfiguratie ontbreekt")
+        configuration = _json_object(row["configuratie"])
+        current = safety_fingerprint(configuration)
+        measured = conn.execute(
+            "SELECT waarde FROM staat WHERE sleutel='ai_veiligheidsfingerprint'").fetchone()
+        previous = measured[0] if measured else configuration.get("veiligheidsfingerprint")
+        if previous and previous != current:
+            _revoke_ai_consent(
+                conn, None, "AI-toestemming ingetrokken door gewijzigde code, FFmpeg of AI-policy")
+            now = datetime.now(UTC).isoformat()
+            if configuration.get("hdr10_vrijgegeven"):
+                configuration["hdr10_vrijgegeven"] = False
+                conn.execute("UPDATE functie SET configuratie=?,gewijzigd_op=? "
+                             "WHERE sleutel='ai_controller'",
+                             (json.dumps(configuration, ensure_ascii=False, sort_keys=True), now))
+            conn.execute("INSERT INTO auditlog(soort,onderwerp,oud,nieuw,tijd) "
+                         "VALUES ('ai','veiligheidsfingerprint',?,?,?)", (previous, current, now))
+        if measured is None or previous != current:
+            conn.execute("INSERT INTO staat(sleutel,waarde) VALUES ('ai_veiligheidsfingerprint',?) "
+                         "ON CONFLICT(sleutel) DO UPDATE SET waarde=excluded.waarde", (current,))
     return current
 
 
@@ -1099,104 +1102,43 @@ def revoke_ai_consent(
     library_ids: list[int] | None = None,
     reason: str,
 ) -> None:
-    """Trek uitsluitend nog niet gestarte AI-acties in en forceer een nieuw besluit."""
-
+    """Trek niet-gestarte AI-acties in. De scanner behoudt zijn positie en tellingen."""
     if library_ids == []:
         return
-    where = ""
-    parameters: tuple[Any, ...] = ()
-    if library_ids:
-        placeholders = ",".join("?" for _ in library_ids)
-        where = f" AND f.library_id IN ({placeholders})"
-        parameters = tuple(library_ids)
+    with database.connection() as conn, conn:
+        _revoke_ai_consent(conn, library_ids, reason)
+
+
+def _revoke_ai_consent(conn: sqlite3.Connection, library_ids: list[int] | None,
+                       reason: str) -> None:
+    params = tuple(library_ids or ())
+    scope = " AND f.library_id IN (" + ",".join("?" for _ in params) + ")" if params else ""
+    decisions = """
+        FROM besluit b JOIN bestand f ON f.id=b.bestand_id
+        WHERE b.goedkeuringsbron='ai_policy' AND b.status IN ('goedgekeurd','ingepland')
+          AND NOT EXISTS (SELECT 1 FROM job j WHERE j.besluit_id=b.id
+                          AND j.status IN ('bezig','verifieren'))
+    """ + scope
+    # Een ingetrokken besluit mag bij de volgende scan niet uit de cache worden
+    # hergebruikt. De oude profielmeting, scanbijdragen en hervatposities blijven bewijs.
+    conn.execute("UPDATE bestand SET scan_status='herbeoordelen' WHERE id IN "
+                 "(SELECT b.bestand_id " + decisions + ")", params)
+    if params:
+        conn.execute("UPDATE library SET canary_status='actief' WHERE id IN ("
+                     + ",".join("?" for _ in params) + ")", params)
+    else:
+        conn.execute("UPDATE library SET canary_status='actief' WHERE actief=1 OR id IN "
+                     "(SELECT f.library_id " + decisions + ")")
     now = datetime.now(UTC).isoformat()
-    with database.connection() as connection:
-        scan_scope = (
-            f" AND library_id IN ({','.join('?' for _ in library_ids)})"
-            if library_ids
-            else ""
-        )
-        connection.execute(
-            """
-            UPDATE scan_run
-            SET status='mislukt',klaar_op=?,
-                fout='scan opnieuw gestart na ingetrokken AI-toestemming'
-            WHERE status='bezig'
-            """
-            + scan_scope,
-            (now, *parameters),
-        )
-        connection.execute(
-            """
-            UPDATE library
-            SET scan_cursor=NULL,
-                laatste_scan_status=CASE
-                    WHEN laatste_scan_status='bezig' THEN 'mislukt'
-                    ELSE laatste_scan_status
-                END,
-                laatste_scan_fout=CASE
-                    WHEN laatste_scan_status='bezig'
-                    THEN 'volledige herscan vereist na veiligheidswijziging'
-                    ELSE laatste_scan_fout
-                END
-            WHERE 1=1
-            """
-            + (f" AND id IN ({','.join('?' for _ in library_ids)})" if library_ids else ""),
-            parameters,
-        )
-        connection.execute(
-            """
-            UPDATE job
-            SET status='overgeslagen',fout=?,foutsoort='AiToestemmingIngetrokken',klaar_op=?
-            WHERE status='wacht' AND besluit_id IN (
-                SELECT b.id FROM besluit b JOIN bestand f ON f.id=b.bestand_id
-                WHERE b.goedkeuringsbron='ai_policy'
-            """
-            + where
-            + ")",
-            (reason, now, *parameters),
-        )
-        connection.execute(
-            """
-            UPDATE besluit
-            SET status='afgewezen',reden=reden || '; AI-toestemming ingetrokken'
-            WHERE goedkeuringsbron='ai_policy'
-              AND status IN ('goedgekeurd','ingepland')
-              AND NOT EXISTS (
-                  SELECT 1 FROM job j WHERE j.besluit_id=besluit.id
-                    AND j.status IN ('bezig','verifieren')
-              )
-              AND bestand_id IN (
-                  SELECT f.id FROM bestand f WHERE 1=1
-            """
-            + where
-            + ")",
-            parameters,
-        )
-        connection.execute(
-            "UPDATE bestand SET profiel_fingerprint=NULL WHERE 1=1"
-            + (
-                f" AND library_id IN ({','.join('?' for _ in library_ids)})"
-                if library_ids
-                else ""
-            ),
-            parameters,
-        )
-        connection.execute(
-            "UPDATE library SET canary_status='actief' WHERE 1=1"
-            + (
-                f" AND id IN ({','.join('?' for _ in library_ids)})"
-                if library_ids
-                else ""
-            ),
-            parameters,
-        )
-        connection.execute(
-            "INSERT INTO auditlog(soort,onderwerp,oud,nieuw,tijd) "
-            "VALUES ('ai','toestemming',NULL,?,?)",
-            (reason, now),
-        )
-        connection.commit()
+    conn.execute("UPDATE job SET status='overgeslagen',fout=?,foutsoort='AiToestemmingIngetrokken',"
+                 "klaar_op=? WHERE status='wacht' AND besluit_id IN (SELECT b.id FROM besluit b "
+                 "JOIN bestand f ON f.id=b.bestand_id WHERE b.goedkeuringsbron='ai_policy'"
+                 + scope + ")", (reason, now, *params))
+    conn.execute("UPDATE besluit SET status='afgewezen',"
+                 "reden=reden || '; AI-toestemming ingetrokken' "
+                 "WHERE id IN (SELECT b.id " + decisions + ")", params)
+    conn.execute("INSERT INTO auditlog(soort,onderwerp,oud,nieuw,tijd) "
+                 "VALUES ('ai','toestemming',NULL,?,?)", (reason, now))
 
 
 __all__ = [

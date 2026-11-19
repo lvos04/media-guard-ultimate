@@ -14,6 +14,7 @@ from app.db import SCHEMA_EXIT, Database, SchemaTooNew
 from app.media import commandos
 from app.media.beslissen import STANDAARD, Besluit, beslis
 from app.media.probe import probe
+from app.mediaguard.holds import set_hold
 from app.planner import Planner
 from app.scanner import ScanError, scan_library
 from app.uitvoerder import ExecutionError, create_job_from_decision, run_job
@@ -154,10 +155,7 @@ def _planner_command(args: argparse.Namespace) -> object:
         )
         return [dict(row) for row in rows]
     if args.opdracht == "pauzeer":
-        database.execute(
-            "UPDATE worker_config SET gepauzeerd=1,pauze_reden='handmatig gepauzeerd' WHERE baan=?",
-            (args.baan,),
-        )
+        set_hold(database, "handmatig", "handmatig gepauzeerd", (args.baan,))
         return {"baan": args.baan, "gepauzeerd": True}
     planner = Planner(database, settings)
     try:

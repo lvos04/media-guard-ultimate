@@ -629,6 +629,7 @@ def test_ci_draait_het_upgradebewijs_op_elke_push() -> None:
     # op een push is inputs leeg: 'inputs.x != false' is dan onwaar (null == false), dus format()
     assert "format('{0}', inputs.upgradebewijs) != 'false'" in jobs["upgradebewijs"]["if"]
     stappen = json.dumps(jobs["upgradebewijs"]["steps"])
+    assert "--build-context encoder=services/encoder/app" in stappen
     assert "deploy/upgradebewijs/Dockerfile.kandidaat" in stappen
     assert "scripts/upgradebewijs.py poort" in stappen
     assert "kopieen" in jobs and "kopie-herkomst.py vergelijk --online" in json.dumps(
@@ -638,6 +639,8 @@ def test_ci_draait_het_upgradebewijs_op_elke_push() -> None:
 def test_kandidaat_dockerfile_bouwt_op_de_gepinde_vorige_release() -> None:
     tekst = (ROOT / "deploy" / "upgradebewijs" / "Dockerfile.kandidaat").read_text("utf-8")
     assert f"ARG VORIGE={VORIGE['image']}@{VORIGE['digest']}" in tekst
+    assert "COPY --from=encoder / /opt/kandidaat-encoder/app/" in tekst
+    assert "ENV MG_AIO_ENCODER_DIR=/opt/kandidaat-encoder" in tekst
     assert "latest" not in tekst
 
 
@@ -757,6 +760,13 @@ class _NepPoort(ub.Poort):
             "kolommen": ["id", "status"], "sleutel": ["id"], "rijen": 2, "inhoud_sha256": "",
             "per_sleutel": {"[1]": [1, "klaar"], "[2]": [2, "gecommit"]},
             "zonder_sleutel": []}}}
+        tables = m["databases"]["encode/app.db"]["tabellen"]
+        tables["library"] = {"kolommen": ["id", "scan_cursor"], "sleutel": ["id"], "rijen": 1,
+                             "per_sleutel": {"[1]": [1, "proefpositie"]}, "zonder_sleutel": []}
+        files = sorted((ROOT / "services/encoder/app/migrations").glob("*.sql"))
+        schema = {json.dumps([n]): [n, p.name] for n, p in enumerate(files, 1)}
+        tables["schema_versie"] = {"kolommen": ["versie", "naam"], "sleutel": ["versie"],
+                                  "rijen": len(schema), "per_sleutel": schema, "zonder_sleutel": []}
         if uit in self.wijzig:
             self.wijzig[uit](m)
         return m
@@ -773,6 +783,19 @@ def _nep_poort(tmp_path: Path, wijzig: dict[str, Any] | None = None) -> tuple[li
         bewaar=False)
     # geen opruimen(): dat roept docker aan; de werkmap staat in tmp_path
     return _NepPoort(args, wijzig).run()
+
+
+def test_poort_weigert_lege_scanpositie_en_oude_encoder(tmp_path: Path) -> None:
+    def leeg(m: dict[str, Any]) -> None:
+        m["databases"]["encode/app.db"]["tabellen"]["library"]["per_sleutel"]["[1]"][1] = None
+
+    def oud(m: dict[str, Any]) -> None:
+        m["databases"]["encode/app.db"]["tabellen"]["schema_versie"]["per_sleutel"].popitem()
+
+    assert "geen gevulde encoder-scanpositie gemeten" in _nep_poort(
+        tmp_path / "leeg", {"meting-voor.json": leeg})[0]
+    fouten, _ = _nep_poort(tmp_path / "oud", {"meting-na.json": oud})
+    assert any("volledige kandidaatbron" in fout for fout in fouten)
 
 
 def _sectie(tekst: str, kop: str) -> str:

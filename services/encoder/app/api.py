@@ -67,13 +67,13 @@ from app.lan import (
 )
 from app.media.beslissen import STANDAARD, Besluit, beslis
 from app.mediaguard.capabilities import (
-    PAUSE_PREFIX,
     CapabilityService,
     apply_lane_gates,
     honest_dependencies,
 )
+from app.mediaguard.holds import LANE_SELECT, lane_reasons, pause_reason, set_hold, set_reason
 from app.metingen import system_metric_history
-from app.onderhoud import STORAGE_PAUSE_PREFIXES, storage_guard
+from app.onderhoud import storage_guard
 from app.opslag import (
     StorageChangeError,
     build_storage_candidate,
@@ -877,8 +877,11 @@ def _worker_rows(database: Database) -> list[dict[str, Any]]:
         "SELECT max_gelijktijdige_encodes FROM instelling WHERE id=1"
     )
     total_limit = int(limit_row["max_gelijktijdige_encodes"]) if limit_row else 1
-    for row in database.fetch_all("SELECT * FROM worker_config ORDER BY baan"):
+    for row in database.fetch_all(LANE_SELECT + " ORDER BY w.baan"):
         item = _as_bool_fields(dict(row))
+        item.pop("overige_redenen")
+        item["pauze_reden"] = pause_reason(row)
+        item["gepauzeerd"] = bool(item["pauze_reden"])
         item["veilige_max_workers"] = total_limit
         item["totaal_max_actieve_jobs"] = total_limit
         item["geheugen_totaal_bytes"] = int(memory.total)
@@ -2071,20 +2074,17 @@ def create_api_router() -> APIRouter:
         lane: Literal["cpu", "gpu"], paused: bool, request: Request
     ) -> dict[str, Any]:
         database = _database(request)
-        row = database.fetch_one(
-            "SELECT gepauzeerd,pauze_reden FROM worker_config WHERE baan=?", (lane,)
-        )
+        row = database.fetch_one(LANE_SELECT + " WHERE w.baan=?", (lane,))
         assert row is not None
         if paused:
-            # Een bestaande systeem-/MediaGuard-reden blijft zichtbaar.
-            if not int(row["gepauzeerd"]):
-                database.execute(
-                    "UPDATE worker_config SET gepauzeerd=1,pauze_reden=? WHERE baan=?",
-                    ("handmatig gepauzeerd", lane),
-                )
+            set_hold(database, "handmatig", "handmatig gepauzeerd", (lane,))
             return {"baan": lane, "gepauzeerd": True}
-        reason = str(row["pauze_reden"] or "")
-        if int(row["gepauzeerd"]) and reason.startswith(PAUSE_PREFIX):
+        reasons = lane_reasons(row)
+        if "handmatig" in reasons and len(reasons) > 1:
+            with database.connection() as conn, conn:
+                remaining = set_reason(conn, lane, "handmatig", None)
+            return {"baan": lane, "gepauzeerd": remaining is not None}
+        if "capaciteit" in reasons:
             # Fail-closed capability-pauze: alleen hervatten na een verse, geslaagde meting.
             capabilities = cast(CapabilityService, request.app.state.capabilities)
             caps = await capabilities.detect(refresh=True, run_qsv_probe=lane == "gpu")
@@ -2094,7 +2094,7 @@ def create_api_router() -> APIRouter:
                     409,
                     f"{lane.upper()}-baan blijft gepauzeerd: {caps['lanes'][lane]['reason']}",
                 )
-        elif int(row["gepauzeerd"]) and reason.startswith(STORAGE_PAUSE_PREFIXES):
+        if "opslag" in reasons:
             settings = _settings(request)
             error = await asyncio.to_thread(storage_validation_error, settings)
             if error is not None:
@@ -2102,10 +2102,9 @@ def create_api_router() -> APIRouter:
             guard = await asyncio.to_thread(storage_guard, database, settings)
             if str(guard["status"]).startswith("automatisch gepauzeerd"):
                 raise HTTPException(409, f"Baan blijft gepauzeerd: {guard['status']}")
-        database.execute(
-            "UPDATE worker_config SET gepauzeerd=0,pauze_reden=NULL WHERE baan=?", (lane,)
-        )
-        return {"baan": lane, "gepauzeerd": False}
+        with database.connection() as conn, conn:
+            remaining = set_reason(conn, lane, "handmatig", None)
+        return {"baan": lane, "gepauzeerd": remaining is not None}
 
     @router.post("/workers/{lane}/pauzeren")
     async def pause_worker(lane: Literal["cpu", "gpu"], request: Request) -> dict[str, Any]:
@@ -2119,11 +2118,9 @@ def create_api_router() -> APIRouter:
     async def toggle_worker(lane: Literal["cpu", "gpu"], request: Request) -> dict[str, Any]:
         """Verouderde wisselknop; gebruikt dezelfde veilige pauzeer-/hervatregels."""
 
-        row = _database(request).fetch_one(
-            "SELECT gepauzeerd FROM worker_config WHERE baan=?", (lane,)
-        )
+        row = _database(request).fetch_one(LANE_SELECT + " WHERE w.baan=?", (lane,))
         assert row is not None
-        return await set_lane_paused(lane, not bool(row["gepauzeerd"]), request)
+        return await set_lane_paused(lane, not lane_reasons(row), request)
 
     @router.patch("/workers/{lane}")
     async def update_worker(
@@ -2326,10 +2323,7 @@ def create_api_router() -> APIRouter:
         except (OSError, StorageChangeError) as exc:
             raise HTTPException(422, str(exc)) from exc
         old = json.dumps(storage_report(current), ensure_ascii=False)
-        database.execute(
-            "UPDATE worker_config SET gepauzeerd=1,"
-            "pauze_reden='opslag gewijzigd; controleer en hervat'"
-        )
+        set_hold(database, "handmatig", "opslag gewijzigd; controleer en hervat")
         if candidate.storage_mode == "systeemschijf":
             database.execute(
                 """
@@ -2937,12 +2931,7 @@ def create_api_router() -> APIRouter:
         active_task_ids = {
             int(job_id) for job_id, task in tasks.items() if not task.done()
         }
-        previous = database.fetch_all(
-            "SELECT baan,gepauzeerd,pauze_reden FROM worker_config ORDER BY baan"
-        )
-        database.execute(
-            "UPDATE worker_config SET gepauzeerd=1,pauze_reden='tijdelijk: wachtrijherstel'"
-        )
+        set_hold(database, "onderhoud", "tijdelijk: wachtrijherstel")
         try:
             result = await asyncio.to_thread(
                 recover_queue, database, _settings(request), active_task_ids
@@ -2950,11 +2939,7 @@ def create_api_router() -> APIRouter:
         except QueueRecoveryError as exc:
             raise HTTPException(409, str(exc)) from exc
         finally:
-            for row in previous:
-                database.execute(
-                    "UPDATE worker_config SET gepauzeerd=?,pauze_reden=? WHERE baan=?",
-                    (int(row["gepauzeerd"]), row["pauze_reden"], str(row["baan"])),
-                )
+            set_hold(database, "onderhoud", None)
         database.execute(
             "INSERT INTO auditlog(soort,onderwerp,oud,nieuw,tijd) "
             "VALUES ('wachtrijherstel','tijdelijke-output',NULL,?,?)",

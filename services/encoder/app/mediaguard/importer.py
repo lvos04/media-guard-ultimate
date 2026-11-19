@@ -30,6 +30,7 @@ from typing import Any
 
 from app.config import Settings
 from app.db import Database
+from app.mediaguard.holds import LANES, set_reason
 
 IMPORT_DIRNAME = "import"
 FINISHED_TRANSACTIONS = ("hersteld", "opgeruimd", "vervangen")
@@ -172,10 +173,9 @@ def import_standalone_db(
             "WHERE status='wacht'",
             (now,),
         )
-        connection.execute(
-            "UPDATE worker_config SET gepauzeerd=1,"
-            "pauze_reden='MediaGuard-import: controleer en hervat via de UI'"
-        )
+        for lane in LANES:
+            set_reason(connection, lane, "handmatig",
+                       "MediaGuard-import: controleer en hervat via de UI")
         connection.execute(
             "INSERT INTO auditlog(soort,onderwerp,oud,nieuw,tijd) VALUES (?,?,?,?,?)",
             (
