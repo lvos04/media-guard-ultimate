@@ -385,9 +385,15 @@ class ControlBody(BaseModel):
 CONFIRM_ACTIONS = {"emergency_stop_on", "emergency_stop_off", "pause_lane"}
 
 
-@router.post("/control")
-async def control(body: ControlBody, principal: Principal = Depends(require_operator),
-                  ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
+@router.post("/control", name="control")
+async def control_route(body: ControlBody, request: Request,
+                        principal: Principal = Depends(require_operator),
+                        ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
+    return await control(body, principal, ctx, correlation_id=request.state.correlation_id)
+
+
+async def control(body: ControlBody, principal: Principal, ctx: AppContext, *,
+                  correlation_id: str | None = None) -> dict[str, Any]:
     if body.action in CONFIRM_ACTIONS and not body.confirm:
         raise HTTPException(409, {"code": "CONFIRM_REQUIRED",
                                   "message": "Bevestig deze actie eerst"})
@@ -397,7 +403,8 @@ async def control(body: ControlBody, principal: Principal = Depends(require_oper
 
         active = body.action == "emergency_stop_on"
         result = emergency_stop(EmergencyBody(active=active, reason=str(
-            p.get("reason") or ("Via de app" if active else ""))[:500]), principal, ctx)
+            p.get("reason") or ("Via de app" if active else ""))[:500]), principal, ctx,
+            correlation_id=correlation_id)
         msg = "Noodstop staat aan" if active else (result.get("resumed_nl") or
                                                    "Noodstop opgeheven")
         return {"ok": True, "message_nl": msg, "result": result}
@@ -583,15 +590,18 @@ def pairing_key(request: Request, principal: Principal = Depends(require_admin),
     from mediaguard import apikeys
     from mediaguard.notify.service import qr_data_uri
 
+    correlation_id = request.state.correlation_id
     for row in ctx.db.fetch_all("SELECT id FROM api_keys WHERE (name=? OR name LIKE ?) AND "
                                 "revoked_at IS NULL", (APP_KEY_NAME, APP_KEY_NAME + " %")):
-        apikeys.revoke_key(ctx, int(row["id"]), actor=principal.actor)
+        apikeys.revoke_key(ctx, int(row["id"]), actor=principal.actor,
+                          correlation_id=correlation_id)
     with contextlib.suppress(Exception):
         _ensure_phone_channel(ctx)
     stamp = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
     created = apikeys.create_key(ctx, name=f"{APP_KEY_NAME} {stamp} {secrets.token_hex(2)}",
                                  role="operator",
-                                 expires_in_days=None, actor=principal.actor)
+                                 expires_in_days=None, actor=principal.actor,
+                                 correlation_id=correlation_id)
     info = pairing(request, principal, ctx)
     payload: dict[str, Any] = {"v": 1, "url": info["server_url"], "key": created["key"]}
     if info.get("ntfy"):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from mediaguard import __version__, jobs
@@ -113,14 +113,20 @@ def may_set_emergency_stop(principal: Principal, active: bool) -> bool:
     return active and principal.role == "viewer" and SCOPE_ESTOP_ON in principal.scopes
 
 
-@router.post("/system/emergency-stop")
-def emergency_stop(body: EmergencyBody, principal: Principal = Depends(require_emergency_stop),
-                   ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
+@router.post("/system/emergency-stop", name="emergency_stop")
+def emergency_stop_route(body: EmergencyBody, request: Request,
+                         principal: Principal = Depends(require_emergency_stop),
+                         ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
     """Noodstop: blokkeert nieuwe grabs (via pre-grab hook), recovery-mutaties en encodes.
     Lopende muterende jobs stoppen bij hun eerstvolgende controlepunt. Een API-sleutel met het
     recht ``emergency_stop:on`` mag hem alleen aanzetten (403 bij ``active: false``); staat hij
     al aan, dan wijzigt zo'n sleutel niets (200 met de bestaande toestand; alleen de poging komt
     in de audit)."""
+    return emergency_stop(body, principal, ctx, correlation_id=request.state.correlation_id)
+
+
+def emergency_stop(body: EmergencyBody, principal: Principal, ctx: AppContext, *,
+                   correlation_id: str | None = None) -> dict[str, Any]:
     if not may_set_emergency_stop(principal, body.active):
         if principal.scopes is None:
             raise HTTPException(status_code=403, detail="Rol 'operator' vereist")
@@ -133,7 +139,7 @@ def emergency_stop(body: EmergencyBody, principal: Principal = Depends(require_e
         if principal.scopes is not None and old.get("active"):
             # reden, door en sinds van wie hem aanzette blijven staan (en dus de herinnering)
             audit(ctx.db, actor=principal.actor, action="system.emergency_stop_repeated",
-                  reason=body.reason, old_value=old)
+                  correlation_id=correlation_id, reason=body.reason, old_value=old)
             return old  # type: ignore[no-any-return]
         new: dict[str, Any] = {"active": body.active, "reason": body.reason,
                                "by": principal.username, "since": utcnow()}
@@ -151,7 +157,8 @@ def emergency_stop(body: EmergencyBody, principal: Principal = Depends(require_e
                                  "instantie)")
         ctx.state_set("emergency_stop", new)
         audit(ctx.db, actor=principal.actor, action="system.emergency_stop", reason=body.reason,
-              old_value=old, new_value=new, undo_hint="Zet de noodstop weer uit")
+              correlation_id=correlation_id, old_value=old, new_value=new,
+              undo_hint="Zet de noodstop weer uit")
     from mediaguard.hookguard import write_flag
 
     try:

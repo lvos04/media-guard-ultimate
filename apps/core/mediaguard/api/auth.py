@@ -348,19 +348,20 @@ def list_api_keys(_: Principal = Depends(require_admin),
 
 
 @router.post("/api-keys")
-def create_api_key(body: NewApiKey, principal: Principal = Depends(require_admin),
+def create_api_key(body: NewApiKey, request: Request, principal: Principal = Depends(require_admin),
                    ctx: AppContext = Depends(get_app_context)) -> dict[str, object]:
     """Alleen dit antwoord bevat ``key``: de sleutel wordt niet opnieuw getoond."""
     from mediaguard import apikeys
 
     return apikeys.create_key(ctx, name=body.name.strip(), role=body.role,
                               expires_in_days=body.expires_in_days, actor=principal.actor,
-                              scopes=body.scopes)
+                              scopes=body.scopes, correlation_id=request.state.correlation_id)
 
 
 @router.post("/api-keys/{key_id}/revoke")
-def revoke_api_key(key_id: int, principal: Principal = Depends(require_admin),
+def revoke_api_key(key_id: int, request: Request, principal: Principal = Depends(require_admin),
                    ctx: AppContext = Depends(get_app_context)) -> dict[str, object]:
     from mediaguard import apikeys
 
-    return apikeys.revoke_key(ctx, key_id, actor=principal.actor)
+    return apikeys.revoke_key(ctx, key_id, actor=principal.actor,
+                              correlation_id=request.state.correlation_id)

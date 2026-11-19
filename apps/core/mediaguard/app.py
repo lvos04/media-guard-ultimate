@@ -25,6 +25,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from mediaguard import __version__, schema
 from mediaguard.config import Settings, load_settings
 from mediaguard.context import AppContext
+from mediaguard.correlation import CorrelationId
 from mediaguard.db import Database
 from mediaguard.events import EventBus
 from mediaguard.jobs import JobRunner
@@ -119,12 +120,18 @@ def build_context(settings: Settings) -> AppContext:
                       secrets=SecretStore(db, settings.secret_key_path), events=EventBus(db))
 
 
+class MediaGuardApp(FastAPI):
+    def build_middleware_stack(self) -> ASGIApp:
+        # Buiten de foutafhandeling, zodat ook onverwachte kernfouten de antwoordkop krijgen.
+        return CorrelationId(super().build_middleware_stack())
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
     ctx = build_context(settings)
     if ctx.db.read_only:
         LOGGER.warning(schema.MESSAGE)
-        app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
+        app = MediaGuardApp(openapi_url=None, docs_url=None, redoc_url=None)
         app.state.ctx = ctx
         app.add_middleware(SchemaRecovery, database=ctx.db)
         return app
@@ -182,8 +189,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_log_redaction()
     # API-documentatie alleen voor een ingelogde beheerder (zie _admin_docs), niet open via
     # de tunnel; FastAPI's eigen openbare routes (/docs, /redoc, /openapi.json) staan uit.
-    app = FastAPI(title="MediaGuard Ultimate API", version=__version__, lifespan=lifespan,
-                  openapi_url=None, docs_url=None, redoc_url=None)
+    app = MediaGuardApp(title="MediaGuard Ultimate API", version=__version__, lifespan=lifespan,
+                        openapi_url=None, docs_url=None, redoc_url=None)
     app.state.ctx = ctx
 
     @app.exception_handler(ValueError)

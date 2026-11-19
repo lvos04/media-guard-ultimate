@@ -30,6 +30,20 @@ webdoorgifte op deze routes 503 met `Retry-After`; publieke gezondheidsroutes ge
 ook dan geen versie, pad of instelling prijs. Bestaande API-routes en de bestaande
 container-healthcheck behouden hun afhandeling en foutformaat.
 
+## Verzoeken correleren
+
+Stuur dezelfde `X-Correlation-Id` mee bij aanvragen die bij één diagnose horen.
+MediaGuard geeft een UUID in de vorm `8-4-4-4-12` hexadecimale tekens letterlijk
+terug in de antwoordkop, ook bij een kernfout. Bij een ontbrekende, ongeldige
+of dubbele kop maakt de kern een nieuwe UUID per verzoek. De ongeldige
+waarde komt niet in de log of audit.
+
+Bij sleuteluitgifte, sleutelintrekking en bediening van de noodstop legt
+MediaGuard de antwoordwaarde ook vast in `audit_events.correlation_id`.
+Bij herkoppelen van de mobiele app delen intrekking en uitgifte dezelfde
+waarde. De interne correlatie met de AV1-engine loopt via het bestaande
+veld `correlation_id` in de body.
+
 ## Metingen en versheid
 
 `health` hergebruikt `health_summary` en de bestaande activiteit- en encodercache.

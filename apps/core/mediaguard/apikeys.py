@@ -277,7 +277,8 @@ def usage_summary(ctx: AppContext, days: int = 7) -> dict[str, dict[str, Any]]:
 
 
 def create_key(ctx: AppContext, *, name: str, role: str, expires_in_days: int | None,
-               actor: str, scopes: Sequence[str] | None = None) -> dict[str, Any]:
+               actor: str, scopes: Sequence[str] | None = None,
+               correlation_id: str | None = None) -> dict[str, Any]:
     if role not in ROLES:
         raise ValueError("rol")
     granted = check_scopes(role, scopes)
@@ -295,7 +296,8 @@ def create_key(ctx: AppContext, *, name: str, role: str, expires_in_days: int | 
          json.dumps(list(granted)) if granted is not None else None))
     rights = f" met rechten {', '.join(granted)}" if granted else ""
     audit(ctx.db, actor=actor, action="apikey.created", target_type="api_key",
-          target_id=key_id, reason=f"API-sleutel '{name}' ({role}){rights} aangemaakt",
+          target_id=key_id, correlation_id=correlation_id,
+          reason=f"API-sleutel '{name}' ({role}){rights} aangemaakt",
           new_value={"name": name, "role": role, "expires_at": expires,
                      "scopes": list(granted) if granted is not None else None})
     row = ctx.db.fetch_one(f"SELECT {','.join(PUBLIC_COLUMNS)} FROM api_keys WHERE id=?",  # noqa: S608
@@ -304,14 +306,16 @@ def create_key(ctx: AppContext, *, name: str, role: str, expires_in_days: int | 
     return {**_public(row), "key": key}
 
 
-def revoke_key(ctx: AppContext, key_id: int, *, actor: str) -> dict[str, Any]:
+def revoke_key(ctx: AppContext, key_id: int, *, actor: str,
+               correlation_id: str | None = None) -> dict[str, Any]:
     row = ctx.db.fetch_one("SELECT * FROM api_keys WHERE id=?", (key_id,))
     if row is None:
         raise HTTPException(404, "API-sleutel niet gevonden")
     if not row["revoked_at"]:
         ctx.db.execute("UPDATE api_keys SET revoked_at=? WHERE id=?", (utcnow(), key_id))
         audit(ctx.db, actor=actor, action="apikey.revoked", target_type="api_key",
-              target_id=key_id, reason=f"API-sleutel '{row['name']}' ingetrokken")
+              target_id=key_id, correlation_id=correlation_id,
+              reason=f"API-sleutel '{row['name']}' ingetrokken")
     fresh = ctx.db.fetch_one(f"SELECT {','.join(PUBLIC_COLUMNS)} FROM api_keys WHERE id=?",  # noqa: S608
                              (key_id,))
     assert fresh is not None
