@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from mediaguard import emergency, jobs, storage_forecast, taskwatch
+from mediaguard import emergency, jobs, schema, storage_forecast, taskwatch
 from mediaguard.audit import audit
 from mediaguard.auth import Principal, require_admin, require_operator, require_viewer
 from mediaguard.context import AppContext, get_app_context
@@ -376,20 +376,45 @@ async def execute(ctx: AppContext, p: Plan, clients: dict[str, Any], *, actor: s
     return {"done": done, "errors": errors}
 
 
-def _rm(ctx: AppContext, path: Path, paused: Callable[[], bool] | None) -> None:
+def _rm(ctx: AppContext, path: Path, paused: Callable[[], bool] | None, *,
+        trash_id: int, partial: bool) -> None:
     # Alleen de controle en één verwijdering delen het slot met de schrijvers van de meting.
     def remove(operation, name, dir_fd=None):
+        nonlocal partial
         with ctx.db.startup_lock():
             if _pool_paused(ctx, paused):
                 raise _PoolPaused
-            with contextlib.suppress(FileNotFoundError):
+            first_child = dir_fd is not None and not partial
+            if first_child:
+                # Ook bij procesuitval tussen unlink en de volgende SQLite-commit
+                # mag terugzetten geen volledig herstel beloven.
+                ctx.db.execute("UPDATE download_janitor_purge_state SET partial=1 WHERE trash_id=?",
+                               (trash_id,))
+            try:
                 operation(name, dir_fd=dir_fd)
+            except OSError:
+                if first_child:
+                    # Alleen bij aantoonbaar behoud van het kind is de map nog compleet.
+                    try:
+                        os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                    except OSError:
+                        pass
+                    else:
+                        ctx.db.execute("UPDATE download_janitor_purge_state SET partial=0 "
+                                       "WHERE trash_id=?", (trash_id,))
+                raise
+            partial = partial or first_child
 
     if path.is_symlink() or not path.is_dir():
         remove(os.unlink, path)
         return
+
+    def scan_error(exc: OSError) -> None:
+        raise exc
+
     # Blijf binnen geopende mappen en volg nooit een symbolische verwijzing naar een map.
-    for _, dirs, files, fd in os.fwalk(path, topdown=False, follow_symlinks=False):
+    for _, dirs, files, fd in os.fwalk(path, topdown=False, follow_symlinks=False,
+                                       onerror=scan_error):
         for name in files:
             remove(os.unlink, name, fd)
         for name in dirs:
@@ -400,6 +425,42 @@ def _rm(ctx: AppContext, path: Path, paused: Callable[[], bool] | None) -> None:
     remove(os.rmdir, path)
 
 
+def _trash_entry(ctx: AppContext, trash_id: int):
+    return ctx.db.fetch_one(
+        "SELECT t.*, s.manual_only, s.partial FROM download_janitor_trash t "
+        "LEFT JOIN download_janitor_purge_state s ON s.trash_id=t.id WHERE t.id=?", (trash_id,))
+
+
+def _purge_entry(ctx: AppContext, trash_id: int, when: str, actor: str, early: bool,
+                 paused: Callable[[], bool] | None) -> bool:
+    # De aanroeper houdt het slot op de downloadmap vast, ook tegenover terugzetten.
+    with ctx.db.transaction():
+        row = _trash_entry(ctx, trash_id)
+        if row is None or row["purged_at"] or row["restored_at"] or row["manual_only"]:
+            return False
+        if _pool_paused(ctx, paused):
+            raise _PoolPaused
+        standalone = not ctx.secrets.exists("truenas:apikey")
+        # Reserveer de enige automatische poging vóór het aanraken van het bestand.
+        ctx.db.execute("INSERT INTO download_janitor_purge_state(trash_id,manual_only) VALUES(?,?) "
+                       "ON CONFLICT(trash_id) DO UPDATE SET manual_only=excluded.manual_only",
+                       (trash_id, standalone))
+    try:
+        _rm(ctx, Path(row["trash_path"]), paused, trash_id=trash_id, partial=bool(row["partial"]))
+    except _PoolPaused:
+        if standalone:
+            ctx.db.execute("UPDATE download_janitor_purge_state SET manual_only=0 WHERE trash_id=?",
+                           (trash_id,))
+        raise
+    with ctx.db.transaction():
+        ctx.db.execute("UPDATE download_janitor_trash SET purged_at=? WHERE id=?", (when, trash_id))
+        ctx.db.execute("DELETE FROM download_janitor_purge_state WHERE trash_id=?", (trash_id,))
+        audit(ctx.db, actor=actor, action="downloads.purged", target_type="download_path",
+              target_id=trash_id, new_value={"path": row["original_path"], "size": row["size"],
+                                             "early_low_space": early})
+    return True
+
+
 def purge(ctx: AppContext, now: datetime | None = None, *, actor: str = "svc:downloads",
           paused: Callable[[], bool] | None = None
           ) -> dict[str, int]:
@@ -408,6 +469,7 @@ def purge(ctx: AppContext, now: datetime | None = None, *, actor: str = "svc:dow
     cutoff = (now - timedelta(days=int(_v(ctx, "trash_days")))).isoformat(timespec="seconds")
     rows = ctx.db.fetch_dicts(
         "SELECT * FROM download_janitor_trash WHERE purged_at IS NULL AND restored_at IS NULL "
+        "AND id NOT IN (SELECT trash_id FROM download_janitor_purge_state WHERE manual_only=1) "
         "ORDER BY moved_at")
     purged = freed = 0
     min_free = float(_v(ctx, "min_free_percent"))
@@ -425,17 +487,23 @@ def purge(ctx: AppContext, now: datetime | None = None, *, actor: str = "svc:dow
         if TRASH_DIR not in trash.parts:
             continue  # nooit buiten de prullenbak verwijderen
         try:
-            _rm(ctx, trash, paused)
+            with schema.startup_lock(Path(r["root"])):
+                if not _purge_entry(ctx, r["id"], now.isoformat(timespec="seconds"),
+                                    actor, early, paused):
+                    continue
         except _PoolPaused:
             return {"purged": purged, "freed": freed}
         except OSError as exc:
+            with ctx.db.transaction():
+                if not ctx.secrets.exists("truenas:apikey"):
+                    ctx.db.execute("INSERT INTO download_janitor_purge_state(trash_id,manual_only) "
+                                   "VALUES(?,1) ON CONFLICT(trash_id) DO UPDATE SET manual_only=1",
+                                   (r["id"],))
+                audit(ctx.db, actor=actor, action="downloads.purge_failed",
+                      target_type="download_path", target_id=r["id"],
+                      reason=f"Verwijderen mislukt ({type(exc).__name__})")
             LOGGER.info("prullenbakitem %s blijft open: %s", trash, exc)
             continue
-        ctx.db.execute("UPDATE download_janitor_trash SET purged_at=? WHERE id=?",
-                       (now.isoformat(timespec="seconds"), r["id"]))
-        audit(ctx.db, actor=actor, action="downloads.purged", target_type="download_path",
-              target_id=r["id"], new_value={"path": r["original_path"], "size": r["size"],
-                                            "early_low_space": early})
         purged += 1
         freed += int(r["freed"] or 0)
     # lege datummappen opruimen
@@ -450,21 +518,26 @@ def purge(ctx: AppContext, now: datetime | None = None, *, actor: str = "svc:dow
 
 
 def restore(ctx: AppContext, trash_id: int, *, actor: str) -> dict[str, Any]:
-    r = ctx.db.fetch_one("SELECT * FROM download_janitor_trash WHERE id=?", (trash_id,))
-    if r is None:
+    root = ctx.db.fetch_one("SELECT root FROM download_janitor_trash WHERE id=?", (trash_id,))
+    if root is None:
         raise KeyError(trash_id)
-    if r["purged_at"] or r["restored_at"]:
-        raise ValueError("Al definitief verwijderd of al teruggezet")
-    orig, trash = Path(r["original_path"]), Path(r["trash_path"])
-    if orig.exists():
-        raise ValueError("Op de oorspronkelijke plek staat al iets")
-    orig.parent.mkdir(parents=True, exist_ok=True)
-    os.rename(trash, orig)
-    ctx.db.execute("UPDATE download_janitor_trash SET restored_at=? WHERE id=?",
-                   (utcnow(), trash_id))
-    audit(ctx.db, actor=actor, action="downloads.restored", target_type="download_path",
-          target_id=trash_id, new_value={"path": str(orig)})
-    return {"restored": True, "path": str(orig)}
+    with schema.startup_lock(Path(root["root"])), ctx.db.transaction():
+        r = _trash_entry(ctx, trash_id)
+        if r["purged_at"] or r["restored_at"]:
+            raise ValueError("Al definitief verwijderd of al teruggezet")
+        orig, trash = Path(r["original_path"]), Path(r["trash_path"])
+        if os.path.lexists(orig):
+            raise ValueError("Op de oorspronkelijke plek staat al iets")
+        partial = bool(r["partial"]) or _stat_tree(trash)[0] < r["size"]
+        orig.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(trash, orig)
+        ctx.db.execute("UPDATE download_janitor_trash SET restored_at=? WHERE id=?",
+                       (utcnow(), trash_id))
+        ctx.db.execute("DELETE FROM download_janitor_purge_state WHERE trash_id=?", (trash_id,))
+        result = {"restored": True, "path": str(orig), "partial": partial}
+        audit(ctx.db, actor=actor, action="downloads.restored", target_type="download_path",
+              target_id=trash_id, new_value=result)
+        return result
 
 
 def own_leftovers(ctx: AppContext, now: datetime | None = None, *,
@@ -744,13 +817,20 @@ def cleanup_status(_: Principal = Depends(require_viewer),
                    ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
     last = ctx.db.fetch_one("SELECT * FROM download_janitor_runs ORDER BY id DESC LIMIT 1")
     trash = ctx.db.fetch_dicts(
-        "SELECT id,original_path,size,freed,reason,moved_at,client FROM download_janitor_trash "
+        "SELECT t.id,t.original_path,t.trash_path,t.size,t.freed,t.reason,t.moved_at,t.client,"
+        "s.manual_only,s.partial FROM download_janitor_trash t LEFT JOIN "
+        "download_janitor_purge_state s ON s.trash_id=t.id "
         "WHERE purged_at IS NULL AND restored_at IS NULL ORDER BY moved_at DESC LIMIT 200")
     total = ctx.db.fetch_one(
         "SELECT COALESCE(SUM(freed),0) AS b, COUNT(*) AS n FROM download_janitor_trash "
         "WHERE purged_at IS NOT NULL")
     days = int(_v(ctx, "trash_days"))
     for t in trash:
+        path = Path(t.pop("trash_path"))
+        t["manual_only"] = bool(t["manual_only"])
+        t["partial"] = bool(t["partial"])
+        if t["partial"]:
+            t["size"], t["freed"], _ = _stat_tree(path)
         t["name"] = Path(t["original_path"]).name
         t["purge_after"] = (datetime.fromisoformat(t["moved_at"]) + timedelta(days=days)
                             ).isoformat(timespec="seconds")

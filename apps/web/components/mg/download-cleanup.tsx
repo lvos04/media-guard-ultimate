@@ -10,7 +10,10 @@ import { useResource } from "@/lib/api/hooks";
 import { useI18n } from "@/lib/i18n";
 import { useSession } from "@/lib/session";
 
-interface TrashItem { id: number; name: string; size: number; reason: string; moved_at: string; purge_after: string }
+interface TrashItem {
+  id: number; name: string; size: number; reason: string; moved_at: string; purge_after: string;
+  partial?: boolean; manual_only?: boolean;
+}
 interface CleanupStatus {
   enabled: boolean;
   interval_hours: number;
@@ -39,8 +42,9 @@ export function DownloadCleanup() {
     setPending(key);
     setError(null);
     try {
-      await api.post(path, {});
-      toast.push("success", done);
+      const result = await api.post<{ partial?: boolean }>(path, {});
+      if (result.partial) toast.push("info", t("cleanup.restoredPartial"));
+      else toast.push("success", done);
       void status.reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -76,7 +80,10 @@ export function DownloadCleanup() {
         <div className="list-row list-row--wrap" key={item.id}>
           <div className="list-main">
             <div className="list-title" style={{ wordBreak: "break-word" }}>{item.name}</div>
-            <div className="list-sub">{[bytes(item.size), item.reason, t("cleanup.purgeAt", { when: dateTime(item.purge_after) })].join(" · ")}</div>
+            <div className="list-sub">{[
+              bytes(item.size), item.reason, item.partial && t("cleanup.partial"),
+              item.manual_only ? t("cleanup.manualOnly") : t("cleanup.purgeAt", { when: dateTime(item.purge_after) }),
+            ].filter(Boolean).join(" · ")}</div>
           </div>
           {can("admin") ? (
             <span className="list-aside">

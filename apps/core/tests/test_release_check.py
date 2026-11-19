@@ -190,6 +190,38 @@ def test_manual_delete_and_bulk_delete(client, ctx, tmp_path):
     assert usage["quota_bytes"] == 500 * 1024**3 and "next_purge" in usage
 
 
+@pytest.mark.skipif(not FFMPEG, reason="ffmpeg nodig voor de vrijgavecontrole")
+@pytest.mark.parametrize("historisch", [False, True])
+async def test_quarantaine_opnieuw_bevestigen(ctx, client, tmp_path, historisch):
+    item = _seed(ctx, tmp_path, age_days=0)
+    assert release_check.run_check(ctx, item)["status"] == "passed"
+    bestand = Path(ctx.db.fetch_one(
+        "SELECT quarantine_path FROM quarantine_items WHERE id=?", (item,))[0])
+    ctx.config.set("global", "", "recovery.truenas_url", "https://pool.invalid", "test")
+    ctx.secrets.set("truenas:apikey", "sleutel", "test")
+    object.__setattr__(ctx.settings, "role", "all")
+    werker = jobs.JobRunner(ctx, concurrency=1)
+    pad = f"/api/v1/quarantine/{item}"
+    eerste = client.request("DELETE", pad, json={"confirm": True}).json()["job_id"]
+    if historisch:
+        ctx.db.execute("UPDATE jobs SET status='succeeded', result=? WHERE id=?",
+                       ('{"deleted":false,"paused":true}', eerste))
+    else:
+        await werker.run_until_idle()
+        assert ctx.db.fetch_one("SELECT status FROM jobs WHERE id=?", (eerste,))[0] == "cancelled"
+    assert bestand.is_file()
+    storage_forecast.record_pool(ctx, {"pools": [{"name": "proef", "status": "ONLINE",
+                                                 "healthy": True}]})
+    tweede = client.request("DELETE", pad, json={"confirm": True}).json()["job_id"]
+    assert tweede != eerste
+    bulk = client.post("/api/v1/quarantine/bulk-delete",
+                       json={"confirm": True, "item_ids": [item]}).json()
+    assert bulk["job_ids"] == [tweede]
+    await werker.run_until_idle()
+    assert not bestand.exists()
+    assert ctx.db.fetch_one("SELECT status FROM jobs WHERE id=?", (tweede,))[0] == "succeeded"
+
+
 @pytest.mark.skipif(not FFMPEG, reason="ffmpeg ontbreekt")
 async def test_immediate_mode_purges_right_after_passed_check(ctx, tmp_path):
     from mediaguard import jobs

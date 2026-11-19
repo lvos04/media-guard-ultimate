@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -517,6 +519,106 @@ async def test_pool_publicatiefout(ctx, cleanup_round, pool_configured, monkeypa
     with closing(worker.db):
         await _expect_pause(worker, cleanup_round)
         await _resume_with_healthy_pool(worker, cleanup_round)
+
+
+async def test_meetstart_alleen_lezen(ctx, cleanup_round, pool_configured):
+    _pool_response(ctx, True)
+    oud = await storage.refresh_pool(ctx)
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        assert storage.pool_cleanup_pause_reason(worker) is None
+        ctx.config.set("global", "", "monitor.enabled", False, "test")
+        ctx.db.execute("PRAGMA query_only=ON")
+        try:
+            await monitor.run_once(ctx)
+        finally:
+            ctx.db.execute("PRAGMA query_only=OFF")
+        # Ook een laat antwoord van vóór de fout mag geen toestemming teruggeven.
+        storage.record_pool(ctx, {"pools": oud["pools"]}, request_id=oud["request_id"])
+        await _expect_pause(worker, cleanup_round)
+    opnieuw = create_app(ctx.settings).state.ctx
+    with closing(opnieuw.db):
+        await _expect_pause(opnieuw, cleanup_round)
+        await _resume_with_healthy_pool(opnieuw, cleanup_round, "truenas.invalid")
+
+
+async def test_meetstart_in_ander_proces(ctx, cleanup_round, pool_configured):
+    _healthy_pool(ctx)
+    # Een apart proces erft geen kanaal of SQLite-verbinding van de opruimer.
+    script = """
+import asyncio
+import sqlite3
+import sys
+from pathlib import Path
+from mediaguard.app import create_app
+from mediaguard.config import load_settings
+from mediaguard.storage_forecast import refresh_pool
+
+ctx = create_app(load_settings(data_dir=Path(sys.argv[1]), start_background=False)).state.ctx
+ctx.db.execute("PRAGMA query_only=ON")
+try:
+    asyncio.run(refresh_pool(ctx))
+except sqlite3.OperationalError:
+    pass
+else:
+    raise AssertionError("SQLite heeft de meetopdracht niet geweigerd")
+"""
+    subprocess.run([sys.executable, "-c", script, str(ctx.settings.data_dir)], check=True)
+    await _expect_pause(ctx, cleanup_round)
+    _healthy_pool(ctx)
+    await storage.shutdown(ctx)
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+async def test_verwijderfout_zonder_sleutel(ctx, client, cleanup_round, monkeypatch):
+    _, _, trash, _ = cleanup_round
+    ctx.config.set("global", "", "downloads.cleanup_enabled", False, "test")
+    origineel = os.unlink
+
+    def weiger(name, **kwargs):
+        if name == "video.mkv":
+            raise PermissionError("Geen schrijfrecht")
+        return origineel(name, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "unlink", weiger)
+        assert (await J.run_once(ctx))["purged"] == 0
+    opnieuw = create_app(ctx.settings).state.ctx
+    with closing(opnieuw.db):
+        assert (await J.run_once(opnieuw))["purged"] == 0
+    assert (trash / "video.mkv").is_file()
+    data = client.get("/api/v1/downloads/cleanup").json()
+    assert data["purged_total"] == 0
+    item, = data["trash"]
+    assert item["manual_only"] and not item["partial"]
+    assert ctx.db.fetch_one("SELECT 1 FROM audit_events WHERE action='downloads.purge_failed'")
+    terug = client.post(f"/api/v1/downloads/cleanup/trash/{item['id']}/restore").json()
+    assert terug["restored"] and not terug["partial"]
+
+
+async def test_gedeeltelijke_map_terugzetten(ctx, client, layout, pool_configured, monkeypatch):
+    _pool_response(ctx, True)
+    await storage.refresh_pool(ctx)
+    bron = _mk(layout["tv"] / "meerdelig", size=4)
+    (bron / "leeg.mkv").touch()
+    item = J._trash(ctx, bron, layout["tv"], "test", actor="test", now=NOW - timedelta(days=8))
+    unlink = os.unlink
+
+    def onderbreek(name, **kwargs):
+        unlink(name, **kwargs)
+        storage.record_pool(ctx, {"error_nl": "Meting onderbroken"})
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "unlink", onderbreek)
+        assert J.purge(ctx, now=NOW)["purged"] == 0
+    data = client.get("/api/v1/downloads/cleanup").json()
+    assert data["trash"][0]["partial"] is True
+    terug = client.post(f"/api/v1/downloads/cleanup/trash/{item['id']}/restore").json()
+    assert terug["restored"] and terug["partial"] is True
+    bestanden = list(bron.iterdir())
+    assert len(bestanden) == 1
+    assert data["trash_bytes"] == bestanden[0].stat().st_size
 
 
 async def test_pool_pauze_binnen_prullenbakmap(ctx, cleanup_round, pool_configured, monkeypatch):

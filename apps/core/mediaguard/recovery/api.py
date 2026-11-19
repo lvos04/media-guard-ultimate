@@ -350,13 +350,14 @@ def storage_probe_run(principal: Principal = Depends(require_operator),
 async def _job_delete(jc: jobs.JobContext) -> dict[str, Any]:
     from mediaguard.storage_forecast import pool_cleanup_pause_reason
 
-    row = jc.app.db.fetch_one("SELECT * FROM quarantine_items WHERE id=?",
-                              (int(jc.payload["item_id"]),))
-    if row is None or row["status"] in ("held", "pending", "purged"):
-        return {"deleted": False}
     with jc.app.db.startup_lock():
+        row = jc.app.db.fetch_one("SELECT * FROM quarantine_items WHERE id=?",
+                                  (int(jc.payload["item_id"]),))
+        if row is None or row["status"] in ("held", "pending", "purged"):
+            return {"deleted": False}
         if paused := pool_cleanup_pause_reason(jc.app):
-            return {"deleted": False, "paused": True, "reason": paused}
+            jc.log(f"{paused} Bevestig het verwijderen opnieuw na een gezonde meting.", "warning")
+            raise jobs.JobCancelled
         _delete_item_file(jc.app, dict(row), jc.payload.get("reason") or "handmatig verwijderd")
     return {"deleted": True}
 
@@ -610,6 +611,17 @@ def quarantine_pin(item_id: int, pinned: bool = True,
     return {"id": item_id, "pinned": pinned}
 
 
+def _enqueue_delete(ctx: AppContext, item_id: int, reason: str | None, actor: str) -> int:
+    key = f"quarantine.delete:{item_id}"
+    with ctx.db.transaction():
+        # Eerdere versies boekten een poolpauze als een succesvol afgeronde taak.
+        ctx.db.execute("UPDATE jobs SET idempotency_key=NULL WHERE idempotency_key=? "
+                       "AND status='succeeded' AND CASE WHEN json_valid(result) "
+                       "THEN json_extract(result,'$.paused') END=1", (key,))
+        return jobs.enqueue(ctx.db, "quarantine.delete", {"item_id": item_id, "reason": reason},
+                            idempotency_key=key, created_by=actor)
+
+
 @router.delete("/api/v1/quarantine/{item_id}")
 def quarantine_delete(item_id: int, body: ConfirmBody,
                       principal: Principal = Depends(require_admin),
@@ -625,10 +637,7 @@ def quarantine_delete(item_id: int, body: ConfirmBody,
     if (check is None or check["status"] != "passed") and not body.force_unverified:
         raise HTTPException(409, "Het nieuwe bestand is nog niet (succesvol) gecontroleerd. "
                                  "Verwijder alleen als je zeker bent ('force_unverified').")
-    job_id = jobs.enqueue(ctx.db, "quarantine.delete", {"item_id": item_id,
-                                                        "reason": body.reason},
-                          idempotency_key=f"quarantine.delete:{item_id}",
-                          created_by=principal.actor)
+    job_id = _enqueue_delete(ctx, item_id, body.reason, principal.actor)
     audit(ctx.db, actor=principal.actor, action="quarantine.delete_requested",
           target_type="quarantine", target_id=item_id, reason=body.reason or None)
     return {"job_id": job_id}
@@ -650,10 +659,8 @@ def quarantine_bulk_delete(body: BulkDeleteBody, principal: Principal = Depends(
                "blocked": blocked, "unverified": unverified}
     if not body.confirm:
         return {"dry_run": True, **preview}
-    job_ids = [jobs.enqueue(ctx.db, "quarantine.delete", {"item_id": r["id"],
-                                                          "reason": body.reason or "bulk"},
-                            idempotency_key=f"quarantine.delete:{r['id']}",
-                            created_by=principal.actor) for r in deletable]
+    job_ids = [_enqueue_delete(ctx, r["id"], body.reason or "bulk", principal.actor)
+               for r in deletable]
     audit(ctx.db, actor=principal.actor, action="quarantine.bulk_delete_requested",
           reason=body.reason or None, new_value=preview)
     return {"job_ids": job_ids, **preview}

@@ -13,7 +13,10 @@ van originelen in de quarantaine tot de pool weer gezond is (verbeterlijst 37).
 
 from __future__ import annotations
 
+import io
 import logging
+import os
+import stat
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -171,6 +174,7 @@ async def truenas_health(ctx: AppContext) -> dict[str, Any] | None:
 POOL_STATE = "truenas_pool"
 # Migratie 071 trekt deze opdracht in zodra de ingestelde bron verandert.
 POOL_REQUEST = "truenas_pool_request_v1"
+_POOL_PIPE = "truenas_pool_pipe"
 POOL_MAX_AGE = timedelta(seconds=900)
 
 
@@ -202,11 +206,50 @@ def _pool_state(prev: dict[str, Any], health: dict[str, Any], checked_at: str) -
             "degraded_since": (prev.get("degraded_since") or checked_at) if degraded else None}
 
 
+def _request_pipe(ctx: AppContext, *, create: bool = False) -> io.FileIO:
+    # De FIFO bevat uitsluitend de opdracht-ID, in het kernelgeheugen. Intrekken
+    # schrijft niets op de schijf. Na het sluiten van de laatste werker is hij leeg.
+    path = ctx.db.path.with_suffix(".pool-fifo")
+    flags = os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        if not create:
+            raise
+        os.mkfifo(path, 0o600)
+        fd = os.open(path, flags)
+    stream = io.FileIO(fd, "r+")
+    if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+        stream.close()
+        raise OSError("Ongeldig kanaal voor de poolmeting")
+    return stream
+
+
+def _current_request(ctx: AppContext, request_id: str) -> bool:
+    # Verbruik en teruggave zijn onder hetzelfde processlot als een nieuwe meetstart.
+    # Uitval tussen beide maakt de toestemming ongeldig.
+    with ctx.db.startup_lock(), _request_pipe(ctx) as stream:
+        current = stream.read(64)
+        if current and stream.write(current) != len(current):
+            raise OSError("Poolopdracht niet leesbaar voor andere werkers")
+        return current == request_id.encode("ascii")
+
+
 def _start_pool_request(ctx: AppContext) -> str:
     request_id = uuid4().hex
     with ctx.db.startup_lock():
         try:
+            previous = ctx.services.get(_POOL_PIPE)
+            if previous is not None:
+                previous.read(64)  # ook als het opnieuw openen van het pad mislukt
+            stream = _request_pipe(ctx, create=True)
+            ctx.services[_POOL_PIPE] = stream
+            if previous is not None:
+                previous.close()
+            stream.read(64)  # trek de vorige toestemming in vóór elke SQLite-schrijfopdracht
             ctx.state_set(POOL_REQUEST, request_id)
+            if stream.write(request_id.encode("ascii")) != len(request_id):
+                raise OSError("Nieuwe poolopdracht niet gedeeld")
         except Exception:
             ctx.db.execute("DELETE FROM system_state WHERE key=?", (POOL_REQUEST,))
             raise
@@ -219,7 +262,7 @@ def record_pool(ctx: AppContext, health: dict[str, Any] | None, *,
     request_id = request_id or _start_pool_request(ctx)
     with ctx.db.transaction():
         prev = ctx.state_get(POOL_STATE, {}) or {}
-        if ctx.state_get(POOL_REQUEST) != request_id:
+        if ctx.state_get(POOL_REQUEST) != request_id or not _current_request(ctx, request_id):
             return prev
         state = {} if health is None else {
             **_pool_state(prev, health, checked_at or utcnow()), "request_id": request_id}
@@ -229,8 +272,13 @@ def record_pool(ctx: AppContext, health: dict[str, Any] | None, *,
 
 
 async def _measure_pool(ctx: AppContext) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    if not ctx.secrets.exists("truenas:apikey") and not ctx.state_get(POOL_STATE):
-        return None, {}
+    try:
+        if not ctx.secrets.exists("truenas:apikey") and not ctx.state_get(POOL_STATE):
+            return None, {}
+    except Exception:
+        # Ook een leesfout bij het bepalen van de bron trekt de oude opdracht in.
+        _start_pool_request(ctx)
+        raise
     # Deze afzonderlijke commit trekt de oude toestemming in vóór het netwerkverzoek.
     # Bij annulering, een herstart of een schrijffout blijft de nieuwe opdracht open.
     request_id = _start_pool_request(ctx)
@@ -242,6 +290,25 @@ async def _measure_pool(ctx: AppContext) -> tuple[dict[str, Any] | None, dict[st
         LOGGER.exception("poolstatus bewaren mislukt")
         state = {}
     return health, state
+
+
+async def startup(ctx: AppContext) -> None:
+    # Open een bestaand kanaal terwijl de gedeelde datamap beschikbaar is.
+    with ctx.db.startup_lock():
+        if _POOL_PIPE in ctx.services:
+            return
+        try:
+            ctx.services[_POOL_PIPE] = _request_pipe(ctx)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            LOGGER.exception("Kanaal voor de poolmeting niet beschikbaar")
+
+
+async def shutdown(ctx: AppContext) -> None:
+    with ctx.db.startup_lock():
+        if stream := ctx.services.pop(_POOL_PIPE, None):
+            stream.close()
 
 
 async def refresh_pool(ctx: AppContext) -> dict[str, Any]:
@@ -272,11 +339,15 @@ def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> s
             return unknown
         state = ctx.state_get(POOL_STATE, {})
         request_id = ctx.state_get(POOL_REQUEST)
+        if not isinstance(request_id, str) or not _current_request(ctx, request_id):
+            return unknown
+    except FileNotFoundError:
+        return unknown
     except Exception:  # noqa: BLE001 - een onleesbare meting geeft geen toestemming
         LOGGER.exception("poolstatus voor opruimen lezen mislukt")
         return unknown
     if (not isinstance(state, dict) or state.get("reachable") is not True
-            or not isinstance(request_id, str) or not request_id
+            or not request_id
             or state.get("request_id") != request_id):
         return unknown
     checked_at = pool_observed_at(state)
