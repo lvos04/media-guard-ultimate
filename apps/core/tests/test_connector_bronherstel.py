@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import secrets
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 from test_arr_fakes import FakeArr, wire
 from test_connector_lezen import assert_database_preserved, database_snapshot, key
 
+from mediaguard.app import create_app
 from mediaguard.db import dumps, utcnow
 from mediaguard.instances.registry import create_instance
 from mediaguard.provisioning import store
@@ -338,6 +341,84 @@ def test_enkele_download_behoudt_historisch_id_bij_beheerde_koppeling(client, ct
         assert page["status"] == "ok" and page["total"] == 1
         assert [(r["id"], r["progress"]) for r in page["items"]] == [(historical_id, 37.0)]
         assert len(client.get("/api/v1/activity").json()["downloads"]) == 1
+
+
+def test_schema_156_behoudt_de_naam_van_een_arr_download(client, ctx):
+    from mediaguard.connector.items import content_hash
+
+    download_source(ctx, "QBittorrent")
+    ctx.db.execute(
+        "UPDATE connector_evidence_origin SET schema_version='156_outbox_cursor_history'"
+    )
+    inst = create_instance(ctx, {"id": "wachtrij-proef", "app": "radarr", "media_type": "movie",
+                                 "name": "Wachtrij", "url": "http://wachtrij.invalid"})
+    arr = wire(ctx, inst.id, FakeArr("radarr"))
+    name = owned_name("Proefbron")
+    torrent = "ab" * 20
+    arr.queue = [{"id": 4, "downloadId": torrent, "protocol": "torrent", "downloadClient": name,
+                  "status": "queued", "statusMessages": []}]
+    ctx.services["live_download_transport"] = httpx.MockTransport(
+        lambda _: httpx.Response(200, json=[])
+    )
+    page = client.get(ITEMS, params={"type": "downloads"}).json()
+    assert (page["status"], page["total"]) == ("ok", 1)
+    assert page["items"][0]["id"] == content_hash(["torrent", torrent.upper(), name])
+
+
+@pytest.mark.parametrize("controle", ["samenloop", "overname", "herstart", "inrichting"])
+def test_download_id_blijft_bij_dezelfde_client(client, ctx, settings, controle):
+    headers = key(client)
+    ctx.db.execute("UPDATE instances SET suspended=1")
+    clients = [
+        {"name": name, "implementation": "QBittorrent", "host": name + ".invalid", "port": 8080}
+        for name in ("eerste", "tweede")
+    ]
+    store.save(ctx, {"download_clients": clients[:1] if controle == "inrichting" else clients},
+               "proef")
+
+    def measure(application, reader, visible):
+        context = application.state.ctx
+
+        def queue(request):
+            name = request.url.host.split(".")[0]
+            assert request.method == "GET" and request.url.path == "/api/v2/torrents/info"
+            return httpx.Response(200, json=[{
+                "hash": "ab" * 20, "state": "downloading",
+                "progress": 0.37 if name == "eerste" else 0.14,
+            }] if name in visible else [])
+
+        context.services["live_download_transport"] = httpx.MockTransport(queue)
+        context.services.pop("activity_cache", None)
+        context.services.pop("connector_items:downloads:viewer", None)
+        before = database_snapshot(context, allow_auth_timestamps=True)
+        page = reader.get(ITEMS, params={"type": "downloads"}, headers=headers).raise_for_status()
+        assert_database_preserved(context, before, allow_auth_timestamps=True)
+        data = page.json()
+        assert (data["status"], data["total"]) == ("ok", len(visible))
+        ids = {row["progress"]: row["id"] for row in data["items"]}
+        assert len(set(ids.values())) == len(visible)
+        return ids
+
+    app = create_app(settings)
+    with closing(app.state.ctx.db), closing(TestClient(app)) as reader:
+        first = measure(app, reader, {"eerste"})
+        if controle == "inrichting":
+            store.save(ctx, {"download_clients": clients[::-1]}, "proef")
+        both = measure(app, reader, {"eerste", "tweede"})
+        assert measure(app, reader, {"eerste"}) == first
+    if controle == "inrichting":
+        store.save(ctx, {"download_clients": clients[1:]}, "proef")
+    restarted = create_app(settings)
+    with closing(restarted.state.ctx.db), closing(TestClient(restarted)) as reader:
+        second = measure(restarted, reader, {"tweede"})
+    if controle == "samenloop":
+        assert first[37] == both[37]
+    elif controle == "overname":
+        assert first[37] != second[14]
+    elif controle == "herstart":
+        assert both[14] == second[14]
+    else:
+        assert first[37] == both[37] and both[14] == second[14]
 
 
 @pytest.mark.parametrize("rows", [0, 2])

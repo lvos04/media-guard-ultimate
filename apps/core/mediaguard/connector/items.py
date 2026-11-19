@@ -10,7 +10,6 @@ import json
 import re
 import time
 from bisect import bisect_right
-from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, get_args
 from urllib.parse import urlencode
@@ -28,6 +27,8 @@ from mediaguard.db import utcnow
 from mediaguard.encoding import resources
 from mediaguard.encoding.client import EncoderError
 from mediaguard.instances.registry import INSTANCE_ID_RE
+from mediaguard.provisioning import store
+from mediaguard.provisioning.templates import PREFIX
 from mediaguard.read_observation import instant, observation_read
 from mediaguard.secrets_store import redact
 from mediaguard.storage_forecast import POOL_STATE, pool_observed_at
@@ -202,21 +203,25 @@ def _system(ctx: AppContext, measured: datetime) -> SystemItem:
 
 
 def _downloads(value: dict[str, Any], measured: datetime, *,
-               client_scoped: bool) -> list[DownloadItem]:
+               legacy_owners: dict[str, str | None] | None) -> list[DownloadItem]:
     items: dict[str, DownloadItem] = {}
     rows = value["downloads"]
-    clients: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for row in rows:
-        key = (str(row.get("protocol") or "").lower(), str(row.get("download_id") or "").upper())
-        clients[key].add(row.get("client") or "")
     for row in sorted(rows, key=lambda d: (str(d.get("instance_id")), str(d.get("id")))):
         download_id = str(row.get("download_id") or "").upper()
         protocol = str(row.get("protocol") or "").lower()
         if download_id:
-            # Dezelfde sleutel voor een cliëntdownload als die later in de Arr-wachtrij verschijnt.
             source = [protocol, download_id]
-            if (client_scoped and row.get("client")) or len(clients[protocol, download_id]) > 1:
-                source.append(row.get("client") or "")
+            client = row.get("client") or ""
+            if not isinstance(client, str):
+                raise ValueError("Ongeldige downloadclient")
+            if legacy_owners is None:
+                # Schema 156 gebruikte de clientnaam wanneer de bron die leverde.
+                if client:
+                    source.append(client)
+            else:
+                client = client.removeprefix(PREFIX)
+                if not client or client != legacy_owners.get(protocol):
+                    source.append(client)
             identity = content_hash(source)
         elif row.get("id") is not None and row.get("instance_id"):
             identity = content_hash([row["instance_id"], row["id"]])
@@ -343,8 +348,9 @@ async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
                 reason = "bron_onbereikbaar"
             else:
                 origin = ctx.db.fetch_one("SELECT schema_version FROM connector_evidence_origin")
-                rows.extend(_downloads(value, measured,
-                                       client_scoped=origin["schema_version"] >= "156"))
+                owners = (store.download_id_owners(ctx) if origin["schema_version"] < "156"
+                          else None)
+                rows.extend(_downloads(value, measured, legacy_owners=owners))
         elif kind == "av1_lanes":
             rows.extend(await _lanes(ctx, measured))
         else:

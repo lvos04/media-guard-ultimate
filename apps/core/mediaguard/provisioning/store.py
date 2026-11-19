@@ -245,6 +245,7 @@ def secret_hash(*values: str | None) -> str:
 
 # -- laden / opslaan ---------------------------------------------------------------------
 CONFIG_KEY = "main"
+DOWNLOAD_ID_OWNERS = "connector:download_id_owners"
 
 
 def load(ctx: AppContext) -> ProvisioningConfig:
@@ -257,6 +258,21 @@ def load(ctx: AppContext) -> ProvisioningConfig:
         # Toon de veilige standaard ook vóór de eerste expliciete opslag.
         media["propers"] = "doNotPrefer"
     return ProvisioningConfig.model_validate(data)
+
+
+def _legacy_owners(clients: list[DownloadClientCfg]) -> dict[str, str | None]:
+    """Alleen een eenduidig ingerichte client kan de oude protocol-ID's bezitten."""
+    owners: dict[str, str | None] = {}
+    for client in clients:
+        protocol = T.DC_IMPLEMENTATIONS[client.implementation]
+        owners[protocol] = None if protocol in owners else client.name
+    return owners
+
+
+def download_id_owners(ctx: AppContext) -> dict[str, str | None]:
+    # Een bestaande installatie kan nog nooit met deze kern zijn opgeslagen.
+    # Bij de eerste wijziging blijft juist haar oude inrichting leidend.
+    return _legacy_owners(load(ctx).download_clients) | ctx.state_get(DOWNLOAD_ID_OWNERS, {})
 
 
 def _store_secret(ctx: AppContext, name: str, value: str | None, actor: str) -> None:
@@ -291,6 +307,10 @@ def save(ctx: AppContext, patch: dict[str, Any], actor: str) -> ProvisioningConf
     _store_secret(ctx, PROWLARR_SECRET, cfg.prowlarr.api_key, actor)
     cfg.prowlarr.api_key = None
     with ctx.db.transaction() as conn:
+        if "download_clients" in patch:
+            owners = _legacy_owners(cfg.download_clients) | download_id_owners(ctx)
+            if owners != ctx.state_get(DOWNLOAD_ID_OWNERS, {}):
+                ctx.state_set(DOWNLOAD_ID_OWNERS, owners)
         conn.execute(
             "INSERT INTO provisioning_config(key,value_json,updated_at,updated_by) "
             "VALUES (?,?,?,?) "
