@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
+from collections import Counter, defaultdict
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -68,10 +70,10 @@ async def _sab(ctx: AppContext, dc: Any) -> list[dict[str, Any]]:
     async with httpx.AsyncClient(timeout=TIMEOUT, transport=_transport(ctx)) as client:
         resp = await client.get(f"{_base(dc)}/api", params=params)
         resp.raise_for_status()
-        data = resp.json() or {}
-    if isinstance(data, dict) and data.get("error"):
-        raise ValueError(str(data["error"]))
-    queue = data.get("queue") or {}
+        data = resp.json()
+    queue = data.get("queue") if isinstance(data, dict) and not data.get("error") else None
+    if not isinstance(queue, dict) or not isinstance(queue.get("slots"), list):
+        raise ValueError("SABnzbd gaf geen wachtrij")
     paused_all = bool(queue.get("paused"))
     out = []
     for s in queue.get("slots") or []:
@@ -102,7 +104,9 @@ async def _qbit(ctx: AppContext, dc: Any) -> list[dict[str, Any]]:
                 raise ValueError("inloggen geweigerd")
         resp = await client.get("/api/v2/torrents/info")
         resp.raise_for_status()
-        rows = resp.json() or []
+        rows = resp.json()
+    if not isinstance(rows, list):
+        raise ValueError("qBittorrent gaf geen downloadlijst")
     out = []
     for t in rows:
         state = str(t.get("state") or "")
@@ -131,8 +135,9 @@ async def client_downloads(ctx: AppContext) -> tuple[list[dict[str, Any]], list[
 
     try:
         clients = [dc for dc in load(ctx).download_clients if dc.enabled]
-    except Exception:  # noqa: BLE001 - geen inrichting = niets te lezen
-        return [], []
+    except (sqlite3.Error, OSError, ValueError):
+        return [], [{"client": "Inrichting", "code": "configuratie_onbeschikbaar",
+                     "error": "Downloadconfiguratie niet beschikbaar."}]
 
     async def one(dc: Any) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
         try:
@@ -140,11 +145,12 @@ async def client_downloads(ctx: AppContext) -> tuple[list[dict[str, Any]], list[
                 return await _sab(ctx, dc), None
             if dc.implementation == "QBittorrent":
                 return await _qbit(ctx, dc), None
-            return [], None
-        except (httpx.HTTPError, ValueError, KeyError) as exc:
-            LOGGER.info("downloadclient %s niet bereikbaar: %s", dc.name, exc)
-            return [], {"client": dc.name,
-                        "error": f"Downloadclient niet bereikbaar: {type(exc).__name__}: {exc}"}
+            return [], {"client": dc.name, "code": "capability_unavailable",
+                        "error": "Meting van deze client niet ondersteund."}
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError, OverflowError):
+            LOGGER.info("bron_onbereikbaar: downloadclient niet bereikbaar of onleesbaar.")
+            return [], {"client": dc.name, "code": "bron_onbereikbaar",
+                        "error": "Downloadclient niet bereikbaar of onleesbaar."}
 
     results = await asyncio.gather(*(one(dc) for dc in clients))
     items = [i for r in results for i in r[0]]
@@ -174,10 +180,10 @@ async def source_queues(ctx: AppContext) -> tuple[list[tuple[Any, list[dict[str,
                 extra = ({"includeSeries": "true", "includeEpisode": "true"}
                          if row["app"] == "sonarr" else {"includeMovie": "true"})
                 queue = await client.get("queue", page=1, pageSize=100, **extra)
-        except Exception as exc:  # noqa: BLE001 - per bron isoleren
+        except Exception:  # noqa: BLE001 - geen externe fouttekst in de gedeelde activiteit
             errors.append({"instance_id": f"source:{row['id']}",
                            "name": f"{row['name']} (oude installatie)",
-                           "error": f"{type(exc).__name__}: {exc}"})
+                           "error": "De wachtrij van de oude installatie is niet bereikbaar."})
             continue
         records = (queue.get("records") if isinstance(queue, dict) else queue) or []
         out.append((row, records))
@@ -188,18 +194,26 @@ def merge(arr_items: list[dict[str, Any]], client_items: list[dict[str, Any]]
           ) -> list[dict[str, Any]]:
     """Voeg clientdownloads toe die geen enkele Sonarr/Radarr-wachtrij kent, en vul bij
     gekoppelde items voortgang/status uit de client aan (die is actueler)."""
-    by_id = {str(d.get("download_id") or "").upper(): d for d in arr_items
-             if d.get("download_id")}
+    by_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in arr_items:
+        if row.get("download_id"):
+            by_id[str(row["download_id"]).upper()].append(row)
+    occurrences = Counter(c["download_id"] for c in client_items)
     out = list(arr_items)
     for c in client_items:
-        hit = by_id.get(c["download_id"])
-        if hit is not None:
+        hits = [row for row in by_id.get(c["download_id"], [])
+                if (not row.get("protocol") or row["protocol"].lower() == c["protocol"])
+                and (row.get("client") == c["client"]
+                     or not row.get("client") and occurrences[c["download_id"]] == 1)]
+        for hit in hits:
             if hit.get("progress") is None:
                 hit["progress"] = c["progress"]
             if c["status"] == "downloading" and hit.get("status") in ("queued", "", None):
                 hit["status"] = "downloading"
             hit.setdefault("time_left", c.get("time_left"))
             hit["client"] = hit.get("client") or c["client"]
+            hit["protocol"] = hit.get("protocol") or c["protocol"]
+        if hits:
             continue
         out.append({
             "id": None, "instance_id": None, "instance_name": None,

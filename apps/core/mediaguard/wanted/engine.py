@@ -289,7 +289,14 @@ def open_wanted_page(ctx: AppContext, after_id: int, limit: int) -> tuple[int, l
         f"""WITH total AS (SELECT COUNT(*) AS n {WANTED_FROM} WHERE {WANTED_OPEN})
             SELECT total.n, p.* FROM total
             LEFT JOIN (
-                SELECT w.id, w.instance_id, w.kind, w.reason, w.status, w.updated_at
+                SELECT w.id, w.instance_id, w.kind, w.reason, w.status,
+                    w.first_seen_at, w.updated_at,
+                    (SELECT s.finished_at FROM library_sync_runs s
+                     WHERE s.instance_id=w.instance_id AND s.status='succeeded'
+                       AND julianday(s.finished_at) >= julianday(w.first_seen_at)
+                       AND CASE WHEN json_valid(s.counts_json)
+                                THEN json_type(s.counts_json, '$.wanted') END = 'object'
+                     ORDER BY s.id DESC LIMIT 1) AS sync_observed_at
                 {WANTED_FROM} WHERE {WANTED_OPEN} AND w.id > ? ORDER BY w.id LIMIT ?
             ) p ON TRUE ORDER BY p.id""",
         (after_id, limit),

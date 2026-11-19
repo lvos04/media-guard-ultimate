@@ -634,7 +634,8 @@ def test_items_five_sources_and_exact_fields(populated_installation, monkeypatch
     )
     ctx.state_set("emergency_stop", {"active": True, "since": utcnow(), **markers})
     workers = [
-        {"baan": "cpu", "aantal": 2, "gepauzeerd": True, "pauze_reden": supplied, **markers},
+        {"baan": "cpu", "aantal": 2, "gepauzeerd": True, "actieve_jobs": [],
+         "pauze_reden": supplied, **markers},
         {"baan": "gpu", "aantal": 3, "gepauzeerd": False, "actieve_jobs": [
             {"job_id": 99, "bestand": f"/fixture/{supplied}", **markers},
         ]},

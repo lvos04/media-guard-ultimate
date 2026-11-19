@@ -33,6 +33,7 @@ from mediaguard import taskwatch
 from mediaguard.auth import Principal, require_operator, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import loads, utcnow
+from mediaguard.read_observation import observation_read
 from mediaguard.settings_registry import REGISTRY, SettingDef
 
 LOGGER = logging.getLogger(__name__)
@@ -302,17 +303,27 @@ def tasks_item(ctx: AppContext, now: datetime | None = None) -> list[dict[str, A
 
 
 def pool_item(ctx: AppContext) -> list[dict[str, Any]]:
-    from mediaguard.storage_forecast import pool_degraded, pool_names_nl
+    from mediaguard.storage_forecast import (
+        POOL_STATE,
+        degraded_pools,
+        pool_names_nl,
+        pool_observed_at,
+    )
 
-    degraded = pool_degraded(ctx)
+    state = ctx.state_get(POOL_STATE, {}) or {}
+    degraded = degraded_pools(state)
     if not degraded:
         return []
-    return [_item(
+    item = _item(
         "storage.pool_degraded", "error",
         "TrueNAS-pool niet gezond: " + pool_names_nl(degraded),
         "MediaGuard ruimt geen originelen op tot de pool weer gezond is; je bestanden blijven "
         "staan. Controleer de schijven in TrueNAS.", "/systeem#opslag",
-        push_ids=[str(p.get("name")) for p in degraded])]
+        push_ids=[str(p.get("name")) for p in degraded])
+    if observation_read.get():
+        item["observed_at"] = pool_observed_at(state)
+        item["source_reachable"] = state.get("reachable") is True
+    return [item]
 
 
 def attention_items(ctx: AppContext) -> list[dict[str, Any]]:
@@ -322,6 +333,8 @@ def attention_items(ctx: AppContext) -> list[dict[str, Any]]:
         try:
             out.extend(source(ctx))
         except Exception:  # noqa: BLE001 - één bron mag de rest nooit tegenhouden
+            if observation_read.get():
+                raise
             LOGGER.exception("bewakingsbron %s mislukt", source.__name__)
     return out
 

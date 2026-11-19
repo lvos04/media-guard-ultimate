@@ -99,10 +99,16 @@ async def workers(ctx: AppContext) -> Any:
     return await asyncio.wait_for(get_encoder_client(ctx).engine("GET", "/workers"), 6)
 
 
-def lane_counts(worker: dict[str, Any]) -> dict[str, Any]:
-    active = worker.get("actieve_jobs") or []
-    return {"running": sum(isinstance(job, dict) for job in active),
-            "slots": int(worker.get("aantal") or 0), "paused": bool(worker.get("gepauzeerd"))}
+def lane_counts(worker: dict[str, Any], *, require_measurement: bool = False) -> dict[str, Any]:
+    active = worker.get("actieve_jobs")
+    slots, paused = worker.get("aantal"), worker.get("gepauzeerd")
+    if require_measurement and not (
+        type(slots) is int and slots >= 0 and isinstance(paused, bool)
+        and isinstance(active, list) and all(isinstance(job, dict) for job in active)
+    ):
+        raise EncoderError("Onvolledige of ongeldige AV1-werkermeting")
+    return {"running": sum(isinstance(job, dict) for job in active or []),
+            "slots": int(slots or 0), "paused": bool(paused)}
 
 
 def parallel_encodes(ctx: AppContext) -> int:

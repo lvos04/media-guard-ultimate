@@ -154,6 +154,15 @@ async def truenas_health(ctx: AppContext) -> dict[str, Any] | None:
 POOL_STATE = "truenas_pool"
 
 
+def pool_observed_at(state: dict[str, Any]) -> str | None:
+    """Tijd van de laatste geslaagde meting, ook na een latere mislukte controle."""
+    return state.get("checked_at") if state.get("reachable") is True else state.get("observed_at")
+
+
+def degraded_pools(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [p for p in state.get("degraded") or [] if isinstance(p, dict)]
+
+
 def record_pool(ctx: AppContext, health: dict[str, Any] | None) -> dict[str, Any]:
     """Bewaar de laatste poolmeting. Niet bereikbaar = laatst bekende toestand houden
     (een tijdelijk onbereikbare API heft een opruimpauze nooit op)."""
@@ -163,7 +172,7 @@ def record_pool(ctx: AppContext, health: dict[str, Any] | None) -> dict[str, Any
         state: dict[str, Any] = {}
     elif health.get("error_nl"):
         state = {**prev, "reachable": False, "error_nl": health["error_nl"],
-                 "checked_at": now}
+                 "checked_at": now, "observed_at": pool_observed_at(prev)}
     else:
         degraded = [{"name": p.get("name"), "status": p.get("status")}
                     for p in health.get("pools") or [] if not p.get("healthy")]
@@ -187,7 +196,7 @@ def pool_degraded(ctx: AppContext) -> list[dict[str, Any]]:
         state = ctx.state_get(POOL_STATE, {}) or {}
     except Exception:  # noqa: BLE001 - nooit het opruimen laten crashen op de meting
         return []
-    return [p for p in state.get("degraded") or [] if isinstance(p, dict)]
+    return degraded_pools(state)
 
 
 def pool_names_nl(pools: list[dict[str, Any]]) -> str:

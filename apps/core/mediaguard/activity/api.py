@@ -12,7 +12,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from mediaguard.arr.client import ArrError
 from mediaguard.auth import Principal, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import loads
@@ -217,11 +216,8 @@ async def _instance(ctx: AppContext, inst: Any) -> dict[str, Any]:
         async with arr_client(ctx, inst.id, timeout=TIMEOUT) as client:
             queue, commands = await asyncio.gather(
                 client.get("queue", page=1, pageSize=100), client.get("command"))
-    except ArrError as exc:
-        out["error"] = exc.message
-        return out
-    except Exception as exc:  # noqa: BLE001 - per bron isoleren
-        out["error"] = f"{type(exc).__name__}: {exc}"
+    except Exception:  # noqa: BLE001 - een bronfout mag geen externe fouttekst doorgeven
+        out["error"] = "De wachtrij van deze instantie is niet bereikbaar."
         return out
     records = (queue.get("records") if isinstance(queue, dict) else queue) or []
     _fill_titles(ctx, inst, records)
@@ -560,7 +556,8 @@ async def _collect(ctx: AppContext) -> dict[str, Any]:
     commands = [c for p in per for c in p["commands"]]
     errors = [{"instance_id": p["instance_id"], "name": p["name"], "error": p["error"]}
               for p in per if p["error"]]
-    errors += [{"instance_id": None, "name": e["client"], "error": e["error"]}
+    errors += [{"instance_id": None, "name": e["client"], "error": e["error"],
+                "code": e.get("code", "bron_onbereikbaar")}
                for e in client_errors]
     errors += old_errors
     downloads.sort(key=lambda d: (d["status"] != "downloading", -(d["progress"] or 0)))

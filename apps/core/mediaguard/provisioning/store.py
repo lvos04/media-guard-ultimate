@@ -254,11 +254,8 @@ def load(ctx: AppContext) -> ProvisioningConfig:
     media = data.get("media") if isinstance(data, dict) else None
     if isinstance(media, dict) and media.get("propers") == "preferAndUpgrade" \
             and not ctx.state_get("provisioning:propers_r4", False):
-        # eenmalig: de oude standaard veroorzaakte downloadlussen (S3)
+        # Toon de veilige standaard ook vóór de eerste expliciete opslag.
         media["propers"] = "doNotPrefer"
-        ctx.db.execute("UPDATE provisioning_config SET value_json=? WHERE key=?",
-                       (dumps(data), CONFIG_KEY))
-        ctx.state_set("provisioning:propers_r4", True)
     return ProvisioningConfig.model_validate(data)
 
 
@@ -293,11 +290,15 @@ def save(ctx: AppContext, patch: dict[str, Any], actor: str) -> ProvisioningConf
         idx.api_key = None
     _store_secret(ctx, PROWLARR_SECRET, cfg.prowlarr.api_key, actor)
     cfg.prowlarr.api_key = None
-    ctx.db.execute(
-        "INSERT INTO provisioning_config(key,value_json,updated_at,updated_by) VALUES (?,?,?,?) "
-        "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, "
-        "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
-        (CONFIG_KEY, dumps(cfg.model_dump()), utcnow(), actor))
+    with ctx.db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO provisioning_config(key,value_json,updated_at,updated_by) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, "
+            "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+            (CONFIG_KEY, dumps(cfg.model_dump()), utcnow(), actor))
+        if not ctx.state_get("provisioning:propers_r4", False):
+            ctx.state_set("provisioning:propers_r4", True)
     # verwijderde namen: geheimen opruimen
     for row in ctx.db.fetch_all("SELECT name FROM secrets WHERE name LIKE 'downloadclient:%' "
                                 "OR name LIKE 'indexer:%'"):

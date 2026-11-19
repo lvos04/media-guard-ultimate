@@ -123,8 +123,18 @@ cursor na `409 snapshot_changed`. De ETag is een SHA-256 van de JSON-inhoud.
 Bij een onbereikbare bron geeft de pagina `status: "unknown"` en `total: null`.
 Lokaal bekende incidenten blijven zichtbaar wanneer de AV1-bron uitvalt.
 Na 900 seconden geeft een verlopen meting `meting_verouderd` met de oude
-meettijd. De connector houdt de huidige installatiestatus en instellingen
-tijdens deze waarnemingen alleen ter inzage.
+meettijd. Een poolincident gebruikt de laatste geslaagde poolmeting, ook als
+een latere controle mislukte. Voor `wanted` telt een geslaagde bibliotheekronde
+die de ontbrekende media opnieuw heeft bepaald. Zonder zo'n ronde geldt de
+eerste vastgelegde constatering. Bij ontbrekende brontijd is de pagina
+`unknown`. Een leesverzoek slaat geen configuratie of voortgang op.
+
+De downloadidentiteit gebruikt het protocol, het download-ID en de bekende
+client. Daardoor blijven twee clients met hetzelfde torrent-ID onderscheidbaar.
+Een gekoppelde Arr-wachtrij behoudt de identiteit van de aantoonbaar bijbehorende
+clientdownload. Bij een onleesbare of niet-ondersteunde downloadbron is het
+totaal onbekend. Een AV1-baan vereist een gemeten capaciteit, lijst van actieve
+jobs en pauzetoestand. Een gemeten capaciteit van nul is geldig.
 
 ## Bewijspakket
 

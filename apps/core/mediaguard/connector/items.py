@@ -29,6 +29,7 @@ from mediaguard.encoding.client import EncoderError
 from mediaguard.instances.registry import INSTANCE_ID_RE
 from mediaguard.read_observation import observation_read
 from mediaguard.secrets_store import redact
+from mediaguard.storage_forecast import POOL_STATE, pool_observed_at
 from mediaguard.wanted.engine import open_wanted_page
 
 from .errors import failure
@@ -166,19 +167,39 @@ def _position(kind: ItemType, cursor: str) -> tuple[str, str | None]:
 def _wanted(ctx: AppContext, after: int, limit: int) -> ItemPage:
     total, rows = open_wanted_page(ctx, after, limit + 1)
     items = []
+    times = []
+    reason = None
     for r in rows[:limit]:
+        observed = instant(r["sync_observed_at"])
+        if observed is None:
+            # De eerste constatering is een bronmeting. Alleen een statuswijziging
+            # of zoekpoging (updated_at) bevestigt de bibliotheek niet opnieuw.
+            first, updated = instant(r["first_seen_at"]), instant(r["updated_at"])
+            observed = min(first, updated) if first and updated else None
+        if observed is None:
+            reason = "meting_ontbreekt"
+            continue
+        times.append(observed)
+        if _stale(observed):
+            reason = reason or "meting_verouderd"
+            continue
+        if observed > datetime.now(UTC):
+            reason = reason or "meettijd_ongeldig"
+            continue
         iid = _instance_id(r["instance_id"])
         filters = {"reason": r["reason"]}
         if iid is not None:
             filters["instance"] = iid
         items.append(WantedItem(
-            id=f"wanted:{r['id']}", observed_at=instant(r["updated_at"]),
+            id=f"wanted:{r['id']}", observed_at=observed,
             deep_link="/ontbrekend?" + urlencode(filters), instance_id=iid,
             kind=r["kind"], reason=r["reason"], status=r["status"],
         ))
     return ItemPage(
-        type="wanted", items=items, total=total, status="ok", reason_code=None,
-        observed_at=None, snapshot_id=None,
+        type="wanted", items=items, total=None if reason else total,
+        status="unknown" if reason else "ok", reason_code=reason,
+        observed_at=None if reason == "meting_ontbreekt" else min(times, default=None),
+        snapshot_id=None,
         next_cursor=_cursor("wanted", str(rows[limit - 1]["id"]), None)
         if len(rows) > limit else None,
     )
@@ -204,7 +225,10 @@ def _downloads(value: dict[str, Any], measured: datetime) -> list[DownloadItem]:
         protocol = str(row.get("protocol") or "").lower()
         if download_id:
             # Dezelfde sleutel voor een cliëntdownload als die later in de Arr-wachtrij verschijnt.
-            identity = content_hash([protocol, download_id])
+            source = [protocol, download_id]
+            if row.get("client"):
+                source.append(row["client"])
+            identity = content_hash(source)
         elif row.get("id") is not None and row.get("instance_id"):
             identity = content_hash([row["instance_id"], row["id"]])
         else:
@@ -236,7 +260,7 @@ async def _lanes(ctx: AppContext, measured: datetime) -> list[LaneItem]:
             lanes[lane] = LaneItem(
                 id=content_hash(["av1_lanes", lane]), observed_at=measured, deep_link="/av1",
                 lane=lane, desired_slots=configured[f"{lane}_workers"],
-                **resources.lane_counts(row),
+                **resources.lane_counts(row, require_measurement=True),
             )
     if not lanes:
         raise EncoderError("AV1-werkermeting ontbreekt")
@@ -292,7 +316,9 @@ def _incident(row: dict[str, Any], measured: datetime) -> IncidentItem:
     if key == "storage.full_soon" and row.get("source_identity"):
         identity.append(row["source_identity"])
     return IncidentItem(
-        id=content_hash(identity), observed_at=measured, deep_link=link,
+        id=content_hash(identity),
+        observed_at=instant(row["observed_at"]) if "observed_at" in row else measured,
+        deep_link=link,
         owner_app="mediaguard", cause_code=code, instance_id=instance,
         severity=severity if severity in ("error", "warning", "info") else "info",
         count=row.get("count", 1),
@@ -336,6 +362,24 @@ async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
             rows.extend(incidents.values())
             if not complete:
                 reason = "bron_onbereikbaar"
+            # Bij een gezonde pool ontbreekt een incidentrij. Ook een lege
+            # incidentlijst kan alleen actueel zijn bij een recente bronmeting.
+            pool_rows = [r for r in visible if r["key"] == "storage.pool_degraded"]
+            if pool_rows:
+                pool_at = instant(pool_rows[0].get("observed_at"))
+                reachable = pool_rows[0].get("source_reachable")
+            else:
+                pool = ctx.state_get(POOL_STATE, {}) or {}
+                pool_at = instant(pool_observed_at(pool)) if pool else measured
+                reachable = not pool or pool.get("reachable") is True
+            if pool_at is None:
+                measured, reason = None, "meting_ontbreekt"
+            elif pool_at > datetime.now(UTC):
+                measured, reason = pool_at, "meettijd_ongeldig"
+            else:
+                measured = min(measured, pool_at)
+                if not reachable:
+                    reason = "bron_onbereikbaar"
     except (EncoderError, TimeoutError, OSError, ValueError, TypeError):
         reason = "bron_onbereikbaar"
         measured = previous.observed_at if previous else None
