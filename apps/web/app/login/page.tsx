@@ -9,6 +9,7 @@ import { AuthFrame } from "@/components/shell/auth-frame";
 import { api, ApiError } from "@/lib/api/client";
 import type { LoginChallenge, LoginResult, SetupStatus } from "@/lib/api/contracts";
 import { useI18n } from "@/lib/i18n";
+import { returnPath } from "@/lib/return-path";
 
 export default function LoginPage() {
   return <AuthFrame><Suspense><LoginForm /></Suspense></AuthFrame>;
@@ -26,8 +27,7 @@ function LoginForm() {
   const [code, setCode] = useState("");
 
   const goNext = () => {
-    const next = params.get("next");
-    router.replace(next && next.startsWith("/") && !next.startsWith("//") ? next : "/");
+    router.replace(returnPath(params.get("next")));
   };
 
   useEffect(() => {
