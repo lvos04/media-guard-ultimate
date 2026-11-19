@@ -1,0 +1,127 @@
+{
+  "bron": "media-source-optimizer@490f3eeec28b5e78537c29b8d0c6718115ab2d20:apps/core/mso/features/mediaguard/compat.py",
+  "datum": "2026-11-19",
+  "uitzondering": {
+    "method": "GET",
+    "path": "/api/v1/openapi.json",
+    "mso_role": "none",
+    "mediaguard_role": "admin",
+    "reden": "MediaGuard beperkt het OpenAPI-document tot beheerders. MSO valt bij weigering terug op directe routeprobes."
+  },
+  "routes": [
+    {
+      "id": "health",
+      "method": "GET",
+      "path": "/api/v1/health",
+      "role": "none"
+    },
+    {
+      "id": "auth_login",
+      "method": "POST",
+      "path": "/api/v1/auth/login",
+      "role": "none"
+    },
+    {
+      "id": "auth_me",
+      "method": "GET",
+      "path": "/api/v1/auth/me",
+      "role": "viewer"
+    },
+    {
+      "id": "status",
+      "method": "GET",
+      "path": "/api/v1/status",
+      "role": "viewer"
+    },
+    {
+      "id": "openapi",
+      "method": "GET",
+      "path": "/api/v1/openapi.json",
+      "role": "none"
+    },
+    {
+      "id": "wanted_list",
+      "method": "GET",
+      "path": "/api/v1/wanted",
+      "role": "viewer"
+    },
+    {
+      "id": "wanted_kpis",
+      "method": "GET",
+      "path": "/api/v1/wanted/kpis",
+      "role": "viewer"
+    },
+    {
+      "id": "wanted_reasons",
+      "method": "GET",
+      "path": "/api/v1/wanted/reasons",
+      "role": "viewer"
+    },
+    {
+      "id": "backfill_quota",
+      "method": "GET",
+      "path": "/api/v1/wanted/backfill/quota",
+      "role": "viewer"
+    },
+    {
+      "id": "wanted_item",
+      "method": "GET",
+      "path": "/api/v1/wanted/{wanted_id}",
+      "role": "viewer"
+    },
+    {
+      "id": "wanted_diagnosis",
+      "method": "GET",
+      "path": "/api/v1/wanted/{wanted_id}/diagnosis",
+      "role": "viewer"
+    },
+    {
+      "id": "policy_effective",
+      "method": "GET",
+      "path": "/api/v1/policy/effective",
+      "role": "viewer"
+    },
+    {
+      "id": "wanted_search",
+      "method": "POST",
+      "path": "/api/v1/wanted/{wanted_id}/search",
+      "role": "operator"
+    },
+    {
+      "id": "instance_queue",
+      "method": "GET",
+      "path": "/api/v1/instances/{instance_id}/queue",
+      "role": "viewer"
+    },
+    {
+      "id": "instance_queue_block",
+      "method": "DELETE",
+      "path": "/api/v1/instances/{instance_id}/queue/{queue_id}",
+      "role": "operator"
+    },
+    {
+      "id": "instances_list",
+      "method": "GET",
+      "path": "/api/v1/instances",
+      "role": "viewer"
+    },
+    {
+      "id": "instance_download_clients",
+      "method": "GET",
+      "path": "/api/v1/instances/{instance_id}/download-clients",
+      "role": "viewer"
+    },
+    {
+      "id": "instance_health",
+      "method": "GET",
+      "path": "/api/v1/instances/{instance_id}/health",
+      "role": "viewer"
+    },
+    {
+      "id": "provisioning_config",
+      "method": "GET",
+      "path": "/api/v1/provisioning/config",
+      "role": "viewer"
+    }
+  ]
+}
