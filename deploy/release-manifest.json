@@ -186,7 +186,8 @@
       "150_mediaserver_servers",
       "151_outbox_event_identity",
       "152_connector_evidence_version",
-      "153_outbox_resume"
+      "153_outbox_resume",
+      "154_outbox_generation"
     ],
     "encoder": [
       1,

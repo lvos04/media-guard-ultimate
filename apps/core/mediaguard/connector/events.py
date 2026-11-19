@@ -17,11 +17,15 @@ from mediaguard.auth import Principal, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.events import source_id
 
-from .errors import failure
+from .errors import cursor_expired, failure
 
 router = APIRouter(prefix="/connector/v1")
 _NUMBER = r"(?:0|[1-9][0-9]{0,18})"
-CURSOR_PATTERN = rf"^(?:v1\.{_NUMBER}\.{_NUMBER}|v2\.{_NUMBER}\.{_NUMBER}\.[a-f0-9]{{64}})$"
+_POSITION = rf"{_NUMBER}\.{_NUMBER}"
+CURSOR_PATTERN = (
+    rf"^(?:v1\.{_POSITION}|v2\.{_POSITION}\.[a-f0-9]{{64}}"
+    rf"|v3\.{_POSITION}\.[a-f0-9]{{32}}\.[a-f0-9]{{64}})$"
+)
 MAX_SQLITE_ID = 2**63 - 1
 Ernst = Literal["kritiek", "hoog", "middel", "laag", "info"]
 
@@ -78,7 +82,7 @@ class EventEnvelope(BaseModel):
     schema_version: Literal["1.0"] = "1.0"
     event_id: UUID
     source_app: Literal["mediaguard"] = "mediaguard"
-    source_event_id: str
+    source_event_id: str = Field(description="Bron-ID binnen de generatie van de outbox.")
     event_type: str = Field(pattern=r"^media\.[a-z0-9_]+\.[a-z0-9_]+$", max_length=128)
     entity: EventEntity
     timestamp_utc: AwareDatetime
@@ -103,7 +107,7 @@ class ConnectorError(BaseModel):
 
 
 def _envelope(row: sqlite3.Row) -> EventEnvelope:
-    identifier = source_id(row["id"], row["birth"])
+    identifier = source_id(row["id"], row["generation"], row["birth"])
     event_type, ernst = TOPICS.get(row["topic"], ("media.event.recorded", "info"))
     timestamp = datetime.fromisoformat(row["ts"])
     if timestamp.tzinfo is None:
@@ -120,8 +124,10 @@ def _envelope(row: sqlite3.Row) -> EventEnvelope:
     )
 
 
-def _cursor(key: bytes, position: int, revision: int, birth: bytes | None) -> str:
-    body = f"v2.{position}.{revision}"
+def _cursor(
+    key: bytes, generation: bytes, position: int, revision: int, birth: bytes | None,
+) -> str:
+    body = f"v3.{position}.{revision}.{generation.hex()}"
     signature = hmac.digest(key, body.encode("ascii") + b"/" + (birth or b""), "sha256").hex()
     return f"{body}.{signature}"
 
@@ -132,7 +138,10 @@ def _cursor(key: bytes, position: int, revision: int, birth: bytes | None) -> st
     responses={
         401: {"model": ConnectorError, "description": "Aanmelding ontbreekt of is ongeldig."},
         403: {"model": ConnectorError, "description": "Onvoldoende rechten."},
-        409: {"model": ConnectorError, "description": "cursor_expired: herstart zonder cursor."},
+        409: {"model": ConnectorError, "description": (
+            "cursor_expired bij retentie, een onbekende leespositie of een andere generatie. "
+            "Herlees zonder cursor en verwerk de gebeurtenissen idempotent."
+        )},
         422: {"model": ConnectorError, "description": "Onbekend, dubbel of ongeldig queryveld."},
         503: {"model": ConnectorError, "description": "De database is tijdelijk niet beschikbaar.",
               "headers": {"Retry-After": {"schema": {"type": "integer", "minimum": 1},
@@ -144,7 +153,7 @@ def poll(
     _: Annotated[Principal, Depends(require_viewer)],
     ctx: Annotated[AppContext, Depends(get_app_context)],
     cursor: Annotated[str | None, Query(
-        pattern=CURSOR_PATTERN, max_length=107, description="Cursor uit de vorige pagina.",
+        pattern=CURSOR_PATTERN, max_length=140, description="Cursor uit de vorige pagina.",
     )] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 200,
 ) -> EventPage | JSONResponse:
@@ -171,13 +180,15 @@ def poll(
 
     # Eén SELECT houdt de retentiestand en de pagina in dezelfde SQLite-momentopname.
     rows = ctx.db.fetch_all(
-        """SELECT r.deleted_through, r.revision, r.cursor_key, p.id, p.ts, p.topic, s.birth,
+        """SELECT r.deleted_through, r.revision, r.cursor_key, g.generation,
+                  p.id, p.ts, p.topic, s.birth,
                   (SELECT birth FROM outbox_source WHERE event_id = ?) AS anchor,
                   EXISTS(SELECT 1 FROM outbox_deletions
                          WHERE revision > ? AND event_id >= ?) AS lost,
                   COALESCE((SELECT seq FROM sqlite_sequence WHERE name='outbox_events'), 0)
                       AS issued_through
            FROM outbox_retention AS r
+           JOIN outbox_generation AS g ON g.singleton = r.singleton
            LEFT JOIN (SELECT id, ts, topic FROM outbox_events WHERE id > ? ORDER BY id LIMIT ?) AS p
                ON TRUE
            LEFT JOIN outbox_source AS s ON s.event_id = p.id
@@ -186,14 +197,14 @@ def poll(
         (position, revision, position, position, limit),
     )
     state = rows[0]
+    key, generation = state["cursor_key"], state["generation"]
     if cursor is not None and (
         not hmac.compare_digest(
-            cursor, _cursor(state["cursor_key"], position, revision, state["anchor"]),
+            cursor, _cursor(key, generation, position, revision, state["anchor"]),
         )
         or position > state["issued_through"] or revision > state["revision"] or state["lost"]
     ):
-        return failure(409, "cursor_expired", "De cursor is verlopen. Begin opnieuw zonder cursor.",
-                       {"restart": True})
+        return cursor_expired()
 
     events = [_envelope(row) for row in rows if row["id"] is not None]
     birth = state["anchor"]
@@ -202,5 +213,5 @@ def poll(
         position = rows[-1]["id"]
     elif cursor is None:
         position = state["deleted_through"]
-    next_cursor = _cursor(state["cursor_key"], position, state["revision"], birth)
+    next_cursor = _cursor(key, generation, position, state["revision"], birth)
     return EventPage(events=events, next_cursor=next_cursor)

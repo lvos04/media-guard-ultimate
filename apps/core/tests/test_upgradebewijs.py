@@ -129,11 +129,13 @@ def test_vul_vult_een_lege_database_inert(tmp_path: Path) -> None:
     settings = load_settings(data_dir=tmp_path / "core", staging_dir=tmp_path / "s",
                              quarantine_dir=tmp_path / "q", start_background=False,
                              internal_token="t")
-    create_app(settings).state.ctx.db.close()
+    with closing(create_app(settings).state.ctx.db) as db:
+        generatie = db.fetch_one("SELECT generation FROM outbox_generation")[0]
     uit = ub.vul(tmp_path / "core" / "mediaguard.db", "core")
     assert uit["niet_gevuld"] == {}
     conn = sqlite3.connect(tmp_path / "core" / "mediaguard.db")
     try:
+        assert conn.execute("SELECT generation FROM outbox_generation").fetchall() == [(generatie,)]
         # inerte toestanden: niets gaat na de start draaien, zoeken of verbinden
         assert {r[0] for r in conn.execute("SELECT status FROM jobs")} <= {"succeeded", "cancelled"}
         assert {r[0] for r in conn.execute("SELECT archived FROM instances")} == {1}
@@ -157,6 +159,18 @@ def test_vul_vult_een_lege_database_inert(tmp_path: Path) -> None:
                             "NULL").fetchone()[0] >= 1
     finally:
         conn.close()
+
+
+def test_vul_weigert_een_ontbrekende_generatie(tmp_path: Path) -> None:
+    from mediaguard.db import MIGRATIONS_DIR
+
+    pad = tmp_path / "core.db"
+    with closing(sqlite3.connect(pad)) as conn:
+        conn.executescript((MIGRATIONS_DIR / "154_outbox_generation.sql").read_text())
+        conn.execute("DELETE FROM outbox_generation")
+        conn.commit()
+        assert "outbox_generation" in ub.vul(pad, "core")["niet_gevuld"]
+        assert conn.execute("SELECT COUNT(*) FROM outbox_generation").fetchone()[0] == 0
 
 
 # -- de fixture van de vorige release is een database die zo echt kan bestaan (S-P2-610) ---------

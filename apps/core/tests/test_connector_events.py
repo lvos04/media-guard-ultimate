@@ -23,12 +23,16 @@ def publish(ctx, *, age=0, topic="library.synced", payload=None, instance_id=Non
     if age:
         stamp = (datetime.now(UTC) - timedelta(days=age)).isoformat(timespec="seconds")
         ctx.db.execute("UPDATE outbox_events SET ts=? WHERE id=?", (stamp, event_id))
-    mark = ctx.db.fetch_one("SELECT birth FROM outbox_source WHERE event_id=?", (event_id,))
-    return (event_id << 129) + int.from_bytes(mark[0], "big") if mark else event_id
+    generation, birth = ctx.db.fetch_one(
+        "SELECT generation, birth FROM outbox_generation CROSS JOIN outbox_source WHERE event_id=?",
+        (event_id,),
+    )
+    assert len(generation) == 16 and len(birth) == 17
+    return int(f"{event_id:x}{generation.hex()}{birth.hex()}", 16)
 
 
 def row_position(identifier):
-    return identifier >> 129 if identifier > 2**63 - 1 else identifier
+    return identifier >> (8 * (16 + 17))
 
 
 def page(transport, headers=None, **params):
@@ -211,7 +215,7 @@ def test_migration_and_snapshot_restore_preserve_every_existing_row(tmp_path, mo
     previous = tmp_path / "vorige-migraties"
     previous.mkdir()
     for path in migrations.glob("*.sql"):
-        if not path.name.startswith(("151_", "153_")):
+        if not path.name.startswith(("151_", "153_", "154_")):
             (previous / path.name).symlink_to(path)
 
     db_path = tmp_path / "config" / "core.sqlite"

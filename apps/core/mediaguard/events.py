@@ -9,13 +9,12 @@ from typing import Any
 from mediaguard.db import Database, dumps, utcnow
 
 
-def source_id(position: int, birth: bytes | None) -> str:
-    """Bewaar uitgegeven numerieke ID's. Nieuwe ID's sorteren op hun SQLite-positie."""
-    if birth is None:
-        return str(position)
-    # Het lage deel bevat 128 bits plus één bit voor het verschil tussen een
-    # geïmporteerde rij en een publicatie met eigen willekeurig kenmerk.
-    return str((position << 129) + int.from_bytes(birth, "big"))
+def source_id(position: int, generation: bytes, birth: bytes | None) -> str:
+    """Decimaal bron-ID uit de rijpositie, de generatie en het publicatiekenmerk."""
+    # Vaste veldbreedtes houden de bron-ID's op volgorde van SQLite-positie.
+    # Oudere installaties kunnen rijen van vóór het publicatiekenmerk bevatten.
+    identity = position.to_bytes(8, "big") + generation + (birth or bytes(17))
+    return str(int.from_bytes(identity, "big"))
 
 
 class EventBus:

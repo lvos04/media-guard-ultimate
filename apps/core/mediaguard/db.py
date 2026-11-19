@@ -232,7 +232,8 @@ class Database:
         with contextlib.suppress(OSError):
             marker.write_text(json.dumps(info), encoding="utf-8")
         try:
-            requires_backup = any(f.stem == "151_outbox_event_identity" for f in pending)
+            requires_backup = any(f.stem in {"151_outbox_event_identity", "154_outbox_generation"}
+                                  for f in pending)
             if applied and (requires_backup or other is None):
                 # Voor de outboxomzetting moet deze schrijver onder zijn eigen slot
                 # een herstelset van de actuele gegevens kunnen verifiëren.

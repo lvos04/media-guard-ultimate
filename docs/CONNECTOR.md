@@ -55,38 +55,45 @@ pagina zijn verwerkt. Stuur de waarde letterlijk mee bij de volgende aanvraag.
 Ook een lege pagina geeft een cursor en houdt de leespositie vast.
 
 De outbox bewaart gebeurtenissen standaard 14 dagen via
-`maintenance.retention_days_events`. De cursor bindt de laatste positie, de
-bron van die rij en de retentierevisie aan een handtekening. Verwijdert retentie
+`maintenance.retention_days_events`. De ondertekende cursor bevat de generatie,
+de laatste positie en de retentierevisie en is gebonden aan de bronrij. Verwijdert retentie
 sinds die revisie een rij op of voorbij de leespositie, dan volgt
 `409 cursor_expired` met `details.restart: true`. Dit antwoord geldt ook voor
-een oude ongetekende cursor, een vervalste combinatie of een cursor die na
-snapshotherstel bij een andere geschiedenis hoort. Begin dan zonder cursor en
-behoud de eerder verwerkte event-ID's voor deduplicatie.
+een cursor uit een andere generatie, een cursor zonder generatie of een
+ongeldige handtekening. Begin dan zonder cursor bij de oudste bewaarde rij.
 
 De query accepteert uitsluitend één `cursor` en één `limit`, beide optioneel.
 Onbekende, dubbele en ongeldige velden geven `422 validation_error`. Bij een
 tijdelijk onbereikbare database geeft de route `503 database_unavailable`.
 Wacht het aantal seconden uit `Retry-After` en gebruik dezelfde leespositie.
 
-`source_app` is `mediaguard`. Bewaar `source_event_id` als tekenreeks. De
-connector leidt `event_id` af als UUIDv5 in de URL-naamruimte uit
-`mediaguard:<bron-id>`. Migratie 151 behoudt de SQLite-rijposities. Bij een
-eerste overgang krijgt iedere bewaarde rij een reproduceerbare bronidentiteit
-uit de oorspronkelijke rij. Een installatie die 151 al toepaste behoudt haar
-eerder uitgegeven numerieke bron-ID's. Voor nieuwe rijen legt migratie 153 per
-publicatie een willekeurig kenmerk vast in dezelfde transactie. Het
-bron-ID combineert dit kenmerk met de positie en blijft gelijk bij herlezing.
+`source_app` is `mediaguard`. Bewaar `source_event_id` als tekenreeks. Dit
+bron-ID bevat de rijpositie, de generatie en het publicatiekenmerk. De
+connector berekent `event_id` als UUIDv5 in de URL-naamruimte uit
+`mediaguard:<source_event_id>`. Binnen één generatie blijven beide sleutels
+gelijk bij herlezing en bij een gewone herstart.
 
-Een oude schrijver legde de tijd tot op de seconde vast. Als hij vóór twee
-afzonderlijke upgrades op dezelfde rijpositie precies dezelfde gebeurtenisgegevens
-schrijft, kan een kale snapshot de twee publicaties niet onderscheiden. Voor
-dit historische geval kan de afnemer na een expliciete cursorherstart dezelfde
-deduplicatiesleutel ontvangen. De garantie voor rijen met een bij publicatie
-vastgelegd kenmerk geldt vanaf migratie 153.
+Bij een bestaande installatie verifieert MediaGuard vóór de migratie de actuele
+back-up. Elke uitvoering van migratie 151 legt een nieuwe willekeurige
+generatie vast. Zet je een snapshot van vóór 151 terug en voer je
+de upgrade opnieuw uit, dan krijgen **alle** bewaarde gebeurtenissen nieuwe
+bron-ID’s en UUID’s. Ook twee afzonderlijke publicaties op dezelfde rijpositie,
+met dezelfde tijd en inhoud, krijgen zo verschillende sleutels. Bij installaties
+die 151 al zonder generatie hebben uitgevoerd, voegt migratie 154 eenmalig
+een generatie toe. Ook daar volgt één volledige herlezing.
 
-De SSE-route `/api/v1/events/stream` koppelt `Last-Event-ID` aan de database
-waarin die leespositie is uitgegeven. Na een tweede upgrade van een oude
-snapshot leest een bestaande client alle bewaarde gebeurtenissen opnieuw.
+Afnemers verwerken gebeurtenissen idempotent. Gebruik binnen één generatie de
+UUID of het paar `(source_app, source_event_id)` voor deduplicatie. Na een
+generatiewissel kan een al verwerkte gebeurtenis onder nieuwe sleutels
+terugkomen. Zorg dat herhaling van die gebeurtenis hetzelfde resultaat geeft.
+
+De SSE-route `/api/v1/events/stream` neemt de generatie op in elk bewaard
+`Last-Event-ID`. Bij een verlopen of generatievreemde leespositie begint de
+stream direct met `event: reset`, ook bij een lege outbox. De lege `id:` wist
+de laatst ontvangen positie. Het veld `data` bevat de §5-fout met
+`code: cursor_expired`, `message`, `details.restart: true` en `trace_id`.
+Op dezelfde verbinding volgen alle bewaarde gebeurtenissen vanaf de oudste
+rij. Een geldige leespositie hervat bij de eerstvolgende gebeurtenis.
 
 De classificatie is `internal`. Bekende brontopics krijgen een vast eventtype en
 een vast onderwerp binnen MediaGuard. Overige records krijgen

@@ -1499,6 +1499,7 @@
             "type": "string"
           },
           "source_event_id": {
+            "description": "Bron-ID binnen de generatie van de outbox.",
             "title": "Source Event Id",
             "type": "string"
           },
@@ -10764,6 +10765,7 @@
     },
     "/api/v1/events/stream": {
       "get": {
+        "description": "Stuur bij een verlopen Last-Event-ID eerst een reset en herlees daarna de outbox.",
         "operationId": "stream_api_v1_events_stream_get",
         "responses": {
           "200": {
@@ -26545,8 +26547,8 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 107,
-                  "pattern": "^(?:v1\\.(?:0|[1-9][0-9]{0,18})\\.(?:0|[1-9][0-9]{0,18})|v2\\.(?:0|[1-9][0-9]{0,18})\\.(?:0|[1-9][0-9]{0,18})\\.[a-f0-9]{64})$",
+                  "maxLength": 140,
+                  "pattern": "^(?:v1\\.(?:0|[1-9][0-9]{0,18})\\.(?:0|[1-9][0-9]{0,18})|v2\\.(?:0|[1-9][0-9]{0,18})\\.(?:0|[1-9][0-9]{0,18})\\.[a-f0-9]{64}|v3\\.(?:0|[1-9][0-9]{0,18})\\.(?:0|[1-9][0-9]{0,18})\\.[a-f0-9]{32}\\.[a-f0-9]{64})$",
                   "type": "string"
                 },
                 {
@@ -26609,7 +26611,7 @@
                 }
               }
             },
-            "description": "cursor_expired: herstart zonder cursor."
+            "description": "cursor_expired bij retentie, een onbekende leespositie of een andere generatie. Herlees zonder cursor en verwerk de gebeurtenissen idempotent."
           },
           "422": {
             "content": {

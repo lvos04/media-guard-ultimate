@@ -222,6 +222,14 @@ def vul(db: Path, profiel: str, rijen: int = 2) -> dict[str, Any]:
                 if al != 1:
                     mislukt[tabel] = "de door de migratie gevulde retentiestand ontbreekt"
                 continue
+            if (profiel, tabel) == ("core", "outbox_generation"):
+                geldig = conn.execute(
+                    "SELECT COUNT(*) FROM outbox_generation WHERE singleton=1 "
+                    "AND typeof(generation)='blob' AND length(generation)=16"
+                ).fetchone()[0]
+                if al != 1 or geldig != 1:
+                    mislukt[tabel] = "de door de migratie vastgelegde generatie ontbreekt of is ongeldig"
+                continue
             if (profiel, tabel) == ("core", "outbox_deletions"):
                 # Laat de echte trigger de grens en bijbehorende revisie samen vastleggen.
                 proef = conn.execute("INSERT INTO outbox_events(ts,topic,payload) VALUES (?,?,?)",

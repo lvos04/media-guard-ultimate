@@ -9,12 +9,13 @@ import sqlite3
 from contextlib import aclosing, closing, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 from test_connector_events import PATH, expired, page, publish, row_position
-from test_connector_lezen import error, key
+from test_connector_lezen import database_snapshot, error, key
 
 from mediaguard import aio
 from mediaguard import db as database
@@ -106,6 +107,106 @@ def herstel(snapshot, path):
         saved.backup(live)
 
 
+@pytest.mark.parametrize("zonder_generatie", [False, True])
+async def test_generatie_vanaf_151_en_bij_bestaande_installatie(
+    settings, old_schema, monkeypatch, zonder_generatie,
+):
+    migraties = database.MIGRATIONS_DIR
+    with closing(database.Database(settings.db_path)) as db:
+        with monkeypatch.context() as oud:
+            oud.setattr(database, "MIGRATIONS_DIR", old_schema)
+            for versie in (151, 152, 153):
+                script, = migraties.glob(f"{versie}_*.sql")
+                (old_schema / script.name).symlink_to(script)
+                db.initialize()
+                if versie == 151:
+                    eerste = db.fetch_one("SELECT generation FROM outbox_generation")[0]
+                    assert len(eerste) == 16
+            if zonder_generatie:
+                # Schema van een installatie die 151 en 153 al vóór dit herstel toepaste.
+                db.execute("DROP TABLE outbox_generation")
+        ctx = SimpleNamespace(db=db)
+        voor = database_snapshot(ctx)
+        db.initialize()
+        na = database_snapshot(ctx)
+        for tabel, rijen in voor.items():
+            if tabel[0] != "schema_migrations":
+                assert na[tabel] == rijen, tabel
+        generatie = db.fetch_one("SELECT generation FROM outbox_generation")[0]
+        assert len(generatie) == 16
+        assert (generatie != eerste) == zonder_generatie
+
+    with aangemeld(settings) as (ctx, client):
+        eerste_pagina = page(client)
+        assert len(eerste_pagina["events"]) == 1
+        assert generatie.hex() in eerste_pagina["next_cursor"].split(".")
+        reset, event = await sse_herlezing(ctx, "1")
+        controleer_sse_reset(reset)
+        last_id = event.splitlines()[0].removeprefix("id: ")
+        assert generatie.hex() in last_id.split(".")
+        for cursor in ("v1.0.0", "v2.0.0." + "0" * 64):
+            expired(client.get(PATH, params={"cursor": cursor}))
+    with aangemeld(settings, nieuw=False) as (_, client):
+        assert page(client) == eerste_pagina
+
+
+def test_afzonderlijke_bytegelijke_publicaties_na_herstel(
+    settings, old_schema, tmp_path, monkeypatch,
+):
+    snapshot = tmp_path / "lege-outbox.db"
+    with closing(database.Database(settings.db_path)) as db:
+        db.execute("DELETE FROM outbox_events")
+        db.backup_to(snapshot)
+
+    def publiceer_en_upgrade(vorige_cursor=None):
+        with monkeypatch.context() as old, closing(database.Database(settings.db_path)) as db:
+            old.setattr(database, "MIGRATIONS_DIR", old_schema)
+            old.setattr("mediaguard.events.utcnow", lambda: STAMP)
+            db.initialize()
+            assert db.fetch_one("SELECT COUNT(*) FROM outbox_events")[0] == 0
+            EventBus(db).publish("library.synced", {})
+            rij = tuple(db.fetch_one("SELECT * FROM outbox_events"))
+        with aangemeld(settings) as (_, client):
+            if vorige_cursor:
+                expired(client.get(PATH, params={"cursor": vorige_cursor}))
+            pagina = page(client)
+            assert page(client) == pagina
+            assert len(pagina["events"]) == 1
+            assert page(client, cursor=pagina["next_cursor"])["events"] == []
+            return rij, pagina
+
+    eerste_rij, eerste = publiceer_en_upgrade()
+    herstel(snapshot, settings.db_path)
+    tweede_rij, tweede = publiceer_en_upgrade(eerste["next_cursor"])
+    assert eerste_rij == tweede_rij
+    a, b = eerste["events"][0], tweede["events"][0]
+    assert a["event_id"] != b["event_id"]
+    assert a["source_event_id"] != b["source_event_id"]
+
+
+def controleer_sse_reset(frame):
+    regels = frame.splitlines()
+    assert regels[0] == "event: reset"
+    assert "id:" in regels
+    body = json.loads(next(regel[6:] for regel in regels if regel.startswith("data: ")))
+    assert set(body) == {"code", "message", "details", "trace_id"}
+    assert body["code"] == "cursor_expired" and body["message"]
+    assert body["details"] == {"restart": True}
+    UUID(body["trace_id"])
+
+
+async def sse_herlezing(ctx, last_id):
+    request = Request({"type": "http", "headers": [(b"last-event-id", last_id.encode())]})
+    response = await stream(request, None, ctx)
+    frames = []
+    async with aclosing(response.body_iterator) as chunks:
+        async for chunk in chunks:
+            if chunk.startswith("retry:"):
+                break
+            frames.append(chunk)
+    return frames
+
+
 def test_terugzetten_en_tweede_upgrade_geeft_geen_ids_opnieuw(settings, old_schema, monkeypatch):
     snapshot = settings.db_path.parent.parent / "snapshot.db"
     with closing(database.Database(settings.db_path)) as db:
@@ -126,7 +227,10 @@ def test_terugzetten_en_tweede_upgrade_geeft_geen_ids_opnieuw(settings, old_sche
 
     with aangemeld(settings) as (_, client):
         repeated, replacement = page(client)["events"]
-        assert common == repeated
+        identity = ("source_event_id", "event_id", "trace_id")
+        for field in identity:
+            assert common[field] != repeated[field]
+        assert common | {k: repeated[k] for k in identity} == repeated
         assert original["event_type"] != replacement["event_type"]
         assert original["source_event_id"] != replacement["source_event_id"]
         assert original["event_id"] != replacement["event_id"]
@@ -150,16 +254,10 @@ async def test_sse_na_verlies_van_oude_hoogste_rij(settings, old_schema, monkeyp
         db.initialize()
         bus = EventBus(db)
         bus.publish("recovery.committed", {})
-        request = Request({"type": "http", "headers": [(b"last-event-id", str(last).encode())]})
-        response = await stream(request, None, SimpleNamespace(db=db, events=bus))
-        topics = []
-        async with aclosing(response.body_iterator) as chunks:
-            async for chunk in chunks:
-                if chunk.startswith("retry:"):
-                    break
-                topics.extend(
-                    json.loads(s[6:])["topic"] for s in chunk.splitlines() if s.startswith("data: ")
-                )
+        reset, *events = await sse_herlezing(SimpleNamespace(db=db, events=bus), str(last))
+        controleer_sse_reset(reset)
+        topics = [json.loads(frame.splitlines()[1].removeprefix("data: "))["topic"]
+                  for frame in events]
         assert topics.count("recovery.committed") == 1
 
 
@@ -270,20 +368,11 @@ async def test_sse_herhaalt_meer_dan_een_batch_en_hervat_precies(ctx):
             [(STAMP, "library.synced", "{}")] * 503,
         )
 
-    async def replay(last):
-        request = Request({"type": "http", "headers": [(b"last-event-id", last.encode())]})
-        response = await stream(request, None, ctx)
-        receipts = []
-        async with aclosing(response.body_iterator) as chunks:
-            async for chunk in chunks:
-                if chunk.startswith("retry:"):
-                    break
-                receipts.append(chunk.splitlines()[0].removeprefix("id: "))
-        return receipts
-
-    receipts = await replay("999")
+    reset, *frames = await sse_herlezing(ctx, "999")
+    controleer_sse_reset(reset)
+    receipts = [frame.splitlines()[0].removeprefix("id: ") for frame in frames]
     assert len(set(receipts)) == len(receipts) == 503
-    assert await replay(receipts[499]) == receipts[500:]
+    assert await sse_herlezing(ctx, receipts[499]) == frames[500:]
 
 
 def test_beschadigde_set_of_oude_markering_geeft_geen_toestemming(
@@ -380,17 +469,6 @@ async def test_sse_hervat_na_tweede_upgrade_met_gelijke_oude_rij(settings, old_s
     with closing(database.Database(path)) as db:
         db.backup_to(snapshot)
 
-    async def frames(db, last_id):
-        request = Request({"type": "http", "headers": [(b"last-event-id", last_id.encode())]})
-        response = await stream(request, None, SimpleNamespace(db=db, events=EventBus(db)))
-        result = []
-        async with aclosing(response.body_iterator) as chunks:
-            async for chunk in chunks:
-                if chunk.startswith("retry:"):
-                    break
-                result.append(chunk)
-        return result
-
     def schrijf_en_upgrade(db):
         with monkeypatch.context() as old:
             old.setattr(database, "MIGRATIONS_DIR", old_schema)
@@ -401,13 +479,19 @@ async def test_sse_hervat_na_tweede_upgrade_met_gelijke_oude_rij(settings, old_s
 
     with closing(database.Database(path)) as db:
         schrijf_en_upgrade(db)
-        eerste = await frames(db, "0")
+        ctx = SimpleNamespace(db=db, events=EventBus(db))
+        eerste = [frame for frame in await sse_herlezing(ctx, "0") if frame.startswith("id: ")]
         assert len(eerste) == 2 and "recovery.committed" in eerste[-1]
         last_id = eerste[-1].splitlines()[0].removeprefix("id: ")
-        assert not await frames(db, last_id)
-    with closing(sqlite3.connect(snapshot)) as saved, closing(sqlite3.connect(path)) as live:
-        saved.backup(live)
+        assert not await sse_herlezing(ctx, last_id)
+    herstel(snapshot, path)
     with closing(database.Database(path)) as db:
         schrijf_en_upgrade(db)
-        herhaald = await frames(db, last_id)
+        ctx = SimpleNamespace(db=db, events=EventBus(db))
+        reset, *herhaald = await sse_herlezing(ctx, last_id)
+        controleer_sse_reset(reset)
+        assert len(herhaald) == 2 and herhaald[0] != eerste[0]
         assert sum("recovery.committed" in frame for frame in herhaald) == 1
+        db.execute("DELETE FROM outbox_events")
+        leeg, = await sse_herlezing(ctx, last_id)
+        controleer_sse_reset(leeg)

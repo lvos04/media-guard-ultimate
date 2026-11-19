@@ -38,3 +38,10 @@ CREATE TABLE outbox_source (
 );
 INSERT INTO outbox_source(event_id, birth)
 SELECT id, mg_legacy_event(id, ts, topic, instance_id, payload) FROM outbox_events;
+
+-- Ook twee upgrades van dezelfde oude snapshot zijn afzonderlijke generaties.
+CREATE TABLE outbox_generation (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    generation BLOB NOT NULL CHECK (length(generation) = 16)
+);
+INSERT INTO outbox_generation VALUES (1, randomblob(16));

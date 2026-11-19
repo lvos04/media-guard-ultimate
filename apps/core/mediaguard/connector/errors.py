@@ -36,6 +36,11 @@ def failure(
     )
 
 
+def cursor_expired() -> JSONResponse:
+    return failure(409, "cursor_expired", "De cursor is verlopen. Begin opnieuw zonder cursor.",
+                   {"restart": True})
+
+
 def event_database_failure(path: str, exc: Exception) -> JSONResponse | None:
     if path != "/connector/v1/events" or not isinstance(exc, sqlite3.OperationalError):
         return None
