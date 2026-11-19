@@ -60,7 +60,7 @@ DEFER_UPGRADE = {"decision": "defer", "reason_code": "EMERGENCY_STOP",
 
 # -- core-kant -----------------------------------------------------------------------------
 def flag_path(ctx: AppContext) -> Path:
-    return Path(ctx.settings.data_dir) / FLAG_NAME
+    return Path(os.environ.get("MG_HOOKGUARD_FLAG") or Path(ctx.settings.data_dir) / FLAG_NAME)
 
 
 def write_flag(ctx: AppContext) -> bool:

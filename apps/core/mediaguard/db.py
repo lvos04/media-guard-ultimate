@@ -179,7 +179,8 @@ class Database:
             self.path.parent, schema.encoder_dir(self.path.parent), blocking=blocking,
         )
 
-    def initialize(self, *, pre_update_set: Path | None = None) -> Path | None:
+    def initialize(self, *, pre_update_set: Path | None = None,
+                   encoder_migrations: Path | None = None) -> Path | None:
         """Initialiseer de database en geef de werkelijk gebruikte herstelset terug."""
         if os.environ.get(schema.AIO_RECOVERY_ENV):
             self.check_schema()
@@ -193,11 +194,14 @@ class Database:
         with self.startup_lock():
             if not self.check_schema():
                 try:
-                    return self._initialize(pre_update_set)
+                    return self._initialize(pre_update_set, encoder_migrations)
                 except schema.SchemaTooNew:
                     self.read_only = True
 
-    def _initialize(self, pre_update_set: Path | None) -> Path | None:
+    def _initialize(self, pre_update_set: Path | None,
+                    encoder_migrations: Path | None) -> Path | None:
+        from mediaguard.maintenance import preupdate
+
         folder = self.path.parent
         conn = self._connect()
         if conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
@@ -224,39 +228,37 @@ class Database:
             )
             applied = {r["version"] for r in conn.execute("SELECT version FROM schema_migrations")}
         pending = [f for f in sorted(MIGRATIONS_DIR.glob("*.sql")) if f.stem not in applied]
-        if not pending:
+        if not pending and encoder_migrations is None:
             with contextlib.suppress(OSError):
                 (folder / MIGRATION_FAILED_FILE).unlink()
             return
-        other = active_migration(folder)
         info = {"pid": os.getpid(), "since": utcnow(), "role": os.environ.get("MG_ROLE", ""),
-                "from": max(applied) if applied else None, "to": pending[-1].stem,
+                "from": max(applied) if applied else None,
+                "to": pending[-1].stem if pending else None,
                 "pending": len(pending)}
         with contextlib.suppress(OSError):
             marker.write_text(json.dumps(info), encoding="utf-8")
         try:
-            protected = {"151_outbox_event_identity", "152_connector_evidence_version",
-                         "154_outbox_generation", "155_job_evidence_snapshot",
-                         "156_outbox_cursor_history", "157_connector_evidence"}
-            first_protected = next((f for f in pending if f.stem in protected), None)
-            if pre_update_set is not None and first_protected is None:
-                first_protected = pending[0]
+            # Bij een losse kern blijven de oude migratiestappen afzonderlijk bewaakt.
+            # De eventidentiteit en haar opvolgers vormen één transactie vanaf schema 151.
+            first_protected = next((f for f in pending if f.stem >= "151_"), None)
             used_set = None
             previous = max(applied, default="")
             with contextlib.ExitStack() as locks:
-                if applied and first_protected:
-                    # Ook een oudere encoderschrijver kent het gedeelde mapslot nog niet.
-                    for path in sorted(schema.encoder_dir(folder).glob("*.db")):
-                        reserve = locks.enter_context(contextlib.closing(sqlite3.connect(
-                            path.resolve().as_uri() + "?mode=rw", uri=True, timeout=30,
-                        )))
-                        reserve.execute("BEGIN IMMEDIATE")
-                if applied and (first_protected or other is None):
+                supervised = pre_update_set is not None
+                if applied:
+                    engines = locks.enter_context(
+                        preupdate.reserve_encoders(schema.encoder_dir(folder)))
+                if supervised:
+                    # Dezelfde schrijftransactie omvat de definitieve set en alle migraties,
+                    # ook wanneer alleen de encoder achterloopt.
+                    locks.enter_context(self._migration_transaction(conn))
+                if applied:
                     with self._migration_transaction(conn):
                         data_version = conn.execute("PRAGMA data_version").fetchone()[0]
                         used_set = self._backup_before_migration(
-                            max(applied), pending[-1].stem,
-                            required=first_protected is not None, archive=pre_update_set,
+                            previous if pending else None, info["to"],
+                            required=True, archive=pre_update_set,
                         )
                 for file in pending:
                     if applied and file == first_protected:
@@ -284,6 +286,13 @@ class Database:
                                 freeze_existing(conn, previous=previous)
                     else:
                         self._apply_migration(conn, file)
+                if encoder_migrations is not None:
+                    if used_set is None:
+                        raise RuntimeError("de volledige herstelset voor de AV1-migratie ontbreekt")
+                    preupdate.migrate_encoders(engines, encoder_migrations)
+                    preupdate.record_commit(folder, used_set)
+            if encoder_migrations is not None:
+                (folder / preupdate.COMMIT_MARKER).unlink()
         except schema.SchemaTooNew:
             raise  # normale herstelweergave, geen mislukte migratie
         except BaseException as exc:
@@ -331,6 +340,12 @@ class Database:
                 conn.create_function("mg_legacy_event", 5, _legacy_event, deterministic=True)
             if version == "156_outbox_cursor_history":
                 event_keys.ensure_key(event_keys.key_path(self.path.parent))
+                row = conn.execute("SELECT cursor_key FROM outbox_retention WHERE singleton=1"
+                                   ).fetchone()
+                if row and isinstance(row[0], str) and row[0].startswith(event_keys.LEGACY_PREFIX):
+                    event_keys.load_legacy(self.path.parent, row[0])
+                    conn.execute("UPDATE outbox_retention SET cursor_key=? WHERE singleton=1",
+                                 (event_keys.KEY_REF,))
             for statement in _split_sql(sql):
                 conn.execute(statement)
             conn.execute(
@@ -339,15 +354,16 @@ class Database:
             )
 
     def _backup_before_migration(
-        self, current: str, target: str, *, required: bool = False, archive: Path | None = None,
+        self, current: str | None, target: str | None, *, required: bool = False,
+        archive: Path | None = None,
     ) -> Path | None:
         """Verifieer bij een beschermde migratie een actuele herstelset."""
         made = archive or os.environ.get("MG_PRE_UPDATE_SET")
-        if not required and made and (Path(made) / "meta.json").is_file():
-            return Path(made)
         from mediaguard import __version__
         from mediaguard.maintenance import preupdate
 
+        if not required and made and preupdate._read_meta(Path(made)) is not None:
+            return Path(made)
         try:
             if required and made:
                 path = Path(made)

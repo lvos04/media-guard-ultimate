@@ -130,7 +130,7 @@ class Spec:
         if self.restricted_roots is None:
             return self.argv
         return [sys.executable, "-I", str(Path(__file__).with_name("aio_access.py")),
-                *map(str, self.restricted_roots), *self.argv]
+                *map(str, self.restricted_roots), self.name, *self.argv]
 
 
 # Stop Grace Period uit de README (60 s) min een marge, zodat de supervisor zelf klaar is
@@ -226,6 +226,7 @@ def build_specs(env: dict[str, str]) -> list[Spec]:
         "MG_PUBLIC_HOST": env.get("MG_HOST") or env.get("MG_AIO_LAN_IP", ""),
         # rapport 16: echte logs onder /config/logs (core.log, recovery.log, encoder.log)
         "MG_LOG_DIR": str(config / "logs"),
+        "MG_HOOKGUARD_FLAG": str(config / "core" / "hookguard" / "noodstop.json"),
         # rapport 17: alleen onder de supervisor kan een back-up van vóór een update bij het
         # stoppen worden teruggezet
         "MG_AIO_SUPERVISOR": "1",
@@ -331,7 +332,7 @@ def build_specs(env: dict[str, str]) -> list[Spec]:
         {**base, "HOME": str(config / "core"),
          "MG_HOOKGUARD_PORT": str(hookguard_port),
          "MG_HOOKGUARD_CORE": f"{INTERNAL_HOST}:{CORE_PORT}",
-         "MG_HOOKGUARD_FLAG": str(config / "core" / "noodstop.json"),
+         "MG_HOOKGUARD_FLAG": core_env["MG_HOOKGUARD_FLAG"],
          "MG_HOOKGUARD_DB": str(config / "core" / "mediaguard.db"),
          # iets korter dan de fork wacht, zodat de wachter zelf nog kan antwoorden
          "MG_HOOKGUARD_TIMEOUT_MS": str(max(500, hook_timeout - 500))},
@@ -1213,7 +1214,14 @@ def _run_services(env: dict[str, str], config: Path, stop: threading.Event,
     if launcher is not None:
         web = next(spec for spec in specs if spec.name == "web")
         threading.Thread(target=sup._pump, args=(web, launcher.worker.stdout), daemon=True).start()
-    code = sup.run()
+    with contextlib.ExitStack() as active:
+        if not recovering:
+            try:
+                active.enter_context(live_core_reader(config / "core"))
+            except (OSError, sqlite3.Error) as exc:
+                print(f"[mediaguard] Kerncontrole voor de diensten mislukt: {exc}", flush=True)
+                return 1
+        code = sup.run()
     # alle diensten zijn nu gestopt: een in de app klaargezette terugzetting omwisselen
     from mediaguard.maintenance.preupdate import config_locks, encoder_migrations
 
@@ -1223,18 +1231,37 @@ def _run_services(env: dict[str, str], config: Path, stop: threading.Event,
     return code
 
 
+@contextlib.contextmanager
+def live_core_reader(core: Path):
+    """Houd de actieve WAL en SHM stabiel voor de schemacontrole van encoder en hookwacht."""
+    (core / "hookguard").mkdir(exist_ok=True, mode=0o700)
+    uri = (core / "mediaguard.db").resolve().as_uri() + "?mode=ro"
+    with contextlib.closing(sqlite3.connect(uri, uri=True)) as reader:
+        # Zonder lopende leestransactie kan SQLite ondertussen gewoon checkpointen.
+        reader.execute("SELECT count(*) FROM sqlite_schema").fetchone()
+        yield
+
+
 def apply_staged_restore(config: Path, owner: tuple[int, int] | None,
-                         migrations: Path | None = None) -> list[str]:
+                         migrations: Path | None = None, *,
+                         before_start: bool = False) -> list[str]:
     """Alleen als geen enkele dienst draait (bij de start of na het stoppen)."""
     from mediaguard.maintenance import preupdate
 
     try:
-        result = preupdate.apply_staged(config / "core", owner, av1_migrations=migrations)
-    except Exception as exc:  # noqa: BLE001 - nooit de start blokkeren
+        result = preupdate.apply_staged(config / "core", owner, av1_migrations=migrations,
+                                        keep_on_error=True)
+    except Exception as exc:
+        if before_start:
+            raise RuntimeError(f"terugzetten mislukt: {exc}") from exc
         return [f"terugzetten mislukt: {exc}"]
     if result is None:
+        if before_start and (config / "core" / preupdate.STAGE_MARKER).exists():
+            raise RuntimeError("de terugzetmarkering is onleesbaar; diensten zijn niet gestart")
         return []
     if not result.get("ok"):
+        if before_start:
+            raise RuntimeError(f"terugzetten niet gedaan: {result.get('error')}")
         return [f"terugzetten niet gedaan: {result.get('error')}"]
     return [f"back-up {result.get('set')} teruggezet ({', '.join(result.get('files') or [])}); "
             f"de vorige databases staan in {result.get('previous')}"]
@@ -1309,9 +1336,9 @@ def before_services(env: dict[str, str], config: Path,
     from mediaguard.maintenance import preupdate
 
     migrations = preupdate.encoder_migrations(env)
-    with preupdate.config_locks(config):
-        out = apply_staged_restore(config, owner, migrations)
     env.pop("MG_PRE_UPDATE_SET", None)
+    with preupdate.config_locks(config):
+        out = apply_staged_restore(config, owner, migrations, before_start=True)
     try:
         made = _preupdate("upgrade" if migrate_core else "snapshot", config, migrations, owner)
     except schema.SchemaTooNew:

@@ -76,7 +76,9 @@ def run(secrets_dir: Path, app_dirs: list[Path], data_dirs: list[Path]) -> list[
             log.append(f"map aangemaakt: {d}")
     _ensure_dir(secrets_dir, uid, gid)
     try:
-        event_keys.ensure_key(secrets_dir / event_keys.KEY_REF, (uid, gid))
+        core = next((p for p in app_dirs if p.name == "core"), secrets_dir.parent / "core")
+        event_keys.prepare_for_start(core / "mediaguard.db", secrets_dir / event_keys.KEY_REF,
+                                     (uid, gid))
     except (OSError, ValueError):
         log.append("Cursorsleutel onbruikbaar. Controleer eigenaar en rechten van de geheimenmap.")
     _ensure_dir(secrets_dir / "internal", uid, gid)

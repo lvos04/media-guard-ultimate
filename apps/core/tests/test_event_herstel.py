@@ -749,7 +749,8 @@ def test_oude_sleutel_alleen_bij_expliciet_terugzetten(tmp_path, monkeypatch, on
                 assert versie < "156_"
         else:
             aio.before_services({}, root, None, migrate_core=True)
-    archives = [p.parent for p in pad.parent.glob("backups/voor-update/*/meta.json")]
+    folder = pad.parent / "backups" / preupdate.FOLDER
+    archives = [folder / row["name"] for row in preupdate.list_sets(folder)]
     assert archives and all(not preupdate.verify(a) for a in archives)
     copy = preupdate.shutil.copyfile
 

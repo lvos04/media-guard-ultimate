@@ -344,7 +344,8 @@ def test_forks_reach_core_through_the_hook_guard(tmp_path):
     guard = by["hookguard"]
     assert guard.argv[-2:] == ["-m", "mediaguard.hookguard"]
     assert guard.env["MG_HOOKGUARD_CORE"] == "127.0.0.1:38100"
-    assert guard.env["MG_HOOKGUARD_FLAG"] == str(tmp_path / "config" / "core" / "noodstop.json")
+    assert guard.env["MG_HOOKGUARD_FLAG"] == str(tmp_path / "config/core/hookguard/noodstop.json")
+    assert guard.env["MG_HOOKGUARD_FLAG"] == by["core"].env["MG_HOOKGUARD_FLAG"]
     assert guard.env["MG_HOOKGUARD_DB"] == str(tmp_path / "config" / "core" / "mediaguard.db")
     assert guard.env["MG_HOOKGUARD_TIMEOUT_MS"] == "3500"  # korter dan de fork wacht
     assert guard.health == "http://127.0.0.1:38102/livez"

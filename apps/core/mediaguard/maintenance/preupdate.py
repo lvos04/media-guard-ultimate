@@ -4,12 +4,13 @@ Een set is een map ``/config/core/backups/voor-update/voor-update-<tijd>/`` met:
 
 - ``mediaguard.db``: consistente kopie van de core-database;
 - ``encode/<naam>.db``: de database(s) van de AV1-engine (alleen in de AIO);
-- ``meta.json``: versies, schema's, checksums en het resultaat van de hersteltest.
+- een manifest met versies, schema's, checksums en de hersteltest. Sets met een
+  historische sleutelverwijzing hebben een eigen manifestnaam voor de oudere lezers.
 
 In de alles-in-één-container maakt de supervisor de set vóórdat er één dienst start, en
 alleen als core of de AV1-engine een databasemigratie heeft openstaan. Zo horen de twee
 databases bij elkaar en is geen van beide al gemigreerd. Zonder supervisor maakt core zelf
-een set (alleen de core-database) vlak vóór zijn migratie.
+een set met de databases die voor hem beschikbaar zijn.
 
 Terugzetten gebeurt in twee stappen, omdat een draaiende dienst zijn database open heeft:
 
@@ -36,7 +37,7 @@ import sqlite3
 import stat
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,8 @@ ASIDE_FOLDER = "voor-terugzetten"
 STAGE_MARKER = "terugzetten.json"
 RESULT_FILE = "terugzetten-resultaat.json"
 UPGRADE_SET = "update-herstelset"
+COMMIT_MARKER = "update-in-uitvoering"
+LEGACY_KEY_META = "meta-met-sleutelverwijzing.json"
 STAGED_SUFFIX = ".terugzetten"
 KEEP_SETS = 5
 PARTIAL_GRACE_S = 3600
@@ -76,6 +79,14 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _sync(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _chown(paths: list[Path], owner: tuple[int, int] | None) -> None:
@@ -130,6 +141,10 @@ def _copy_sqlite(src: Path, dest: Path) -> dict[str, Any]:
             s.execute("BEGIN")
             core = dest.name == "mediaguard.db" and dest.parent.name != "encode"
             value = _cursor_value(s) if core else None
+            if isinstance(value, str) and value.startswith(event_keys.LEGACY_PREFIX):
+                # Ook een door een eerdere beheerroute rechtstreeks teruggezette verwijzing
+                # moet met de oorspronkelijke sleutel terug te zetten zijn.
+                value = event_keys.load_legacy(src.parent, value)
             if isinstance(value, bytes):
                 extra["legacy_cursor_key"] = _copy_legacy(s, src.parent, part, value)
             else:
@@ -190,7 +205,17 @@ def claim_snapshot(core_dir: Path, archive: Path) -> bool:
     return name == archive.name
 
 
-def matches_sources(path: Path, core_db: Path, current: str, target: str) -> bool:
+def _check_archive_access(path: Path, owner: tuple[int, int] | None = None) -> None:
+    expected = owner or (os.geteuid(), os.getegid())
+    for entry in (path, *path.rglob("*")):
+        info = entry.lstat()
+        mode = 0o700 if stat.S_ISDIR(info.st_mode) else 0o600
+        if ((info.st_uid, info.st_gid) != expected or stat.S_IMODE(info.st_mode) != mode
+                or (mode == 0o600 and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1))):
+            raise SetError("de eigenaar of toegangsrechten van de herstelset kloppen niet")
+
+
+def matches_sources(path: Path, core_db: Path, current: str | None, target: str | None) -> bool:
     """Controleer onder beide mapsloten de volledige set en alle live databases met WAL."""
     if path.parent != core_db.parent / "backups" / FOLDER or not _SET_NAME.fullmatch(path.name):
         return False
@@ -204,6 +229,7 @@ def matches_sources(path: Path, core_db: Path, current: str, target: str) -> boo
         raise SetError("de herstelset bevat niet alle actuele databases")
     if problems := verify(path):
         raise SetError(", ".join(problems))
+    _check_archive_access(path)
     return True
 
 
@@ -233,7 +259,7 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
     # Oudere supervisors accepteren na de seconde alleen één decimaal achtervoegsel.
     name = f"{SET_PREFIX}{stamp:%Y%m%dT%H%M%SZ-%f}{uuid4().int:039d}"
     work = folder / (name + ".part")
-    work.mkdir()
+    work.mkdir(mode=0o700)
     files: list[dict[str, Any]] = []
     try:
         generation = _source_generation(core_db, encode_dir) if reason == "update" else None
@@ -241,7 +267,7 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
                       **_copy_sqlite(core_db, work / "mediaguard.db")})
         encoder_problem = None
         if encode_dir is not None and encode_dir.is_dir():
-            (work / "encode").mkdir()
+            (work / "encode").mkdir(mode=0o700)
             for db in sorted(encode_dir.glob("*.db")):
                 try:
                     files.append({"name": f"encode/{db.name}", "live": f"encode/{db.name}",
@@ -260,23 +286,36 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
             if generation != _source_generation(core_db, encode_dir):
                 raise SetError("de bronbestanden zijn tijdens het archiveren gewijzigd")
             meta["source_generation"] = generation
-        (work / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        manifest = LEGACY_KEY_META if any("legacy_cursor_key" in f for f in files) else "meta.json"
+        (work / manifest).write_text(json.dumps(meta, indent=2), encoding="utf-8")
         if reason == "update":
+            for entry in work.rglob("*"):
+                entry.chmod(0o700 if entry.is_dir() else 0o600)
+            _chown([work, *work.rglob("*")], owner)
+            _check_archive_access(work, owner)
             if encoder_problem or _read_meta(work) != meta:
                 raise SetError("de herstelset voor de update is onvolledig")
             if problems := verify(work, core_dir=core_db.parent):
                 raise SetError(", ".join(problems))
+            for entry in sorted(work.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+                _sync(entry)
+            _sync(work)
         os.replace(work, folder / name)
+        if reason == "update":
+            for directory in (folder, folder.parent, core_db.parent):
+                _sync(directory)
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
         raise
     done = folder / name
-    _chown([done, *done.rglob("*")], owner)
+    if reason != "update":
+        _chown([done, *done.rglob("*")], owner)
     protected = {done}
     if preserve is not None:
         protected.add(preserve)
     prune_sets(folder, protected=protected)
     if reason == "update":
+        _check_archive_access(done, owner)
         if _read_meta(done) != meta:
             raise SetError("de gepubliceerde herstelset voor deze update ontbreekt of is gewijzigd")
         if problems := verify(done, core_dir=core_db.parent):
@@ -290,7 +329,7 @@ def prune_sets(folder: Path, keep: int = KEEP_SETS, now: float | None = None,
     now = time.time() if now is None else now
     removed = 0
     complete = sorted(p for p in folder.glob(SET_PREFIX + "*")
-                      if p.is_dir() and _SET_NAME.match(p.name) and (p / "meta.json").is_file())
+                      if p.is_dir() and _SET_NAME.fullmatch(p.name) and _read_meta(p) is not None)
     removable = [p for p in complete if p not in (protected or set())]
     for old in removable[:max(0, len(complete) - keep)]:
         shutil.rmtree(old, ignore_errors=True)
@@ -310,11 +349,30 @@ def prune_sets(folder: Path, keep: int = KEEP_SETS, now: float | None = None,
 
 # -- lezen ------------------------------------------------------------------------------------
 def _read_meta(set_dir: Path) -> dict[str, Any] | None:
+    source = set_dir / LEGACY_KEY_META
     try:
-        meta = json.loads((set_dir / "meta.json").read_text(encoding="utf-8"))
+        try:
+            data = source.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            data = (set_dir / "meta.json").read_text(encoding="utf-8")
+        meta = json.loads(data)
     except (OSError, ValueError):
         return None
     return meta if isinstance(meta, dict) else None
+
+
+def _protect_old_manifests(folder: Path) -> None:
+    """Verberg ook eerdere sets met verwijzingen voor een beheerder van schema 155."""
+    for manifest in folder.glob(SET_PREFIX + "*/meta.json"):
+        if not _SET_NAME.fullmatch(manifest.parent.name):
+            continue
+        meta = _read_meta(manifest.parent) or {}
+        if any(isinstance(f, dict) and "legacy_cursor_key" in f for f in meta.get("files", [])):
+            target = manifest.with_name(LEGACY_KEY_META)
+            if target.exists():
+                raise SetError("de herstelset heeft twee verschillende manifesten")
+            manifest.rename(target)
+            _sync(target.parent)
 
 
 def list_sets(folder: Path) -> list[dict[str, Any]]:
@@ -471,6 +529,7 @@ def stage(core_dir: Path, path: Path, *, actor: str) -> dict[str, Any]:
 
 def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
     config_root = core_dir.parent
+    _protect_old_manifests(core_dir / "backups" / FOLDER)
     pairs = _set_files(core_dir, path)
     migrations = encoder_migrations(os.environ)
     for rel, (src, size, digest) in pairs.items():
@@ -497,6 +556,8 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
     try:
         for live, (src, size, digest) in pairs.items():
             dest = _within(config_root, live + STAGED_SUFFIX)
+            if dest != (config_root / (live + STAGED_SUFFIX)).absolute():
+                raise SetError("ongeldig pad naar de klaargezette database")
             with tempfile.NamedTemporaryFile(dir=dest.parent, suffix=".part", delete=False) as out:
                 part = Path(out.name)
             try:
@@ -512,7 +573,9 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
                                     (legacy,))
                     size, digest = part.stat().st_size, _sha256(part)
                     _check_restore_copy(part, live, size, digest, migrations)
+                _sync(part)
                 os.replace(part, dest)
+                _sync(dest.parent)
             finally:
                 part.unlink(missing_ok=True)
             staged.append({"live": live, "staged": live + STAGED_SUFFIX,
@@ -527,7 +590,9 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
     marker = core_dir / STAGE_MARKER
     tmp = marker.with_name(marker.name + ".part")
     tmp.write_text(json.dumps(info, indent=2), encoding="utf-8")
+    _sync(tmp)
     os.replace(tmp, marker)
+    _sync(core_dir)
     return info
 
 
@@ -558,13 +623,14 @@ def cancel(core_dir: Path) -> bool:
 
 def apply_staged(core_dir: Path, owner: tuple[int, int] | None = None,
                  max_age_s: float = STAGE_MAX_AGE_S, *,
-                 av1_migrations: Path | None = None) -> dict[str, Any] | None:
+                 av1_migrations: Path | None = None,
+                 keep_on_error: bool = False) -> dict[str, Any] | None:
     """Alleen aanroepen als ALLE diensten gestopt zijn (supervisor). Hernoemt de huidige
     databases (met hun -wal/-shm) naar ``voor-terugzetten/<tijd>/`` en de klaargezette
     kopieën naar hun plek. Ontbreekt er iets, dan verandert er niets."""
     with Database(core_dir / "mediaguard.db").startup_lock():
         return _apply_staged(core_dir, owner, max_age_s,
-                             av1_migrations or encoder_migrations(os.environ))
+                             av1_migrations or encoder_migrations(os.environ), keep_on_error)
 
 
 def _restore_pairs(core_dir: Path, info: dict[str, Any], av1_migrations: Path,
@@ -621,7 +687,7 @@ def _restore_pairs(core_dir: Path, info: dict[str, Any], av1_migrations: Path,
 
 
 def _apply_staged(core_dir: Path, owner: tuple[int, int] | None, max_age_s: float,
-                  av1_migrations: Path) -> dict[str, Any] | None:
+                  av1_migrations: Path, keep_on_error: bool) -> dict[str, Any] | None:
     info = pending(core_dir)
     if info is None:
         return None
@@ -630,6 +696,10 @@ def _apply_staged(core_dir: Path, owner: tuple[int, int] | None, max_age_s: floa
         pairs = _restore_pairs(core_dir, info, av1_migrations, max_age_s)
     except (SetError, schema.SchemaTooNew) as exc:
         result = {"ok": False, "set": info.get("set"), "at": _now(), "error": str(exc)}
+        # De supervisor mag bij zijn volgende start dezelfde mislukte terugval niet
+        # voorbijgaan. De beheerder kan de aanvraag annuleren of de set opnieuw klaarzetten.
+        if keep_on_error:
+            return result
         # Tijdens de herstelweergave moet ook een geweigerde aanvraag appdata ongemoeid laten.
         # Bij bekende live-schema's kan de app de fout tonen en de aanvraag opruimen.
         try:
@@ -715,6 +785,80 @@ def _encoder_versions(migrations_dir: Path) -> set[int]:
             if (m := _ENC_VERSION.match(p.name))}
 
 
+@contextlib.contextmanager
+def reserve_encoders(folder: Path) -> Iterator[list[sqlite3.Connection]]:
+    """Houd oude en nieuwe SQLite-schrijvers tegen tot de geverifieerde upgrade is afgerond."""
+    with contextlib.ExitStack() as locks:
+        databases = []
+        for path in sorted(folder.glob("*.db")):
+            conn = locks.enter_context(contextlib.closing(sqlite3.connect(
+                path.resolve().as_uri() + "?mode=rw", uri=True, timeout=30,
+            )))
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("BEGIN IMMEDIATE")
+            # executescript mag het slot van de herstelset niet impliciet committen.
+            conn.autocommit = False
+            databases.append(locks.enter_context(conn))
+        yield databases
+
+
+def migrate_encoders(databases: list[sqlite3.Connection], migrations: Path) -> None:
+    """Pas de meegeleverde AV1-scripts op hun eigen versietabel toe onder dezelfde sloten."""
+    scripts = {}
+    for path in sorted(migrations.glob("*.sql")):
+        match = _ENC_VERSION.match(path.name)
+        if not match or (version := int(match[1])) in scripts:
+            raise SetError("ongeldige of dubbele AV1-databasemigratie")
+        scripts[version] = path
+    for conn in databases:
+        have = schema.versions_in(conn, "schema_versie", "versie")
+        if have - scripts.keys():
+            raise schema.SchemaTooNew()
+        if have:
+            for version in sorted(scripts.keys() - have):
+                path = scripts[version]
+                conn.executescript(path.read_text(encoding="utf-8"))
+                conn.execute("INSERT INTO schema_versie(versie,naam,toegepast_op) VALUES (?,?,?)",
+                             (version, path.name, _now()))
+
+
+def record_commit(core: Path, archive: Path) -> None:
+    """Bewaar de gekozen set vóór de afzonderlijke SQLite-commits op beide databases."""
+    marker = core / COMMIT_MARKER
+    with marker.open("x", encoding="ascii") as handle:
+        handle.write(archive.name)
+        handle.flush()
+        os.fsync(handle.fileno())
+    _sync(core)
+
+
+def _interrupted_commit(core: Path, pending: bool) -> Path | None:
+    marker = core / COMMIT_MARKER
+    try:
+        name = marker.read_text(encoding="ascii")
+    except FileNotFoundError:
+        return None
+    archive = find(core / "backups" / FOLDER, name)
+    if archive is None or not archive.is_dir():
+        raise SetError("de herstelset van de onderbroken update ontbreekt")
+    entries = _set_files(core, archive)
+    _check_archive_access(archive)
+    if problems := verify(archive):
+        raise SetError(", ".join(problems))
+    if pending:
+        # Alleen als alle versietabellen nog de oude stand hebben, mag een gewone nieuwe
+        # poging beginnen. Een gedeeltelijke commit krijgt nooit een nieuwe terugvalbasis.
+        for rel, (copy, _, _) in entries.items():
+            cols = ("schema_versie", "versie") if rel.startswith("encode/") else (
+                "schema_migrations", "version")
+            if schema.applied_versions(core.parent / rel, *cols) != schema.applied_versions(
+                copy, *cols,
+            ):
+                raise SetError(f"update deels vastgelegd; zet de geverifieerde set {name} terug")
+    marker.unlink()
+    return archive
+
+
 def _encoder_pending(encode_dir: Path, migrations_dir: Path | None, *, timeout: float = 30) -> bool:
     if migrations_dir is None:
         return False
@@ -787,23 +931,32 @@ def snapshot_before_start(config_root: Path, *, core_migrations: Path,
         core, enc = inspect_schema(config_root, core_migrations=core_migrations,
                                    encoder_migrations=encoder_migrations)
         core_db = config_root / "core" / "mediaguard.db"
+        if migrate_core:
+            event_keys.prepare_for_start(core_db, event_keys.key_path(core_db.parent), owner)
+        _protect_old_manifests(core_db.parent / "backups" / FOLDER)
+        previous = _interrupted_commit(core_db.parent, core is not None or enc)
         marker = core_db.parent / UPGRADE_SET
         marker.unlink(missing_ok=True)
         if core is None and not enc:
-            return None
+            if migrate_core:
+                with contextlib.closing(Database(core_db)) as db:
+                    initialized = db.initialize()
+                    db.require_writable()
+                    return initialized or previous
+            return previous
         archive = _make_set(core_db.parent / "backups" / FOLDER, core_db,
                             encode_dir=config_root / "encode",
                             from_schema=core[0] if core else None,
                             to_schema=core[1] if core else None,
                             from_version=_previous_version(core_db), to_version=app_version,
                             reason="update", owner=owner)
-        if migrate_core and core:
-            # Geen enkele dienst draait al. Houd beide mapsloten ook tijdens de kernmigratie.
+        if migrate_core:
             with contextlib.closing(Database(core_db)) as db:
-                archive = db.initialize(pre_update_set=archive)
+                archive = db.initialize(pre_update_set=archive,
+                                        encoder_migrations=encoder_migrations if enc else None)
                 db.require_writable()
                 if archive is None:
-                    raise SetError("er is geen geverifieerde herstelset voor deze kernmigratie")
+                    raise SetError("er is geen geverifieerde herstelset voor deze update")
         elif core:
             marker.write_text(archive.name, encoding="ascii")
         return archive

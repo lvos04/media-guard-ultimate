@@ -200,9 +200,15 @@ het na een uur opnieuw. Een back-up schrijft eerst naar `….part` en krijgt pas
 hersteltest zijn echte naam; halve of kapotte bestanden tellen niet mee bij het opruimen en
 kunnen dus nooit een goede back-up wegdrukken.
 
-**Vóór een update met databasewijzigingen** (in core of in de AV1-engine) maakt de
-supervisor, nog vóór er een dienst start, een set in `backups/voor-update/voor-update-<tijd>/`
-met de core-database, de database(s) van de AV1-engine en `meta.json` (versies, checksums).
+**Vóór een update met databasewijzigingen** maakt de supervisor een set in
+`backups/voor-update/voor-update-<tijd>/` met de kern, alle AV1-databases en hun manifest.
+Onder SQLite-schrijfsloten controleert hij de bronbestanden inclusief WAL, de eigenaar,
+de rechten (mappen 0700, bestanden 0600), de integriteit en de SHA-256-controlesommen.
+Is sinds de eerste kopie een transactie vastgelegd, dan maakt hij onder die sloten een
+actuele set. Onder dezelfde sloten voert hij de openstaande migraties uit. Pas daarna
+meldt hij de gekozen set en start hij de diensten. Ook als alleen de encoder migreert,
+geldt deze volgorde. Bij een gedeeltelijke commit bewaart de supervisor de set en
+vermeldt de startweigering welke set de beheerder kan terugzetten.
 De laatste 5 sets blijven bewaard. Je ziet ze in de app onder *Instellingen → Systeem →
 Back-ups* ('Vóór update naar …'). **Terugzetten** zet de kopieën klaar; zodra de app stopt
 wisselt MediaGuard de databases om (alleen hernoemen, binnen een seconde). De databases van
@@ -224,12 +230,16 @@ en het doelpad. Zet bij handmatig herstel eerst alle huidige databases met hun
 naar de aangegeven doelpaden. Verwijder de markering `terugzetten.json` uit de
 kernmap zodra alle kopieën op hun plek staan. Voor een set van een schema met een
 historische cursorsleutel is ook de oorspronkelijke map `secrets/core` nodig. De set
-bevat de verwijzing. Bij het klaarzetten krijgt de database voor de oude versie de
-oorspronkelijke sleutel terug. Bewaar de set en neem de geheimenmap mee in de herstelbundel.
+bevat de verwijzing. Haar manifest heet `meta-met-sleutelverwijzing.json`. Daardoor toont
+het oude beheer deze set niet als een zelfstandig terugzetbare kopie. Zet haar klaar met
+de versie die de verwijzing kan lezen. Die versie herstelt de oorspronkelijke sleutel in
+de wachtende database en schrijft een markering die ook de oude supervisor kan toepassen.
+Bewaar de set en neem de geheimenmap mee in de herstelbundel.
 
 De alles-in-één-supervisor controleert vóór de migratie of de kernel Landlock ABI 3
-of hoger ondersteunt. Daarmee schermt hij de kerngeheimen af voor de nevendiensten
-die voor hun mediabestanden dezelfde gebruikersidentiteit nodig hebben.
+of hoger ondersteunt. De kernel schermt de kerngeheimen, terugzetkopieën en tijdelijke
+kernbestanden af voor alle zeven nevendiensten. De encoder en hookwacht kunnen de actieve
+SQLite-bestanden lezen voor de schemacontrole. De hookwacht leest ook zijn noodstopvlag.
 
 Die gewone back-ups bevatten de opgeslagen wachtwoorden en API-sleutels **versleuteld**;
 de sleutel daarvoor (`core/secret.key`) en de gegenereerde sleutels (`secrets/`) staan er
@@ -269,3 +279,19 @@ Daarna staan `core/mediaguard.db`, `core/secret.key`, `encode/*.db` en `secrets/
 hun plek en start de app zoals voorheen. Herstelcode kwijt? Maak een nieuwe (oude bundels
 blijven met hun eigen `herstelsleutel.json` + oude code te openen); zonder code zijn
 bestaande bundels niet te openen — dat is precies de bedoeling.
+
+### 8.1 Proefgevallen voor de update en terugval
+
+| Geval | Wat de lokale proef moet aantonen | Controle in de repo |
+|---|---|---|
+| Laatste transactie | Een kern- of encoderschrijver legt 75% en een auditregel vast. Precies de gemelde set herstelt beide, ook bij uitsluitend een encodermigratie. Een tussentijdse kernpublicatie komt mee. | `test_event_herstel.py`, `test_updatevolgorde.py` |
+| Volledigheid en rotatie | Volle opslag, een verdwenen of beschadigde set en te ruime rechten blokkeren de update. Bij een vaste en een lopende klok overleeft de actuele set de rotatie. | `test_event_herstel.py`, `test_updatevolgorde.py` |
+| Onderbroken omwisseling | Een onderbreking tussen de commits van kern en encoder geeft een startweigering met de oorspronkelijke set. Een onvolledige terugzetaanvraag blijft bij herstart geweigerd. Na expliciet herstel of annulering kan de bewaker opnieuw starten. | `test_updatevolgorde.py`, `test_schema_klaargezet.py` |
+| Oud beheer en oude supervisor | Na weigering of onderbreking blijft schema 155 zijn events lezen. De oude beheerroute biedt een set met sleutelverwijzing niet aan. De oude supervisors kunnen een expliciet klaargezette set toepassen. | `test_updatevolgorde.py`, `test_event_herstel.py`, herstelcode van schema 155 en release 1.2.2 |
+| Sleutelpublicatie | Twee herstarts behouden dezelfde sleutel na uitval bij publicatie. De herkende tijdelijke naam van de vorige schrijver is herstelbaar. Een onbekende koppeling of ontbrekende uitgegeven sleutel blokkeert de vrijgave. | `test_updatevolgorde.py` |
+| Wachtende terugval | Tijdens het klaarzetten blijft de eventroute bereikbaar. Zeven nevendiensten krijgen een leesweigering op de wachtende kernkopie. Na de omwisseling levert de oude leespositie de juiste vervolgpagina. | `test_updatevolgorde.py`, `test_aio.py`, beheer-API van schema 155 |
+| Sleutelopslag en archieven | Ook bij een afgebroken migratie bevatten de nieuwe archieven geen sleutelbytes. Bij onveilige rechten weigeren polling en SSE en na rechtenherstel blijft de cursor bruikbaar. | `test_event_herstel.py`, `test_event_leesposities.py` |
+| Eventidentiteit en retentie | Een terugval of gelijktijdige schrijvers hergebruiken geen identiteit. Een vervallen cursor geeft 409. Een SSE-reset herleest alle bewaarde rijen, ook bij een lege pagina, een nieuw gat of meerdere batches. | `test_event_herstel.py`, `test_event_leesposities.py`, `test_connector_events.py` |
+| Invoer, rechten en tijdelijke uitval | Polling en SSE bewaken de leesrechten. Ongeldige queryvelden geven 422. Een bezette aanmeld- of outboxcontrole geeft 503 met wachttijd. Antwoord en verzoeklog bevatten uitsluitend toegestane gegevens. | `test_connector_events.py`, `test_event_leesposities.py`, `test_openapi_export.py` |
+| Kijkgegevens en voortgang | Twee simulatorgebruikers behouden rechten, gezien-status, hervatpunt, favoriet, beoordeling en spoorkeuzes tijdens upgrade en terugval. De koppeling doet nul schrijfverzoeken. De taak loopt na herstart door. | Mediaserversimulator en gevulde releasefixture |
+| Gevulde vorige release | Vergelijk elke gevulde tabel vóór en na de image-upgrade en na terugzetten. Taken, gebruikers, events en de open overdracht blijven aanwezig. | `scripts/upgradebewijs.py poort` |
