@@ -21725,6 +21725,17 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "De opslag van de inrichting is tijdelijk niet beschikbaar.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "minimum": 1.0,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Put Config",

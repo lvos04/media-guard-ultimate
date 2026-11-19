@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import secrets
 import sqlite3
 import time
 from collections import Counter
@@ -336,6 +337,142 @@ def populated_installation(settings):
             lambda _: httpx.Response(200, json={})
         )
         yield ctx, client, machine
+
+
+@pytest.mark.parametrize("herkomst", ["release", "opvolger", "156", "156_arr_naam"])
+def test_arr_download_behoudt_id_bij_wisselende_clientwachtrij(populated_installation, herkomst):
+    from test_arr_fakes import FakeArr, wire
+
+    from mediaguard.connector.items import content_hash
+    from mediaguard.instances.registry import create_instance
+    from mediaguard.provisioning import store
+    from mediaguard.provisioning.templates import owned_name
+
+    ctx, admin, viewer = populated_installation
+    headers = key(admin)
+    ctx.db.execute("UPDATE instances SET suspended=1")
+    client = {"name": "Proefbron", "implementation": "QBittorrent",
+              "host": "client.invalid", "port": 8080}
+    if herkomst == "opvolger":
+        store.save(ctx, {"download_clients": [dict(client, name="Eerdere")]}, "proef")
+    if herkomst.startswith("156"):
+        ctx.db.execute(
+            "UPDATE connector_evidence_origin SET schema_version='156_outbox_cursor_history'"
+        )
+    store.save(ctx, {"download_clients": [client]}, "proef")
+    inst = create_instance(ctx, {"id": "proefwachtrij", "app": "radarr", "media_type": "movie",
+                                 "url": "http://wachtrij.invalid"})
+    arr = wire(ctx, inst.id, FakeArr("radarr"))
+    torrent = "ab" * 20
+    arr.queue = [{"id": 7, "title": "Proef", "downloadId": torrent, "protocol": "torrent",
+                  "status": "downloading", "size": 100, "sizeleft": 63}]
+    arr_name = owned_name(client["name"]) if herkomst == "156_arr_naam" else None
+    if arr_name:
+        arr.queue[0]["downloadClient"] = arr_name
+    source = ["torrent", torrent.upper()]
+    if herkomst != "release":
+        source.append(arr_name or client["name"])
+    for visible in (False, True, False):
+        def torrents(request, present=visible):
+            assert request.method == "GET" and request.url.path == "/api/v2/torrents/info"
+            return httpx.Response(200, json=[
+                {"hash": torrent, "state": "downloading", "progress": 0.37}
+            ] if present else [])
+
+        ctx.services["live_download_transport"] = httpx.MockTransport(torrents)
+        ctx.services.pop("activity_cache", None)
+        ctx.services.pop("connector_items:downloads:viewer", None)
+        activity = viewer.get("/api/v1/activity", headers=headers).raise_for_status().json()
+        row, = activity["downloads"]
+        assert (row["instance_id"], row["id"], row["download_id"].upper(), row["progress"]) == (
+            inst.id, 7, torrent.upper(), 37.0,
+        )
+        if not arr_name:
+            assert row["client"] == (client["name"] if visible else None)
+        before = database_snapshot(ctx, allow_auth_timestamps=True)
+        page = viewer.get("/connector/v1/items?type=downloads", headers=headers).raise_for_status()
+        assert_database_preserved(ctx, before, allow_auth_timestamps=True)
+        assert (page.json()["status"], page.json()["total"]) == ("ok", 1)
+        item, = page.json()["items"]
+        assert (item["id"], item["progress"]) == (content_hash(source), 37.0)
+
+
+@pytest.mark.parametrize("foutplek", ["id_toewijzing", "audit"])
+def test_geweigerde_inrichting_behoudt_sleutel_en_voortgang(
+    populated_installation, settings, monkeypatch, foutplek,
+):
+    from mediaguard.provisioning import api, store
+
+    ctx, admin, viewer = populated_installation
+    headers = key(admin)
+    ctx.db.execute("UPDATE instances SET suspended=1")
+    path = "/api/v1/provisioning/config"
+    first = {"name": "Wachtrij", "host": "wachtrij.invalid", "port": 8080,
+             "implementation": "Sabnzbd"}
+    second = {"name": "Tweede", "host": "tweede.invalid", "port": 8080,
+              "implementation": "QBittorrent"}
+    value = secrets.token_hex(18)
+    admin.put(path, json={"download_clients": [dict(first, api_key=value)]}).raise_for_status()
+
+    def queue(request):
+        assert request.method == "GET"
+        if request.url.host == second["host"]:
+            return httpx.Response(200, json=[])
+        assert request.url.host == first["host"] and request.url.params["apikey"] == value
+        return httpx.Response(200, json={"queue": {"slots": [
+            {"nzo_id": "proefrij", "mb": 100, "mbleft": 63,
+             "percentage": 37, "status": "Downloading"}
+        ]}})
+
+    def downloads(reader):
+        page = reader.get("/connector/v1/items?type=downloads", headers=headers).raise_for_status()
+        assert page.json()["status"] == "ok"
+        return [(item["id"], item["progress"]) for item in page.json()["items"]]
+
+    ctx.services["live_download_transport"] = httpx.MockTransport(queue)
+    original = downloads(viewer)
+    assert len(original) == 1 and original[0][1] == 37.0
+    before = database_snapshot(ctx, allow_auth_timestamps=True)
+    change = {"download_clients": [dict(first, enabled=False, api_key=""), second]}
+    if foutplek == "audit":
+        # Ook de in dezelfde PUT gewijzigde koppeling moet samen met het auditbewijs terugrollen.
+        change["seerr_connection"] = {"url": "http://koppeling.invalid", "api_key": value}
+        ctx.services["seerr_transport"] = httpx.MockTransport(
+            lambda _: httpx.Response(200, json={}))
+    state_set = ctx.state_set
+
+    def refuse(*args, **kwargs):
+        raise sqlite3.OperationalError("Proefopslag vol")
+
+    def refuse_owners(name, data):
+        if name == store.DOWNLOAD_ID_OWNERS:
+            refuse()
+        state_set(name, data)
+
+    with monkeypatch.context() as patch, closing(
+        TestClient(admin.app, raise_server_exceptions=False)
+    ) as writer:
+        if foutplek == "id_toewijzing":
+            patch.setattr(ctx, "state_set", refuse_owners)
+        else:
+            patch.setattr(api, "audit", refuse)
+        writer.cookies.update(admin.cookies)
+        writer.headers.update(admin.headers)
+        response = writer.put(path, json=change)
+    assert response.status_code == 503 and value not in response.text
+    assert int(response.headers["Retry-After"]) > 0
+    assert_database_preserved(ctx, before, allow_auth_timestamps=True)
+    app = create_app(settings)
+    with closing(app.state.ctx.db), closing(TestClient(app)) as reader:
+        app.state.ctx.services["live_download_transport"] = httpx.MockTransport(queue)
+        config = store.public_view(app.state.ctx)
+        saved, = config["download_clients"]
+        assert saved["name"] == first["name"] and saved["enabled"] and saved["api_key_set"]
+        assert downloads(reader) == original
+    result = admin.put(path, json=change).raise_for_status().json()["download_clients"]
+    assert [(c["name"], c["enabled"], c["api_key_set"]) for c in result] == [
+        (first["name"], False, False), (second["name"], True, False),
+    ]
 
 
 @pytest.mark.parametrize(("method", "route"), [

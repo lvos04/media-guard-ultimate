@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import copy
 import logging
+import sqlite3
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -372,7 +373,10 @@ class SeerrConnection(BaseModel):
     api_key: str | None = Field(default=None, max_length=200)
 
 
-@router.put("/config")
+@router.put("/config", responses={503: {
+    "description": "De opslag van de inrichting is tijdelijk niet beschikbaar.",
+    "headers": {"Retry-After": {"schema": {"type": "integer", "minimum": 1}}},
+}})
 async def put_config(body: dict[str, Any], principal: Principal = Depends(require_admin),
                      ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
     allowed = set(store.ProvisioningConfig.model_fields) | {"seerr_connection"}
@@ -387,6 +391,7 @@ async def put_config(body: dict[str, Any], principal: Principal = Depends(requir
     for iid in (body.get("instances") or {}):
         if instance_row(ctx, iid) is None:
             raise HTTPException(422, f"Onbekende instantie: {iid}")
+    sc = None
     if body.get("seerr_connection") is not None:
         sc = SeerrConnection.model_validate(body["seerr_connection"])
         try:
@@ -398,18 +403,29 @@ async def put_config(body: dict[str, Any], principal: Principal = Depends(requir
                                   transport=ctx.services.get("seerr_transport")).status()
         except (SeerrError, ValueError) as exc:
             raise _bad(exc) from exc
-        ctx.config.set("global", "", "seerr.url", sc.url.rstrip("/"), principal.actor)
-        if sc.api_key not in (None, "", store.MASK):
-            ctx.secrets.set(SEERR_SECRET, sc.api_key, principal.actor)  # type: ignore[arg-type]
-    before = store.public_view(ctx)
     try:
-        cfg = store.save(ctx, body, principal.actor)
+        with ctx.db.transaction():
+            before = store.public_view(ctx)
+            cfg = store.save(ctx, body, principal.actor)
+            after = store.public_view(ctx, cfg)
+            if sc is not None:
+                # Lees de gedeelde instellingencache pas weer na het vastleggen.
+                after["seerr_connection"]["url"] = ctx.config.set(
+                    "global", "", "seerr.url", sc.url.rstrip("/"), principal.actor)
+                if sc.api_key and sc.api_key != store.MASK:
+                    ctx.secrets.set(SEERR_SECRET, sc.api_key, principal.actor)
+                    after["seerr_connection"]["api_key_set"] = True
+            audit(ctx.db, actor=principal.actor, action="provisioning.config", target_type="config",
+                  target_id="provisioning", old_value={k: before.get(k) for k in body},
+                  new_value={k: after.get(k) for k in body})
     except (ValidationError, ValueError) as exc:
         raise _bad(exc) from exc
-    after = store.public_view(ctx, cfg)
-    audit(ctx.db, actor=principal.actor, action="provisioning.config", target_type="config",
-          target_id="provisioning", old_value={k: before.get(k) for k in body},
-          new_value={k: after.get(k) for k in body})
+    except sqlite3.OperationalError as exc:
+        raise HTTPException(503, "De inrichting kon niet worden opgeslagen. Probeer het opnieuw.",
+                            headers={"Retry-After": "5"}) from exc
+    finally:
+        if sc is not None:
+            ctx.config.invalidate()
     return after
 
 

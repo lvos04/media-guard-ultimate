@@ -203,25 +203,28 @@ def _system(ctx: AppContext, measured: datetime) -> SystemItem:
 
 
 def _downloads(value: dict[str, Any], measured: datetime, *,
+               single_clients: dict[str, str | None],
                legacy_owners: dict[str, str | None] | None) -> list[DownloadItem]:
     items: dict[str, DownloadItem] = {}
     rows = value["downloads"]
     for row in sorted(rows, key=lambda d: (str(d.get("instance_id")), str(d.get("id")))):
         download_id = str(row.get("download_id") or "").upper()
         protocol = str(row.get("protocol") or "").lower()
+        client = row.get("client")
         if download_id:
             source = [protocol, download_id]
-            client = row.get("client") or ""
-            if not isinstance(client, str):
+            # Een lege clientwachtrij verandert de identiteit van dezelfde Arr-rij niet.
+            client = client or single_clients.get(protocol)
+            if client is not None and not isinstance(client, str):
                 raise ValueError("Ongeldige downloadclient")
             if legacy_owners is None:
                 # Schema 156 gebruikte de clientnaam wanneer de bron die leverde.
                 if client:
                     source.append(client)
             else:
-                client = client.removeprefix(PREFIX)
-                if not client or client != legacy_owners.get(protocol):
-                    source.append(client)
+                name = (client or "").removeprefix(PREFIX)
+                if not name or name != legacy_owners.get(protocol):
+                    source.append(name)
             identity = content_hash(source)
         elif row.get("id") is not None and row.get("instance_id"):
             identity = content_hash([row["instance_id"], row["id"]])
@@ -230,7 +233,7 @@ def _downloads(value: dict[str, Any], measured: datetime, *,
         if identity in items:
             # Een tweede bronrij voor hetzelfde cliënt-ID behoudt haar eigen wachtrij-identiteit.
             identity = content_hash([identity, row.get("instance_id"), row.get("id"),
-                                     row.get("client")])
+                                     client])
         status = row.get("status")
         progress = row.get("progress")
         items[identity] = DownloadItem(
@@ -348,9 +351,11 @@ async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
                 reason = "bron_onbereikbaar"
             else:
                 origin = ctx.db.fetch_one("SELECT schema_version FROM connector_evidence_origin")
-                owners = (store.download_id_owners(ctx) if origin["schema_version"] < "156"
+                clients = store.single_download_clients(store.load(ctx).download_clients)
+                owners = (store.download_id_owners(ctx, clients) if origin["schema_version"] < "156"
                           else None)
-                rows.extend(_downloads(value, measured, legacy_owners=owners))
+                rows.extend(_downloads(value, measured, single_clients=clients,
+                                       legacy_owners=owners))
         elif kind == "av1_lanes":
             rows.extend(await _lanes(ctx, measured))
         else:

@@ -260,8 +260,8 @@ def load(ctx: AppContext) -> ProvisioningConfig:
     return ProvisioningConfig.model_validate(data)
 
 
-def _legacy_owners(clients: list[DownloadClientCfg]) -> dict[str, str | None]:
-    """Alleen een eenduidig ingerichte client kan de oude protocol-ID's bezitten."""
+def single_download_clients(clients: list[DownloadClientCfg]) -> dict[str, str | None]:
+    """De enige ingerichte client per protocol, of None bij meerdere kandidaten."""
     owners: dict[str, str | None] = {}
     for client in clients:
         protocol = T.DC_IMPLEMENTATIONS[client.implementation]
@@ -269,10 +269,14 @@ def _legacy_owners(clients: list[DownloadClientCfg]) -> dict[str, str | None]:
     return owners
 
 
-def download_id_owners(ctx: AppContext) -> dict[str, str | None]:
+def download_id_owners(
+    ctx: AppContext, configured: dict[str, str | None] | None = None,
+) -> dict[str, str | None]:
     # Een bestaande installatie kan nog nooit met deze kern zijn opgeslagen.
     # Bij de eerste wijziging blijft juist haar oude inrichting leidend.
-    return _legacy_owners(load(ctx).download_clients) | ctx.state_get(DOWNLOAD_ID_OWNERS, {})
+    if configured is None:
+        configured = single_download_clients(load(ctx).download_clients)
+    return configured | ctx.state_get(DOWNLOAD_ID_OWNERS, {})
 
 
 def _store_secret(ctx: AppContext, name: str, value: str | None, actor: str) -> None:
@@ -288,27 +292,30 @@ def save(ctx: AppContext, patch: dict[str, Any], actor: str) -> ProvisioningConf
     """Gedeeltelijke update: alleen meegegeven topniveau-sleutels worden vervangen.
     Geheimen in het verzoek gaan naar de secrets-store; ``None``/``********`` = ongewijzigd,
     ``""`` = wissen. Valideert het complete document vóór opslaan."""
-    current = load(ctx).model_dump()
-    merged = {**current, **{k: v for k, v in patch.items() if k != "seerr_connection"}}
-    cfg = ProvisioningConfig.model_validate(merged)
-    names = [d.name for d in cfg.download_clients]
-    if len(set(names)) != len(names):
-        raise ValueError("Downloadclientnamen moeten uniek zijn")
-    inames = [i.name for i in cfg.indexers]
-    if len(set(inames)) != len(inames):
-        raise ValueError("Indexernamen moeten uniek zijn")
-    for dc in cfg.download_clients:
-        _store_secret(ctx, dc_secret(dc.name, "api_key"), dc.api_key, actor)
-        _store_secret(ctx, dc_secret(dc.name, "password"), dc.password, actor)
-        dc.api_key = dc.password = None
-    for idx in cfg.indexers:
-        _store_secret(ctx, indexer_secret(idx.name), idx.api_key, actor)
-        idx.api_key = None
-    _store_secret(ctx, PROWLARR_SECRET, cfg.prowlarr.api_key, actor)
-    cfg.prowlarr.api_key = None
     with ctx.db.transaction() as conn:
+        current = load(ctx)
+        merged = current.model_dump()
+        merged.update((k, v) for k, v in patch.items() if k != "seerr_connection")
+        cfg = ProvisioningConfig.model_validate(merged)
+        names = [d.name for d in cfg.download_clients]
+        if len(set(names)) != len(names):
+            raise ValueError("Downloadclientnamen moeten uniek zijn")
+        inames = [i.name for i in cfg.indexers]
+        if len(set(inames)) != len(inames):
+            raise ValueError("Indexernamen moeten uniek zijn")
+        for dc in cfg.download_clients:
+            _store_secret(ctx, dc_secret(dc.name, "api_key"), dc.api_key, actor)
+            _store_secret(ctx, dc_secret(dc.name, "password"), dc.password, actor)
+            dc.api_key = dc.password = None
+        for idx in cfg.indexers:
+            _store_secret(ctx, indexer_secret(idx.name), idx.api_key, actor)
+            idx.api_key = None
+        _store_secret(ctx, PROWLARR_SECRET, cfg.prowlarr.api_key, actor)
+        cfg.prowlarr.api_key = None
         if "download_clients" in patch:
-            owners = _legacy_owners(cfg.download_clients) | download_id_owners(ctx)
+            previous = single_download_clients(current.download_clients)
+            owners = (single_download_clients(cfg.download_clients)
+                      | download_id_owners(ctx, previous))
             if owners != ctx.state_get(DOWNLOAD_ID_OWNERS, {}):
                 ctx.state_set(DOWNLOAD_ID_OWNERS, owners)
         conn.execute(
@@ -319,13 +326,13 @@ def save(ctx: AppContext, patch: dict[str, Any], actor: str) -> ProvisioningConf
             (CONFIG_KEY, dumps(cfg.model_dump()), utcnow(), actor))
         if not ctx.state_get("provisioning:propers_r4", False):
             ctx.state_set("provisioning:propers_r4", True)
-    # verwijderde namen: geheimen opruimen
-    for row in ctx.db.fetch_all("SELECT name FROM secrets WHERE name LIKE 'downloadclient:%' "
-                                "OR name LIKE 'indexer:%'"):
-        parts = str(row["name"]).split(":")
-        if parts[0] == "downloadclient" and parts[1] not in names or \
-                parts[0] == "indexer" and parts[1] not in inames:
-            ctx.secrets.delete(row["name"])
+        # Ook het opruimen van verwijderde namen hoort bij deze inrichtingswijziging.
+        for row in conn.execute("SELECT name FROM secrets WHERE name LIKE 'downloadclient:%' "
+                                "OR name LIKE 'indexer:%'").fetchall():
+            kind, name, *_ = row["name"].split(":", 2)
+            if (kind == "downloadclient" and name not in names
+                    or kind == "indexer" and name not in inames):
+                ctx.secrets.delete(row["name"])
     return cfg
 
 

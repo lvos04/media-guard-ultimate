@@ -158,9 +158,14 @@ elke client een sleutel op basis van protocol, bron-ID en clientnaam. Een oud ID
 dat al voor twee verschillende clients is uitgegeven, wijst geen eigenaar aan.
 Schema 156 gebruikte de clientnaam bij benoemde downloads. De door MediaGuard
 ingestelde Arr-naam en de lokale clientnaam verwijzen naar dezelfde download.
-Een onleesbare configuratie of een
-wachtrijrij zonder identiteit geeft een onbekend totaal. De AV1-meting vereist
-één CPU-rij en één GPU-rij, elk met capaciteit, actieve jobs en pauzetoestand.
+Bij één ingerichte client voor het protocol houdt een Arr-rij hetzelfde ID als
+de overdracht uit de clientwachtrij verdwijnt of er weer in verschijnt.
+De beheerder slaat de inrichting, de bijbehorende sleutels, de ID-toewijzing
+en de auditregel in één transactie op. Bij een opslagfout geeft de PUT een
+503 en blijft de oorspronkelijke inrichting beschikbaar.
+Een onleesbare configuratie of een wachtrijrij zonder identiteit geeft een
+onbekend totaal. De AV1-meting vereist één CPU-rij en één GPU-rij, elk met
+capaciteit, actieve jobs en pauzetoestand.
 Een gemeten capaciteit van nul is geldig.
 
 ## Bewijspakket

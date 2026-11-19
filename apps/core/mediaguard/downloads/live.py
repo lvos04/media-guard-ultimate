@@ -223,7 +223,8 @@ def merge(arr_items: list[dict[str, Any]], client_items: list[dict[str, Any]]
         if c["status"] == "downloading" and hit.get("status") in ("queued", "", None):
             hit["status"] = "downloading"
         hit.setdefault("time_left", c.get("time_left"))
-        hit["client"] = c["client"]
+        # Een reeds benoemde Arr-rij houdt haar bronnaam, ook wanneer de client haar ziet.
+        hit["client"] = hit.get("client") or c["client"]
         hit["protocol"] = c["protocol"]
         linked.add((c["protocol"], c["download_id"], c["client"]))
     for c in client_items:
