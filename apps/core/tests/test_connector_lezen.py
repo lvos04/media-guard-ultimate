@@ -21,6 +21,7 @@ from mediaguard import health_summary
 from mediaguard.app import create_app
 from mediaguard.auth import Principal, current_principal
 from mediaguard.db import utcnow
+from mediaguard.provisioning.templates import owned_name
 
 # Alleen de bestaande aanmeldadministratie mag wijzigen: gebruikstijdstippen in
 # bestaande rijen en uitsluitend nieuwe auditregels voor geweigerde sleutels.
@@ -346,7 +347,6 @@ def test_arr_download_behoudt_id_bij_wisselende_clientwachtrij(populated_install
     from mediaguard.connector.items import content_hash
     from mediaguard.instances.registry import create_instance
     from mediaguard.provisioning import store
-    from mediaguard.provisioning.templates import owned_name
 
     ctx, admin, viewer = populated_installation
     headers = key(admin)
@@ -475,66 +475,145 @@ def test_geweigerde_inrichting_behoudt_sleutel_en_voortgang(
     ]
 
 
-@pytest.mark.parametrize(("schema", "metingen"), [
-    # Per meting: inrichting, Arr-rij en zichtbare clients. None = geen Arr-rij,
-    # "" = naamloos op 37%, "zonder meting" = naamloos zonder eigen voortgang.
-    pytest.param(100, [("eerste", None, ("eerste",))] * 2, id="basis"),
-    pytest.param(100, [("eerste", "", ()), ("eerste", "", ("eerste",)),
-                       ("eerste", "", ())], id="wachtrij"),
-    pytest.param(100, [("eerste", None, ("eerste",)), ("geweigerd", None, ("eerste",))],
-                 id="opslag"),
-    pytest.param(100, [("eerste", "", ()), ("reserve-uit", "", ()), ("eerste", "", ())],
-                 id="reserveclient"),
-    pytest.param(100, [("eerste", "", ()), ("beide", "", ()), ("tweede", "", ())],
-                 id="andere-inrichting"),
-    pytest.param(156, [("eerste", None, ("eerste",)), ("eerste", "eerste", ("eerste",)),
-                       ("eerste", None, ("eerste",))], id="arrkoppeling156"),
-    pytest.param(156, [("eerste", "eerste", ()), ("eerste", None, ("eerste",)),
-                       ("reserve-uit", "eerste", ())], id="arrkoppeling156-omgekeerd"),
-    pytest.param(100, [("eerste", None, ("eerste",)), ("beide", None, ("eerste", "tweede")),
-                       ("tweede", None, ("tweede",))], id="clientwissel"),
-    pytest.param(156, [("beide", None, ("eerste",)), ("beide", "eerste", ("eerste", "tweede")),
-                       ("beide", None, ("tweede",))], id="samenloop156"),
-    pytest.param(156, [("eerste", None, ("eerste",)), ("hernoemd", None, ("eerste",))],
-                 id="clientnaam"),
-    pytest.param(156, [("beide", None, ("eerste", "tweede")),
-                       ("beide", "zonder meting", ("eerste", "tweede")),
-                       ("beide", "zonder meting", ("eerste",))], id="dubbelmelding"),
-    pytest.param(156, [("eerste", "zonder meting", ("eerste",)),
-                       ("beide", "zonder meting", ("eerste", "tweede")),
-                       ("beide", None, ("eerste", "tweede"))], id="dubbelmelding-omgekeerd"),
-    # De vierde waarde is de clientnaam van een tweede Arr-rij met dezelfde torrent op 82%.
-    pytest.param(100, [("eerste", "", (), ""), ("eerste", "", (), "eerste"),
-                       ("eerste", "", (), "")], id="gedeelde-clientnaam"),
+# Eén torrent in alle metingen. Iedere regel bevat de volledige nieuwe toestand;
+# de voorgaande regel bevat de vorige toestand en de daar uitgegeven ID's.
+# Arr-rij = (instantie, rijnummer, gemelde clientnaam, eigen voortgang).
+_ARR = ("arr-a", 7, None, 37)
+_BEHEERD = ("arr-a", 7, owned_name("eerste"), 37)
+_NAAMLOOS = ("arr-a", 7, None, None)
+_TWEEDE_RIJ = ("arr-a", 8, None, 82)
+_ANDERE_INSTANTIE = ("arr-b", 7, None, 82)
+
+# Clientmeting = {adres vóór .invalid: voortgang}. De inrichting hieronder koppelt
+# elk adres aan een naam. De laatste kolom geeft per voortgang het verwachte ID:
+# gelijke letters zijn hetzelfde uitgegeven ID, verschillende letters aparte ID's.
+_EEN = {"eerste": 37}
+_TWEE = {"eerste": 37, "tweede": 14}
+_RESTANT = {"tweede": 14}
+
+
+@pytest.mark.parametrize(("schema", "historische_naam", "metingen"), [
+    # Inrichting, Arr-rijen, clientmeting op adres, verwachte connector-ID's.
+    pytest.param(100, None, [("eerste", (), _EEN, {37: "A"})] * 2, id="basis"),
+    pytest.param(154, None, [("eerste", (), _EEN, {37: "A"}),
+                             ("eerste", (_BEHEERD,), _EEN, {37: "A"})], id="arrkoppeling154"),
+    pytest.param(100, None, [("eerste", (_ARR,), {}, {37: "A"}),
+                             ("eerste", (_ARR,), _EEN, {37: "A"}),
+                             ("eerste", (_ARR,), {}, {37: "A"})], id="wachtrij"),
+    pytest.param(100, None, [("eerste", (), _EEN, {37: "A"}),
+                             ("geweigerd", (), _EEN, {37: "A"})], id="opslag"),
+    pytest.param(100, None, [("eerste", (_ARR,), {}, {37: "A"}),
+                             ("reserve-uit", (_ARR,), {}, {37: "A"}),
+                             ("eerste", (_ARR,), {}, {37: "A"})], id="reserveclient"),
+    pytest.param(100, None, [("eerste", (_ARR,), {}, {37: "A"}),
+                             ("beide", (_ARR,), {}, {37: "A"}),
+                             ("tweede", (_ARR,), {}, {37: "A"})], id="andere-inrichting"),
+    pytest.param(156, "eerste", [("eerste", (), _EEN, {37: "A"}),
+                                 ("eerste", (_BEHEERD,), _EEN, {37: "A"}),
+                                 ("eerste", (), _EEN, {37: "A"})], id="arrkoppeling156"),
+    pytest.param(156, owned_name("eerste"), [
+        ("eerste", (_BEHEERD,), {}, {37: "A"}), ("eerste", (), _EEN, {37: "A"}),
+        ("reserve-uit", (_BEHEERD,), {}, {37: "A"}),
+    ], id="arrkoppeling156-omgekeerd"),
+    pytest.param(100, None, [("eerste", (), _EEN, {37: "A"}),
+                             ("beide", (), _TWEE, {37: "A", 14: "B"}),
+                             ("tweede", (), _RESTANT, {14: "B"})], id="clientwissel"),
+    pytest.param(100, None, [("eerste", (), _EEN, {37: "A"}),
+                             ("beide", (), _TWEE, {37: "A", 14: "B"}),
+                             ("beide", (), _EEN, {37: "A"}),
+                             ("tweede", (), _RESTANT, {14: "B"})], id="clientwissel-na-herstart"),
+    pytest.param(100, "eerste", [
+        ("beide", (), _EEN, {37: "A"}),
+        ("beide", (), {"eerste": 37, "tweede": 82}, {37: "A", 82: "B"}),
+        ("beide", (), {"tweede": 82}, {82: "B"}),
+    ], id="clientvertrek"),
+    pytest.param(156, "eerste", [("beide", (), _EEN, {37: "A"}),
+                                 ("beide", (_BEHEERD,), _TWEE, {37: "A", 14: "B"}),
+                                 ("beide", (), _RESTANT, {14: "B"})], id="samenloop156"),
+    pytest.param(156, "eerste", [("eerste", (), _EEN, {37: "A"}),
+                                 ("hernoemd", (), _EEN, {37: "A"})], id="clientnaam"),
+    pytest.param(156, "eerste", [("eerste", (), _EEN, {37: "A"}),
+                                 ("verplaatst", (), {"ander": 41}, {41: "A"})], id="clientadres"),
+    pytest.param(156, "eerste", [
+        ("beide", (), _TWEE, {37: "A", 14: "B"}),
+        ("beide", (), {"eerste": 45, "tweede": 82}, {45: "A", 82: "B"}),
+        ("namen-verwisseld", (), {"eerste": 45, "tweede": 82}, {45: "A", 82: "B"}),
+    ], id="omgekeerde-bronvolgorde"),
+    pytest.param(156, "eerste", [
+        ("beide", (), _TWEE, {37: "A", 14: "B"}),
+        ("beide", (_NAAMLOOS,), _TWEE, {37: "A", 14: "B", None: "W"}),
+        ("beide", (_NAAMLOOS,), _EEN, {37: "A"}),
+    ], id="dubbelmelding"),
+    pytest.param(156, "eerste", [
+        ("eerste", (_NAAMLOOS,), _EEN, {37: "A"}),
+        ("beide", (_NAAMLOOS,), _TWEE, {37: "A", 14: "B", None: "W"}),
+        ("beide", (), _TWEE, {37: "A", 14: "B"}),
+    ], id="dubbelmelding-omgekeerd"),
+    pytest.param(100, None, [
+        ("eerste", (_ARR, _TWEEDE_RIJ), {}, {37: "A", 82: "B"}),
+        ("eerste", (_ARR, ("arr-a", 8, "eerste", 82)), {}, {37: "A", 82: "B"}),
+        ("eerste", (_ARR, _TWEEDE_RIJ), {}, {37: "A", 82: "B"}),
+    ], id="gedeelde-clientnaam"),
+    pytest.param(100, None, [
+        ("eerste", (_ARR, _ANDERE_INSTANTIE), {}, {37: "A", 82: "B"}),
+        ("eerste", (_ARR, ("arr-b", 7, "eerste", 82)), {}, {37: "A", 82: "B"}),
+        ("eerste", (_ARR, _ANDERE_INSTANTIE), {}, {37: "A", 82: "B"}),
+        ("eerste", (_ANDERE_INSTANTIE,), {}, {82: "B"}),
+        ("eerste", (_ARR, _ANDERE_INSTANTIE), {}, {37: "A", 82: "B"}),
+    ], id="gedeelde-clientnaam-twee-instanties"),
+    pytest.param(100, "eerste", [
+        ("beide", (("arr-a", 7, "eerste", None),), _TWEE, {37: "A", 14: "B"}),
+        ("beide", (), _TWEE, {37: "A", 14: "B"}),
+        ("beide", (("arr-b", 8, None, None),), _TWEE, {37: "A", 14: "B", None: "W"}),
+        ("beide", (("arr-b", 8, "eerste", None),), _TWEE, {37: "A", 14: "B"}),
+    ], id="clientsamenloop"),
+    pytest.param(100, "eerste", [
+        ("beide", (("arr-a", 7, "eerste", None),), _TWEE, {37: "A", 14: "B"}),
+        ("beide", (), _TWEE, {37: "A", 14: "B"}),
+        ("beide", (("arr-a", 8, None, None),), _TWEE, {37: "A", 14: "B", None: "W"}),
+        ("beide", (("arr-a", 8, "eerste", None),), _TWEE, {37: "A", 14: "B"}),
+    ], id="clientsamenloop-zelfde-instantie"),
+    pytest.param(100, None, [
+        ("eerste", (), _EEN, {37: "A"}),
+        ("eerste", (_BEHEERD, ("arr-a", 8, "eerste", 82)), {}, {37: "W", 82: "X"}),
+        ("eerste", (_BEHEERD, ("arr-a", 8, "eerste", 82)), {}, {37: "W", 82: "X"}),
+        ("eerste", (), _EEN, {37: "A"}),
+    ], id="meerduidige-clientnaam"),
+    pytest.param(100, None, [
+        ("eerste", (_BEHEERD,), {}, {37: "A"}),
+        ("eerste", (_BEHEERD, ("arr-b", 7, "eerste", 82)), {}, {37: "A", 82: "B"}),
+        ("eerste", (("arr-b", 7, "eerste", 82),), {}, {82: "B"}),
+    ], id="vertrek-bij-gedeelde-clientnaam"),
 ])
-def test_uitgegeven_download_id(populated_installation, settings, monkeypatch, schema, metingen):
+def test_uitgegeven_download_id(populated_installation, settings, monkeypatch,
+                                 schema, historische_naam, metingen):
     from test_arr_fakes import FakeArr, wire
 
     from mediaguard.connector.items import content_hash
     from mediaguard.instances.registry import create_instance
     from mediaguard.provisioning import store
-    from mediaguard.provisioning.templates import owned_name
 
     ctx, admin, _ = populated_installation
     headers = key(admin)
     ctx.db.execute("UPDATE instances SET suspended=1")
-    if schema == 156:
-        ctx.db.execute(
-            "UPDATE connector_evidence_origin SET schema_version='156_outbox_cursor_history'"
-        )
-    inst = create_instance(ctx, {"id": "id-proef", "app": "radarr", "media_type": "movie",
-                                 "url": "http://wachtrij.invalid"})
+    if schema != 100:
+        version = {154: "154_outbox_generation", 156: "156_outbox_cursor_history"}[schema]
+        ctx.db.execute("UPDATE connector_evidence_origin SET schema_version=?", (version,))
+    for instance in ("arr-a", "arr-b"):
+        create_instance(ctx, {"id": instance, "app": "radarr", "media_type": "movie",
+                              "url": f"http://{instance}.invalid"})
     first, second = [
         {"name": name, "implementation": "QBittorrent", "host": name + ".invalid", "port": 8080}
         for name in ("eerste", "tweede")
     ]
     configs = {"eerste": [first], "hernoemd": [dict(first, name="Andere naam")],
+               "verplaatst": [dict(first, host="ander.invalid")],
+               "namen-verwisseld": [dict(first, name="tweede"), dict(second, name="eerste")],
                "reserve-uit": [first, dict(second, enabled=False)],
                "beide": [second, first], "tweede": [second]}
     torrent = "ab" * 20
-    progress = {"eerste": 37, "tweede": 14}
     issued = {}
-    for config, arr_name, visible, *second_arr_name in metingen:
+    for config, arr_rows, visible, expected in metingen:
         path = "/api/v1/provisioning/config"
         if config == "geweigerd":
             def refuse(name, data):
@@ -553,52 +632,41 @@ def test_uitgegeven_download_id(populated_installation, settings, monkeypatch, s
         app = create_app(settings)
         current = app.state.ctx
         with closing(current.db), closing(TestClient(app)) as viewer:
-            arr = wire(current, inst.id, FakeArr("radarr"))
-            ambiguous = arr_name == "zonder meting"
-            if arr_name is not None:
-                arr.queue = [{"id": 7, "downloadId": torrent, "protocol": "torrent",
-                              "downloadClient": owned_name(arr_name) if arr_name and not ambiguous
-                              else None, "status": "downloading", "size": 0 if ambiguous else 100,
-                              "sizeleft": 0 if ambiguous else 63}]
-            if second_arr_name:
-                arr.queue.append(dict(arr.queue[0], id=8, sizeleft=18,
-                                      downloadClient=second_arr_name[0] or None))
+            arrs = {inst: wire(current, inst, FakeArr("radarr")) for inst in ("arr-a", "arr-b")}
+            for inst, row_id, name, pct in arr_rows:
+                arrs[inst].queue.append({
+                    "id": row_id, "downloadId": torrent, "protocol": "torrent",
+                    "downloadClient": name, "status": "downloading",
+                    "size": 100 if pct is not None else 0,
+                    "sizeleft": 100 - pct if pct is not None else 0,
+                })
 
             def queue(request, visible=visible):
-                name = request.url.host.split(".")[0]
+                address = request.url.host.removesuffix(".invalid")
                 assert request.method == "GET" and request.url.path == "/api/v2/torrents/info"
                 return httpx.Response(200, json=[{"hash": torrent, "state": "downloading",
-                                                  "progress": progress[name] / 100}]
-                                      if name in visible else [])
+                                                  "progress": visible[address] / 100}]
+                                      if address in visible else [])
 
             current.services["live_download_transport"] = httpx.MockTransport(queue)
-            expected = {progress[name] for name in visible}
-            if ambiguous and len(visible) > 1:
-                expected.add(None)  # De bron bewaart ook de nog niet toewijsbare Arr-rij.
-            elif arr_name is not None:
-                expected.add(37)
-            if second_arr_name:
-                expected.add(82)
             before = database_snapshot(current, allow_auth_timestamps=True)
             page = viewer.get("/connector/v1/items?type=downloads", headers=headers).json()
             assert_database_preserved(current, before, allow_auth_timestamps=True)
             assert (page["status"], page["total"]) == ("ok", len(expected))
             rows = {r["progress"]: r["id"] for r in page["items"]}
-            assert rows.keys() == expected
+            assert rows.keys() == expected.keys()
             if not issued:
                 source = ["torrent", torrent.upper()]
-                if schema == 156:
-                    source.append(owned_name(arr_name) if arr_name and not ambiguous
-                                  else first["name"])
+                if historische_naam is not None:
+                    source.append(historische_naam)
                 assert rows[37] == content_hash(source)
-            for pct, connector_id in rows.items():
-                assert issued.setdefault(pct, connector_id) == connector_id
+            for pct, label in expected.items():
+                assert rows[pct] == issued.setdefault(label, rows[pct]), (config, arr_rows, label)
             assert len(set(issued.values())) == len(issued)
 
 
 def test_onvolledige_downloadmeting_behoudt_de_uitgegeven_ids(client, ctx, monkeypatch):
     from mediaguard.connector import download_ids
-    from mediaguard.provisioning.templates import owned_name
 
     ctx.db.execute("UPDATE connector_evidence_origin SET schema_version='156'")
     transfer = {"download_id": "proefrij", "protocol": "torrent", "progress": 37}

@@ -132,34 +132,42 @@ def download_ids(ctx: AppContext, rows: list[dict[str, Any]], measured: datetime
         last, previous = _read_index(path, generation)
         assigned: dict[int, str] = {}
         used: set[str] = set()
-        # Reserveer bestaande ID's vóór de eerste uitgifte, ook wanneer een nieuwe
-        # rij vóór de oorspronkelijke rij sorteert of meerdere Arr-rijen één client zien.
         columns = {kind: [s.aliases[pos] for s in sources] for pos, kind in enumerate(_KINDS)}
-        arr_ids = {identity for key, identity in previous.items()
-                   if key.startswith(("wachtrij:", "instantie:"))}
+        arr_columns = (columns["wachtrij"], columns["instantie"])
+        # Een bekende wachtrijrij is specifieker dan dezelfde torrent in de instantie.
+        visible_arr_ids = {previous.get(queue) or previous.get(instance)
+                           for queue, instance in zip(*arr_columns, strict=True)}
+        # Bij splitsen volgt het ID de expliciet gemelde client. Bij samenvoegen
+        # mag een Arr-rij dit ID alleen volgen als geen andere zichtbare Arr-rij
+        # het al herkent. Een oude wachtrijkoppeling is geen actuele claim.
         confirmed = []
+        inferred = []
         for kind in ("adres", "client"):
+            column = columns[kind]
             reported = [alias if row.get("client") else None
-                        for alias, row in zip(columns[kind], rows, strict=True)]
-            counts = Counter(reported)
-            # Een losse client of een ID zonder Arr-koppeling kan bij samenvoegen
-            # of splitsen voorgaan. Tussen Arr-rijen beslist hun eigen bronsleutel.
+                        for alias, row in zip(column, rows, strict=True)]
+            report_counts = Counter(reported)
             confirmed.append([
-                key if key and counts[key] == 1 and (
-                    not row.get("instance_id") or previous.get(key) not in arr_ids
+                key if key and report_counts[key] == 1 and (
+                    not row.get("instance_id") or previous.get(key) not in visible_arr_ids
                 ) else None for key, row in zip(reported, rows, strict=True)
             ])
-        for column in [*confirmed, *columns.values()]:
+            counts = Counter(column)
+            inferred.append([key if counts[key] == 1 else None for key in column])
+        # Eerst unieke clientmeldingen (adres vóór naam), dan de eigen wachtrij
+        # of instantie en pas daarna een eenduidig afgeleide clientkoppeling.
+        for column in (*confirmed, *arr_columns, *inferred):
             for i, alias in enumerate(column):
                 identity = previous.get(alias) if alias else None
                 if identity and i not in assigned and identity not in used:
                     assigned[i] = identity
                     used.add(identity)
+        previous_ids = set(previous.values())
         for i, source in enumerate(sources):
             if i in assigned:
                 continue
             identity = source.initial_id
-            if identity in used:
+            if identity in used or identity in previous_ids:
                 row = rows[i]
                 identity = content_hash([identity, row.get("instance_id"), row.get("id"),
                                          source.initial_client])
@@ -172,7 +180,8 @@ def download_ids(ctx: AppContext, rows: list[dict[str, Any]], measured: datetime
         # Ontbreekt een bron tijdelijk, dan blijft de laatst herkende koppeling gelden.
         old_keys = {(identity, alias.split(":", 1)[0]): alias
                     for alias, identity in previous.items()}
-        claims: dict[str, list[str]] = defaultdict(list)
+        remembered: dict[str, list[str]] = defaultdict(list)
+        observed: dict[str, list[str]] = defaultdict(list)
         for i, source in enumerate(sources):
             identity = assigned[i]
             for kind, alias in zip(_KINDS, source.aliases, strict=True):
@@ -180,9 +189,12 @@ def download_ids(ctx: AppContext, rows: list[dict[str, Any]], measured: datetime
                 if old and kind in ("adres", "client") and not rows[i].get("client"):
                     alias = old  # Een naamloze Arr-rij bewijst geen wisseling van client.
                 if key := alias or old:
+                    direct = alias and (kind in ("wachtrij", "instantie") or rows[i].get("client"))
+                    claims = observed if direct else remembered
                     claims[key].append(identity)
-        current = {key: previous[key] if previous.get(key) in ids else ids[0]
-                   for key, ids in claims.items()}
+        # Een gemeten koppeling gaat voor een oude of afgeleide. Bij meerdere
+        # gelijkwaardige rijen kan deze alias bij de volgende meting geen ID bewijzen.
+        current = {key: ids[0] for key, ids in (remembered | observed).items() if len(ids) == 1}
         if current != previous:
             stamp = measured.isoformat(timespec="microseconds")
             if stamp < last:
