@@ -37,18 +37,22 @@ EIGEN_CONTROLE = {"require_emergency_stop": "operator"}
 
 
 def _role(dependant: Any) -> str:
+    from mediaguard.auth import ROLE_RANK
+
+    rang = {"ingelogd": 0, **ROLE_RANK}
+    rollen = []
     stack = list(dependant.dependencies)
     while stack:
-        dep = stack.pop(0)
+        dep = stack.pop()
+        stack.extend(dep.dependencies)
         call = dep.call
         if getattr(call, "__qualname__", "") == "require.<locals>.dep" and call.__closure__:
-            return str(call.__closure__[0].cell_contents)
-        if getattr(call, "__name__", "") in EIGEN_CONTROLE:
-            return EIGEN_CONTROLE[call.__name__]
-        if getattr(call, "__name__", "") == "current_principal":
-            return "ingelogd"
-        stack.extend(dep.dependencies)
-    return "geen"
+            rollen.append(str(call.__closure__[0].cell_contents))
+        elif getattr(call, "__name__", "") in EIGEN_CONTROLE:
+            rollen.append(EIGEN_CONTROLE[call.__name__])
+        elif getattr(call, "__name__", "") == "current_principal":
+            rollen.append("ingelogd")
+    return max(rollen, key=rang.__getitem__, default="geen")
 
 
 @contextmanager
@@ -72,7 +76,6 @@ def collect(app: Any | None = None) -> list[dict[str, Any]]:
     """Alle routes van ``app`` (zonder app: een tijdelijke app) met minimale rol en de rechten
     (scopes) van API-sleutels die de route openen (``mediaguard.auth.SCOPE_ROUTES``)."""
     from fastapi.routing import APIRoute, APIWebSocketRoute
-
     from mediaguard.auth import SCOPE_ROUTES
 
     rows: list[dict[str, Any]] = []

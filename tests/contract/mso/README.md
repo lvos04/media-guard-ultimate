@@ -1,6 +1,6 @@
 # MSO-contracttest
 
-`routes.json` bevat de ID, methode, het pad en de minimale rol van elke route uit `ROUTES` in de gepinde MSO-bron. De test vergelijkt die lijst met de JSON-uitvoer van `scripts/platform-v2-routes.py --json`, op een tijdelijke MediaGuard-app. Een ontbrekende methode of route en een strengere minimale rol laten de test falen. `ingelogd` geldt als minimaal `viewer`.
+`routes.json` bevat de ID, methode, het pad en de minimale rol van elke route uit `ROUTES` in de gepinde MSO-bron. De test controleert de route-ID's tegen een lijst die rechtstreeks uit de broncommit is vastgelegd. Daarna vergelijkt de test de pin met de JSON-uitvoer van `scripts/platform-v2-routes.py --json`, op een tijdelijke MediaGuard-app. Een ontbrekende routespecificatie, een ontbrekende methode of route en een strengere minimale rol laten de test falen. De routetabel neemt de strengste van alle gelijktijdig vereiste rollen. `ingelogd` geldt als minimaal `viewer`.
 
 De uitzondering voor `GET /api/v1/openapi.json` vereist dat de route bestaat en beschermd blijft met `admin`. MSO gebruikt directe routeprobes als het document niet toegankelijk is. De bestaande tests in `apps/core/tests/test_api_keys.py` bewaken het gebruik van MediaGuard-sleutels door MSO.
 
@@ -14,7 +14,7 @@ Genereer vanuit de hoofdmap van MediaGuard met een lokale MSO-werkkopie en de ge
 python3 tests/contract/mso/genereer_routes.py '<MSO-werkkopie>' '<MSO-commit>' --datum '<JJJJ-MM-DD>'
 ```
 
-Controleer de uitvoer en neem die over als `tests/contract/mso/routes.json`. Draai daarna vanuit `apps/core` de contracttest met de ontwikkelomgeving van MediaGuard.
+Controleer de uitvoer en neem die over als `tests/contract/mso/routes.json`. Leg in `ROUTE_IDS_PER_BRON` in `test_routes.py` de verwachte route-ID's vast uit `ROUTES` in `compat.py` op de nieuwe broncommit. Draai daarna vanuit `apps/core` de contracttest met de ontwikkelomgeving van MediaGuard.
 
 ```sh
 ../../.venv/bin/python -m pytest -q -p no:cacheprovider ../../tests/contract/mso
