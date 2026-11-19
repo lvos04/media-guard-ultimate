@@ -608,3 +608,34 @@ def test_aio_migreert_voor_de_start_van_de_schrijvers(settings, old_schema):
             assert db.execute("SELECT count(*) FROM schema_migrations WHERE version LIKE '151_%'"
                               ).fetchone()[0] == verwacht
             assert db.execute("SELECT topic FROM outbox_events").fetchone() == ("library.synced",)
+
+
+@pytest.mark.parametrize("schrijver", ["kern", "encoder"])
+def test_ander_sqlite_schrijfslot_blijft_bezet_tot_151(settings, old_schema, monkeypatch, schrijver):
+    kern = settings.db_path
+    encoder = settings.data_dir / "encode" / "app.db"
+    encoder.parent.mkdir()
+    with closing(sqlite3.connect(encoder)) as db, db:
+        db.execute("CREATE TABLE job (percent INTEGER)")
+        db.execute("INSERT INTO job VALUES (75)")
+    meting = []
+    doel = kern if schrijver == "kern" else encoder
+    with closing(database.Database(kern)) as db:
+        migreer = db._apply_migration
+
+        def controle(conn, script):
+            if script.name.startswith("151_"):
+                with closing(sqlite3.connect(doel, timeout=0)) as ander:
+                    with pytest.raises(sqlite3.OperationalError, match="locked"):
+                        ander.execute("BEGIN IMMEDIATE")
+                    meting.append(True)
+            migreer(conn, script)
+
+        monkeypatch.setattr(db, "_apply_migration", controle)
+        db.initialize()
+    assert meting == [True]
+    with closing(sqlite3.connect(doel, timeout=0)) as vrij:
+        vrij.execute("BEGIN IMMEDIATE")
+    archief, = settings.backup_dir.glob("voor-update/*/encode/app.db")
+    with closing(sqlite3.connect(archief)) as kopie:
+        assert kopie.execute("SELECT percent FROM job").fetchone()[0] == 75

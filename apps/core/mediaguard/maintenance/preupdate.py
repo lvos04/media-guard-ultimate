@@ -213,7 +213,9 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
                 "from_schema": from_schema, "to_schema": to_schema, "files": files,
                 "encoder_included": any(f["name"].startswith("encode/") for f in files),
                 "encoder_problem": encoder_problem, "integrity_ok": True}
-        if generation is not None and generation == _source_generation(core_db, encode_dir):
+        if generation is not None:
+            if generation != _source_generation(core_db, encode_dir):
+                raise SetError("de bronbestanden zijn tijdens het archiveren gewijzigd")
             meta["source_generation"] = generation
         (work / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         if reason == "update":

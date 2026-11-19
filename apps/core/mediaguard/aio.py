@@ -1129,7 +1129,7 @@ def _preupdate(command: str, config: Path, encoder_migrations: Path,
         if command != "inspect":
             argv += ["--version", __version__]
         proc = subprocess.run(  # noqa: S603 - vaste argv
-            argv, capture_output=True, text=True, timeout=3600,
+            argv, capture_output=True, text=True, timeout=None if command == "upgrade" else 3600,
             preexec_fn=_demote(owner[0], owner[1], []), check=False,
         )
         if proc.returncode == schema.EXIT_CODE:

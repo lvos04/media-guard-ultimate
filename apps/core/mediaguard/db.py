@@ -234,14 +234,30 @@ class Database:
         try:
             protected = {"151_outbox_event_identity", "152_connector_evidence_version",
                          "154_outbox_generation", "155_job_evidence_snapshot"}
-            requires_backup = any(f.stem in protected for f in pending)
-            if applied and (requires_backup or other is None):
-                # Verifieer voor outbox- en bewijsgegevens de actuele set onder het schrijfslot.
-                with self._migration_transaction(conn):
-                    self._backup_before_migration(max(applied), pending[-1].stem,
-                                                  required=requires_backup, archive=pre_update_set)
-            for file in pending:
-                self._apply_migration(conn, file)
+            first_protected = next((f for f in pending if f.stem in protected), None)
+            with contextlib.ExitStack() as locks:
+                if applied and first_protected:
+                    # Ook een oudere encoderschrijver kent het gedeelde mapslot nog niet.
+                    for path in sorted(schema.encoder_dir(folder).glob("*.db")):
+                        reserve = locks.enter_context(contextlib.closing(sqlite3.connect(
+                            path.resolve().as_uri() + "?mode=rw", uri=True, timeout=30,
+                        )))
+                        reserve.execute("BEGIN IMMEDIATE")
+                if applied and (first_protected or other is None):
+                    with self._migration_transaction(conn):
+                        data_version = conn.execute("PRAGMA data_version").fetchone()[0]
+                        self._backup_before_migration(
+                            max(applied), pending[-1].stem,
+                            required=first_protected is not None, archive=pre_update_set,
+                        )
+                for file in pending:
+                    if applied and file == first_protected:
+                        locks.enter_context(self._migration_transaction(conn))
+                        # Eigen voorafgaande migraties wijzigen data_version op deze verbinding
+                        # niet. Een andere SQLite-commit vergt een nieuwe poging met verse set.
+                        if conn.execute("PRAGMA data_version").fetchone()[0] != data_version:
+                            raise RuntimeError("de kern is na de herstelset gewijzigd")
+                    self._apply_migration(conn, file)
         except schema.SchemaTooNew:
             raise  # normale herstelweergave, geen mislukte migratie
         except BaseException as exc:
@@ -267,6 +283,10 @@ class Database:
 
     @contextmanager
     def _migration_transaction(self, conn: sqlite3.Connection) -> Iterator[None]:
+        if conn.in_transaction:
+            self._check_write_schema(conn)
+            yield
+            return
         with self._lock, conn:
             _begin_immediate_waiting(conn)
             self._check_write_schema(conn)
