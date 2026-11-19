@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from mediaguard import __version__
+from mediaguard.audit import audit
 from mediaguard.db import Database, dumps, loads, utcnow
 from mediaguard.secrets_store import redact
 
@@ -254,9 +255,11 @@ class JobRunner:
                 if not self._eligible(row, stopped):
                     continue
                 conn.execute(
-                    "UPDATE jobs SET status='running', started_at=?, attempts=attempts+1, "
-                    "evidence_app_version=? WHERE id=?", (now, __version__, row["id"]),
+                    "UPDATE jobs SET status='running', started_at=?, attempts=attempts+1 "
+                    "WHERE id=?", (now, row["id"]),
                 )
+                audit(self.app.db, actor="worker", action="job.started",
+                      target_type="job", target_id=row["id"], correlation_id=row["correlation_id"])
                 return dict(row)
         return None
 

@@ -28,7 +28,8 @@ JobStatus = Literal[
     "queued", "running", "succeeded", "failed", "retry_scheduled", "cancelled", "paused",
 ]
 ACTIONS = ACTIONS_NL.keys() | {
-    "system.emergency_stop", "job.cancel", "job.retry", "job.ignore", "job.ignore_all",
+    "system.emergency_stop", "job.cancel", "job.retry", "job.started", "job.ignore",
+    "job.ignore_all",
     "settings.update", "policy.profile_update", "identity.manual_decision",
 }
 UNDO_HINTS = frozenset({
@@ -154,28 +155,30 @@ def _audit_package(row: sqlite3.Row) -> EvidencePackage:
 
 
 def _job_package(ctx: AppContext, row: sqlite3.Row) -> EvidencePackage:
+    snapshot = ctx.db.fetch_one("SELECT * FROM job_evidence_snapshot WHERE job_id=?", (row["id"],))
+    state = snapshot or row
     related = ctx.db.fetch_one(
         f"""SELECT {AUDIT_FIELDS} FROM audit_events
             WHERE target_type='job' AND target_id=CAST(? AS TEXT)
-              AND julianday(ts) >= julianday(?)
+              AND julianday(ts) >= julianday(?) AND id <= ?
             ORDER BY julianday(ts) DESC, id DESC LIMIT 1""",
-        (row["id"], row["created_at"]),
+        (row["id"], row["created_at"], snapshot["audit_cutoff"] if snapshot else MAX_SQLITE_ID),
     )
     version = _version(row)
     request = None
-    response = EvidenceResponse(status=row["status"])
+    response = EvidenceResponse(status=state["status"])
     if row["job_type"] == "library.sync":
         full = _bool(_object(row["payload"]), "full")
         if full is not None:
             request = EvidenceRequest(full=full)
-        result = _object(row["result"])
+        result = _object(state["result"])
         response.episodes = _count(result, "episodes")
         response.movies = _count(result, "movies")
         response.failed_items = _count(result, "failed_items")
     return EvidencePackage(
         id=f"job:{row['id']}", source="job", app_version=version,
-        created_at=instant(row["created_at"]), started_at=instant(row["started_at"]),
-        finished_at=instant(row["finished_at"]), deep_link="/activiteit?tab=problemen",
+        created_at=instant(row["created_at"]), started_at=instant(state["started_at"]),
+        finished_at=instant(state["finished_at"]), deep_link="/activiteit?tab=problemen",
         job_type=row["job_type"] if row["job_type"] in HANDLERS else None,
         request=request, response=response, audit=_audit_record(related) if related else None,
         details=EvidenceDetails(

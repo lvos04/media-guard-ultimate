@@ -187,7 +187,8 @@
       "151_outbox_event_identity",
       "152_connector_evidence_version",
       "153_outbox_resume",
-      "154_outbox_generation"
+      "154_outbox_generation",
+      "155_job_evidence_snapshot"
     ],
     "encoder": [
       1,

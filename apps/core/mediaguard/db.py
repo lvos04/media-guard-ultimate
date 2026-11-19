@@ -232,11 +232,11 @@ class Database:
         with contextlib.suppress(OSError):
             marker.write_text(json.dumps(info), encoding="utf-8")
         try:
-            requires_backup = any(f.stem in {"151_outbox_event_identity", "154_outbox_generation"}
-                                  for f in pending)
+            protected = {"151_outbox_event_identity", "152_connector_evidence_version",
+                         "154_outbox_generation", "155_job_evidence_snapshot"}
+            requires_backup = any(f.stem in protected for f in pending)
             if applied and (requires_backup or other is None):
-                # Voor de outboxomzetting moet deze schrijver onder zijn eigen slot
-                # een herstelset van de actuele gegevens kunnen verifiëren.
+                # Verifieer voor outbox- en bewijsgegevens de actuele set onder het schrijfslot.
                 with self._migration_transaction(conn):
                     self._backup_before_migration(max(applied), pending[-1].stem,
                                                   required=requires_backup)
@@ -291,7 +291,7 @@ class Database:
 
     def _backup_before_migration(self, current: str, target: str, *,
                                  required: bool = False) -> None:
-        """Verifieer bij de outboxomzetting een verse set onder het schrijfslot."""
+        """Verifieer bij een beschermde migratie een actuele herstelset."""
         made = os.environ.get("MG_PRE_UPDATE_SET")
         if not required and made and (Path(made) / "meta.json").is_file():
             return

@@ -140,11 +140,18 @@ Bij een job gaat het om toegestane invoer en resultaatvelden, aangevuld met
 de jobstatus. Historische HTTP-body's zijn niet vastgelegd. Ontbrekende waarden
 zijn `null`. Alleen vaste, gecontroleerde herstelteksten worden getoond.
 
-Migratie 152 voegt de appversie toe aan nieuwe auditregels en jobs. De jobversie
-begint bij aanmaak en wordt bij uitvoering bijgewerkt naar de versie van die
-poging. Bestaande rijen houden hun oorspronkelijke inhoud. Een historisch
-bewijsstuk zonder vastgelegde versie heeft `app_version: null` en
-`details.app_version: "onbekend"`.
+Migratie 152 voegt de appversie toe aan nieuwe auditregels en jobs. De versie op
+het job-ID blijft de vastgelegde versie bij aanmaak. Iedere nieuwe uitvoeringspoging
+krijgt een eigen audit-ID met actie `job.started`, de gebruikte workerversie en
+de job als doel. Het aanmaken van dit bewijs en het ophalen van de job door de
+worker gebeuren in dezelfde databasetransactie.
+
+Vóór migraties 152 en 155 verifieert MediaGuard op een bestaande installatie de
+actuele herstelset. Migratie 155 bewaart de toestand en de auditkoppeling van de
+dan bestaande jobbewijzen in een extra tabel. Bij hervatting houdt het historische
+bewijs-ID dezelfde inhoud. De wachtrij zelf houdt de actuele voortgang bij.
+Een historisch bewijsstuk zonder vastgelegde versie heeft `app_version: null`
+en `details.app_version: "onbekend"`.
 
 ## Grenzen en vervolg
 

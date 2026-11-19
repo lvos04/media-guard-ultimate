@@ -873,9 +873,14 @@ def test_evidence_job_version_follows_worker_attempt(client, machine, ctx, monke
     created = machine.get(url, headers=headers).json()
     assert created["app_version"] == "2.3.4" and created["started_at"] is None
     monkeypatch.setattr(jobs, "__version__", "2.3.5")
+    monkeypatch.setattr("mediaguard.audit.__version__", "2.3.5")
     assert ctx.services["jobs"]._claim_next()["id"] == job
     running = machine.get(url, headers=headers).json()
-    assert running["app_version"] == "2.3.5" and running["started_at"].endswith("Z")
+    assert running["app_version"] == created["app_version"] and running["started_at"].endswith("Z")
+    attempt_path = "/connector/v1/evidence/" + running["audit"]["id"]
+    attempt = machine.get(attempt_path, headers=headers).json()
+    assert attempt["app_version"] == "2.3.5" and attempt["audit"]["action"] == "job.started"
     assert running["response"]["status"] == "running" and running["finished_at"] is None
     monkeypatch.setattr(jobs, "__version__", "2.3.6")
     assert machine.get(url, headers=headers).json() == running
+    assert machine.get(attempt_path, headers=headers).json() == attempt

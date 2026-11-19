@@ -9,6 +9,9 @@ verantwoordelijke app, de bronoorzaak en waar mogelijk de instantie.
 `/connector/v1/evidence/{id}` toont geredigeerde audit- en jobgegevens. Migratie
 152 legt bij nieuwe bewijsstukken de appversie vast. Voor historisch bewijs
 zonder vastgelegde versie meldt de connector `onbekend`.
+Migratie 155 bewaart de bestaande jobbewijzen bij hervatting. Elke nieuwe
+uitvoeringspoging krijgt een eigen auditbewijs met de gebruikte appversie.
+Beide bewijsmigraties vereisen een geverifieerde herstelset.
 
 Rechten (scopes) op API-sleutels (S-P3-600; contract 1.3 §2.3 regels 2 en 3, C1.3-MGU-05). Eén migratie
 (`005_api_key_scopes`, voegt alleen een kolom toe); sleutels zonder rechten (MSO, de Android-app) werken precies als
