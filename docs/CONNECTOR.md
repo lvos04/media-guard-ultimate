@@ -146,12 +146,15 @@ Het pakket heeft UTC-tijden, een deeplink en waar beschikbaar een toegestane
 
 Het pakket vermeldt in `details` de herkomst van de geredigeerde `request` en
 `response`. Bij een auditregel gaat het om toegestane oude en nieuwe waarden.
+Voor een noodstop is dat `active`. Bij een profielwijziging zijn dat de aanwezige
+booleans `prefer_hdr`, `prefer_smaller` en `reject_false_audio_claims`.
 Bij een job gaat het om toegestane invoer en resultaatvelden, aangevuld met
 de jobstatus. Historische HTTP-body's zijn niet vastgelegd. Ontbrekende waarden
 zijn `null`. Alleen vaste, gecontroleerde herstelteksten worden getoond.
 
-Migratie 152 voegt de appversie toe aan nieuwe auditregels en jobs. De versie op
-het job-ID blijft de vastgelegde versie bij aanmaak. Iedere nieuwe uitvoeringspoging
+Migratie 152 voegt de appversie toe aan nieuwe auditregels en jobs. Bij nieuwe
+jobs blijft op het job-ID de versie bij aanmaak staan. Bij bestaande jobs
+behoudt de upgrade de aangetroffen versie en toestand. Iedere nieuwe uitvoeringspoging
 krijgt een eigen audit-ID met actie `job.started`, de gebruikte workerversie en
 de job als doel. Het aanmaken van dit bewijs en het ophalen van de job door de
 worker gebeuren in dezelfde databasetransactie.
@@ -164,6 +167,12 @@ Een historisch bewijsstuk zonder vastgelegde versie heeft `app_version: null`
 en `details.app_version: "onbekend"`.
 
 ## Grenzen en vervolg
+
+De itemroute accepteert `type` en optioneel `cursor` en `limit`, elk één keer.
+De bewijsroute accepteert uitsluitend het ID in het pad. Een onbekend of dubbel
+queryveld geeft `422 validation_error`. Bij tijdelijke database-uitval, ook
+tijdens het aanmelden, antwoorden beide routes met `503 database_unavailable`.
+De header `Retry-After` geeft de wachttijd in seconden.
 
 Het contractfoutformaat geldt uitsluitend onder `/connector/v1`: `code`,
 Nederlandse `message`, `details` en een UUID als `trace_id`. Connectorpaden

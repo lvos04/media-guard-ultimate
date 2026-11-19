@@ -4,18 +4,44 @@ from __future__ import annotations
 
 import sqlite3
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from mediaguard.auth import SCOPE_DENIED_DETAIL
 
 MAX_BYTES = 1048576
+
+
+class ConnectorError(BaseModel):
+    code: str
+    message: str
+    details: dict[str, Any]
+    trace_id: UUID
+
+
+DATABASE_UNAVAILABLE = {
+    "model": ConnectorError, "description": "De database is tijdelijk niet beschikbaar.",
+    "headers": {"Retry-After": {"schema": {"type": "integer", "minimum": 1},
+                                "description": "Wachttijd in seconden."}},
+}
+
+
+def query_faults(request: Request, *allowed: str) -> list[dict[str, Any]]:
+    params = request.query_params
+    faults = []
+    if params.keys() - set(allowed):
+        faults.append({"veld": ["query"], "type": "onbekend_veld"})
+    for field in allowed:
+        if len(params.getlist(field)) > 1:
+            faults.append({"veld": ["query", field], "type": "dubbel_veld"})
+    return faults
 
 
 def is_connector(path: str) -> bool:
@@ -41,8 +67,11 @@ def cursor_expired() -> JSONResponse:
                    {"restart": True})
 
 
-def event_database_failure(path: str, exc: Exception) -> JSONResponse | None:
-    if path != "/connector/v1/events" or not isinstance(exc, sqlite3.OperationalError):
+def database_failure(path: str, exc: Exception) -> JSONResponse | None:
+    if not isinstance(exc, sqlite3.OperationalError) or not (
+        path in ("/connector/v1/events", "/connector/v1/items")
+        or path.startswith("/connector/v1/evidence/")
+    ):
         return None
     code = getattr(exc, "sqlite_errorcode", None)
     if code is None:
@@ -154,7 +183,7 @@ class InputLimit:
         except Exception as exc:  # noqa: BLE001 - geen interne fouttekst naar de connector
             if started:
                 raise
-            response = event_database_failure(path, exc) or failure(
+            response = database_failure(path, exc) or failure(
                 500, "internal_error", "Interne fout bij het lezen van de toestand",
             )
             await response(scope, receive, send)

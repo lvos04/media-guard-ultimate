@@ -228,9 +228,9 @@ class SchemaRecovery:
         try:
             recovery = await run_in_threadpool(self.database.check_schema)
         except sqlite3.OperationalError as exc:
-            from mediaguard.connector.errors import event_database_failure
+            from mediaguard.connector.errors import database_failure
 
-            response = event_database_failure(scope["path"], exc)
+            response = database_failure(scope["path"], exc)
             if scope["type"] != "http" or response is None:
                 raise
             await response(scope, receive, send)

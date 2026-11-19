@@ -1670,7 +1670,7 @@
                 "type": "null"
               }
             ],
-            "description": "Vastgelegde gebruikte appversie. Bij historische stukken zonder versie is dit null en staat \"onbekend\" in details.app_version.",
+            "description": "Vastgelegde appversie bij dit bewijs-ID. Nieuwe jobs bewaren de versie bij aanmaak. Elke nieuwe poging heeft een eigen audit-ID. Bij historische stukken zonder versie is dit null en staat \"onbekend\" in details.app_version.",
             "title": "App Version"
           },
           "audit": {
@@ -1735,9 +1735,13 @@
                 "$ref": "#/components/schemas/EvidenceRequest"
               },
               {
+                "$ref": "#/components/schemas/ProfileEvidence"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Request"
           },
           "response": {
             "anyOf": [
@@ -1745,9 +1749,13 @@
                 "$ref": "#/components/schemas/EvidenceResponse"
               },
               {
+                "$ref": "#/components/schemas/ProfileEvidence"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Response"
           },
           "source": {
             "enum": [
@@ -3745,6 +3753,25 @@
           "config"
         ],
         "title": "ProfileBody",
+        "type": "object"
+      },
+      "ProfileEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "prefer_hdr": {
+            "title": "Prefer Hdr",
+            "type": "boolean"
+          },
+          "prefer_smaller": {
+            "title": "Prefer Smaller",
+            "type": "boolean"
+          },
+          "reject_false_audio_claims": {
+            "title": "Reject False Audio Claims",
+            "type": "boolean"
+          }
+        },
+        "title": "ProfileEvidence",
         "type": "object"
       },
       "ProwlarrTestBody": {
@@ -26736,6 +26763,25 @@
               }
             },
             "description": "Interne leesfout."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "De database is tijdelijk niet beschikbaar.",
+            "headers": {
+              "Retry-After": {
+                "description": "Wachttijd in seconden.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Get Evidence",
@@ -26899,6 +26945,25 @@
               }
             },
             "description": "Interne leesfout."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "De database is tijdelijk niet beschikbaar.",
+            "headers": {
+              "Retry-After": {
+                "description": "Wachttijd in seconden.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Get Items",

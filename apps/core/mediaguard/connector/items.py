@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, get_args
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
@@ -32,8 +32,8 @@ from mediaguard.secrets_store import redact
 from mediaguard.storage_forecast import POOL_STATE, pool_observed_at
 from mediaguard.wanted.engine import open_wanted_page
 
-from .errors import failure
-from .events import MAX_SQLITE_ID, ConnectorError
+from .errors import DATABASE_UNAVAILABLE, ConnectorError, failure, query_faults
+from .events import MAX_SQLITE_ID
 
 router = APIRouter(prefix="/connector/v1")
 ItemType = Literal["wanted", "status", "downloads", "av1_lanes", "incidents"]
@@ -446,9 +446,11 @@ def _snapshot_page(kind: ItemType, snapshot: Snapshot, last: str, limit: int) ->
         413: {"model": ConnectorError, "description": "Verzoek groter dan 1 MiB."},
         422: {"model": ConnectorError, "description": "Onbekend type of ongeldige invoer."},
         500: {"model": ConnectorError, "description": "Interne leesfout."},
+        503: DATABASE_UNAVAILABLE,
     },
 )
 async def get_items(
+    request: Request,
     principal: Annotated[Principal, Depends(require_viewer)],
     ctx: Annotated[AppContext, Depends(get_app_context)],
     type_: Annotated[ItemType, Query(alias="type")],
@@ -459,6 +461,12 @@ async def get_items(
     )] = 200,
 ) -> JSONResponse:
     """Lees eigen MediaGuard-data met vaste velden en een cursor per type."""
+    faults = query_faults(request, "type", "cursor", "limit")
+    raw_limit = request.query_params.get("limit", "200")
+    if not re.fullmatch(rf"[0-9]{{1,{MAX_LIMIT_DIGITS}}}", raw_limit):
+        faults.append({"veld": ["query", "limit"], "type": "ongeldig_geheel_getal"})
+    if faults:
+        return failure(422, "validation_error", "Ongeldige invoer", {"fouten": faults})
     limit = min(limit, PAGE_LIMIT)
     last = ""
     snapshot_id = None

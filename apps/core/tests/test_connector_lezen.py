@@ -259,8 +259,9 @@ def test_connector_openapi_documents_only_current_routes(app):
     params = {p["name"]: p["schema"] for p in items["parameters"]}
     assert params["type"]["enum"] == ["wanted", "status", "downloads", "av1_lanes", "incidents"]
     evidence = paths["/connector/v1/evidence/{id}"]["get"]
-    for endpoint, statuses in ((items, ("401", "403", "409", "422")),
-                               (evidence, ("401", "403", "404", "422"))):
+    for endpoint, statuses in ((items, ("401", "403", "409", "422", "503")),
+                               (evidence, ("401", "403", "404", "422", "503"))):
+        assert endpoint["responses"]["503"]["headers"]["Retry-After"]["schema"]["minimum"] == 1
         for status in statuses:
             schema = endpoint["responses"][status]["content"]["application/json"]["schema"]
             assert schema["$ref"].endswith("/ConnectorError")

@@ -6,7 +6,7 @@ import hmac
 import re
 import sqlite3
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -17,7 +17,7 @@ from mediaguard.auth import Principal, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.events import source_id
 
-from .errors import cursor_expired, failure
+from .errors import DATABASE_UNAVAILABLE, ConnectorError, cursor_expired, failure, query_faults
 
 router = APIRouter(prefix="/connector/v1")
 _NUMBER = r"(?:0|[1-9][0-9]{0,18})"
@@ -99,13 +99,6 @@ class EventPage(BaseModel):
     next_cursor: str
 
 
-class ConnectorError(BaseModel):
-    code: str
-    message: str
-    details: dict[str, Any]
-    trace_id: UUID
-
-
 def _envelope(row: sqlite3.Row) -> EventEnvelope:
     identifier = source_id(row["id"], row["generation"], row["birth"])
     event_type, ernst = TOPICS.get(row["topic"], ("media.event.recorded", "info"))
@@ -143,9 +136,7 @@ def _cursor(
             "Herlees zonder cursor en verwerk de gebeurtenissen idempotent."
         )},
         422: {"model": ConnectorError, "description": "Onbekend, dubbel of ongeldig queryveld."},
-        503: {"model": ConnectorError, "description": "De database is tijdelijk niet beschikbaar.",
-              "headers": {"Retry-After": {"schema": {"type": "integer", "minimum": 1},
-                                          "description": "Wachttijd in seconden."}}},
+        503: DATABASE_UNAVAILABLE,
     },
 )
 def poll(
@@ -158,14 +149,8 @@ def poll(
     limit: Annotated[int, Query(ge=1, le=200)] = 200,
 ) -> EventPage | JSONResponse:
     """Lees een pagina op oplopend bron-ID. Zonder cursor begint de oudste bewaarde rij."""
-    params = request.query_params
-    faults = []
-    if params.keys() - {"cursor", "limit"}:
-        faults.append({"veld": ["query"], "type": "onbekend_veld"})
-    for field in ("cursor", "limit"):
-        if len(params.getlist(field)) > 1:
-            faults.append({"veld": ["query", field], "type": "dubbel_veld"})
-    if not re.fullmatch(r"[0-9]{1,3}", params.get("limit", "200")):
+    faults = query_faults(request, "cursor", "limit")
+    if not re.fullmatch(r"[0-9]{1,3}", request.query_params.get("limit", "200")):
         faults.append({"veld": ["query", "limit"], "type": "ongeldig_geheel_getal"})
     if faults:
         return failure(422, "validation_error", "Ongeldige invoer", {"fouten": faults})

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypedDict
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, Path, Request
 from fastapi.responses import JSONResponse
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, with_config
 
 from mediaguard.audit_labels import ACTIONS_NL
 from mediaguard.auth import Principal, require_viewer
@@ -17,8 +17,8 @@ from mediaguard.db import loads
 from mediaguard.jobs import HANDLERS
 from mediaguard.secrets_store import redact
 
-from .errors import failure
-from .events import MAX_SQLITE_ID, ConnectorError
+from .errors import DATABASE_UNAVAILABLE, ConnectorError, failure, query_faults
+from .events import MAX_SQLITE_ID
 from .items import instant
 
 router = APIRouter(prefix="/connector/v1")
@@ -28,8 +28,7 @@ JobStatus = Literal[
     "queued", "running", "succeeded", "failed", "retry_scheduled", "cancelled", "paused",
 ]
 ACTIONS = ACTIONS_NL.keys() | {
-    "system.emergency_stop", "job.cancel", "job.retry", "job.started", "job.ignore",
-    "job.ignore_all",
+    "system.emergency_stop", "job.cancel", "job.retry", "job.ignore", "job.ignore_all",
     "settings.update", "policy.profile_update", "identity.manual_decision",
 }
 UNDO_HINTS = frozenset({
@@ -83,20 +82,28 @@ class EvidenceAudit(BaseModel):
     undo_hint: str | None
 
 
+@with_config(ConfigDict(extra="forbid"))
+class ProfileEvidence(TypedDict, total=False):
+    prefer_hdr: bool
+    prefer_smaller: bool
+    reject_false_audio_claims: bool
+
+
 class EvidencePackage(BaseModel):
     id: str
     source: Literal["audit", "job"]
     app_version: str | None = Field(
-        description="Vastgelegde gebruikte appversie. Bij historische stukken zonder versie "
-        'is dit null en staat "onbekend" in details.app_version.',
+        description="Vastgelegde appversie bij dit bewijs-ID. Nieuwe jobs bewaren de versie "
+        "bij aanmaak. Elke nieuwe poging heeft een eigen audit-ID. Bij historische stukken "
+        'zonder versie is dit null en staat "onbekend" in details.app_version.',
     )
     created_at: AwareDatetime | None
     started_at: AwareDatetime | None
     finished_at: AwareDatetime | None
     deep_link: str
     job_type: str | None
-    request: EvidenceRequest | None
-    response: EvidenceResponse | None
+    request: EvidenceRequest | ProfileEvidence | None
+    response: EvidenceResponse | ProfileEvidence | None
     audit: EvidenceAudit | None
     details: EvidenceDetails
 
@@ -138,20 +145,30 @@ def _audit_record(row: sqlite3.Row) -> EvidenceAudit:
 def _audit_package(row: sqlite3.Row) -> EvidencePackage:
     version = _version(row)
     info = _audit_record(row)
-    active_before = active_after = None
-    if info.action in ("system.emergency_stop", "system.emergency_stop_repeated"):
+    request = response = None
+    if info.action == "policy.profile_update":
+        request = _profile_values(row["old_value"])
+        response = _profile_values(row["new_value"])
+    elif info.action in ("system.emergency_stop", "system.emergency_stop_repeated"):
         active_before = _bool(_object(row["old_value"]), "active")
         active_after = _bool(_object(row["new_value"]), "active")
+        request = EvidenceRequest(active=active_before) if active_before is not None else None
+        response = EvidenceResponse(active=active_after) if active_after is not None else None
     return EvidencePackage(
         id=info.id, source="audit", app_version=version, created_at=info.timestamp_utc,
         started_at=None, finished_at=None, deep_link="/activiteit?tab=problemen", job_type=None,
-        request=EvidenceRequest(active=active_before) if active_before is not None else None,
-        response=EvidenceResponse(active=active_after) if active_after is not None else None,
+        request=request, response=response,
         audit=info, details=EvidenceDetails(
             app_version="opgeslagen" if version else "onbekend", request_source="audit.old_value",
             response_source="audit.new_value", http_body="niet_vastgelegd",
         ),
     )
+
+
+def _profile_values(raw: str | None) -> dict[str, bool] | None:
+    data = _object(raw)
+    return {field: data[field] for field in ProfileEvidence.__annotations__
+            if isinstance(data.get(field), bool)} or None
 
 
 def _job_package(ctx: AppContext, row: sqlite3.Row) -> EvidencePackage:
@@ -197,9 +214,11 @@ def _job_package(ctx: AppContext, row: sqlite3.Row) -> EvidencePackage:
         413: {"model": ConnectorError, "description": "Verzoek groter dan 1 MiB."},
         422: {"model": ConnectorError, "description": "Ongeldige invoer."},
         500: {"model": ConnectorError, "description": "Interne leesfout."},
+        503: DATABASE_UNAVAILABLE,
     },
 )
 def get_evidence(
+    request: Request,
     id: Annotated[str, Path(description="Bron-ID in de vorm audit:<nummer> of job:<nummer>.")],
     _: Annotated[Principal, Depends(require_viewer)],
     ctx: Annotated[AppContext, Depends(get_app_context)],
@@ -209,6 +228,8 @@ def get_evidence(
     Historische HTTP-body's zijn niet vastgelegd. Het bewijspakket vermeldt
     de herkomst van de toegestane velden; een onbekende versie blijft null.
     """
+    if faults := query_faults(request):
+        return failure(422, "validation_error", "Ongeldige invoer", {"fouten": faults})
     match = re.fullmatch(ID_PATTERN, id)
     if match:
         source, number_text = match.groups()

@@ -102,7 +102,9 @@ def test_historisch_jobpakket_blijft_identiek_na_twee_pogingen(before_evidence, 
         assert client.post(
             "/api/v1/auth/login", json={"username": meta["user"], "password": meta["password"]}
         ).is_success
-        original = client.get(path).json()
+        initial_response = client.get(path)
+        assert initial_response.is_success
+        original = initial_response.json()
         assert original["app_version"] is None and original["details"]["app_version"] == "onbekend"
         assert original["response"]["status"] == "retry_scheduled"
         attempts = []
@@ -111,7 +113,7 @@ def test_historisch_jobpakket_blijft_identiek_na_twee_pogingen(before_evidence, 
             monkeypatch.setattr(jobs, "__version__", version)
             monkeypatch.setattr("mediaguard.audit.__version__", version)
             assert app.state.ctx.services["jobs"]._claim_next()["id"] == number
-            assert client.get(path).json() == original
+            assert client.get(path).content == initial_response.content
             audit = database.fetch_one(
                 "SELECT id FROM audit_events WHERE action='job.started' "
                 "AND target_type='job' AND target_id=? ORDER BY id DESC",
@@ -133,6 +135,70 @@ def test_historisch_jobpakket_blijft_identiek_na_twee_pogingen(before_evidence, 
         assert client.post(
             "/api/v1/auth/login", json={"username": meta["user"], "password": meta["password"]}
         ).is_success
-        assert client.get(path).json() == original
+        assert client.get(path).content == initial_response.content
         for attempt in attempts:
             assert client.get("/connector/v1/evidence/" + attempt["id"]).json() == attempt
+
+
+def test_bestaand_versiegebonden_jobresultaat_en_audit_blijven_bewaard(
+    before_evidence, monkeypatch
+):
+    from mediaguard.audit import audit
+
+    settings, number, previous = before_evidence
+    for script in db.MIGRATIONS_DIR.glob("*.sql"):
+        if VERSION <= script.stem < "155":
+            (previous / script.name).symlink_to(script)
+    with monkeypatch.context() as m, closing(db.Database(settings.db_path)) as database:
+        m.setattr(db, "MIGRATIONS_DIR", previous)
+        database.initialize()
+        database.execute(
+            "UPDATE jobs SET status='failed', started_at=?, finished_at=?, evidence_app_version=?,"
+            "payload=?,result=? WHERE id=?",
+            (
+                db.utcnow(),
+                db.utcnow(),
+                "2.3.4",
+                db.dumps({"full": True}),
+                db.dumps(
+                    {
+                        "movies": 0,
+                        "episodes": 17,
+                        "failed_items": True,
+                        "ongebruikt": "privéfixture",
+                    }
+                ),
+                number,
+            ),
+        )
+        related = audit(
+            database, actor="proef", action="job.retry", target_type="job", target_id=number
+        )
+    app = create_app(settings)
+    meta = json.loads((FIXTURES / "core-1.2.2.json").read_text())
+    path = f"/connector/v1/evidence/job:{number}"
+    with closing(app.state.ctx.db) as database, TestClient(app) as client:
+        assert client.post(
+            "/api/v1/auth/login", json={"username": meta["user"], "password": meta["password"]}
+        ).is_success
+        original = client.get(path)
+        body = original.json()
+        assert original.is_success and body["app_version"] == "2.3.4"
+        assert body["audit"]["id"] == f"audit:{related}" and body["request"]["full"] is True
+        assert body["response"] == {
+            "status": "failed",
+            "movies": 0,
+            "episodes": 17,
+            "active": None,
+            "failed_items": None,
+        }
+        assert body["started_at"] and body["finished_at"]
+        database.execute(
+            "UPDATE jobs SET status='queued',result=NULL,finished_at=NULL WHERE id=?", (number,)
+        )
+        assert app.state.ctx.services["jobs"]._claim_next()["id"] == number
+        assert client.get(path).content == original.content
+        saved = database.fetch_one(
+            "SELECT result FROM job_evidence_snapshot WHERE job_id=?", (number,)
+        )
+        assert "privéfixture" not in saved["result"]

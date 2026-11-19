@@ -29,6 +29,7 @@ ACTIONS_NL: dict[str, str] = {
     "apikey.created": "API-sleutel aangemaakt",
     "apikey.revoked": "API-sleutel ingetrokken",
     "apikey.rejected": "API-sleutel geweigerd",
+    "job.started": "Uitvoeringspoging van de taak gestart",
     "system.emergency_stop_repeated": "Noodstop stond al aan: opnieuw gevraagd, niets gewijzigd",
     "storage.typo_fix": "Map hernoemd",
     "arr.removed_deleted_title": "Verwijderde titel opgeruimd",
@@ -75,6 +76,7 @@ WORDS_NL = {"update": "bijgewerkt", "create": "aangemaakt", "delete": "verwijder
             "removed": "verwijderd", "submit": "ingediend", "verify": "controle"}
 
 ACTORS_NL: dict[str, str] = {
+    "worker": "MediaGuard (taakuitvoering)",
     "apikey:mso": "Media Source Optimizer (API-sleutel)",
     "svc:download-guard": "MediaGuard (downloadbewaking)",
     "svc:downloads": "MediaGuard (opruimer)",

@@ -72,8 +72,8 @@ def test_downloadfout_verbergt_brongegevens(client, anon_client, ctx, caplog, fa
     activity = anon_client.get("/api/v1/activity", headers=headers)
     assert response.is_success and response.json()["status"] == "unknown"
     assert activity.is_success and activity.json()["errors"] and calls == ["GET"]
-    assert activity.json()["errors"][0]["code"] == "bron_onbereikbaar"
     assert all(value not in part for part in (response.text, activity.text, caplog.text))
+    assert activity.json()["errors"][0]["code"] == "bron_onbereikbaar"
 
 
 @pytest.mark.parametrize("fault", ["onleesbaar", "niet_ondersteund"])
