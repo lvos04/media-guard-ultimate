@@ -160,14 +160,24 @@
   "bijgewerkt": "2026-11-19"
  },
  {
-  "id": "C1.3-MGU-07",
-  "status": "Niet gestart",
-  "validatie": "Niet getest",
-  "bewijs": "CONTRACT_1.3_CONFORMITEIT.md §6 (moment P3)",
-  "blokkade": "",
-  "opmerking": "Healthcheck in exec-vorm met wissel naar 568 + no_new_privs, bounding set leeg bij een start als root, rooktest. Fase P3; deploy/aio/healthcheck.sh is ongewijzigd.",
+  "id": "C1.3-ALG-04",
+  "status": "Bezig",
+  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "S-P3-650, deel MediaGuard: apps/core/tests/test_aio.py en apps/core/tests/test_release_pipeline.py. De AIO-rooktest meet de rechten van de volledige procesboom bij rootstart en Custom User 568. Een lokale proef bevestigt de aparte web-UID, webherstart, nette stop en behoud van een gesimuleerde rendergroep (RAPPORT-A-BOUW.md).",
+  "blokkade": "Praktijkproef met de standaard Custom App op de NAS, inclusief GPU (N-P6-05).",
+  "opmerking": "De bewaker is PID 1. De rooktest controleert de procesboom en de afzonderlijke healthcheck bij beide startwijzen. ADR-0024 legt de uitzondering voor de web-UID vast.",
   "repo": "media-guard-ultimate",
-  "bijgewerkt": "2026-11-10"
+  "bijgewerkt": "2026-11-19"
+ },
+ {
+  "id": "C1.3-MGU-07",
+  "status": "Bezig",
+  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "S-P3-650: apps/core/tests/test_aio.py en apps/core/tests/test_release_pipeline.py. De lokale AIO-rooktest controleert de healthcheckdiagnose bij beide startwijzen en wordt rood zonder rechtenwissel. Ontbrekend SETPCAP, een oude bewakerstatus en HTTP 503 worden geweigerd (RAPPORT-A-BOUW.md).",
+  "blokkade": "Praktijkproef met de standaard Custom App op de NAS (N-P6-05).",
+  "opmerking": "Bij een rootstart leegt de healthcheck zijn bounding set en wisselt naar de app-gebruiker. De uiteindelijke NAS-proef hoort bij N-P6-05.",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-19"
  },
  {
   "id": "C1.3-MGU-08",

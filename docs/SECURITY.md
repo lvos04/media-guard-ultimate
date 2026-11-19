@@ -265,7 +265,14 @@ noodstopcache in `MediaGuardHookClient`).
   (niet als root), dan kan het wisselen van gebruiker niet en draait web als die gebruiker.
   Voor de uitleg bij 'core onbereikbaar' (migratie, herstartlus) leest web alleen
   `/run/mediaguard/core-status.json`: een beperkte kopie van `supervisor.json` (staat, migratie,
-  uitleg) zonder pids, exitcodes of logregels, in een map van root die web niet kan wijzigen.
+  uitleg) zonder pids, exitcodes of logregels, in een map van de app-gebruiker die web niet kan
+  wijzigen. De bewaker laat bij een rootstart de vaste webdienst via een webbewaker met
+  dezelfde aparte UID starten, herstarten en stoppen. Beide bewakers geven hun capabilities af
+  en zetten `no_new_privs` vóór de diensten starten.
+- **AIO-healthcheck**: Docker voert een apart programma uit. Het schakelt bij een rootstart
+  naar de app-gebruiker met lege capability-bounding-set, zet `no_new_privs` en controleert de
+  actieve rechten. Een verse bewakerstatus en HTTP 200 van de interne `/readyz` zijn beide
+  vereist. Zie ADR-0024 voor de web-UID en PID 1. [ADR-0024](adr/ADR-0024-healthcheck-als-568.md)
 - **Geen** `privileged`, **geen** Docker-socket, `cap_drop: [ALL]`,
   `no-new-privileges:true` op elke container.
 - Alle langlopende containers draaien als `568:568` (TrueNAS `apps`). Alleen

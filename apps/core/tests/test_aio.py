@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+import pytest
 
 from mediaguard import aio, bootstrap
 
@@ -426,4 +429,68 @@ def test_core_and_recovery_get_sigterm_early_even_while_encoder_finishes(tmp_pat
     assert enc_proc is not None and enc_proc.returncode == 0
     specs = {s.name: s for s in aio.build_specs(_env(tmp_path))}
     assert [n for n, s in specs.items() if s.slow_stop] == ["encode"]
+
+
+def test_web_launcher_controls_only_its_own_service_and_can_restart(tmp_path):
+    folder = str(Path(aio.__file__).resolve().parents[1])
+    launcher = aio.WebLauncher([sys.executable, "-c", "import time; time.sleep(60)"],
+                               {"PYTHONPATH": folder, "PYTHONDONTWRITEBYTECODE": "1"},
+                               str(tmp_path), lambda: None)
+    try:
+        first = launcher.start()
+        assert first.poll() is None
+        with pytest.raises(OSError):
+            launcher.request("signal 1 15")
+        with pytest.raises(OSError):
+            launcher.start()
+        first.signal_group(signal.SIGTERM)
+        assert first.wait(3) == -signal.SIGTERM
+        second = launcher.start()
+        assert second.pid != first.pid
+        with pytest.raises(OSError):
+            first.signal_group(signal.SIGTERM)
+        assert second.poll() is None
+    finally:
+        launcher.close()
+    assert launcher.worker.returncode == 0
+
+
+def test_healthcheck_combines_recent_status_and_readiness(tmp_path, monkeypatch):
+    from mediaguard import aio_healthcheck
+
+    status = tmp_path / "health"
+    monkeypatch.setenv("MG_AIO_HEALTH_FILE", str(status))
+    monkeypatch.setattr(aio_healthcheck, "lower_privileges", lambda: None)
+    probes = []
+    monkeypatch.setattr(aio_healthcheck, "ready", lambda: probes.append(True) or True)
+
+    assert aio_healthcheck.main([]) == 1
+    status.write_text("fail web\n")
+    assert aio_healthcheck.main([]) == 1
+    status.write_text("ok\n")
+    old = time.time() - 90
+    os.utime(status, (old, old))
+    assert aio_healthcheck.main([]) == 1
+    assert probes == []
+
+    status.write_text("ok\n")
+    assert aio_healthcheck.main([]) == 0
+    assert probes == [True]
+    monkeypatch.setattr(aio_healthcheck, "ready", lambda: False)
+    assert aio_healthcheck.main([]) == 1
+
+
+def test_healthcheck_refuses_to_check_if_privilege_drop_fails(monkeypatch, capsys):
+    from mediaguard import aio_healthcheck
+
+    def fail():
+        raise PermissionError("rechtenwissel geweigerd")
+
+    def unexpected():
+        pytest.fail("healthcheck controleerde de status vóór de rechtenwissel")
+
+    monkeypatch.setattr(aio_healthcheck, "lower_privileges", fail)
+    monkeypatch.setattr(aio_healthcheck, "recent_ok", unexpected)
+    assert aio_healthcheck.main([]) == aio_healthcheck.main(["--controle"]) == 1
+    assert "rechtenwissel geweigerd" in capsys.readouterr().err
 

@@ -98,7 +98,7 @@ hoofdlettergevoelige paden in benoemde volumes (die bij een herinstallatie blijv
 met het oude pad), en een init-container die met exit 1 de hele app liet mislukken, waarna
 TrueNAS de containers én hun logs verwijdert. **Besluit:** standaard één image
 (`ghcr.io/lvos04/mediaguard-core:<versie>-aio`, `deploy/aio/Dockerfile`) met alle onderdelen,
-gestart door `mediaguard.aio` (PID 1 onder tini). Installatie via het gewone *Custom
+gestart door `mediaguard.aio` als PID 1 (ADR-0024). Installatie via het gewone *Custom
 App*-formulier: drie *Host Paths* (`/config`, `/work`, `/data`, gekozen met de mappenkiezer),
 *Host Network* aan, geen variabelen. Mappen/sleutels aanmaken is nooit fataal; ontbreekt een
 recht, dan start de app en meldt de UI/het log wat er nodig is. Crasht een onderdeel (of

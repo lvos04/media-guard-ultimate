@@ -1,7 +1,7 @@
 """Alles-in-één-start (image ``ghcr.io/lvos04/mediaguard-core:<versie>-aio``): één container
 voor TrueNAS' gewone *Custom App*-formulier, zonder YAML, volumes of init-container.
 
-Dit proces draait als PID 1 onder tini en doet:
+De bewaker is PID 1 in de container en doet:
 
 1. mappen en sleutels aanmaken (``mediaguard.bootstrap``). Een fout hier is NOOIT fataal:
    de app start toch en de UI meldt wat er aan rechten ontbreekt;
@@ -33,9 +33,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from mediaguard import bootstrap, schema
+from mediaguard.aio_healthcheck import CORE_PORT, HEALTH_FILE, restrict_process
+from mediaguard.aio_web import WebLauncher, WebProcess
 
 INTERNAL_HOST = "127.0.0.1"
-CORE_PORT = 38100
 RECOVERY_PORT = 38101
 ENCODER_PORT = 38000
 # hookwacht tussen de forks en core: houdt de noodstop vast terwijl core herstart
@@ -45,7 +46,7 @@ RECOVERY_SERVICES = frozenset({"core", "web", "hookguard"})
 # en zonder de groepen van de app-gebruiker; standaard 'nobody'
 WEB_UID = 65534
 # beperkte supervisorstatus (alleen core: staat, migratie, uitleg herstartlus) voor de
-# web-server, buiten /config in een map van root die alleen leesbaar is voor anderen
+# web-server, buiten /config in een map van de app-gebruiker die web alleen kan lezen
 WEB_STATE = "/run/mediaguard/core-status.json"
 
 # (instantie, soort, standaardpoort). Afwijkend van 8989/7878 zodat ze naast een bestaande
@@ -94,7 +95,7 @@ class Spec:
     # diensten krijgen per rang hooguit FAST_STOP_WAIT voordat de volgende rang aan de beurt is
     slow_stop: bool = False
     restarts: int = 0
-    proc: subprocess.Popen[bytes] | None = field(default=None, repr=False)
+    proc: subprocess.Popen[bytes] | WebProcess | None = field(default=None, repr=False)
     started_at: float = 0.0
     next_start: float = 0.0
     fails: int = 0
@@ -176,6 +177,11 @@ def detect_lan_ip() -> str:
 
 def fork_port(env: dict[str, str], instance: str, default: int) -> int:
     return _env_int(env, f"MG_PORT_{instance.upper().replace('-', '_')}", default)
+
+
+def web_identity(env: dict[str, str]) -> tuple[int, int]:
+    uid = _env_int(env, "MG_WEB_UID", WEB_UID)
+    return uid, _env_int(env, "MG_WEB_GID", uid)
 
 
 def build_specs(env: dict[str, str]) -> list[Spec]:
@@ -323,8 +329,6 @@ def build_specs(env: dict[str, str]) -> list[Spec]:
         port=hookguard_port, ready_wait=5,
         health=f"http://{INTERNAL_HOST}:{hookguard_port}/livez", grace=15, stop_rank=4))
     specs += core_specs
-    web_uid = _env_int(env, "MG_WEB_UID", WEB_UID)
-    web_gid = _env_int(env, "MG_WEB_GID", web_uid)
     specs.append(Spec(
         "web", [env.get("MG_AIO_NODE", "/usr/local/bin/node"), "server.mjs"],
         {**base, "NODE_ENV": "production", "NEXT_TELEMETRY_DISABLED": "1",
@@ -336,7 +340,7 @@ def build_specs(env: dict[str, str]) -> list[Spec]:
          "MG_SUPERVISOR_STATE": env.get("MG_AIO_WEB_STATE", WEB_STATE)},
         cwd=env.get("MG_AIO_WEB_DIR", "/opt/web"),
         health=f"http://{INTERNAL_HOST}:{web_port}/login", grace=60, stop_rank=1,
-        user=(web_uid, web_gid)))
+        user=web_identity(env)))
     if env.get(schema.AIO_RECOVERY_ENV):
         specs = [spec for spec in specs if spec.name in RECOVERY_SERVICES]
         for spec in specs:
@@ -421,11 +425,32 @@ def _dri_groups(dri: Path = Path("/dev/dri")) -> list[int]:
 
 def _demote(uid: int, gid: int, groups: list[int]):  # pragma: no cover - vereist root
     def run() -> None:
-        os.setgroups(sorted({gid, *groups}))
-        os.setgid(gid)
-        os.setuid(uid)
+        restrict_process(uid, gid, tuple(groups))
         os.umask(0o002)
     return run
+
+
+def _signal_group(proc: subprocess.Popen[bytes] | WebProcess, sig: signal.Signals) -> None:
+    with contextlib.suppress(OSError):
+        if isinstance(proc, WebProcess):
+            proc.signal_group(sig)
+        else:
+            os.killpg(proc.pid, sig)
+
+
+def _reap_adopted_children(managed: set[int]) -> None:
+    """Ruim als PID 1 verweesde kinderen op, met behoud van de exitcode van beheerde processen."""
+    if os.getpid() != 1:
+        return
+    while True:
+        try:
+            child = os.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return
+        if child is None or child.si_pid in managed:
+            return
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(child.si_pid, os.WNOHANG)
 
 
 _QUIET = re.compile(r'"(GET|HEAD) (/api/v1/health|/health|/ping|/login)\S* HTTP/[\d.]+" 2\d\d')
@@ -513,7 +538,9 @@ class Supervisor:
                  check_interval: float = 30.0, max_fails: int = 3,
                  log_path: Path | None = None, config_dir: Path | None = None,
                  web_state_path: Path | None = None,
-                 stop_budget: float | None = None, schema_recovery: bool = False) -> None:
+                 stop_budget: float | None = None, schema_recovery: bool = False,
+                 web_launcher: WebLauncher | None = None,
+                 shutdown: threading.Event | None = None) -> None:
         self.specs = specs
         self.schema_recovery = schema_recovery
         self.stop_budget = DEFAULT_STOP_BUDGET if stop_budget is None else stop_budget
@@ -523,13 +550,14 @@ class Supervisor:
         self.state_path = state_path
         self.health_path = health_path
         self.web_state_path = web_state_path
+        self.web_launcher = web_launcher
+        self.shutdown = shutdown or threading.Event()
         # eigen regels (starts, herstarts, uitleg) ook in /config/logs/supervisor.log
         self.log_path = log_path
         self.config_dir = config_dir
         self.core_dir = state_path.parent if state_path is not None else None
         self.check_interval = check_interval
         self.max_fails = max_fails
-        self._lock = threading.Lock()
 
     def log(self, msg: str) -> None:
         print(f"[mediaguard] {msg}", flush=True)
@@ -556,9 +584,14 @@ class Supervisor:
             preexec = (_demote(spec.user[0], spec.user[1], []) if spec.user is not None
                        else _demote(self.uid, self.gid, self.groups))
         try:
-            spec.proc = subprocess.Popen(  # noqa: S603 - vaste argv
-                spec.argv, env=spec.env, cwd=spec.cwd, preexec_fn=preexec,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+            if spec.name == "web" and self.web_launcher is not None:
+                spec.proc = self.web_launcher.start()
+            else:
+                spec.proc = subprocess.Popen(  # noqa: S603 - vaste argv
+                    spec.argv, env=spec.env, cwd=spec.cwd, preexec_fn=preexec, umask=0o002,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+                threading.Thread(target=self._pump, args=(spec, spec.proc.stdout),
+                                 daemon=True).start()
         except OSError as exc:
             self.log(f"{spec.name} kan niet starten: {exc}")
             spec.proc = None
@@ -567,19 +600,15 @@ class Supervisor:
         spec.started_at = time.monotonic()
         spec.fails = 0
         spec.child_cpu = -1
-        threading.Thread(target=self._pump, args=(spec, spec.proc.stdout), daemon=True).start()
         self.log(f"{spec.name} gestart (pid {spec.proc.pid})")
 
     @staticmethod
-    def wait_port(port: int, timeout: float) -> bool:
-        return Supervisor.wait_ports([port], timeout)
-
-    @staticmethod
-    def wait_ports(ports: list[int], timeout: float) -> bool:
+    def wait_ports(ports: list[int], timeout: float,
+                   shutdown: threading.Event | None = None) -> bool:
         import socket
         deadline = time.monotonic() + timeout
         pending = set(ports)
-        while pending and time.monotonic() < deadline:
+        while pending and time.monotonic() < deadline and not (shutdown and shutdown.is_set()):
             for port in list(pending):
                 with socket.socket() as s:
                     s.settimeout(0.5)
@@ -766,8 +795,7 @@ class Supervisor:
         spec.loop_nl = text
 
     def _health_loop(self) -> None:  # pragma: no cover - draad
-        while not self.stopping:
-            time.sleep(self.check_interval)
+        while not self.shutdown.wait(self.check_interval):
             try:
                 self.check_health()
             except Exception as exc:  # noqa: BLE001 - controle mag nooit de supervisor stoppen
@@ -828,7 +856,7 @@ class Supervisor:
 
     def _write_web_state(self, snap: dict) -> None:
         """Alleen wat de web-server nodig heeft om 'core onbereikbaar' uit te leggen. Geen
-        pids, exitcodes of logregels; de map is van root (0755), dus de web-gebruiker kan er
+        pids, exitcodes of logregels; de map is van de app-gebruiker (0755), dus web kan er
         niets in neerzetten of omleggen."""
         path = self.web_state_path
         if path is None:
@@ -847,15 +875,25 @@ class Supervisor:
     def run(self) -> int:
         threading.Thread(target=self._health_loop, daemon=True).start()
         for spec in self.specs:
-            if self.stopping:
+            if self.stopping or self.shutdown.is_set():
                 break
-            if spec.wait_for and not self.wait_ports(spec.wait_for, spec.wait_for_timeout):
+            if spec.wait_for and not self.wait_ports(
+                spec.wait_for, spec.wait_for_timeout, self.shutdown
+            ):
                 self.log(f"nog niet alles van Sonarr/Radarr is op; {spec.name} start toch")
+            if self.shutdown.is_set():
+                break
             self.start(spec)
-            if spec.port and spec.ready_wait and not self.wait_port(spec.port, spec.ready_wait):
+            if spec.port and spec.ready_wait and not self.wait_ports(
+                [spec.port], spec.ready_wait, self.shutdown
+            ):
                 self.log(f"{spec.name} reageert nog niet op poort {spec.port}; ga toch door")
         last_write = 0.0
-        while not self.stopping:
+        while not self.stopping and not self.shutdown.is_set():
+            if self.web_launcher is not None and self.web_launcher.worker.poll() is not None:
+                self.log("webbewaker gestopt; de container sluit af")
+                self.stop()
+                return 1
             now = time.monotonic()
             for spec in self.specs:
                 if spec.proc is None:
@@ -876,30 +914,31 @@ class Supervisor:
                 spec.restarts += 1
                 spec.next_start = now + delay
                 self.log(f"{spec.name} gestopt (code {code}); herstart over {delay}s")
+            managed = {s.proc.pid for s in self.specs if isinstance(s.proc, subprocess.Popen)}
+            if self.web_launcher is not None:
+                managed.add(self.web_launcher.worker.pid)
+            _reap_adopted_children(managed)
             if now - last_write >= 5:
                 self.write_state()
                 last_write = now
-            time.sleep(1)
+            self.shutdown.wait(1)
+        self.stop()
         return 0
 
     @staticmethod
-    def _terminate(proc: subprocess.Popen[bytes], grace: float) -> None:
+    def _terminate(proc: subprocess.Popen[bytes] | WebProcess, grace: float) -> None:
         """SIGTERM naar de hele procesgroep (ook ffmpeg); bevroren proces eerst ontdooien."""
         if not grace:
-            with contextlib.suppress(OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
+            _signal_group(proc, signal.SIGKILL)
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(0.5)
             return
-        with contextlib.suppress(OSError):
-            os.killpg(proc.pid, signal.SIGCONT)
-        with contextlib.suppress(OSError):
-            os.killpg(proc.pid, signal.SIGTERM)
+        _signal_group(proc, signal.SIGCONT)
+        _signal_group(proc, signal.SIGTERM)
         try:
             proc.wait(grace)
         except subprocess.TimeoutExpired:
-            with contextlib.suppress(OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
+            _signal_group(proc, signal.SIGKILL)
 
     def announce_planned_stop(self) -> None:
         """Vóór SIGTERM: diensten laten weten dat dit een geplande stop is (update/herstart),
@@ -930,6 +969,7 @@ class Supervisor:
         if self.stopping:
             return
         self.stopping = True
+        self.shutdown.set()
         budget = self.stop_budget if budget is None else budget
         self.check_schema_recovery()
         if not self.schema_recovery:
@@ -943,8 +983,7 @@ class Supervisor:
             specs = [s for s in self.specs
                      if s.stop_rank == rank and s.proc and s.proc.poll() is None]
             for spec in specs:
-                with contextlib.suppress(OSError):
-                    os.killpg(spec.proc.pid, signal.SIGTERM)  # type: ignore[union-attr]
+                _signal_group(spec.proc, signal.SIGTERM)  # type: ignore[arg-type]
             slow = any(s.slow_stop for s in specs)
             until = min(deadline, late_at if slow else time.monotonic() + FAST_STOP_WAIT)
             for spec in specs:
@@ -960,8 +999,7 @@ class Supervisor:
         for spec in self.specs:
             proc = spec.proc
             if proc is not None and proc.poll() is None:
-                with contextlib.suppress(OSError):
-                    os.killpg(proc.pid, signal.SIGKILL)
+                _signal_group(proc, signal.SIGKILL)
         self.write_state()
 
 
@@ -1013,7 +1051,7 @@ class _ProblemServer:  # pragma: no cover - netwerk, getest in de image-test
         self.server.server_close()
 
 
-def main() -> int:  # pragma: no cover - integratie (zie tests/integration/aio)
+def main() -> int:  # pragma: no cover - integratie (scripts/aio-smoke.py)
     env = dict(os.environ)
     config = Path(env.get("MG_AIO_CONFIG", "/config"))
     if config.is_dir():
@@ -1021,6 +1059,32 @@ def main() -> int:  # pragma: no cover - integratie (zie tests/integration/aio)
         with schema.startup_lock(config):
             return _run(env, config)
     return _run(env, config)
+
+
+def prepare_runtime(config: Path, web_state: Path, owner: tuple[int, int],
+                    *, recovering: bool) -> None:
+    """Maak de vluchtige statusmap en bestaande bewakerlog schrijfbaar voor de app."""
+    runtime = Path(HEALTH_FILE).parent
+    runtime.mkdir(parents=True, exist_ok=True, mode=0o755)
+    os.chown(runtime, *owner)
+    os.chmod(runtime, 0o755)
+    web_state.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    if recovering:
+        return
+    logs = config / "logs"
+    try:
+        logs.mkdir(exist_ok=True, mode=0o750)
+        entry = logs.lstat()
+        if stat.S_ISDIR(entry.st_mode) and entry.st_uid == 0:
+            os.chown(logs, *owner, follow_symlinks=False)
+    except OSError:
+        return  # logging naar stdout blijft beschikbaar, ook op een dataset zonder schrijfrecht
+    for name in ("supervisor.log", "supervisor.log.1"):
+        path = logs / name
+        with contextlib.suppress(OSError):
+            entry = path.lstat()
+            if stat.S_ISREG(entry.st_mode) and entry.st_uid == 0:
+                os.chown(path, *owner, follow_symlinks=False)
 
 
 def _run(env: dict[str, str], config: Path) -> int:  # pragma: no cover - integratie
@@ -1034,10 +1098,41 @@ def _run(env: dict[str, str], config: Path) -> int:  # pragma: no cover - integr
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    owner = (uid, gid) if os.geteuid() == 0 else None
+    web_state = Path(env.get("MG_AIO_WEB_STATE", WEB_STATE))
+    launcher: WebLauncher | None = None
+    with contextlib.ExitStack() as cleanup:
+        try:
+            warnings = None
+            if os.geteuid() == 0:
+                groups = _dri_groups()
+                web_uid, web_gid = web_identity(env)
+                if (not all(0 < value < 2**32 - 1 for value in (uid, gid, web_uid, web_gid))
+                        or web_uid == uid or web_gid in {gid, *groups}):
+                    raise ValueError("ongeldige of overlappende app- en webidentiteit")
+                warnings = prepare_start(env, config, (uid, gid))
+                prepare_runtime(config, web_state, (uid, gid),
+                                recovering=bool(env.get(schema.AIO_RECOVERY_ENV)))
+                web = next(spec for spec in build_specs(env) if spec.name == "web")
+                launcher = WebLauncher(web.argv, web.env, web.cwd, _demote(web_uid, web_gid, []))
+                cleanup.callback(launcher.close)
+                restrict_process(uid, gid, tuple(groups))
+            else:
+                restrict_process(uid, gid)
+        except (KeyError, OSError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"[mediaguard] Rechtenwissel mislukt: {exc}", flush=True)
+            return 1
+        return _run_services(env, config, stop, web_state, launcher, warnings)
+
+
+def _run_services(env: dict[str, str], config: Path, stop: threading.Event,
+                  web_state: Path, launcher: WebLauncher | None,
+                  warnings: list[str] | None) -> int:
     fallback: _ProblemServer | None = None
     while True:
-        warnings = prepare_start(env, config, owner)
+        if stop.is_set():
+            break
+        if warnings is None:
+            warnings = prepare_start(env, config, None)
         for warning in warnings:
             print(f"[mediaguard] LET OP: {warning}", flush=True)
         if env.get(schema.AIO_RECOVERY_ENV) or (
@@ -1054,12 +1149,15 @@ def _run(env: dict[str, str], config: Path) -> int:  # pragma: no cover - integr
                                                       "schrijfbaar voor gebruiker apps (568)."])
         print("[mediaguard] wacht op schrijfrechten; nieuwe poging over 30s", flush=True)
         if stop.wait(30):
-            return 0
+            break
+        warnings = None
     if fallback is not None:
         fallback.close()
+    if stop.is_set():
+        return 0
     if not env.get(schema.AIO_RECOVERY_ENV):
         try:
-            lines = before_services(env, config, owner, migrate_core=True)
+            lines = before_services(env, config, None, migrate_core=True)
         except RuntimeError as exc:
             print(f"[mediaguard] {exc}", flush=True)
             return 1
@@ -1070,26 +1168,24 @@ def _run(env: dict[str, str], config: Path) -> int:  # pragma: no cover - integr
     if not recovering:
         with contextlib.suppress(OSError):
             logs_dir.mkdir(parents=True, exist_ok=True, mode=0o750)  # niet voor de web-gebruiker
-            if owner is not None:
-                os.chown(logs_dir, uid, gid)
+    specs = build_specs(env)
     sup = Supervisor(
-        build_specs(env), uid if owner else None, gid,
+        specs, None, None,
         state_path=None if recovering else config / "core" / "supervisor.json",
-        health_path=Path(env.get("MG_AIO_HEALTH_FILE", "/tmp/mediaguard-health")),
+        health_path=Path(env.get("MG_AIO_HEALTH_FILE") or HEALTH_FILE),
         log_path=None if recovering else logs_dir / "supervisor.log", config_dir=config,
-        web_state_path=Path(env.get("MG_AIO_WEB_STATE", WEB_STATE)),
+        web_state_path=web_state, web_launcher=launcher, shutdown=stop,
         stop_budget=stop_budget(env), schema_recovery=recovering,
     )
-    signal.signal(signal.SIGTERM, sup.stop)
-    signal.signal(signal.SIGINT, sup.stop)
-    if stop.is_set():
-        return 0
+    if launcher is not None:
+        web = next(spec for spec in specs if spec.name == "web")
+        threading.Thread(target=sup._pump, args=(web, launcher.worker.stdout), daemon=True).start()
     code = sup.run()
     # alle diensten zijn nu gestopt: een in de app klaargezette terugzetting omwisselen
     from mediaguard.maintenance.preupdate import config_locks, encoder_migrations
 
     with config_locks(config):
-        for line in apply_staged_restore(config, owner, encoder_migrations(env)):
+        for line in apply_staged_restore(config, None, encoder_migrations(env)):
             print(f"[mediaguard] {line}", flush=True)
     return code
 

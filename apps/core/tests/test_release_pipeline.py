@@ -41,12 +41,80 @@ def _scripts(job: dict) -> str:
     return "\n".join(step.get("run", "") for step in job.get("steps", []))
 
 
+@pytest.mark.parametrize("filename", ("deploy/aio/Dockerfile",
+                                     "deploy/upgradebewijs/Dockerfile.kandidaat"))
+def test_aio_healthcheck_uses_exec_form(filename):
+    dockerfile = (ROOT / filename).read_text("utf-8")
+    assert 'CMD ["/usr/local/bin/mg-aio-healthcheck"]' in dockerfile
+    assert 'ENTRYPOINT ["/opt/venv/bin/python", "-m", "mediaguard.aio"]' in dockerfile
+    assert ("COPY --from=core --chmod=0755 /mediaguard/aio_healthcheck.py "
+            "/usr/local/bin/mg-aio-healthcheck") in dockerfile
+
+
 def _smoke():
     spec = importlib.util.spec_from_file_location("aio_smoke", ROOT / "scripts" / "aio-smoke.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_smoke_checks_healthcheck_for_both_uids(monkeypatch):
+    smoke = _smoke()
+    calls = []
+    zero = "0000000000000000"
+    status = {
+        "Uid": "568 568 568 568", "Gid": "568 568 568 568",
+        "CapEff": zero, "CapPrm": zero, "CapInh": zero, "CapAmb": zero,
+        "CapBnd": zero, "NoNewPrivs": "1",
+    }
+
+    def docker(*args):
+        calls.append(args)
+        fields = dict(status)
+        return "\n".join(f"{key}: {value}" for key, value in fields.items())
+
+    monkeypatch.setattr(smoke, "docker", docker)
+    assert not smoke.verify_healthcheck("proef", root_start=True)
+    status["CapBnd"] = "00000000a80425fb"
+    assert not smoke.verify_healthcheck("proef", root_start=False)
+    assert calls == [("exec", "proef", "/usr/local/bin/mg-aio-healthcheck", "--controle")] * 2
+    status["Uid"] = "0 0 0 0"
+    status["NoNewPrivs"] = "0"
+    del status["CapPrm"]
+    problems = smoke.verify_healthcheck("proef", root_start=True)
+    assert all(any(field in problem for problem in problems)
+               for field in ("Uid", "NoNewPrivs", "CapPrm", "CapBnd"))
+
+
+@pytest.mark.parametrize("root_start", (True, False))
+def test_smoke_checks_every_descendant_and_only_allows_the_web_subtree(root_start):
+    smoke = _smoke()
+    zero = "0000000000000000"
+
+    def fields(ppid, identity):
+        return {
+            "PPid": str(ppid), "Uid": f"{identity} " * 4, "Gid": f"{identity} " * 4,
+            "CapEff": zero, "CapPrm": zero, "CapInh": zero, "CapAmb": zero,
+            "CapBnd": zero if root_start else "00000000a80425fb", "NoNewPrivs": "1", "Groups": "",
+        }
+
+    processes = {"1": (fields(0, 568), False), "2": (fields(1, 568), False),
+                 "3": (fields(2, 568), False), "4": (fields(0, 0), False)}
+    web_id = 65534 if root_start else 568
+    if root_start:
+        processes["5"] = (fields(1, web_id), True)
+    processes["6"] = (fields(5 if root_start else 1, web_id), False)
+    services = {"core": {"pid": 2}, "web": {"pid": 6}}
+    assert not smoke.verify_process_tree(processes, services, root_start)
+
+    processes["3"][0]["Uid"] = "0 0 0 0"
+    del processes["3"][0]["NoNewPrivs"]
+    processes["6"][0]["PPid"] = "0"
+    problems = smoke.verify_process_tree(processes, services, root_start)
+    assert any("PID 3" in problem and "Uid" in problem for problem in problems)
+    assert any("PID 3" in problem and "NoNewPrivs" in problem for problem in problems)
+    assert any("dienst web" in problem for problem in problems)
 
 
 # -- workflows --------------------------------------------------------------------------------

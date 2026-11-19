@@ -22,5 +22,10 @@ RUN --mount=type=bind,from=core,target=/src \
     rm -rf "$d"; \
     cp -a /src/mediaguard "$d"; \
     find "$d" -name __pycache__ -prune -exec rm -rf {} +; \
-    /opt/venv/bin/python -c "import mediaguard.aio, mediaguard.app; print(mediaguard.__version__)"
+    /opt/venv/bin/python -c "import mediaguard.aio, mediaguard.app; print(mediaguard.__version__)"; \
+    install -d -m 0755 -o 568 -g 568 /run/mediaguard
 COPY --from=release release-manifest.json /usr/share/mediaguard/release-manifest.json
+COPY --from=core --chmod=0755 /mediaguard/aio_healthcheck.py /usr/local/bin/mg-aio-healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD ["/usr/local/bin/mg-aio-healthcheck"]
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "mediaguard.aio"]

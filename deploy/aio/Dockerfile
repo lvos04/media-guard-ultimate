@@ -38,22 +38,20 @@ RUN --mount=type=secret,id=ca_bundle,required=false \
     ln -s /opt/venv /opt/core-venv; \
     node --version; \
     test -x /app/sonarr/bin/Sonarr && test -x /app/radarr/bin/Radarr; \
-    mkdir -p /config /work /data /media
+    mkdir -p /config /work /data /media; \
+    install -d -m 0755 -o 568 -g 568 /run/mediaguard
 COPY --from=release / /usr/share/mediaguard/
-COPY healthcheck.sh /usr/local/bin/mg-aio-healthcheck
+COPY --from=core --chmod=0755 /mediaguard/aio_healthcheck.py /usr/local/bin/mg-aio-healthcheck
 
 ENV MG_AIO_CONFIG=/config MG_AIO_WORK=/work MG_AIO_DATA=/data \
     MG_RELEASE_MANIFEST=/usr/share/mediaguard/release-manifest.json \
     PUID=568 PGID=568 TZ=Europe/Amsterdam
 
-# Draait als root alleen om mappen/sleutels te maken en daarna alle onderdelen als 568 te
-# starten (zelfde als de vroegere init-container). Met een vaste gebruiker in TrueNAS (568)
-# werkt het ook: dan wordt er niets gewisseld.
+# De bewaker verlaagt zijn rechten bij de start. Bij een rootstart krijgt web een eigen UID.
 USER root
 # 30080 UI · 38989/38990 Sonarr · 37878/37879 Radarr (core/recovery/encoder alleen intern)
 EXPOSE 30080 38989 38990 37878 37879
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD ["sh", "/usr/local/bin/mg-aio-healthcheck"]
+    CMD ["/usr/local/bin/mg-aio-healthcheck"]
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/opt/venv/bin/python", "-m", "mediaguard.aio"]
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "mediaguard.aio"]

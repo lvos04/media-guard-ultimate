@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Rooktest van het alles-in-één-image vóór publicatie (release.yml, job aio-smoke).
 
-Start het nieuwe AIO-image zoals TrueNAS dat doet (drie mappen, als root gestart, alles
-draait als 568) op een GEVULDE database van een eerdere versie en controleert:
+Start het nieuwe AIO-image op aparte kopieën van een GEVULDE database van een eerdere
+versie, met de standaard rootstart en als vaste app-gebruiker, en controleert:
 
-1. de container wordt *healthy* en alle diensten draaien zonder herstart;
+1. de container wordt *healthy*, alle diensten draaien zonder herstart en de hele
+   procesboom en de afzonderlijke healthcheck hebben de verwachte rechten;
 2. ``/api/v1/health`` (via de web-UI op poort 30080) geeft status ok en de juiste versie;
 3. core gebruikt de oude database: geen installatiescherm, de oude beheerder kan inloggen
    en ``/api/v1/admin/version`` noemt precies de migraties uit het release-manifest;
@@ -31,7 +32,9 @@ import contextlib
 import importlib.util
 import json
 import os
+import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -44,6 +47,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_UID = APP_GID = 568
+WEB_ID = 65534
 # alle diensten die mediaguard.aio start; elk moet draaien zonder één herstart
 # hookguard: wachter tussen de forks en core (houdt de noodstop vast als core herstart)
 SERVICES = ("core", "recovery", "encode", "web", "hookguard", "sonarr-series", "sonarr-anime",
@@ -189,7 +193,99 @@ def docker(*args: str, check: bool = True) -> str:
     return out.stdout.strip()
 
 
-def wait_until_ready(name: str, base: str, config: Path, timeout: float) -> dict[str, Any]:
+def invalid_rights(fields: dict[str, str], uid: int, gid: int, root_start: bool) -> list[str]:
+    zero = "0000000000000000"
+    expected = {"Uid": [str(uid)] * 4, "Gid": [str(gid)] * 4, "NoNewPrivs": ["1"],
+                **{field: [zero] for field in ("CapEff", "CapPrm", "CapInh", "CapAmb")}}
+    problems = [field for field, value in expected.items() if fields.get(field, "").split() != value]
+    bound = fields.get("CapBnd", "").strip()
+    if (root_start and bound != zero) or not re.fullmatch(r"[0-9a-f]{16}", bound):
+        problems.append("CapBnd")
+    return problems
+
+
+def verify_healthcheck(name: str, root_start: bool) -> list[str]:
+    output = docker("exec", name, "/usr/local/bin/mg-aio-healthcheck", "--controle")
+    fields = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
+    return [f"healthcheck: ongeldige of ontbrekende {field}"
+            for field in invalid_rights(fields, APP_UID, APP_GID, root_start)]
+
+
+PROC_SNAPSHOT = """\
+import json
+from pathlib import Path
+
+processes = {}
+for path in Path("/proc").iterdir():
+    if not path.name.isdecimal():
+        continue
+    try:
+        argv = (path / "cmdline").read_bytes().split(b"\\0")
+        fields = dict(line.split(":", 1) for line in (path / "status").read_text().splitlines()
+                      if ":" in line)
+    except (FileNotFoundError, ProcessLookupError):
+        continue
+    processes[path.name] = [fields, argv[1:3] == [b"-m", b"mediaguard.aio_web"]]
+print(json.dumps(processes))
+"""
+
+
+def verify_process_tree(processes: dict[str, Any], services: dict[str, Any],
+                        root_start: bool) -> list[str]:
+    if "1" not in processes:
+        return ["procesboom: PID 1 ontbreekt"]
+    children: dict[str, list[str]] = {}
+    for pid, (fields, _web_launcher) in processes.items():
+        if not fields.get("PPid", "").strip().isdecimal():
+            return [f"procesboom: ongeldige of ontbrekende PPid bij PID {pid}"]
+        children.setdefault(fields["PPid"].strip(), []).append(pid)
+    web_launchers = [pid for pid in children.get("1", []) if processes[pid][1]]
+    if len(web_launchers) != int(root_start):
+        return ["procesboom: onverwacht aantal afzonderlijke webbewakers"]
+
+    problems: list[str] = []
+    seen: dict[str, bool] = {}
+    pending = [("1", False)]
+    while pending:
+        pid, web = pending.pop()
+        if pid in seen:
+            return [f"procesboom: dubbele PID {pid}"]
+        web = web or pid in web_launchers
+        seen[pid] = web
+        uid, gid = (WEB_ID, WEB_ID) if web else (APP_UID, APP_GID)
+        problems += [f"procesboom PID {pid}: ongeldige of ontbrekende {field}"
+                     for field in invalid_rights(processes[pid][0], uid, gid, root_start)]
+        if web and processes[pid][0].get("Groups", "?").strip():
+            problems.append(f"procesboom PID {pid}: web heeft groepen of de meting ontbreekt")
+        pending.extend((child, web) for child in children.get(pid, []))
+    for name, service in services.items():
+        pid = str(service.get("pid"))
+        if pid not in seen or seen[pid] != (root_start and name == "web"):
+            problems.append(f"procesboom: dienst {name} ontbreekt of draait onder de verkeerde bewaker")
+    return problems
+
+
+def verify_web_isolation(name: str) -> None:
+    docker("exec", "--user", f"{WEB_ID}:{WEB_ID}", name, "/opt/venv/bin/python", "-c", """\
+import os
+from pathlib import Path
+
+public = Path("/run/mediaguard/core-status.json")
+if not os.access(public, os.R_OK) or os.access(public.parent, os.W_OK) or os.access(public, os.W_OK):
+    raise SystemExit("web mag de openbare status alleen lezen")
+for path in ("/config/core/mediaguard.db", "/config/secrets/internal/token"):
+    if os.access(path, os.R_OK):
+        raise SystemExit("web kan private appdata lezen")
+""")
+
+
+def service_snapshot(name: str) -> dict[str, Any]:
+    output = docker("exec", "--user", f"{APP_UID}:{APP_GID}", name,
+                    "cat", "/config/core/supervisor.json", check=False)
+    return json.loads(output) if output else {}
+
+
+def wait_until_ready(name: str, base: str, timeout: float) -> tuple[dict[str, Any], dict[str, Any]]:
     """Wacht op Docker-health 'healthy', health-endpoint en alle diensten 'running'."""
     deadline = time.monotonic() + timeout
     last = "nog niets"
@@ -199,17 +295,14 @@ def wait_until_ready(name: str, base: str, config: Path, timeout: float) -> dict
         if state.startswith(("exited", "dead")):
             raise RuntimeError(f"container gestopt: {state}")
         try:
-            snap = json.loads((config / "core" / "supervisor.json").read_text())
-        except (OSError, ValueError):
-            snap = {}
-        try:
             code, health, _ = http(f"{base}/api/v1/health")
         except OSError as exc:
             code, health = 0, str(exc)
-        last = f"docker={state} health={code} diensten={verify_services(snap) or 'ok'}"
-        if state.endswith("healthy") and not state.endswith("unhealthy") and code == 200 \
-                and not verify_services(snap):
-            return health if isinstance(health, dict) else {}
+        snap = service_snapshot(name) if state.endswith(" healthy") and code == 200 else {}
+        services = verify_services(snap)
+        last = f"docker={state} health={code} diensten={services or 'ok'}"
+        if not services:
+            return (health if isinstance(health, dict) else {}), snap
         time.sleep(5)
     raise RuntimeError(f"niet klaar binnen {int(timeout)} s: {last}")
 
@@ -244,12 +337,22 @@ def check_api(base: str, fixture: dict[str, Any], version: str,
     return problems
 
 
-def run(args: argparse.Namespace) -> tuple[list[str], str]:
+def set_fixture_owner(image: str, path: Path, uid: int, gid: int) -> None:
+    if os.geteuid() == 0:
+        for entry in (path, *path.rglob("*")):
+            os.chown(entry, uid, gid, follow_symlinks=False)
+    else:
+        docker("run", "--rm", "--network", "none", "--user", "0:0", "--entrypoint", "chown",
+               "-v", f"{path}:/proef", image, "-hR", f"{uid}:{gid}", "/proef")
+
+
+def run(args: argparse.Namespace, root_start: bool) -> tuple[list[str], str]:
+    label = "rootstart" if root_start else "vaste gebruiker"
     manifest = json.loads(Path(args.manifest).read_text("utf-8"))
     expected = manifest["schema_versions"]["core"]
     sql, fixture = pick_fixture(Path(args.fixtures), args.version)
     pending = [v for v in expected if v not in fixture["schema_versions"]]
-    print(f"fixture: {sql.name} (schema {len(fixture['schema_versions'])} migraties, release "
+    print(f"{label}, fixture: {sql.name} (schema {len(fixture['schema_versions'])} migraties, release "
           f"{len(expected)}); te migreren: {', '.join(pending) or 'geen'}", flush=True)
     tmp = Path(tempfile.mkdtemp(prefix="mg-aio-smoke-"))
     config, work, data = tmp / "config", tmp / "work", tmp / "data"
@@ -257,32 +360,40 @@ def run(args: argparse.Namespace) -> tuple[list[str], str]:
         d.mkdir(parents=True, exist_ok=True)
     restore(sql, config / "core" / "mediaguard.db")
     voor, problems = measure(config, fixture)
-    if os.geteuid() == 0:  # zoals de TrueNAS-ACL: alles van 'apps' (568)
-        for path in (tmp, *tmp.rglob("*")):
-            os.chown(path, APP_UID, APP_GID)
-    name = f"mg-aio-smoke-{os.getpid()}"
-    base = f"http://127.0.0.1:{args.port}"
-    docker("run", "-d", "--name", name, "-p", f"127.0.0.1:{args.port}:30080",
-           "-e", "TZ=UTC", "-e", "MG_HOST=127.0.0.1",
-           "-v", f"{config}:/config", "-v", f"{work}:/work", "-v", f"{data}:/data", args.image)
+    name = f"mg-aio-smoke-{os.getpid()}-{'root' if root_start else 'apps'}"
+    loopback = socket.inet_ntoa(socket.INADDR_LOOPBACK.to_bytes(4, "big"))
+    base = f"http://{loopback}:{args.port}"
+    user = [] if root_start else ["--user", f"{APP_UID}:{APP_GID}"]
+    snapshot_text, log_text, exit_code = "", "", ""
     try:
-        health = wait_until_ready(name, base, config, args.timeout)
+        set_fixture_owner(args.image, tmp, APP_UID, APP_GID)
+        docker("run", "-d", "--name", name, *user, "-p", f"{loopback}:{args.port}:30080",
+               "-e", "TZ=UTC", "-e", f"MG_HOST={loopback}",
+               "-v", f"{config}:/config", "-v", f"{work}:/work", "-v", f"{data}:/data", args.image)
+        health, snapshot = wait_until_ready(name, base, args.timeout)
+        processes = json.loads(docker("exec", name, "/opt/venv/bin/python", "-c", PROC_SNAPSHOT))
+        problems += verify_process_tree(processes, snapshot["services"], root_start)
+        problems += verify_healthcheck(name, root_start)
+        if root_start:
+            verify_web_isolation(name)
         if health.get("version") != args.version:
             problems.append(f"health meldt versie {health.get('version')}, verwacht "
                             f"{args.version}")
         problems += check_api(base, fixture, args.version, expected)
-    except (RuntimeError, OSError) as exc:  # OSError: verbinding weg tijdens de controles
+    except (RuntimeError, OSError, ValueError, TypeError, KeyError) as exc:
         problems.append(str(exc))
     finally:
-        snapshot_text = ""
-        with contextlib.suppress(OSError):
-            snapshot_text = (config / "core" / "supervisor.json").read_text()
+        with contextlib.suppress(RuntimeError, OSError, ValueError):
+            snapshot_text = json.dumps(service_snapshot(name), indent=2)
         subprocess.run(["docker", "stop", "-t", str(args.stop_timeout), name],
                        capture_output=True, check=False)
         exit_code = docker("inspect", "-f", "{{.State.ExitCode}}", name, check=False)
         logs = subprocess.run(["docker", "logs", "--tail", "200", name], capture_output=True,
                               text=True, check=False)
+        log_text = logs.stdout + logs.stderr
         docker("rm", "-f", name, check=False)
+        if os.geteuid() != 0:
+            set_fixture_owner(args.image, tmp, os.getuid(), os.getgid())
     if exit_code != "0":
         problems.append(f"geen nette stop binnen {args.stop_timeout} s (exitcode {exit_code})")
     problems += verify_db(config / "core" / "mediaguard.db", fixture, expected)
@@ -295,10 +406,10 @@ def run(args: argparse.Namespace) -> tuple[list[str], str]:
     if problems:
         print("---- supervisor.json ----\n" + snapshot_text, flush=True)
         print("---- docker logs (laatste 200 regels) ----", flush=True)
-        print(logs.stdout + logs.stderr, flush=True)
+        print(log_text, flush=True)
     if not args.keep:
         shutil.rmtree(tmp, ignore_errors=True)
-    return problems, report
+    return [f"{label}: {problem}" for problem in problems], report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -315,13 +426,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--stop-timeout", type=int, default=90)
     p.add_argument("--keep", action="store_true", help="tijdelijke mappen laten staan")
     args = p.parse_args(argv)
-    problems, report = run(args)
+    results = [run(args, root_start) for root_start in (True, False)]
+    problems = [problem for errors, _report in results for problem in errors]
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     lines = [f"## AIO-rooktest {args.version}", ""]
-    lines += [f"- ❌ {p}" for p in problems] or ["- ✅ start, health, versie, inloggen, "
-                                                  "migratie, nette stop en per tabel niets "
-                                                  "verloren"]
-    lines += ["", report]
+    lines += [f"- ❌ {p}" for p in problems] or [
+        "- ✅ rootstart en vaste gebruiker: diensten, procesrechten, healthcheck, versie, "
+        "inloggen, migratie, nette stop en per tabel niets verloren"
+    ]
+    for label, (_errors, report) in zip(("Rootstart", "Vaste gebruiker"), results, strict=True):
+        lines += ["", f"### {label}", "", report]
     if summary:
         with open(summary, "a", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
