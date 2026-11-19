@@ -495,3 +495,116 @@ async def test_sse_hervat_na_tweede_upgrade_met_gelijke_oude_rij(settings, old_s
         db.execute("DELETE FROM outbox_events")
         leeg, = await sse_herlezing(ctx, last_id)
         controleer_sse_reset(leeg)
+
+
+def test_rotatie_bewaart_de_set_van_elke_nieuwe_poging(settings, old_schema, monkeypatch):
+    from datetime import UTC, datetime
+
+    class VasteKlok(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 1, 1, tzinfo=UTC).astimezone(tz)
+
+    monkeypatch.setattr(preupdate, "datetime", VasteKlok)
+    pad = settings.db_path
+    namen = set()
+
+    def onderbreek(*_):
+        raise InterruptedError("proefonderbreking na het archiveren")
+
+    for _ in range(preupdate.KEEP_SETS + 2):
+        with closing(database.Database(pad)) as db, monkeypatch.context() as poging:
+            poging.setattr(db, "_apply_migration", onderbreek)
+            with pytest.raises(InterruptedError):
+                db.initialize()
+        sets = {p.parent.name for p in settings.backup_dir.glob("voor-update/*/meta.json")}
+        assert len(sets - namen) == 1
+        namen.update(sets)
+
+    with closing(sqlite3.connect(pad)) as db, db:
+        db.execute("UPDATE outbox_events SET topic='recovery.committed'")
+    with closing(database.Database(pad)) as db:
+        db.initialize()
+        assert db.fetch_one("SELECT 1 FROM schema_migrations WHERE version LIKE '151_%'")
+    nieuwe, = [p.parent for p in settings.backup_dir.glob("voor-update/*/meta.json")
+               if p.parent.name not in namen]
+    assert not preupdate.verify(nieuwe)
+    preupdate.stage(pad.parent, nieuwe, actor="proef")
+    assert preupdate.apply_staged(pad.parent)["ok"]
+    with closing(sqlite3.connect(pad)) as db:
+        assert db.execute("SELECT topic FROM outbox_events").fetchone() == ("recovery.committed",)
+        assert not db.execute(
+            "SELECT 1 FROM schema_migrations WHERE version LIKE '151_%'"
+        ).fetchone()
+
+
+def test_verdwenen_gepubliceerde_set_blokkeert_151(settings, old_schema, monkeypatch):
+    origineel = preupdate.prune_sets
+
+    def verlies(folder, *args, **kwargs):
+        origineel(folder, *args, **kwargs)
+        bestand, = folder.glob("*/mediaguard.db")
+        bestand.unlink()
+
+    monkeypatch.setattr(preupdate, "prune_sets", verlies)
+    with closing(database.Database(settings.db_path)) as db:
+        with pytest.raises(RuntimeError, match="back-up"):
+            db.initialize()
+        assert not db.fetch_one("SELECT 1 FROM schema_migrations WHERE version LIKE '151_%'")
+        assert db.fetch_one("SELECT topic FROM outbox_events")[0] == "library.synced"
+
+
+@pytest.mark.parametrize("wijziging", ["wal", "extra", "verwijderd"])
+def test_herstelset_volgt_ook_de_encoder(settings, old_schema, monkeypatch, wijziging):
+    config = settings.data_dir.parent / "aio"
+    core, encoder = config / "core", config / "encode"
+    encoder.mkdir(parents=True)
+    settings.data_dir.rename(core)
+    pad = encoder / "app.db"
+    with closing(sqlite3.connect(pad)) as schrijver:
+        schrijver.execute("PRAGMA journal_mode=WAL")
+        schrijver.execute("CREATE TABLE job (percent INTEGER)")
+        schrijver.execute("INSERT INTO job VALUES (25)")
+        schrijver.commit()
+        env = {}
+        aio.before_services(env, config, None)
+        eerste = Path(env["MG_PRE_UPDATE_SET"])
+        if wijziging == "wal":
+            schrijver.execute("UPDATE job SET percent=75")
+            schrijver.commit()
+        elif wijziging == "extra":
+            with closing(sqlite3.connect(encoder / "tweede.db")) as extra:
+                schrijver.backup(extra)
+        else:
+            schrijver.close()
+            pad.unlink()
+        monkeypatch.setenv("MG_PRE_UPDATE_SET", str(eerste))
+        with closing(database.Database(core / "mediaguard.db")) as db:
+            db.initialize()
+            assert db.fetch_one("SELECT 1 FROM schema_migrations WHERE version LIKE '151_%'")
+    actueel, = [p.parent for p in eerste.parent.glob("*/meta.json") if p.parent != eerste]
+    bewaard = {p.name for p in (actueel / "encode").glob("*.db")}
+    assert bewaard == {p.name for p in encoder.glob("*.db")}
+    assert not preupdate.verify(actueel)
+    preupdate.stage(core, actueel, actor="proef")
+    assert preupdate.apply_staged(core)["ok"]
+    if wijziging != "verwijderd":
+        with closing(sqlite3.connect(pad)) as db:
+            stand = db.execute("SELECT percent FROM job").fetchone()[0]
+            assert stand == (75 if wijziging == "wal" else 25)
+
+
+def test_aio_migreert_voor_de_start_van_de_schrijvers(settings, old_schema):
+    config = settings.data_dir.parent / "aio"
+    config.mkdir()
+    core = config / "core"
+    settings.data_dir.rename(core)
+    env = {}
+    aio.before_services(env, config, None, migrate_core=True)
+    archief = Path(env["MG_PRE_UPDATE_SET"])
+    assert preupdate.verify(archief) == []
+    for map_, verwacht in ((archief, 0), (core, 1)):
+        with closing(sqlite3.connect(map_ / "mediaguard.db")) as db:
+            assert db.execute("SELECT count(*) FROM schema_migrations WHERE version LIKE '151_%'"
+                              ).fetchone()[0] == verwacht
+            assert db.execute("SELECT topic FROM outbox_events").fetchone() == ("library.synced",)

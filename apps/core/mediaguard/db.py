@@ -177,7 +177,7 @@ class Database:
             self.path.parent, schema.encoder_dir(self.path.parent), blocking=blocking,
         )
 
-    def initialize(self) -> None:
+    def initialize(self, *, pre_update_set: Path | None = None) -> None:
         if os.environ.get(schema.AIO_RECOVERY_ENV):
             self.check_schema()
             return
@@ -190,11 +190,11 @@ class Database:
         with self.startup_lock():
             if not self.check_schema():
                 try:
-                    self._initialize()
+                    self._initialize(pre_update_set)
                 except schema.SchemaTooNew:
                     self.read_only = True
 
-    def _initialize(self) -> None:
+    def _initialize(self, pre_update_set: Path | None) -> None:
         folder = self.path.parent
         conn = self._connect()
         if conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
@@ -239,7 +239,7 @@ class Database:
                 # Verifieer voor outbox- en bewijsgegevens de actuele set onder het schrijfslot.
                 with self._migration_transaction(conn):
                     self._backup_before_migration(max(applied), pending[-1].stem,
-                                                  required=requires_backup)
+                                                  required=requires_backup, archive=pre_update_set)
             for file in pending:
                 self._apply_migration(conn, file)
         except schema.SchemaTooNew:
@@ -290,24 +290,28 @@ class Database:
             )
 
     def _backup_before_migration(self, current: str, target: str, *,
-                                 required: bool = False) -> None:
+                                 required: bool = False, archive: Path | None = None) -> None:
         """Verifieer bij een beschermde migratie een actuele herstelset."""
-        made = os.environ.get("MG_PRE_UPDATE_SET")
+        made = archive or os.environ.get("MG_PRE_UPDATE_SET")
         if not required and made and (Path(made) / "meta.json").is_file():
             return
         from mediaguard import __version__
         from mediaguard.maintenance import preupdate
 
         try:
-            if required and made and preupdate.matches_core(Path(made), self.path, current, target):
-                return
+            if required and made:
+                path = Path(made)
+                current_turn = (archive is not None
+                                or preupdate.claim_snapshot(self.path.parent, path))
+                if current_turn and preupdate.matches_sources(path, self.path, current, target):
+                    return
             encoder = schema.encoder_dir(self.path.parent)
             preupdate.make_set(
                 self.path.parent / "backups" / preupdate.FOLDER, self.path,
                 encode_dir=encoder if required and encoder.is_dir() else None,
                 from_schema=current, to_schema=target,
                 from_version=preupdate._previous_version(self.path), to_version=__version__,
-                reason="update" if required else "migratie",
+                reason="update" if required else "migratie", preserve=Path(made) if made else None,
             )
         except preupdate.SetError as exc:
             if exc.disk and not required:

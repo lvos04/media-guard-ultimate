@@ -1059,7 +1059,7 @@ def _run(env: dict[str, str], config: Path) -> int:  # pragma: no cover - integr
         fallback.close()
     if not env.get(schema.AIO_RECOVERY_ENV):
         try:
-            lines = before_services(env, config, owner)
+            lines = before_services(env, config, owner, migrate_core=True)
         except RuntimeError as exc:
             print(f"[mediaguard] {exc}", flush=True)
             return 1
@@ -1126,7 +1126,7 @@ def _preupdate(command: str, config: Path, encoder_migrations: Path,
             "--config", str(config), "--core-migrations", str(MIGRATIONS_DIR),
             "--encoder-migrations", str(encoder_migrations),
         ]
-        if command == "snapshot":
+        if command != "inspect":
             argv += ["--version", __version__]
         proc = subprocess.run(  # noqa: S603 - vaste argv
             argv, capture_output=True, text=True, timeout=3600,
@@ -1137,13 +1137,13 @@ def _preupdate(command: str, config: Path, encoder_migrations: Path,
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip()[-300:] or f"code {proc.returncode}")
         line = proc.stdout.strip()
-        return Path(line) if line and command == "snapshot" else None
+        return Path(line) if line and command != "inspect" else None
     if command == "inspect":
         preupdate.inspect_schema(config, encoder_migrations=encoder_migrations)
         return None
     return preupdate.snapshot_before_start(
         config, core_migrations=MIGRATIONS_DIR, encoder_migrations=encoder_migrations,
-        app_version=__version__, owner=owner,
+        app_version=__version__, owner=owner, migrate_core=command == "upgrade",
     )
 
 
@@ -1175,7 +1175,7 @@ def prepare_start(env: dict[str, str], config: Path,
 
 
 def before_services(env: dict[str, str], config: Path,
-                    owner: tuple[int, int] | None) -> list[str]:
+                    owner: tuple[int, int] | None, *, migrate_core: bool = False) -> list[str]:
     """Verwerk klaargezet herstel en maak zo nodig een set vlak vóór het starten."""
     from mediaguard.maintenance import preupdate
 
@@ -1184,7 +1184,7 @@ def before_services(env: dict[str, str], config: Path,
         out = apply_staged_restore(config, owner, migrations)
     env.pop("MG_PRE_UPDATE_SET", None)
     try:
-        made = _preupdate("snapshot", config, migrations, owner)
+        made = _preupdate("upgrade" if migrate_core else "snapshot", config, migrations, owner)
     except schema.SchemaTooNew:
         env[schema.AIO_RECOVERY_ENV] = "1"
         return [*out, schema.MESSAGE]

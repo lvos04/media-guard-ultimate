@@ -39,6 +39,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from mediaguard import schema
 from mediaguard.db import MIGRATIONS_DIR, Database, check_schema_versions
@@ -48,11 +49,12 @@ SET_PREFIX = "voor-update-"
 ASIDE_FOLDER = "voor-terugzetten"
 STAGE_MARKER = "terugzetten.json"
 RESULT_FILE = "terugzetten-resultaat.json"
+UPGRADE_SET = "update-herstelset"
 STAGED_SUFFIX = ".terugzetten"
 KEEP_SETS = 5
 PARTIAL_GRACE_S = 3600
 STAGE_MAX_AGE_S = 24 * 3600  # daarna niet meer omwisselen (geen verrassing weken later)
-_SET_NAME = re.compile(r"^voor-update-\d{8}T\d{6}Z(-\d+)?$")
+_SET_NAME = re.compile(r"^voor-update-\d{8}T\d{6}Z(?:-\d+|-[0-9]{6}-[a-f0-9]{32})?$")
 _LEGACY_NAME = re.compile(r"^mediaguard-[\w.-]+-naar-[\w.-]+-\d{8}T\d{6}Z\.db$")
 _ENC_VERSION = re.compile(r"^(\d+)_")
 
@@ -116,7 +118,7 @@ def _copy_sqlite(src: Path, dest: Path) -> dict[str, Any]:
     return {"sha256": _sha256(dest), "size": dest.stat().st_size}
 
 
-def _core_generation(path: Path) -> list[list[int]]:
+def _file_generation(path: Path) -> list[list[int]]:
     # De gegevens staan in het hoofdbestand en eventueel de WAL. Het gedeelde
     # lezersregister (-shm) en een lege WAL bevatten geen databasewijzigingen.
     main = list(schema._generation(path))
@@ -127,16 +129,37 @@ def _core_generation(path: Path) -> list[list[int]]:
     return [main, wal if wal and wal[2] else []]
 
 
-def matches_core(path: Path, core_db: Path, current: str, target: str) -> bool:
-    """Hergebruik de supervisorsnapshot uitsluitend bij dezelfde live bestandsstand."""
+def _source_generation(core_db: Path, encode_dir: Path | None) -> dict[str, list[list[int]]]:
+    stand = {"mediaguard.db": _file_generation(core_db)}
+    if encode_dir is not None:
+        for path in sorted(encode_dir.glob("*.db")):
+            stand[f"encode/{path.name}"] = _file_generation(path)
+    return stand
+
+
+def claim_snapshot(core_dir: Path, archive: Path) -> bool:
+    """De losse kern kan alleen de ongebruikte set van de laatste supervisorstart overnemen."""
+    marker = core_dir / UPGRADE_SET
+    try:
+        name = marker.read_text(encoding="ascii")
+        marker.unlink()
+    except FileNotFoundError:
+        return False
+    return name == archive.name
+
+
+def matches_sources(path: Path, core_db: Path, current: str, target: str) -> bool:
+    """Controleer onder beide mapsloten de volledige set en alle live databases met WAL."""
     if path.parent != core_db.parent / "backups" / FOLDER or not _SET_NAME.fullmatch(path.name):
         return False
     meta = _read_meta(path) or {}
-    if (meta.get("from_schema"), meta.get("to_schema"), meta.get("core_generation")) != (
-        current, target, _core_generation(core_db),
-    ):
+    stand = _source_generation(core_db, schema.encoder_dir(core_db.parent))
+    if (meta.get("name"), meta.get("reason"), meta.get("from_schema"), meta.get("to_schema"),
+        meta.get("source_generation")) != (path.name, "update", current, target, stand):
         return False
-    _set_files(core_db.parent, path)
+    entries = _set_files(core_db.parent, path)
+    if {p.relative_to(path).as_posix() for p, _, _ in entries.values()} != stand.keys():
+        raise SetError("de herstelset bevat niet alle actuele databases")
     if problems := verify(path):
         raise SetError(", ".join(problems))
     return True
@@ -145,7 +168,8 @@ def matches_core(path: Path, core_db: Path, current: str, target: str) -> bool:
 def make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
              from_schema: str | None = None, to_schema: str | None = None,
              from_version: str | None = None, to_version: str | None = None,
-             reason: str = "migratie", owner: tuple[int, int] | None = None) -> Path:
+             reason: str = "migratie", owner: tuple[int, int] | None = None,
+             preserve: Path | None = None) -> Path:
     """Maak een complete set (eerst als ``.part``-map, pas daarna de echte naam)."""
     peer = encode_dir or schema.encoder_dir(core_db.parent)
     with schema.startup_locks(core_db.parent, peer):
@@ -154,25 +178,22 @@ def make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
             check_encoder_schema(peer)
         return _make_set(folder, core_db, encode_dir=encode_dir, from_schema=from_schema,
                          to_schema=to_schema, from_version=from_version, to_version=to_version,
-                         reason=reason, owner=owner)
+                         reason=reason, owner=owner, preserve=preserve)
 
 
 def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
               from_schema: str | None, to_schema: str | None, from_version: str | None,
-              to_version: str | None, reason: str, owner: tuple[int, int] | None) -> Path:
+              to_version: str | None, reason: str, owner: tuple[int, int] | None,
+              preserve: Path | None = None) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     _chown([folder.parent, folder], owner)
-    base = SET_PREFIX + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    name, n = base, 1
-    while (folder / name).exists():
-        n += 1
-        name = f"{base}-{n}"
+    stamp = datetime.now(UTC)
+    name = f"{SET_PREFIX}{stamp:%Y%m%dT%H%M%SZ-%f}-{uuid4().hex}"
     work = folder / (name + ".part")
-    shutil.rmtree(work, ignore_errors=True)
-    work.mkdir(parents=True)
+    work.mkdir()
     files: list[dict[str, Any]] = []
     try:
-        generation = _core_generation(core_db) if reason == "update" else None
+        generation = _source_generation(core_db, encode_dir) if reason == "update" else None
         files.append({"name": "mediaguard.db", "live": f"{core_db.parent.name}/{core_db.name}",
                       **_copy_sqlite(core_db, work / "mediaguard.db")})
         encoder_problem = None
@@ -186,13 +207,14 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
                     encoder_problem = str(exc)
                     if exc.disk:
                         raise
-        meta = {"kind": "pre-update", "name": name, "created_at": _now(), "reason": reason,
+        meta = {"kind": "pre-update", "name": name, "reason": reason,
+                "created_at": stamp.isoformat(timespec="microseconds"),
                 "from_version": from_version, "to_version": to_version,
                 "from_schema": from_schema, "to_schema": to_schema, "files": files,
                 "encoder_included": any(f["name"].startswith("encode/") for f in files),
                 "encoder_problem": encoder_problem, "integrity_ok": True}
-        if generation is not None and generation == _core_generation(core_db):
-            meta["core_generation"] = generation
+        if generation is not None and generation == _source_generation(core_db, encode_dir):
+            meta["source_generation"] = generation
         (work / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         if reason == "update":
             if encoder_problem or _read_meta(work) != meta:
@@ -205,17 +227,27 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
         raise
     done = folder / name
     _chown([done, *done.rglob("*")], owner)
-    prune_sets(folder)
+    protected = {done}
+    if preserve is not None:
+        protected.add(preserve)
+    prune_sets(folder, protected=protected)
+    if reason == "update":
+        if _read_meta(done) != meta:
+            raise SetError("de gepubliceerde herstelset voor deze update ontbreekt of is gewijzigd")
+        if problems := verify(done):
+            raise SetError(", ".join(problems))
     return done
 
 
-def prune_sets(folder: Path, keep: int = KEEP_SETS, now: float | None = None) -> int:
+def prune_sets(folder: Path, keep: int = KEEP_SETS, now: float | None = None,
+               *, protected: set[Path] | None = None) -> int:
     """Alleen complete sets tellen mee; halve ``.part``-mappen verdwijnen na een uur."""
     now = time.time() if now is None else now
     removed = 0
     complete = sorted(p for p in folder.glob(SET_PREFIX + "*")
                       if p.is_dir() and _SET_NAME.match(p.name) and (p / "meta.json").is_file())
-    for old in complete[:-keep]:
+    removable = [p for p in complete if p not in (protected or set())]
+    for old in removable[:max(0, len(complete) - keep)]:
         shutil.rmtree(old, ignore_errors=True)
         removed += 1
     for part in folder.glob(SET_PREFIX + "*.part"):
@@ -669,20 +701,32 @@ def _previous_version(core_db: Path) -> str | None:
 
 def snapshot_before_start(config_root: Path, *, core_migrations: Path,
                           encoder_migrations: Path | None, app_version: str,
-                          owner: tuple[int, int] | None = None) -> Path | None:
+                          owner: tuple[int, int] | None = None,
+                          migrate_core: bool = False) -> Path | None:
     """Supervisor, vóór de start van de diensten: staat er een migratie open (core of AV1-
     engine), verifieer dan de set met beide databases vóór het vrijgeven van de start."""
     with config_locks(config_root):
         core, enc = inspect_schema(config_root, core_migrations=core_migrations,
                                    encoder_migrations=encoder_migrations)
+        core_db = config_root / "core" / "mediaguard.db"
+        marker = core_db.parent / UPGRADE_SET
+        marker.unlink(missing_ok=True)
         if core is None and not enc:
             return None
-        core_db = config_root / "core" / "mediaguard.db"
-        return _make_set(core_db.parent / "backups" / FOLDER, core_db,
-                         encode_dir=config_root / "encode",
-                         from_schema=core[0] if core else None, to_schema=core[1] if core else None,
-                         from_version=_previous_version(core_db), to_version=app_version,
-                         reason="update", owner=owner)
+        archive = _make_set(core_db.parent / "backups" / FOLDER, core_db,
+                            encode_dir=config_root / "encode",
+                            from_schema=core[0] if core else None,
+                            to_schema=core[1] if core else None,
+                            from_version=_previous_version(core_db), to_version=app_version,
+                            reason="update", owner=owner)
+        if migrate_core and core:
+            # Geen enkele dienst draait al. Houd beide mapsloten ook tijdens de kernmigratie.
+            with contextlib.closing(Database(core_db)) as db:
+                db.initialize(pre_update_set=archive)
+                db.require_writable()
+        elif core:
+            marker.write_text(archive.name, encoding="ascii")
+        return archive
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - aangeroepen door aio
@@ -694,12 +738,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - aangeroepe
 
     p = argparse.ArgumentParser(prog="python -m mediaguard.maintenance.preupdate")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for cmd in ("inspect", "snapshot"):
+    for cmd in ("inspect", "snapshot", "upgrade"):
         action = sub.add_parser(cmd)
         action.add_argument("--config", required=True, type=Path)
         action.add_argument("--core-migrations", required=True, type=Path)
         action.add_argument("--encoder-migrations", type=Path)
-        if cmd == "snapshot":
+        if cmd != "inspect":
             action.add_argument("--version", required=True)
     a = p.parse_args(argv)
     try:
@@ -709,7 +753,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - aangeroepe
             return 0
         made = snapshot_before_start(a.config, core_migrations=a.core_migrations,
                                      encoder_migrations=a.encoder_migrations,
-                                     app_version=a.version)
+                                     app_version=a.version, migrate_core=a.cmd == "upgrade")
     except schema.SchemaTooNew as exc:
         print(str(exc), file=sys.stderr)
         return schema.EXIT_CODE
