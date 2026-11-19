@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import select
+import sqlite3
+import stat
 import subprocess
 import sys
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -569,6 +572,295 @@ else:
     await storage.shutdown(ctx)
     await _expect_pause(ctx, cleanup_round)
     await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+@pytest.mark.parametrize("rechten", ["444", "777"], ids=["datamapslot", "zoekrecht"])
+async def test_slotfout_aparte_meetwerker(ctx, cleanup_round, pool_configured, rechten):
+    # De meetwerker is al gestart voordat de opruimer zijn eerste gezonde meting krijgt.
+    script = """
+import asyncio, stat, sys
+from pathlib import Path
+from mediaguard.app import create_app
+from mediaguard.config import load_settings
+from mediaguard import storage_forecast as pool
+
+folder = Path(sys.argv[1])
+ctx = create_app(load_settings(data_dir=folder, start_background=False)).state.ctx
+asyncio.run(pool.startup(ctx))
+print("gestart", flush=True)
+assert input() == "meet"
+mode = stat.S_IMODE(folder.stat().st_mode)
+try:
+    folder.chmod(mode & ~int(sys.argv[2], 8))
+    try:
+        asyncio.run(pool.refresh_pool(ctx))
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("De meetstart had moeten worden geweigerd")
+finally:
+    folder.chmod(mode)
+"""
+    folder = ctx.settings.data_dir
+    mode = stat.S_IMODE(folder.stat().st_mode)
+    with subprocess.Popen([sys.executable, "-c", script, str(folder), rechten],
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as worker:
+        try:
+            assert select.select([worker.stdout], [], [], 15)[0], "De meetwerker startte niet"
+            assert worker.stdout.readline().strip() == "gestart"
+            old = _healthy_pool(ctx)
+            worker.communicate("meet\n", timeout=15)
+            assert worker.returncode == 0
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+                worker.wait()
+            folder.chmod(mode)
+    storage.record_pool(ctx, {"pools": old["pools"]}, request_id=old["request_id"])
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+async def test_leesfout_trekt_toestemming_in(ctx, cleanup_round, pool_configured, monkeypatch):
+    _healthy_pool(ctx)
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        await storage.startup(worker)
+        try:
+            with monkeypatch.context() as error:
+                error.setattr(worker.secrets, "get", lambda _: None)
+                assert storage.pool_cleanup_pause_reason(worker)
+        finally:
+            await storage.shutdown(worker)
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+async def test_slotfout_tijdens_toestemmingscontrole(ctx, cleanup_round, pool_configured,
+                                                     monkeypatch):
+    _healthy_pool(ctx)
+    meter = create_app(ctx.settings).state.ctx
+    await storage.startup(meter)
+    open_pipe = storage._request_pipe
+
+    def weiger_slot():
+        raise PermissionError("datamapslot")
+
+    @contextmanager
+    def onderbroken_controle(*args, **kwargs):
+        with open_pipe(*args, **kwargs) as stream:
+            read = stream.read
+
+            def tijdens_lezen(*args):
+                current = read(*args)
+                stream.read = read
+                with pytest.raises(PermissionError, match="datamapslot"):
+                    storage.record_pool(meter, None)
+                return current
+
+            stream.read = tijdens_lezen
+            yield stream
+
+    with closing(meter.db):
+        try:
+            with monkeypatch.context() as fault:
+                fault.setattr(meter.db, "startup_lock", weiger_slot)
+                fault.setattr(storage, "_request_pipe", onderbroken_controle)
+                assert storage.pool_cleanup_pause_reason(ctx)
+        finally:
+            await storage.shutdown(meter)
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+async def test_lezende_werker_zonder_zoekrecht_trekt_meting_in(ctx, cleanup_round, pool_configured):
+    _healthy_pool(ctx)
+    worker = create_app(ctx.settings).state.ctx
+    folder = ctx.db.path.parent
+    mode = stat.S_IMODE(folder.stat().st_mode)
+    with closing(worker.db):
+        assert storage.pool_cleanup_pause_reason(worker) is None
+        try:
+            folder.chmod(0)
+            with pytest.raises(PermissionError):
+                await storage.refresh_pool(worker)
+        finally:
+            folder.chmod(mode)
+            await storage.shutdown(worker)
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+async def test_kanaal_onleesbaar_bij_start_behoudt_kern(ctx, cleanup_round, pool_configured,
+                                                       monkeypatch):
+    _healthy_pool(ctx)
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        def weiger_kanaal(*args, **kwargs):
+            raise PermissionError("Geen leesrecht op het meetkanaal")
+
+        with monkeypatch.context() as fault:
+            fault.setattr(storage, "_request_pipe", weiger_kanaal)
+            await storage.startup(worker)
+            assert worker.state_get(storage.POOL_REQUEST) is None
+        await _expect_pause(ctx, cleanup_round)
+        await _resume_with_healthy_pool(worker, cleanup_round)
+        await storage.shutdown(worker)
+
+
+def test_bewaartermijn_na_onderbroken_boeking(ctx, layout, pool_configured, monkeypatch):
+    root = layout["tv"]
+    source = root / "aflevering.mkv"
+    source.write_bytes(b"eerste")
+    _healthy_pool(ctx)
+    first = J._trash(ctx, source, root, "test", actor="test", now=NOW)
+    usage = type(J.shutil.disk_usage(root))
+    monkeypatch.setattr(J.shutil, "disk_usage", lambda _: usage(100, 99, 1))
+    ctx.db.execute("CREATE TEMP TRIGGER weiger_einde BEFORE UPDATE OF purged_at ON "
+                   "download_janitor_trash BEGIN SELECT RAISE(ABORT, 'eindboeking'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="eindboeking"):
+        J.purge(ctx, NOW + timedelta(hours=1))
+    ctx.db.close()
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        _healthy_pool(worker)
+        source.write_bytes(b"tweede")
+        second = J._trash(worker, source, root, "test", actor="test", now=NOW + timedelta(hours=4))
+        first_path = J._trash_entry(worker, first["id"])["trash_path"]
+        second_path = J._trash_entry(worker, second["id"])["trash_path"]
+        monkeypatch.setattr(J.shutil, "disk_usage", lambda _: usage(100, 50, 50))
+        # Eén uur na de eerste vervaltijd heeft de tweede download nog drie uur.
+        J.purge(worker, NOW + timedelta(days=7, hours=1))
+        assert second_path != first_path and Path(second_path).read_bytes() == b"tweede"
+        assert J.restore(worker, second["id"], actor="test")["restored"]
+        assert source.read_bytes() == b"tweede"
+
+
+@pytest.mark.parametrize("historisch", [False, True])
+def test_dubbele_prullenbakverwijzing_behoudt_bestand(ctx, layout, historisch):
+    root = layout["tv"]
+    source = root / "dubbel.mkv"
+    source.write_bytes(b"bewaren")
+    item = J._trash(ctx, source, root, "test", actor="test", now=NOW)
+    path = Path(J._trash_entry(ctx, item["id"])["trash_path"])
+    ctx.db.execute("INSERT INTO download_janitor_trash(root,original_path,trash_path,reason,"
+                   "moved_at,purged_at) VALUES(?,?,?,?,?,?)",
+                   (str(root), str(root / "andere.mkv"), str(path), "oud", OLD.isoformat(),
+                    NOW.isoformat() if historisch else None))
+    assert J.purge(ctx, NOW + timedelta(days=8))["purged"] == 0
+    with pytest.raises(ValueError, match="registratie"):
+        J.restore(ctx, item["id"], actor="test")
+    assert path.read_bytes() == b"bewaren"
+
+
+@pytest.mark.parametrize("client_type", ["sab", "qbit"])
+async def test_geweigerde_reservering_behoudt_download_en_client(ctx, layout, client_type):
+    item = _nzb(layout, "geboekt")
+    if client_type == "qbit":
+        path = _mk(layout["torrents"] / "delen")
+        item = ClientItem("qbit", "torrent", "DELING", "delen", "movies", str(path), active=False)
+    source = Path(item.path)
+    plan = J.plan(ctx, _snap(layout, [item], imported_ids={item.id}), NOW)
+    sab, qbit = FakeSab(), FakeQbit()
+    ctx.db.execute("CREATE TRIGGER weiger_reservering BEFORE INSERT ON "
+                   "download_janitor_trash BEGIN SELECT RAISE(ABORT, 'reservering'); END")
+    result = await J.execute(ctx, plan, {"sab": sab, "qbit": qbit}, actor="test")
+    assert result["errors"] and not result["done"]
+    assert (source / "video.mkv").is_file() and not sab.deleted and not qbit.removed
+
+
+def test_geweigerde_herstelboeking_behoudt_prullenbak(ctx, layout):
+    root = layout["tv"]
+    source = root / "terug.mkv"
+    source.write_bytes(b"inhoud")
+    item = J._trash(ctx, source, root, "test", actor="test", now=NOW)
+    trash = Path(J._trash_entry(ctx, item["id"])["trash_path"])
+    ctx.db.execute("CREATE TEMP TRIGGER weiger_herstel BEFORE UPDATE OF restored_at ON "
+                   "download_janitor_trash BEGIN SELECT RAISE(ABORT, 'herstelboeking'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="herstelboeking"):
+        J.restore(ctx, item["id"], actor="test")
+    assert not source.exists() and trash.read_bytes() == b"inhoud"
+    ctx.db.execute("DROP TRIGGER weiger_herstel")
+    assert J.restore(ctx, item["id"], actor="test")["restored"] and source.read_bytes() == b"inhoud"
+
+
+@pytest.mark.parametrize("onderbreking", ["hernoemen", "audit"])
+def test_onderbroken_terugplaatsing_hervat_na_herstart(ctx, layout, monkeypatch, onderbreking):
+    source = layout["tv"] / "terug.mkv"
+    source.write_bytes(b"dezelfde inhoud")
+    tid = J._trash(ctx, source, layout["tv"], "test", actor="test", now=NOW)["id"]
+    with monkeypatch.context() as error:
+        if onderbreking == "hernoemen":
+            def weigeren(*_):
+                raise PermissionError("hernoemen")
+
+            error.setattr(os, "rename", weigeren)
+        else:
+            ctx.db.execute("CREATE TEMP TRIGGER onderbreek_audit BEFORE INSERT ON audit_events "
+                           "WHEN NEW.action='downloads.restored' BEGIN SELECT RAISE(ABORT, "
+                           "'audit'); END")
+        with pytest.raises((PermissionError, sqlite3.IntegrityError), match=onderbreking):
+            J.restore(ctx, tid, actor="test")
+    ctx.db.close()
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        assert J.purge(worker, NOW + timedelta(days=8))["purged"] == 0
+        assert [r["id"] for r in J.cleanup_status(ctx=worker)["trash"]] == [tid]
+        assert J.restore(worker, tid, actor="test")["restored"]
+        assert source.read_bytes() == b"dezelfde inhoud"
+        assert not J.cleanup_status(ctx=worker)["trash"]
+
+
+def test_geweigerde_commit_voor_unlink_behoudt_bestand(ctx, layout):
+    root = layout["tv"]
+    source = root / "blijft.mkv"
+    source.write_bytes(b"bewaren")
+    tid = J._trash(ctx, source, root, "test", actor="test", now=NOW)["id"]
+    trash = Path(J._trash_entry(ctx, tid)["trash_path"])
+    # De INSERT lukt. Pas COMMIT ziet de ontbrekende verwijzing.
+    ctx.db.execute("CREATE TABLE proef_boeking(id INTEGER REFERENCES download_janitor_trash(id) "
+                   "DEFERRABLE INITIALLY DEFERRED)")
+    ctx.db.execute("CREATE TRIGGER weiger_commit AFTER INSERT ON download_janitor_purge_state "
+                   "BEGIN INSERT INTO proef_boeking VALUES(-1); END")
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        J.purge(ctx, NOW + timedelta(days=8))
+    assert trash.read_bytes() == b"bewaren" and not J._trash_entry(ctx, tid)["purged_at"]
+
+
+def test_boekingen_gebruiken_duurzame_commit(ctx, layout):
+    # Controleer de feitelijke SQLite-instelling op de verbinding van de schrijver.
+    normal = ctx.db.fetch_one("PRAGMA synchronous")[0]
+    for table in ("download_janitor_trash", "download_janitor_purge_state"):
+        ctx.db.execute(f"CREATE TEMP TRIGGER sync_{table} BEFORE INSERT ON {table} "
+                       "WHEN (SELECT synchronous FROM pragma_synchronous)<2 BEGIN "
+                       "SELECT RAISE(ABORT, 'geen duurzame boeking'); END")
+    root = layout["tv"]
+    source = _mk(root / "delen")
+    J._trash(ctx, source, root, "test", actor="test", now=NOW)
+    assert J.purge(ctx, NOW + timedelta(days=8))["purged"] == 1
+    assert ctx.db.fetch_one("PRAGMA synchronous")[0] == normal
+
+
+def test_meetuitval_tijdens_deelboeking_behoudt_eerste_bestand(ctx, layout, pool_configured,
+                                                              monkeypatch):
+    _healthy_pool(ctx)
+    root = layout["tv"]
+    source = _mk(root / "aflevering")
+    tid = J._trash(ctx, source, root, "test", actor="test", now=NOW)["id"]
+    trash = Path(J._trash_entry(ctx, tid)["trash_path"])
+    boeking = ctx.db.durable_transaction
+
+    @contextmanager
+    def na_boeking():
+        with boeking() as conn:
+            yield conn
+        if J._trash_entry(ctx, tid)["partial"]:
+            storage.record_pool(ctx, {"error_nl": "Poolmeting weggevallen"})
+
+    monkeypatch.setattr(ctx.db, "durable_transaction", na_boeking)
+    assert J.purge(ctx, NOW + timedelta(days=8))["purged"] == 0
+    assert (trash / "video.mkv").read_bytes() == b"x" * 10
+    assert not J._trash_entry(ctx, tid)["partial"]
 
 
 async def test_verwijderfout_zonder_sleutel(ctx, client, cleanup_round, monkeypatch):

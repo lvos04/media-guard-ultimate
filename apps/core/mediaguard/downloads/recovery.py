@@ -174,8 +174,10 @@ def _from_trash(ctx: AppContext, path: str) -> tuple[bool, str]:
     from mediaguard.downloads import janitor
 
     row = ctx.db.fetch_one(
-        "SELECT id FROM download_janitor_trash WHERE original_path=? AND purged_at IS NULL "
-        "AND restored_at IS NULL ORDER BY id DESC LIMIT 1", (path,))
+        "SELECT t.id FROM download_janitor_trash t LEFT JOIN download_janitor_purge_state s "
+        "ON s.trash_id=t.id WHERE original_path=? AND purged_at IS NULL "
+        "AND (restored_at IS NULL OR s.restore_file IS NOT NULL) ORDER BY t.id DESC LIMIT 1",
+        (path,))
     if row is None:
         return False, "bestanden bestaan niet meer"
     try:

@@ -443,6 +443,23 @@ class Database:
     def transaction(self) -> contextlib.AbstractContextManager[sqlite3.Connection]:
         return self._write_transaction()
 
+    @contextmanager
+    def durable_transaction(self) -> Iterator[sqlite3.Connection]:
+        """Leg het journaal op schijf vast vóór een afzonderlijke bestandsbewerking."""
+        with self.startup_lock(), self._lock:
+            conn = self._connect()
+            if conn.in_transaction:
+                raise RuntimeError("Een bestandsbewerking vereist een eigen duurzame boeking")
+            previous = conn.execute("PRAGMA synchronous").fetchone()[0]
+            if previous < 2:  # SQLite FULL
+                conn.execute("PRAGMA synchronous=FULL")
+            try:
+                with self.transaction() as transaction:
+                    yield transaction
+            finally:
+                if previous < 2:
+                    conn.execute(f"PRAGMA synchronous={int(previous)}")
+
     def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         if sql.lstrip().upper().startswith(("PRAGMA", "VACUUM")):
             # SQLite staat sommige instellingen en onderhoud alleen buiten een transactie toe.

@@ -141,6 +141,28 @@ dan blijft het item beschikbaar om terug te zetten. De audit registreert de fout
 automatische rondes laten het item staan. Een handmatige verwijdering van een quarantaineorigineel
 die op de poolstatus stuit, vraagt na een gezonde meting opnieuw bevestiging.
 
+**Meetgeldigheidsmodel voor opruimen**
+
+| Gebeurtenis | Gevolg voor de bestanden en de downloadclient | Regressieproef |
+|---|---|---|
+| Geen sleutel, of een verse gezonde meting van de ingestelde bron | De gewone bewaartermijn en ruimtegrens gelden. | `test_run_once_cleans_with_healthy_pool_or_without_key` |
+| Een pool is ziek, het antwoord is onvolledig of de bron is onbereikbaar | De opruimer pauzeert. Ook een vrijgegeven quarantaineorigineel blijft staan. | `test_run_once_pauses_on_unhealthy_or_unknown_pool`, `test_gemengde_poolmeting_beschermt_quarantaine` |
+| De sleutel, het adres of de TLS-instelling verandert | Alle werkers wachten op een meting van de nieuwe bron, ook na een wissel terug. | `test_pool_bronwisseling` |
+| Een oude meting komt later binnen of stamt van vóór de upgrade | Alleen de actuele opdracht kan publiceren. | `test_pool_volgorde_bewaking_en_prognose`, `test_pool_meting_van_voor_upgrade` |
+| Een meting duurt meer dan 15 minuten | De geldigheid is gerekend vanaf de meetstart verstreken. | `test_pool_versheid_telt_vanaf_meetstart` |
+| SQLite weigert de meetstart of het bewaren van de uitslag | De vorige toestemming blijft ingetrokken. | `test_meetstart_alleen_lezen`, `test_pool_publicatiefout` |
+| De meetwerker mist lees- of zoekrecht op de datamap en kan het slot niet nemen | Ook na zijn vertrek behouden alle actieve werkers de download, het prullenbakbestand en de clientregistratie tot een volgende gezonde meting. | `test_slotfout_aparte_meetwerker`, `test_slotfout_tijdens_toestemmingscontrole`, `test_lezende_werker_zonder_zoekrecht_trekt_meting_in` |
+| Een werker kan de ingestelde sleutel niet lezen, of alle werkers zijn herstart | De opruimer wacht op een nieuwe gezonde meting. | `test_leesfout_trekt_toestemming_in`, `test_meetstart_in_ander_proces` |
+| Een startende werker kan het meetkanaal niet openen terwijl SQLite bereikbaar is | SQLite trekt de gedeelde toestemming in. De kern blijft beschikbaar en de opruimer wacht op een nieuwe gezonde meting. | `test_kanaal_onleesbaar_bij_start_behoudt_kern` |
+| De poolmeting vervalt tijdens het verzamelen of het legen van een map | De volgende actie stopt. De resterende inhoud kan worden teruggezet. | `test_run_once_rechecks_pool_after_gathering`, `test_pool_pauze_binnen_prullenbakmap`, `test_gedeeltelijke_map_terugzetten` |
+| De meting vervalt tijdens de duurzame boeking voor het eerste bestand van een map | Ook dat eerste bestand blijft staan en de map blijft volledig terugzetbaar. | `test_meetuitval_tijdens_deelboeking_behoudt_eerste_bestand` |
+| SQLite weigert de reservering van een prullenbakpad | De download blijft bij SABnzbd of qBittorrent geregistreerd en op zijn oorspronkelijke plek. | `test_geweigerde_reservering_behoudt_download_en_client` |
+| De voorboeking van een verwijdering mislukt bij het vastleggen | Het bestand blijft in de prullenbak. De reservering en verwijderopdracht gebruiken een duurzame SQLite-commit. | `test_geweigerde_commit_voor_unlink_behoudt_bestand`, `test_boekingen_gebruiken_duurzame_commit` |
+| De eindboeking van een verwijdering valt uit en een volgende download heeft dezelfde naam | Elke registratie reserveert haar pad, ook na herstart. De tweede download houdt zijn eigen bewaartermijn en blijft terugzetbaar. | `test_bewaartermijn_na_onderbroken_boeking` |
+| Twee bestaande registraties verwijzen naar hetzelfde prullenbakpad | Zowel opruimen als terugzetten laat het bestand op zijn plaats, ook als een van de registraties al is afgesloten. | `test_dubbele_prullenbakverwijzing_behoudt_bestand` |
+| Een herstelboeking, de verplaatsing of de afsluitende audit mislukt | Vóór de boeking blijft het bestand in de prullenbak. Een geboekte terugplaatsing kan na herstart worden afgemaakt. | `test_geweigerde_herstelboeking_behoudt_prullenbak`, `test_onderbroken_terugplaatsing_hervat_na_herstart` |
+| Een verwijdering zonder sleutel stuit op een bestandsfout, of een handmatige quarantaineactie op een poolpauze | Het prullenbakbestand blijft beschikbaar voor herstel. De quarantaineactie vraagt een nieuwe bevestiging. | `test_verwijderfout_zonder_sleutel`, `test_quarantaine_opnieuw_bevestigen` |
+
 API: `GET /api/v1/downloads/cleanup` (laatste ronde, totaal vrijgemaakt, prullenbak met reden),
 `POST /api/v1/downloads/cleanup/run` (operator), `POST /api/v1/downloads/cleanup/trash/{id}/restore` (beheerder).
 
