@@ -355,7 +355,9 @@ def run(args: argparse.Namespace, root_start: bool) -> tuple[list[str], str]:
     print(f"{label}, fixture: {sql.name} (schema {len(fixture['schema_versions'])} migraties, release "
           f"{len(expected)}); te migreren: {', '.join(pending) or 'geen'}", flush=True)
     tmp = Path(tempfile.mkdtemp(prefix="mg-aio-smoke-"))
-    config, work, data = tmp / "config", tmp / "work", tmp / "data"
+    testdata = tmp / "testdata"
+    config, work, data = testdata / "config", testdata / "work", testdata / "data"
+    cidfile = tmp / "container-id"
     for d in (config, work, data / "media", data / "downloads"):
         d.mkdir(parents=True, exist_ok=True)
     restore(sql, config / "core" / "mediaguard.db")
@@ -364,18 +366,30 @@ def run(args: argparse.Namespace, root_start: bool) -> tuple[list[str], str]:
     loopback = socket.inet_ntoa(socket.INADDR_LOOPBACK.to_bytes(4, "big"))
     base = f"http://{loopback}:{args.port}"
     user = [] if root_start else ["--user", f"{APP_UID}:{APP_GID}"]
-    snapshot_text, log_text, exit_code = "", "", ""
+    snapshot_text, log_text = "", ""
+    container_id = None
+    exit_code = None
     try:
-        set_fixture_owner(args.image, tmp, APP_UID, APP_GID)
-        docker("run", "-d", "--name", name, *user, "-p", f"{loopback}:{args.port}:30080",
-               "-e", "TZ=UTC", "-e", f"MG_HOST={loopback}",
-               "-v", f"{config}:/config", "-v", f"{work}:/work", "-v", f"{data}:/data", args.image)
-        health, snapshot = wait_until_ready(name, base, args.timeout)
-        processes = json.loads(docker("exec", name, "/opt/venv/bin/python", "-c", PROC_SNAPSHOT))
+        set_fixture_owner(args.image, testdata, APP_UID, APP_GID)
+        try:
+            docker("run", "-d", "--name", name, "--cidfile", str(cidfile), *user,
+                   "-p", f"{loopback}:{args.port}:30080", "-e", "TZ=UTC", "-e", f"MG_HOST={loopback}",
+                   "-v", f"{config}:/config", "-v", f"{work}:/work", "-v", f"{data}:/data", args.image)
+        finally:
+            # Docker schrijft de ID bij aanmaak, ook als de daaropvolgende start mislukt.
+            with contextlib.suppress(FileNotFoundError):
+                created = cidfile.read_text(encoding="ascii").strip()
+                if re.fullmatch(r"[0-9a-f]{64}", created):
+                    container_id = created
+        if container_id is None:
+            raise RuntimeError("docker run gaf geen geldige container-ID")
+        health, snapshot = wait_until_ready(container_id, base, args.timeout)
+        processes = json.loads(docker("exec", container_id, "/opt/venv/bin/python", "-c",
+                                      PROC_SNAPSHOT))
         problems += verify_process_tree(processes, snapshot["services"], root_start)
-        problems += verify_healthcheck(name, root_start)
+        problems += verify_healthcheck(container_id, root_start)
         if root_start:
-            verify_web_isolation(name)
+            verify_web_isolation(container_id)
         if health.get("version") != args.version:
             problems.append(f"health meldt versie {health.get('version')}, verwacht "
                             f"{args.version}")
@@ -383,18 +397,19 @@ def run(args: argparse.Namespace, root_start: bool) -> tuple[list[str], str]:
     except (RuntimeError, OSError, ValueError, TypeError, KeyError) as exc:
         problems.append(str(exc))
     finally:
-        with contextlib.suppress(RuntimeError, OSError, ValueError):
-            snapshot_text = json.dumps(service_snapshot(name), indent=2)
-        subprocess.run(["docker", "stop", "-t", str(args.stop_timeout), name],
-                       capture_output=True, check=False)
-        exit_code = docker("inspect", "-f", "{{.State.ExitCode}}", name, check=False)
-        logs = subprocess.run(["docker", "logs", "--tail", "200", name], capture_output=True,
-                              text=True, check=False)
-        log_text = logs.stdout + logs.stderr
-        docker("rm", "-f", name, check=False)
+        if container_id is not None:
+            with contextlib.suppress(RuntimeError, OSError, ValueError):
+                snapshot_text = json.dumps(service_snapshot(container_id), indent=2)
+            subprocess.run(["docker", "stop", "-t", str(args.stop_timeout), container_id],
+                           capture_output=True, check=False)
+            exit_code = docker("inspect", "-f", "{{.State.ExitCode}}", container_id, check=False)
+            logs = subprocess.run(["docker", "logs", "--tail", "200", container_id],
+                                  capture_output=True, text=True, check=False)
+            log_text = logs.stdout + logs.stderr
+            docker("rm", "-f", container_id, check=False)
         if os.geteuid() != 0:
-            set_fixture_owner(args.image, tmp, os.getuid(), os.getgid())
-    if exit_code != "0":
+            set_fixture_owner(args.image, testdata, os.getuid(), os.getgid())
+    if exit_code is not None and exit_code != "0":
         problems.append(f"geen nette stop binnen {args.stop_timeout} s (exitcode {exit_code})")
     problems += verify_db(config / "core" / "mediaguard.db", fixture, expected)
     try:

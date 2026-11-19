@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -57,6 +58,64 @@ def _smoke():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("uitkomst", ["aanmaak geweigerd", "start geweigerd", "gestart"])
+def test_aio_rooktest_beheert_alleen_een_eigen_container(tmp_path, monkeypatch, uitkomst):
+    smoke = _smoke()
+    container_id = "abcd" * 16
+    aanroepen = []
+    args = SimpleNamespace(
+        manifest=ROOT / "deploy" / "release-manifest.json", fixtures=FIXTURES,
+        exceptions=UITZONDERINGEN, version=_manifest()["version"], image="lokaal",
+        port=0, timeout=1, stop_timeout=1, keep=False,
+    )
+
+    def docker(argv, **_kw):
+        assert argv[0] == "docker"
+        aanroepen.append(argv)
+        if argv[1] == "run":
+            if uitkomst == "aanmaak geweigerd":
+                return subprocess.CompletedProcess(argv, 1, "", "containernaam is bezet")
+            if "--cidfile" in argv:
+                Path(argv[argv.index("--cidfile") + 1]).write_text(container_id, encoding="ascii")
+            if uitkomst == "start geweigerd":
+                return subprocess.CompletedProcess(argv, 1, "", "containerstart geweigerd")
+            return subprocess.CompletedProcess(argv, 0, container_id, "")
+        return subprocess.CompletedProcess(argv, 0, "0" if argv[1] == "inspect" else "", "")
+
+    def readiness(container, *_a):
+        aanroepen.append(["wacht", container])
+        raise RuntimeError("container werd niet klaar")
+
+    monkeypatch.setattr(smoke.subprocess, "run", docker)
+    monkeypatch.setattr(smoke, "wait_until_ready", readiness)
+    monkeypatch.setattr(smoke, "set_fixture_owner", lambda *_: None)
+    monkeypatch.setattr(smoke, "tempfile", SimpleNamespace(
+        mkdtemp=lambda **_kw: str(tmp_path / "proef"),
+    ))
+    fouten, _ = smoke.run(args, root_start=True)
+
+    assert aanroepen[0][1] == "run"
+    if uitkomst == "aanmaak geweigerd":
+        assert "containernaam is bezet" in fouten[0]
+        assert len(aanroepen) == 1
+        return
+    if uitkomst == "start geweigerd":
+        assert "containerstart geweigerd" in fouten[0]
+        eerste_opruiming = 1
+    else:
+        assert "container werd niet klaar" in fouten[0]
+        assert aanroepen[1] == ["wacht", container_id]
+        eerste_opruiming = 2
+    assert aanroepen[eerste_opruiming:] == [
+        ["docker", "exec", "--user", "568:568", container_id, "cat",
+         "/config/core/supervisor.json"],
+        ["docker", "stop", "-t", "1", container_id],
+        ["docker", "inspect", "-f", "{{.State.ExitCode}}", container_id],
+        ["docker", "logs", "--tail", "200", container_id],
+        ["docker", "rm", "-f", container_id],
+    ]
 
 
 def test_smoke_checks_healthcheck_for_both_uids(monkeypatch):

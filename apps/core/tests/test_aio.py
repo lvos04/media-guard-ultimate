@@ -8,15 +8,107 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
-from mediaguard import aio, bootstrap
+from mediaguard import aio, aio_healthcheck, aio_web, bootstrap
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
     return {"MG_AIO_CONFIG": str(tmp_path / "config"), "MG_AIO_WORK": str(tmp_path / "work"),
             "MG_AIO_DATA": str(tmp_path / "data"), "PATH": os.environ["PATH"], **extra}
+
+
+@pytest.mark.parametrize("type_logmap", ["map", "symlink"])
+@pytest.mark.parametrize("type_oud_log", ["bestand", "symlink", "hardlink", "fifo"])
+def test_prepare_runtime_wijzigt_alleen_eigenaars_van_eigen_logs(
+    tmp_path, monkeypatch, type_logmap, type_oud_log,
+):
+    config = tmp_path / "config"
+    config.mkdir()
+    buiten = tmp_path / "buiten"
+    buiten.mkdir()
+    doel = buiten / "proef"
+    doel.touch()
+    logs = config / "logs"
+    if type_logmap == "symlink":
+        logs.symlink_to(buiten, target_is_directory=True)
+    else:
+        logs.mkdir()
+    huidig = logs / "supervisor.log"
+    huidig.touch()
+    oud = logs / "supervisor.log.1"
+    if type_oud_log == "bestand":
+        oud.touch()
+    elif type_oud_log == "symlink":
+        oud.symlink_to(doel)
+    elif type_oud_log == "hardlink":
+        oud.hardlink_to(doel)
+    else:
+        os.mkfifo(oud)
+
+    runtime = tmp_path / "status"
+    monkeypatch.setattr(aio, "HEALTH_FILE", str(runtime / "health"))
+    fstat, lstat = os.fstat, Path.lstat
+    wijzigingen = []
+
+    def root_eigenaar(info):
+        return SimpleNamespace(st_mode=info.st_mode, st_uid=0, st_nlink=info.st_nlink)
+
+    with monkeypatch.context() as proef:
+        proef.setattr(os, "fstat", lambda fd: root_eigenaar(fstat(fd)))
+        proef.setattr(Path, "lstat", lambda pad: root_eigenaar(lstat(pad)))
+        proef.setattr(os, "chown", lambda pad, *_a, **_kw: wijzigingen.append(lstat(pad).st_ino))
+        proef.setattr(os, "fchown", lambda fd, *_a: wijzigingen.append(fstat(fd).st_ino))
+        aio.prepare_runtime(config, runtime / "web", (568, 568), recovering=False)
+
+    verwacht = [runtime.stat().st_ino]
+    if type_logmap == "map":
+        verwacht += [logs.stat().st_ino, huidig.stat().st_ino]
+        if type_oud_log == "bestand":
+            verwacht.append(oud.stat().st_ino)
+    assert wijzigingen == verwacht
+
+
+@pytest.mark.parametrize("veld", ["PUID", "PGID"])
+@pytest.mark.parametrize("uid", [0, 568])
+def test_aio_en_healthcheck_weigeren_ongeldige_identiteit(tmp_path, monkeypatch, veld, uid):
+    env = _env(tmp_path, MG_HOST="localhost", PUID="568", PGID="568")
+    env[veld] = "ongeldig"
+    monkeypatch.setenv(veld, "ongeldig")
+    monkeypatch.setattr(os, "geteuid", lambda: uid)
+    monkeypatch.setattr(signal, "signal", lambda *_: None)
+    voorbereiding = Mock(side_effect=ValueError("voorbereiding is al bereikt"))
+    diensten = Mock(return_value=0)
+    monkeypatch.setattr(aio, "prepare_start", voorbereiding)
+    monkeypatch.setattr(aio, "restrict_process", Mock())
+    monkeypatch.setattr(aio, "_run_services", diensten)
+    restrict_health = Mock()
+    monkeypatch.setattr(aio_healthcheck, "restrict_process", restrict_health)
+
+    assert (aio._run(env, Path(env["MG_AIO_CONFIG"])), aio_healthcheck.main([])) == (1, 1)
+    voorbereiding.assert_not_called()
+    diensten.assert_not_called()
+    restrict_health.assert_not_called()
+
+
+def test_webbewaker_weigert_ongeldige_berichten_en_leest_verder(monkeypatch):
+    kanaal = Mock()
+    kanaal.recv.side_effect = [b"start", b"onbekend", b"  ", b"poll \xff", b"signal 41 ongeldig",
+                               b"poll 41" + b" " * 64, b"poll 41", b""]
+    proces = Mock(pid=41)
+    proces.poll.return_value = 0
+    starten = Mock(return_value=proces)
+    monkeypatch.setattr(aio_web.subprocess, "Popen", starten)
+
+    aio_web.run(kanaal, ["proef"])
+
+    starten.assert_called_once()
+    assert [aanroep.args[0] for aanroep in kanaal.sendall.call_args_list] == [
+        b"41", *[b"error"] * 5, b"0",
+    ]
 
 
 def test_specs_cover_all_services_with_generated_keys(tmp_path, monkeypatch):

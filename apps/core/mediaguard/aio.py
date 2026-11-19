@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from mediaguard import bootstrap, schema
-from mediaguard.aio_healthcheck import CORE_PORT, HEALTH_FILE, restrict_process
+from mediaguard.aio_healthcheck import CORE_PORT, HEALTH_FILE, app_identity, restrict_process
 from mediaguard.aio_web import WebLauncher, WebProcess
 
 INTERNAL_HOST = "127.0.0.1"
@@ -1087,24 +1087,35 @@ def prepare_runtime(config: Path, web_state: Path, owner: tuple[int, int],
     logs = config / "logs"
     try:
         logs.mkdir(exist_ok=True, mode=0o750)
-        entry = logs.lstat()
-        if stat.S_ISDIR(entry.st_mode) and entry.st_uid == 0:
-            os.chown(logs, *owner, follow_symlinks=False)
+        directory = os.open(logs, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError:
         return  # logging naar stdout blijft beschikbaar, ook op een dataset zonder schrijfrecht
-    for name in ("supervisor.log", "supervisor.log.1"):
-        path = logs / name
-        with contextlib.suppress(OSError):
-            entry = path.lstat()
-            if stat.S_ISREG(entry.st_mode) and entry.st_uid == 0:
-                os.chown(path, *owner, follow_symlinks=False)
+    try:
+        if os.fstat(directory).st_uid == 0:
+            os.fchown(directory, *owner)
+        for name in ("supervisor.log", "supervisor.log.1"):
+            with contextlib.suppress(OSError):
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                try:
+                    entry = os.fstat(fd)
+                    if stat.S_ISREG(entry.st_mode) and entry.st_uid == 0 and entry.st_nlink == 1:
+                        os.fchown(fd, *owner)
+                finally:
+                    os.close(fd)
+    except OSError:
+        pass  # logging naar stdout blijft beschikbaar
+    finally:
+        os.close(directory)
 
 
 def _run(env: dict[str, str], config: Path) -> int:  # pragma: no cover - integratie
+    try:
+        uid, gid = app_identity(env)
+    except ValueError as exc:
+        print(f"[mediaguard] Rechtenwissel mislukt: {exc}", flush=True)
+        return 1
     if not env.get("MG_HOST"):
         env["MG_AIO_LAN_IP"] = detect_lan_ip()
-    uid = _env_int(env, "PUID", 568)
-    gid = _env_int(env, "PGID", 568)
     os.environ["MG_UID"], os.environ["MG_GID"] = str(uid), str(gid)
     print(f"[mediaguard] MediaGuard Ultimate {__import__('mediaguard').__version__} start",
           flush=True)

@@ -82,12 +82,18 @@ class WebProcess:
 
 def run(channel: socket.socket, argv: list[str]) -> None:
     proc: subprocess.Popen[bytes] | None = None
-    allowed_signals = {signal.SIGTERM, signal.SIGKILL, signal.SIGCONT}
+    allowed_signals = {str(int(sig)).encode("ascii"): sig
+                       for sig in (signal.SIGTERM, signal.SIGKILL, signal.SIGCONT)}
     try:
-        while request := channel.recv(64):
-            command, *args = request.decode("ascii").split()
+        while request := channel.recv(65):
+            words = request.split()
+            if not words or len(request) > 64 or not request.isascii():
+                channel.sendall(b"error")
+                continue
+            command, *args = words
             code = proc.poll() if proc is not None else 1
-            if command == "start" and not args and code is not None:
+            pid = str(proc.pid).encode("ascii") if proc is not None else None
+            if command == b"start" and not args and code is not None:
                 try:
                     proc = subprocess.Popen(argv, start_new_session=True)  # noqa: S603
                 except OSError as exc:
@@ -95,14 +101,14 @@ def run(channel: socket.socket, argv: list[str]) -> None:
                     channel.sendall(b"error")
                 else:
                     channel.sendall(str(proc.pid).encode("ascii"))
-            elif command == "poll" and len(args) == 1:
-                current = code if proc is not None and args[0] == str(proc.pid) else 1
+            elif command == b"poll" and len(args) == 1:
+                current = code if args[0] == pid else 1
                 channel.sendall(b"-" if current is None else str(current).encode("ascii"))
-            elif (command == "signal" and len(args) == 2 and proc is not None
-                  and args[0] == str(proc.pid) and int(args[1]) in allowed_signals):
+            elif (command == b"signal" and len(args) == 2 and proc is not None
+                  and args[0] == pid and args[1] in allowed_signals):
                 if code is None:
                     with contextlib.suppress(ProcessLookupError):
-                        os.killpg(proc.pid, int(args[1]))
+                        os.killpg(proc.pid, allowed_signals[args[1]])
                 channel.sendall(b"-")
             else:
                 channel.sendall(b"error")

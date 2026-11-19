@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Mapping
 
 CORE_PORT = 38100
 HEALTH_FILE = "/run/mediaguard/mediaguard-health"
@@ -55,9 +56,15 @@ def restrict_process(uid: int, gid: int, groups: tuple[int, ...] = ()) -> dict[s
     return status
 
 
+def app_identity(env: Mapping[str, str]) -> tuple[int, int]:
+    try:
+        return int(env.get("PUID", "568")), int(env.get("PGID", "568"))
+    except ValueError as exc:
+        raise ValueError("PUID en PGID moeten gehele getallen zijn") from exc
+
+
 def lower_privileges() -> dict[str, str]:
-    return restrict_process(int(os.environ.get("PUID") or "568"),
-                            int(os.environ.get("PGID") or "568"))
+    return restrict_process(*app_identity(os.environ))
 
 
 def recent_ok() -> bool:
