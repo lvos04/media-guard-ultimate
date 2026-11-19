@@ -177,21 +177,24 @@ def toekomstig_schema(tmp_path: Path):
 
 
 def test_onbekend_schema_blokkeert_av1_ingangen(toekomstig_schema, monkeypatch, capsys):
-    import sys
+    from contextlib import closing
 
     from fastapi.testclient import TestClient
 
     from app import backups, cli
     from app.main import create_app
 
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "scripts"))
-    import upgradebewijs
-
     path = toekomstig_schema.database_path
-    voor = upgradebewijs.meet_db(path)
+
+    def lees_inhoud() -> tuple[str, ...]:
+        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as conn:
+            assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+            return tuple(conn.iterdump())
+
+    voor = lees_inhoud()
     db = Database(toekomstig_schema)
     db.initialize()
-    assert upgradebewijs.meet_db(path) == voor
+    assert lees_inhoud() == voor
     assert not toekomstig_schema.backup_root.exists()
 
     app = create_app(toekomstig_schema, db)
@@ -217,9 +220,8 @@ def test_onbekend_schema_blokkeert_av1_ingangen(toekomstig_schema, monkeypatch, 
     for args in (["scan", "1"], ["draai", "1"], ["planner-start"]):
         assert cli.main(args) != 0
         assert "database is van een nieuwere" in capsys.readouterr().err
-    assert upgradebewijs.meet_db(path) == voor
+    assert lees_inhoud() == voor
     assert not toekomstig_schema.backup_root.exists()
-    sys.modules.pop("upgradebewijs", None)
 
 
 def test_draaiende_av1_gaat_blijvend_naar_herstelweergave(tmp_path: Path) -> None:
