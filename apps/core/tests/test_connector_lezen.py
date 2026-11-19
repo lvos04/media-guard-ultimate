@@ -503,6 +503,9 @@ def test_geweigerde_inrichting_behoudt_sleutel_en_voortgang(
     pytest.param(156, [("eerste", "zonder meting", ("eerste",)),
                        ("beide", "zonder meting", ("eerste", "tweede")),
                        ("beide", None, ("eerste", "tweede"))], id="dubbelmelding-omgekeerd"),
+    # De vierde waarde is de clientnaam van een tweede Arr-rij met dezelfde torrent op 82%.
+    pytest.param(100, [("eerste", "", (), ""), ("eerste", "", (), "eerste"),
+                       ("eerste", "", (), "")], id="gedeelde-clientnaam"),
 ])
 def test_uitgegeven_download_id(populated_installation, settings, monkeypatch, schema, metingen):
     from test_arr_fakes import FakeArr, wire
@@ -531,7 +534,7 @@ def test_uitgegeven_download_id(populated_installation, settings, monkeypatch, s
     torrent = "ab" * 20
     progress = {"eerste": 37, "tweede": 14}
     issued = {}
-    for config, arr_name, visible in metingen:
+    for config, arr_name, visible, *second_arr_name in metingen:
         path = "/api/v1/provisioning/config"
         if config == "geweigerd":
             def refuse(name, data):
@@ -557,6 +560,9 @@ def test_uitgegeven_download_id(populated_installation, settings, monkeypatch, s
                               "downloadClient": owned_name(arr_name) if arr_name and not ambiguous
                               else None, "status": "downloading", "size": 0 if ambiguous else 100,
                               "sizeleft": 0 if ambiguous else 63}]
+            if second_arr_name:
+                arr.queue.append(dict(arr.queue[0], id=8, sizeleft=18,
+                                      downloadClient=second_arr_name[0] or None))
 
             def queue(request, visible=visible):
                 name = request.url.host.split(".")[0]
@@ -571,6 +577,8 @@ def test_uitgegeven_download_id(populated_installation, settings, monkeypatch, s
                 expected.add(None)  # De bron bewaart ook de nog niet toewijsbare Arr-rij.
             elif arr_name is not None:
                 expected.add(37)
+            if second_arr_name:
+                expected.add(82)
             before = database_snapshot(current, allow_auth_timestamps=True)
             page = viewer.get("/connector/v1/items?type=downloads", headers=headers).json()
             assert_database_preserved(current, before, allow_auth_timestamps=True)

@@ -135,14 +135,20 @@ def download_ids(ctx: AppContext, rows: list[dict[str, Any]], measured: datetime
         # Reserveer bestaande ID's vóór de eerste uitgifte, ook wanneer een nieuwe
         # rij vóór de oorspronkelijke rij sorteert of meerdere Arr-rijen één client zien.
         columns = {kind: [s.aliases[pos] for s in sources] for pos, kind in enumerate(_KINDS)}
+        arr_ids = {identity for key, identity in previous.items()
+                   if key.startswith(("wachtrij:", "instantie:"))}
         confirmed = []
         for kind in ("adres", "client"):
             reported = [alias if row.get("client") else None
                         for alias, row in zip(columns[kind], rows, strict=True)]
             counts = Counter(reported)
-            # Bij een losse én een gekoppelde rij kan één eenduidig herkende client
-            # haar ID niet afstaan aan de eerder nog dubbelzinnige Arr-rij.
-            confirmed.append([key if key and counts[key] == 1 else None for key in reported])
+            # Een losse client of een ID zonder Arr-koppeling kan bij samenvoegen
+            # of splitsen voorgaan. Tussen Arr-rijen beslist hun eigen bronsleutel.
+            confirmed.append([
+                key if key and counts[key] == 1 and (
+                    not row.get("instance_id") or previous.get(key) not in arr_ids
+                ) else None for key, row in zip(reported, rows, strict=True)
+            ])
         for column in [*confirmed, *columns.values()]:
             for i, alias in enumerate(column):
                 identity = previous.get(alias) if alias else None
