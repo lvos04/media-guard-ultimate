@@ -74,11 +74,12 @@ core() {  # ruff en pytest allebei draaien; exitcode faalt als één van beide f
   [[ $lint == 0 ]] || { echo "ruff: FOUT (exit $lint)"; return 3; }
 }
 encoder() {
-  local secret=() ctx=()
+  local secret=() ctx=() base=()
   [[ -n "${BUILD_CA_BUNDLE:-}" && -s "${BUILD_CA_BUNDLE}" ]] && secret=(--secret "id=ca_bundle,src=$BUILD_CA_BUNDLE")
   [[ -n "${FFMPEG_SRC_DIR:-}" ]] && ctx=(--build-context "ffmpeg-src=$FFMPEG_SRC_DIR")
+  [[ -n "${BASE_IMAGE:-}" ]] && base=(--build-arg "BASE_IMAGE=$BASE_IMAGE")
   DOCKER_BUILDKIT=1 docker build "${secret[@]}" "${ctx[@]}" --target test \
-    --build-arg "BASE_IMAGE=${BASE_IMAGE:-ubuntu:26.04}" -t mediaguard/encode:test "$ROOT/services/encoder" \
+    "${base[@]}" -t mediaguard/encode:test "$ROOT/services/encoder" \
     && docker run --rm mediaguard/encode:test python3 -m pytest -q -rfEs -p no:cacheprovider
 }
 web() {

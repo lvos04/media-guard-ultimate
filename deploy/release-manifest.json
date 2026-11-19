@@ -14,21 +14,21 @@
         "core",
         "recovery"
       ],
-      "base": "python:3.12-slim-bookworm"
+      "base": "mirror.gcr.io/library/python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df"
     },
     "web": {
       "image": "ghcr.io/lvos04/mediaguard-web",
       "tag": "1.2.2",
       "dev_tag": "mediaguard/web:dev",
       "dockerfile": "apps/web/Dockerfile",
-      "base": "node:22-bookworm-slim"
+      "base": "mirror.gcr.io/library/node:22.23.5-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee"
     },
     "encode": {
       "image": "ghcr.io/lvos04/mediaguard-encode",
       "tag": "1.2.2",
       "dev_tag": "mediaguard/encode:dev",
       "dockerfile": "services/encoder/Dockerfile",
-      "base": "ubuntu:26.04"
+      "base": "ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db"
     },
     "sonarr-fork": {
       "image": "ghcr.io/lvos04/mediaguard-sonarr-fork",
@@ -75,9 +75,9 @@
       "patch_rev": "mg2",
       "patches": "forks/sonarr/patches",
       "api": "v3",
-      "sdk_image": "mcr.microsoft.com/dotnet/sdk:8.0.421",
-      "runtime_image": "mcr.microsoft.com/dotnet/runtime-deps:8.0-bookworm-slim",
-      "node_image": "mirror.gcr.io/library/node:20.11.1-bookworm"
+      "sdk_image": "mcr.microsoft.com/dotnet/sdk:8.0.421@sha256:fc69dc5e0c9789adaac5c8efce71ead4d016a51318667c4f26ce93574b1b9403",
+      "runtime_image": "mcr.microsoft.com/dotnet/runtime-deps:8.0.34-bookworm-slim@sha256:54c5e25d41d6df433e520750bacfa4eed1f664140cd36b37c189dd6c6df33d79",
+      "node_image": "mirror.gcr.io/library/node:20.11.1-bookworm@sha256:e06aae17c40c7a6b5296ca6f942a02e6737ae61bbbf3e2158624bb0f887991b5"
     },
     "radarr": {
       "repo": "https://github.com/Radarr/Radarr",
@@ -87,9 +87,9 @@
       "patch_rev": "mg1",
       "patches": "forks/radarr/patches",
       "api": "v3",
-      "sdk_image": "mcr.microsoft.com/dotnet/sdk:8.0.421",
-      "runtime_image": "mcr.microsoft.com/dotnet/runtime-deps:8.0-bookworm-slim",
-      "node_image": "mirror.gcr.io/library/node:20.11.1-bookworm"
+      "sdk_image": "mcr.microsoft.com/dotnet/sdk:8.0.421@sha256:fc69dc5e0c9789adaac5c8efce71ead4d016a51318667c4f26ce93574b1b9403",
+      "runtime_image": "mcr.microsoft.com/dotnet/runtime-deps:8.0.34-bookworm-slim@sha256:54c5e25d41d6df433e520750bacfa4eed1f664140cd36b37c189dd6c6df33d79",
+      "node_image": "mirror.gcr.io/library/node:20.11.1-bookworm@sha256:e06aae17c40c7a6b5296ca6f942a02e6737ae61bbbf3e2158624bb0f887991b5"
     }
   },
   "toolchain": {

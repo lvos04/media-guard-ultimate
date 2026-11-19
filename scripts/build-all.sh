@@ -6,8 +6,8 @@
 # Env:
 #   BUILD_CA_BUNDLE   optioneel PEM-bestand, alleen tijdens de build vertrouwd (TLS-inspecterende
 #                     proxy); komt nooit in een image (BuildKit-secret `ca_bundle`).
-#   BASE_IMAGE        basis voor de encoder (default ubuntu:26.04; bij Docker Hub-ratelimit:
-#                     mirror.gcr.io/library/ubuntu:26.04)
+#   BASE_IMAGE        optionele basis voor de encoder, bijvoorbeeld een mirror met dezelfde
+#                     digest als in services/encoder/Dockerfile. Standaard geldt het Dockerfile.
 #   FFMPEG_SRC_DIR    map met ffmpeg-8.1.3.tar.xz als ffmpeg.org niet bereikbaar is vanuit de
 #                     builder; anders downloadt dit script hem (sha256 wordt gecontroleerd).
 #   IMAGE_PREFIX      default "mediaguard/" → mediaguard/core:<tag>; voor GHCR bijvoorbeeld
@@ -60,8 +60,12 @@ want core && run core docker build "${SECRET[@]}" --build-context release="$ROOT
 want web && run web docker build "${SECRET[@]}" -t "$(name web):$TAG" "$ROOT/apps/web"
 if want encode; then
   SRC="$(ffmpeg_src)"
+  BASE=()
+  if [[ -n "${BASE_IMAGE:-}" ]]; then
+    BASE=(--build-arg "BASE_IMAGE=$BASE_IMAGE")
+  fi
   run encode docker build "${SECRET[@]}" --target runtime --build-context ffmpeg-src="$SRC" \
-    --build-arg "BASE_IMAGE=${BASE_IMAGE:-ubuntu:26.04}" -t "$(name encode):$TAG" "$ROOT/services/encoder"
+    "${BASE[@]}" -t "$(name encode):$TAG" "$ROOT/services/encoder"
 fi
 want sonarr && run sonarr env IMAGE_REPO="$(name sonarr-fork)" "$ROOT/forks/sonarr/build.sh"
 want radarr && run radarr env IMAGE_REPO="$(name radarr-fork)" "$ROOT/forks/radarr/build.sh"

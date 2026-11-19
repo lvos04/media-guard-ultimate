@@ -345,7 +345,7 @@ de encoder met fsync en sha256-controle en verwijdert pas daarna het cache-resul
 | FFmpeg-bron HDR10+-route | 8.1.3, sha256 `7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3` (ADD `--checksum` en opnieuw in de bouwstage) |
 | dovi_tool | 2.3.1, sha256 `1db0735a…f8ae68` |
 | hdr10plus_tool (alleen testimage) | 1.7.2, sha256 `06385f37…2249f2` |
-| Basisimages | `ubuntu:26.04`, `python:3.12-slim-bookworm`, `node:22-bookworm-slim`, `mcr.microsoft.com/dotnet/sdk:6.0.405` / `8.0.421`, runtime-deps `6.0`/`8.0-bookworm-slim` |
+| Basisimages | De Dockerfiles leggen Ubuntu 26.04, Python 3.12.16, Node 22.23.5 / 20.11.1, .NET SDK 8.0.421 en .NET runtime-deps 8.0.34 vast op een versietag met registerdigest. |
 | Web-dependencies | exacte versies in `apps/web/package.json` + `package-lock.json` (`npm ci`) |
 | Python-dependencies | bereiken met boven- en ondergrens in `pyproject.toml` |
 | Release-images | `ghcr.io/lvos04/mediaguard-*` met vaste versietags, nooit `latest`; OCI-labels met bronrepo en revisie; forks met GPL-3.0-bronverwijzing (upstream-SHA + patches) |
@@ -355,9 +355,19 @@ via `GET /api/v1/admin/version`. Upstream-wijzigingen worden nooit automatisch o
 `forks/*/sync-upstream.sh` (nachtelijk in CI, rapportmodus) wijzigt niets; promotie is een
 handmatige, gereviewde stap (`docs/FORK_UPSTREAM_SYNC.md`).
 
-**Open punten supply chain:** basisimages zijn op tag gepind, niet op digest; Python-
-dependencies hebben geen lockfile met hashes; er is (nog) geen SBOM of image-signing
-(cosign) in `release.yml`.
+CI weigert externe basisimages zonder volledige SHA-256-digest. De alles-in-één-build
+gebruikt de componentimages van dezelfde releaserun en eventueel bestaande, vaste
+fork-tags. Bij een wijziging aan het encoder-Dockerfile vergelijkt CI de FFmpeg-versie,
+bouwconfiguratie en encoderlijst met een build op de oorspronkelijke Ubuntu-tag.
+
+De releaseworkflow schrijft vóór publicatie `release/digests.json` en één SPDX-SBOM
+per image. Het workflowartefact `release-bewijs-<versie>` bevat de zes SBOM's en het
+JSON-bestand. De digests komen uit het register en Syft scant elk image via zijn
+digest, inclusief hergebruikte forks. Publicatie gebruikt diezelfde digests.
+De artefacten worden 90 dagen bewaard.
+
+**Open punten supply chain** omvatten een lockfile met hashes voor Python-dependencies
+en het ondertekenen van release-images.
 
 ## 9a. Noodtoegang (wachtwoord of 2FA kwijt)
 

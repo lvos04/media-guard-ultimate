@@ -1,8 +1,9 @@
 # MediaGuard Ultimate — CI
 #
-# push/PR: core, encoder unit tests (zonder toolchain), web (Peil-driftcontrole, lint/typecheck/unit/build/e2e),
+# push/PR: basisimages op digest, core, encoder unit tests (zonder toolchain), web (Peil-driftcontrole, lint/typecheck/unit/build/e2e),
 # kopieën van contract en Peil tegen hun gepinde bron (C1.3-MGU-01) en het upgradebewijs van de HARDE EIS
 # (vorige release → core van deze commit op een gevulde database, C1.3-MGU-03).
+# Push die het encoder-Dockerfile wijzigt: vergelijk de gepinde FFmpeg-build met de ongewijzigde basis-tag.
 # Nightly (03:17 UTC) + handmatig: encoder-suite in het toolchain-image (--target test),
 # beide fork-images bouwen, de upstream-sync van de forks in rapportmodus en de contracttest mediaservers
 # (echte Emby + Jellyfin 12.x op digest, vorige release → core van deze commit; Δ-MG-AUTH, Δ-MG-DUAL).
@@ -22,6 +23,10 @@ on:
         description: "Ook zware jobs (encoder-image, fork-images, upstream-sync, contracttest mediaservers) draaien"
         type: boolean
         default: true
+      encoderbewijs:
+        description: "Vergelijk het encoder-image met een build op de ongewijzigde basis-tag"
+        type: boolean
+        default: false
   # vanuit release.yml: alleen core, encoder-unit en web (de zware jobs vragen
   # github.event_name 'schedule' of 'workflow_dispatch' met heavy=true)
   workflow_call:
@@ -46,6 +51,14 @@ env:
   FFMPEG_HDR10PLUS_SHA256: "7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3"
 
 jobs:
+  basisimages:
+    name: basisimages op digest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check-dockerfile-digests.py
+
   # 3.12 = het losse core-image (apps/core/Dockerfile); 3.14 = het alles-in-één-image, waar
   # core op de Python van het encode-image draait (deploy/release-manifest.json,
   # toolchain.encode.python). test_release_pipeline.py bewaakt dat die twee overeenkomen.
@@ -165,25 +178,86 @@ jobs:
           tests/test_verificatie.py tests/test_systeem.py tests/test_playback_hold.py
 
   encoder-image:
-    name: encoder volledige suite in toolchain-image (traag)
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.heavy)
+    name: encoder-image en FFmpeg-bewijs
+    if: >
+      (github.event_name == 'push' && github.ref_type == 'branch' && !startsWith(github.ref_name, 'release/v')) ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.heavy || inputs.encoderbewijs))
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: FFmpeg-bron (gepinde sha256)
+        with:
+          fetch-depth: 0
+      - name: bepalen welke encoderproef nodig is
+        id: proef
+        env:
+          VOOR: ${{ github.event.before }}
+          BEWIJS: ${{ inputs.encoderbewijs }}
+          HEAVY: ${{ inputs.heavy }}
         run: |
-          mkdir -p /tmp/ffmpeg-src
-          curl -fsSL --retry 5 -o "/tmp/ffmpeg-src/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz" \
+          bewijs=false
+          suite=false
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            if ! git cat-file -e "${VOOR}^{commit}" 2>/dev/null; then
+              bewijs=true
+            else
+              gewijzigd="$(git diff --name-only "$VOOR" HEAD -- services/encoder/Dockerfile)"
+              [[ -z "$gewijzigd" ]] || bewijs=true
+            fi
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == schedule || "$HEAVY" == true ]]; then suite=true; fi
+          if [[ "$BEWIJS" == true ]]; then bewijs=true; fi
+          { echo "bewijs=$bewijs"; echo "suite=$suite"; } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+        if: steps.proef.outputs.bewijs == 'true' || steps.proef.outputs.suite == 'true'
+      - name: FFmpeg-bron (gepinde sha256)
+        if: steps.proef.outputs.bewijs == 'true' || steps.proef.outputs.suite == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/ffmpeg-src"
+          BRON="$RUNNER_TEMP/ffmpeg-src/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --max-time 90 -o "$BRON" \
             "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz"
-          echo "${FFMPEG_HDR10PLUS_SHA256}  /tmp/ffmpeg-src/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz" | sha256sum -c -
+          echo "${FFMPEG_HDR10PLUS_SHA256}  $BRON" | sha256sum -c -
+      - name: bouw en vergelijk FFmpeg met en zonder basisdigest
+        if: steps.proef.outputs.bewijs == 'true'
+        timeout-minutes: 120
+        run: |
+          bouw=(docker buildx build --load --platform linux/amd64 --target runtime
+                --build-context "ffmpeg-src=$RUNNER_TEMP/ffmpeg-src")
+          "${bouw[@]}" --build-arg BASE_IMAGE=ubuntu:26.04 -t mediaguard/encode:referentie services/encoder
+          if ! "${bouw[@]}" -t mediaguard/encode:gepind services/encoder; then
+            echo "::error::Het encoder-image bouwt niet met de vaste basisdigest."
+            exit 1
+          fi
+          bewijs="$RUNNER_TEMP/encoderbewijs"
+          mkdir -p "$bewijs"
+          verschil=0
+          for optie in version buildconf encoders; do
+            for image in referentie gepind; do
+              docker run --rm --network none --entrypoint /opt/ffmpeg/bin/ffmpeg \
+                "mediaguard/encode:$image" "-$optie" > "$bewijs/$image-$optie.txt" 2>&1
+            done
+            diff -u "$bewijs/referentie-$optie.txt" "$bewijs/gepind-$optie.txt" || verschil=1
+          done
+          if [[ "$verschil" == 1 ]]; then
+            echo "::error::encoder-build anders: FFmpeg-versie, bouwconfiguratie of encoders wijken af."
+            exit 1
+          fi
+          echo "FFmpeg-versie, bouwconfiguratie en encoders zijn gelijk."
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.proef.outputs.bewijs == 'true'
+        with:
+          name: ffmpeg-basisdigest
+          path: ${{ runner.temp }}/encoderbewijs
       - name: build --target test
+        if: steps.proef.outputs.suite == 'true'
         run: |
           docker buildx build --load --target test \
-            --build-context ffmpeg-src=/tmp/ffmpeg-src \
+            --build-context "ffmpeg-src=$RUNNER_TEMP/ffmpeg-src" \
             -t mediaguard/encode:test services/encoder
       - name: pytest + ruff + mypy in het image
+        if: steps.proef.outputs.suite == 'true'
         run: |
           docker run --rm mediaguard/encode:test python3 -m pytest -q -rfEs -p no:cacheprovider
           docker run --rm mediaguard/encode:test sh -c "ruff check app tests && mypy app"

@@ -6,7 +6,7 @@
 # Zonder die context blijft de stage hieronder leeg en meldt de API manifest_found=false.
 FROM scratch AS release
 
-FROM mirror.gcr.io/library/python:3.12-slim-bookworm AS build
+FROM mirror.gcr.io/library/python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df AS build
 WORKDIR /src
 COPY pyproject.toml ./
 COPY mediaguard ./mediaguard
@@ -16,7 +16,7 @@ RUN --mount=type=secret,id=ca_bundle,required=false \
     if [ -f /run/secrets/ca_bundle ]; then export PIP_CERT=/run/secrets/ca_bundle; fi; \
     pip install --no-cache-dir --prefix=/install .
 
-FROM mirror.gcr.io/library/python:3.12-slim-bookworm
+FROM mirror.gcr.io/library/python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
 ARG UID=568
 ARG GID=568
 # ffprobe/mediainfo voor lichte analyse in core (zware analyse in de encoder)

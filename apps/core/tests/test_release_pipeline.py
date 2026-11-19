@@ -197,6 +197,9 @@ def test_release_publishes_nothing_without_tests_and_smoke():
     assert {"app-images", "fork-images"} <= needs("aio-image")
     assert "aio-image" in needs("aio-smoke")
     assert {"tests", "aio-smoke", "app-images", "fork-images", "aio-image"} <= needs("publish")
+    assert "release-bewijs" in needs("publish") and "aio-image" in needs("release-bewijs")
+    assert "scripts/release-bewijs.py" in _scripts(jobs["release-bewijs"])
+    assert "release/digests.json" in _scripts(jobs["publish"])
     assert "publish" in needs("summary") and "publish" in needs("tag")
     # alleen 'publish' zet echte tags; de bouwjobs pushen uitsluitend kandidaat-tags
     for name, job in jobs.items():
@@ -265,8 +268,60 @@ def test_ci_is_reusable_and_tests_core_on_the_aio_python():
 def test_core_dockerfile_python_matches_manifest():
     m = _manifest()
     df = (ROOT / "apps" / "core" / "Dockerfile").read_text("utf-8")
-    assert f"python:{m['toolchain']['core']['python']}-slim" in df
-    assert df.count(m["images"]["core"]["base"]) >= 1
+    series = re.escape(m["toolchain"]["core"]["python"])
+    bases = re.findall(r"^FROM (\S*library/python:\S+)", df, re.M)
+    assert len(bases) == 2
+    assert bases == [m["images"]["core"]["base"]] * 2
+    base = rf"mirror\.gcr\.io/library/python:{series}\.\d+-slim-bookworm@sha256:[a-f0-9]{{64}}"
+    assert re.fullmatch(base, bases[0])
+
+
+def test_release_bewijs_dekt_alle_images_en_gebruikt_hun_digest(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "release_bewijs", ROOT / "scripts" / "release-bewijs.py",
+    )
+    assert spec and spec.loader
+    bewijs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bewijs)
+
+    manifest = _manifest()
+    candidate = "kandidaat-7-1"
+    pins = {}
+    scans = []
+
+    def digest(ref):
+        pins[ref] = f"sha256:{len(pins) + 1:064x}"
+        return pins[ref]
+
+    def scan(syft, ref, path):
+        assert syft == "syft"
+        scans.append(ref)
+        path.write_text('{"spdxVersion": "SPDX-2.3"}', encoding="utf-8")
+
+    monkeypatch.setattr(bewijs, "digest", digest)
+    monkeypatch.setattr(bewijs, "maak_sbom", scan)
+    monkeypatch.setattr(bewijs, "tag_bestaat", lambda ref: "-radarr-fork:" in ref)
+    uitvoer = tmp_path / "release"
+    bewijs.verzamel(manifest, candidate, uitvoer, "syft")
+    resultaat = json.loads((uitvoer / "digests.json").read_text(encoding="utf-8"))
+    assert resultaat["version"] == manifest["version"]
+    assert resultaat["platform"] == "linux/amd64"
+    assert resultaat["images"].keys() == manifest["images"].keys()
+    for naam, entry in resultaat["images"].items():
+        bron = entry["image"] if naam == "sonarr-fork" else f"{entry['image']}-{candidate}"
+        assert entry["digest"] == pins[bron]
+        assert f"{entry['image']}@{entry['digest']}" in scans
+        assert (uitvoer / entry["sbom"]).is_file()
+
+    # Bij een scannerfout mag het bewijsbestand niet worden geschreven.
+    def weigert(*_):
+        raise RuntimeError("scanner geweigerd")
+
+    monkeypatch.setattr(bewijs, "maak_sbom", weigert)
+    mislukt = tmp_path / "mislukt"
+    with pytest.raises(RuntimeError, match="scanner geweigerd"):
+        bewijs.verzamel(manifest, candidate, mislukt, "syft")
+    assert not (mislukt / "digests.json").exists()
 
 
 # -- manifest -------------------------------------------------------------------------------
@@ -385,6 +440,15 @@ import json, os, sys
 state = os.environ["FAKE_REGISTRY"]
 tags = json.load(open(state)) if os.path.exists(state) else {}
 args = sys.argv[1:]
+
+def manifest(ref):
+    if "@" not in ref:
+        return tags.get(ref)
+    tag, digest = ref.rsplit("@", 1)
+    repo = tag.rsplit(":", 1)[0]
+    if any(other.rsplit(":", 1)[0] == repo and value == digest for other, value in tags.items()):
+        return digest
+
 if os.environ.get("FAKE_REGISTRY_DOWN") and args[:2] == ["manifest", "inspect"]:
     print("Get https://ghcr.io/v2/: net/http: TLS handshake timeout", file=sys.stderr)
     sys.exit(1)
@@ -394,16 +458,20 @@ if args[:2] == ["manifest", "inspect"]:
     print("manifest unknown", file=sys.stderr)
     sys.exit(1)
 if args[:3] == ["buildx", "imagetools", "inspect"]:
-    if args[-1] not in tags:
+    found = manifest(args[-1])
+    if not found:
         sys.exit(1)
     print(json.dumps({"mediaType": "application/vnd.oci.image.index.v1+json",
-                      "digest": tags[args[-1]]}))
+                      "digest": found}))
     sys.exit(0)
 if args[:3] == ["buildx", "imagetools", "create"]:
-    rest, src = args[3:-1], args[-1]
+    assert args[3] == "--prefer-index=false"
+    rest, src = args[4:-1], args[-1]
+    digest = manifest(src)
+    assert "@" in src and digest
     for i in range(0, len(rest), 2):
         assert rest[i] == "-t"
-        tags[rest[i + 1]] = tags[src]  # een kopie: zelfde digest
+        tags[rest[i + 1]] = digest  # een kopie: zelfde digest
     json.dump(tags, open(state, "w"))
     open(state + ".log", "a").write(" ".join(rest[1::2]) + "\n")
     sys.exit(0)
@@ -459,6 +527,16 @@ def test_promote_publishes_candidate_and_never_overwrites(tmp_path):
     # 6. kandidaat ontbreekt → weigeren
     r, tags, created = _promote(tmp_path, {}, cand, final)
     assert r.returncode == 1 and "niet gevonden" in r.stdout and created == []
+
+
+def test_promote_uses_the_release_evidence_digest(tmp_path):
+    final = "ghcr.io/lvos04/mediaguard-core:2.0.0"
+    cand = f"{final}-kandidaat-7-1"
+    proved = f"{final}@sha256:aaa"
+    # De doeltag bestaat nog niet. Het aangetoonde manifest staat wel onder de kandidaat-tag.
+    r, tags, created = _promote(tmp_path, {cand: "sha256:aaa"}, proved, final)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert tags[final] == "sha256:aaa" and created == [final]
 
 
 def _git(repo: Path, *args: str) -> str:

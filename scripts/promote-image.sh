@@ -49,5 +49,6 @@ done
 if [ "${#new[@]}" -eq 0 ]; then
   exit 0
 fi
-docker buildx imagetools create "${new[@]}" "$src" || exit 1
+# Een enkel manifest moet dezelfde digest houden en mag geen nieuwe index krijgen.
+docker buildx imagetools create --prefer-index=false "${new[@]}" "${src%@*}@$want" || exit 1
 echo "gepubliceerd: $* ($want)"

@@ -16,7 +16,7 @@
 # -dolbyvision, vereist >=7.1), libvpl (av1_qsv) en VA-API, plus mkvtoolnix en
 # de Intel media-driver uit dezelfde, reproduceerbaar gepinde distributie.
 
-ARG BASE_IMAGE=ubuntu:26.04
+ARG BASE_IMAGE=ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 # ── FFmpeg: één gepinde, slanke 8.1.x-build voor álle routes ────────────────
 # Vroeger: distro-FFmpeg 8.0 (sleept o.a. libLLVM, mesa, flite, Qt mee: ~250 MB)
