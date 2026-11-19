@@ -178,7 +178,7 @@ Zie `scripts/aio-smoke.py` en `scripts/upgradebewijs.py`.
 | Encoder-DB | automatische back-ups van de encoder in `${MG_APPDATA}/encode/` (functie `automatische_backups`) | via snapshot van `mg_appdata` |
 | Forks | native Sonarr/Radarr-back-ups in `${MG_APPDATA}/<instantie>/Backups/` | Sonarr/Radarr → System → Backup → Restore |
 | Sleutels | `${MG_APPDATA}/secrets/` en `core/secret.key` | zitten in de snapshot; zonder `secret.key` zijn de in de UI ingevoerde geheimen niet te ontsleutelen |
-| Originelen na AV1-vervanging | `${MG_WORK}/quarantine/` (+ journaal in de core-DB) | UI → Ruimte → *Terugzetten* (zie `docs/DATA_RECOVERY.md`) |
+| Originelen na AV1-vervanging | Standaard onder `/data/.mediaguard-quarantine` per bibliotheekroot (`library_root`), of in `/work/quarantine` (`central`). Het journaal staat in appdata. | Neem de gebruikte datasets mee in dezelfde [herstelset](../deploy/truenas/CUSTOM_APP.md#back-up-en-upgrade). Herstel een origineel via **Ruimte → Terugzetten**. Zie [Dataherstel](DATA_RECOVERY.md). |
 
 De appdata-dataset bevat sleutels: bewaar replica's en exports net zo zorgvuldig als
 wachtwoorden.
@@ -188,8 +188,9 @@ wachtwoorden.
 ### 8.1 Alles-in-één (Custom App)
 
 Volg [Terugzetten na een mislukte upgrade](../deploy/truenas/CUSTOM_APP.md#terugzetten-na-een-mislukte-upgrade).
-Herstel de bijpassende snapshot via de TrueNAS-webinterface en daarna de vorige
-imageversie en digest. Bewaar de toestand van na de update vóór de terugzetting.
+Bewaar de toestand van na de update. Herstel de bijpassende appdata-snapshot en
+ontbrekende originelen gericht uit de werk- en mediakopieën. Kies de vorige image
+met digest in het formulier, start MediaGuard en controleer de herstelde gegevens.
 
 Als de kern of de AV1-engine in de huidige bronstand een onbekende schemaversie vindt,
 meldt de web-URL dat een bijpassende versie of herstelset nodig is. MediaGuard
@@ -199,9 +200,8 @@ blijft bewaard. Bij het lezen van een actief SQLite-journaal kunnen de hulpbesta
 
 ## 9. Verwijderen zonder media te raken
 
-Bewaar de datasets en herstelpunten bij het verwijderen van de app. In de werkdataset
-kunnen originelen staan die nodig zijn om een eerdere vervanging te herstellen. Behoud
-ook de mediabibliotheek, downloads en de bestaande mediaserver.
+Bewaar de datasets en herstelpunten bij het verwijderen van de app. Behoud beide
+gebruikte quarantainelocaties, de mediabibliotheek, downloads en de bestaande mediaserver.
 
 ## 10. Echte NAS
 

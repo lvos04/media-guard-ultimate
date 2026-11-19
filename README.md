@@ -79,7 +79,7 @@ openen.
 
 ## 2. Vereisten
 
-- **TrueNAS SCALE 24.10 of nieuwer** met Apps (Docker).
+- **TrueNAS SCALE 24.10.2.2 of nieuwer** met Apps (Docker) en ix-app 1.4.8 of nieuwer.
 - Een **pool** voor data en een paar datasets (zie 3.1).
 - Je **downloadclient** (SABnzbd, NZBGet, qBittorrent, …) die bij `/data/downloads` kan
   (zelfde dataset als je media, voor hardlinks), of een remote path mapping.
@@ -94,7 +94,7 @@ openen.
 
 ### 3.1 Datasets aanmaken (eenmalig, TrueNAS-UI → Datasets)
 
-Indeling (`<pool>` = de naam van jouw pool in TrueNAS → **Datasets**; de datasetnamen zijn vrij):
+Voorbeeldindeling voor nieuwe datasets (`<pool>` = de naam van jouw pool in **Datasets**):
 
 ```text
 <pool>/apps/mediaguard        ← configuratie (/config)
@@ -110,10 +110,11 @@ Indeling (`<pool>` = de naam van jouw pool in TrueNAS → **Datasets**; de datas
 - Geef gebruiker/groep **`apps` (568:568)** rechten via de **dataset-ACL** (Lezen+Schrijven op
   `apps/mediaguard`, `mediaguard-work` en `data`). **Geen** massale `chown -R` over je bestaande
   bibliotheek nodig.
-- Staat je bestaande bibliotheek al ergens anders (bv. `<pool>/media/series`)? Dan kun je die
-  mappen in `<pool>/data/media/...` zetten (verplaatsen binnen dezelfde dataset is direct), óf
-  Host Path 3 (`/data`) naar je bestaande dataset laten wijzen en de submappen gelijk noemen. De
-  migratiewizard zet oude paden om (stap 5).
+- Koppel voor een bestaande bibliotheek de bestaande mediadataset als Host Path op
+  `/data`. Behoud de namen, locaties en koppelingen van de bestaande bibliotheekmappen.
+  Stel het corresponderende pad onder `/data` in voor MediaGuard en zijn forks.
+  Gebruik in de migratiewizard de vertaling naar dat containerpad. Controleer dat Emby
+  dezelfde titel vóór en na de koppeling via hetzelfde bestaande pad afspeelt.
 
 Details, ACL-plan en GPU: [`docs/INSTALL_TRUENAS.md`](docs/INSTALL_TRUENAS.md).
 
@@ -365,16 +366,18 @@ nooit automatisch uitrollen) — [`docs/FORK_UPSTREAM_SYNC.md`](docs/FORK_UPSTRE
 
 ### 10.1 Updaten (alles-in-één)
 
-Volg [Back-up en upgrade](deploy/truenas/CUSTOM_APP.md#back-up-en-upgrade). Stop MediaGuard
-en verifieer een volledige appdata-snapshot vóór de migratie. Behoud de bestaande datasets,
-de MediaGuard-voortgang en alle kijkgegevens. Hervat het gebruik pas na de vergelijking
-vóór en na de update.
+Volg [Back-up en upgrade](deploy/truenas/CUSTOM_APP.md#back-up-en-upgrade). Verifieer de
+herstelset voor appdata, werkdata, media en de gebruikte quarantainelocaties op een
+afgeschermde kopie. Verifieer vóór de echte wijziging ook het herstelpunt van elke
+schrijvend gekoppelde dienst. Hervat het gebruik pas na de vergelijking vóór en na de
+update van de MediaGuard-voortgang en kijkgegevens.
 
 ### 10.2 Terugdraaien na een mislukte update
 
 Volg [Terugzetten na een mislukte upgrade](deploy/truenas/CUSTOM_APP.md#terugzetten-na-een-mislukte-upgrade).
-Bewaar ook de actuele gegevens, herstel eerst de bijpassende appdata-snapshot via de TrueNAS-webinterface
-en kies vervolgens de vorige imageversie en digest in het Custom App-formulier.
+Bewaar de actuele gegevens, herstel de bijpassende appdata-snapshot en zo nodig de
+originelen uit de bijpassende werk- en mediakopieën. Kies de vorige imageversie en
+digest in het Custom App-formulier, start MediaGuard en controleer de voortgang en kijkgegevens.
 
 Herstel na stroomuitval, half geïmporteerde bestanden en mislukte encodes:
 [`docs/DATA_RECOVERY.md`](docs/DATA_RECOVERY.md).
@@ -416,7 +419,7 @@ oude installaties uitzet:
 |---|---|
 | "Bibliotheek nog vergrendeld" | Normaal tot de overstap; bij een verse start: *Overzicht → Bibliotheek vrijgeven* |
 | UI toont "MediaGuard kan nog niet starten" | De pagina noemt de map. Geef gebruiker `apps` (568) schrijfrechten (*Datasets → Edit Permissions*); de app gaat binnen 30 s vanzelf verder |
-| Hostpoort bezet | Kies bij bridge een vrije hostpoort in het Custom App-formulier. Controleer daarna de portal en betrokken koppelingen |
+| Hostpoort bezet | Kies een vrije poort volgens [Bezette forkpoort](deploy/truenas/CUSTOM_APP.md#bezette-forkpoort). Controleer de portal of de Seerr-verbinding voor de betrokken poort. |
 | "Hostactie nodig" bij een map | Geef gebruiker `apps` (568) schrijfrechten op de dataset via de TrueNAS-ACL |
 | Instantie "Offline" | *Instellingen › Sonarr- en Radarr-instanties → Test*; controleer in TrueNAS of de container draait |
 | Pre-grab-meldingen `MEDIAGUARD_UNAVAILABLE` in Sonarr | Core was even niet bereikbaar; met fail policy `open` gaat downloaden gewoon door |

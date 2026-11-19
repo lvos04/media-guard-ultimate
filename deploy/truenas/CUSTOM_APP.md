@@ -7,12 +7,18 @@ STAPPEN_P6.md, onderdeel N-P6-05.
 
 - Bevestig de TrueNAS- en ix-app-versie (D01). Het hieronder beschreven formulier hoort
   bij ix-app 1.4.8, waarvan de [app-metadata een minimum van TrueNAS SCALE 24.10.2.2 opgeeft](https://github.com/truenas/apps/blob/f142a16a1e15da5f8517658f5a9ad34400972fc4/ix-dev/stable/ix-app/app.yaml).
-- Bevestig de drie datasets (D02) en vrije hostpoorten (D03). Gebruik voor nieuwe
+- Bevestig de drie mounts en de datasets die er werkelijk onder liggen (D02), plus
+  de vrije hostpoorten (D03). Gebruik voor nieuwe
   configuratie- en werkdatasets **Datasets → Add Dataset** met de preset **Apps**.
   Geef gebruiker **apps (568)** via **Edit Permissions** de ACL-rechten **Modify**.
   Pas rechten alleen recursief toe op nieuwe, lege datasets. Behoud op bestaande media
-  de bestaande groepstoegang of geef toegang op de benodigde submappen. Houd downloads
-  en media op één dataset voor hardlinks en cache en staging op dezelfde werkdataset.
+  de bestaande groepstoegang of geef toegang op de benodigde submappen. Koppel de
+  bestaande mediadataset aan `/data` en behoud de mappen, namen, shares en mounts van
+  de mediaserver. Stel in MediaGuard en de forks de bijbehorende paden onder `/data`
+  in. Controleer vóór en na de koppeling dat Emby een bestaande titel via hetzelfde
+  pad afspeelt. Hardlinks vereisen media en downloads op hetzelfde bestandssysteem.
+  Laat de bestaande indeling intact als dat anders is en controleer de padkoppelingen
+  voordat je overgaat. Houd cache en staging op dezelfde werkdataset.
 - Leg bij een upgrade de bestaande app, imageversie en digest, formulierwaarden en
   datasets vast (D07). Volg vóór het wijzigen van het formulier de back-upstappen hieronder.
 - De gepubliceerde verwijzing is `ghcr.io/lvos04/mediaguard-core:1.2.2-aio`. Die image
@@ -30,17 +36,17 @@ Custom App open je die met **Edit** en behoud je de naam, mounts en eerder beves
 instellingen. Als die app **Host Network** gebruikt, behoud je die keuze en laat je de
 poortkoppelingen leeg. Een netwerkwijziging vraagt een aparte controle van alle koppelingen.
 
-Draait MediaGuard nog als losse containers, oefen de overstap eerst op een aparte kopie
-van de datasets en verifieer de terugval. Bewaar de bestaande installatie als terugval.
-Voorkom dat beide MediaGuard-installaties tegelijk dezelfde appdata gebruiken.
+Draait MediaGuard nog als losse containers, oefen de overstap en terugval eerst op
+[afgeschermde datasetkopieën](#afgeschermde-proefkopie). Bewaar de bestaande installatie
+als terugval en gebruik voor elke installatie eigen appdata.
 
 | Sectie | Veld | Waarde |
 |---|---|---|
 | Application Name | | `mediaguard` bij een eerste installatie. |
+| General | Notes | Optioneel. Leg hier geen aanmeldgegevens vast. |
 | Image Configuration | Repository | `ghcr.io/lvos04/mediaguard-core` |
 | | Tag | De exacte gepubliceerde AIO-tag met digest, als `<VERSIE>-aio@sha256:<DIGEST>`. Weigert het formulier het digestdeel, vul dan de exacte tag in. Controleer in beide gevallen de opgehaalde digest. |
 | | Pull Policy | *Pull the image if it is not already present on host*. |
-| General | Notes | Optioneel. Leg hier geen aanmeldgegevens vast. |
 | Container Configuration | Hostname / Entrypoint / Command | Leeg bij een eerste installatie. |
 | | Timezone | De bevestigde tijdzone. |
 | | Environment Variables | Leeg bij een eerste installatie, tenzij je bij automatische Seerr-inrichting over bridge `MG_HOST` nodig hebt. Vul dan het bevestigde adres in waarop Seerr de fork-API's bereikt. Voer koppelingen en inloggegevens later in MediaGuard zelf in. |
@@ -56,7 +62,7 @@ Voorkom dat beide MediaGuard-installaties tegelijk dezelfde appdata gebruiken.
 | Storage Configuration | Add → Type | Maak drie **Host Path**-koppelingen. Laat **Read Only** uit. Regel de dataset-ACL vooraf via **Datasets**. |
 | | Mount Path / Host Path | `/config` → kies de appdata-dataset, bijvoorbeeld `/mnt/<POOL>/apps/mediaguard`. |
 | | Mount Path / Host Path | `/work` → kies de werkdataset, bijvoorbeeld `/mnt/<POOL>/mediaguard-work`. |
-| | Mount Path / Host Path | `/data` → kies de dataset met media en downloads, bijvoorbeeld `/mnt/<POOL>/data`. |
+| | Mount Path / Host Path | `/data` → kies de bestaande dataset met media en downloads, bijvoorbeeld `/mnt/<POOL>/data`. Behoud alle bestaande mediapaden aan de hostkant. |
 | Resources Configuration | Enable Resource Limits | Uit bij een eerste installatie. Behoud eerder vastgelegde limieten bij een upgrade. |
 | | GPU Configuration | Standaard uit. Gebruik Intel-render uitsluitend na bevestiging van D08. Met **Passthrough available (non-NVIDIA) GPUs** geeft het beschreven formulier alle beschikbare niet-NVIDIA-GPU's door. MediaGuard neemt de rendergroepen over bij de standaardstart. Controleer de toegang via *Ruimte → Hardware*. |
 
@@ -64,11 +70,35 @@ Gebruik een vertrouwd lokaal netwerk. Is aanmelding bij het register vereist, st
 uitsluitend in bij **Apps → Configuration → Manage Container Image Registries** met
 alleen leesrechten voor pakketten. Registry-login en GPU-doorgifte zijn **NIET GEVALIDEERD (echte NAS)**.
 
+### Bezette forkpoort
+
+Volg bij een bestaande installatie eerst de back-upstappen hieronder.
+Kies een vrije, unieke poort en stel die voor dezelfde fork in als luisterpoort,
+containerpoort én hostpoort. Voor Sonarr Series doe je dat via `MG_PORT_SONARR_SERIES`
+in **Environment Variables** en het bijbehorende poortpaar onder **Network
+Configuration**. Voor de overige forks gebruiken dezelfde stappen
+`MG_PORT_SONARR_ANIME`, `MG_PORT_RADARR_FILMS` of `MG_PORT_RADARR_ANIMEFILMS`.
+Bij **Host Network** stel je alleen de luisterpoort in en laat je de poortkoppelingen
+leeg. `MG_HOST` bevat de hostnaam waarop Seerr de fork bereikt.
+Sla het formulier op en start de app als die gestopt is.
+
+Bij een bestaande installatie pas je onder **Instellingen → Instanties → Beheren**
+de **Interne URL** van die fork aan naar dezelfde poort op de interne host en de
+**URL voor Seerr** naar dezelfde poort op de voor Seerr bereikbare host. Controleer
+de verbinding met de fork. Als Seerr die instantie al gebruikt, wijzig je onder
+**Instellingen → Services** in Seerr de bestaande serververmelding. Behoud de
+standaardrol, profielen en rootmap. Test de nieuwe verbinding daar vóór het
+opslaan. Controleer daarna in MediaGuard **Seerr-routetest → Test alle routes**.
+
+Bij alleen een bezette webpoort volstaat in bridge-modus een vrije hostpoort met
+dezelfde containerpoort voor web en de aangepaste portal.
+
 ## Na het opslaan
 
 1. Controleer de opgehaalde registerdigest tegen het releasebewijs. Lees voor de gekozen
-   repository de `repo_digests` uit `app.image.query` terug via een alleen-lezen
-   TrueNAS-API-controle. Stop bij een afwijking of ontbrekende teruglezing.
+   repository en tag `repo_digests` uit de alleen-lezen methode `app.image.query`
+   met de [TrueNAS WebSocket Client](https://github.com/truenas/api_client), passend
+   bij de TrueNAS-versie. Stop bij een afwijking of ontbrekende teruglezing.
 2. Controleer de ingebouwde healthcheck en het opstartlog. In de nieuwe bronstand
    verlaagt de healthcheck eerst haar rechten naar 568:568, zet zij
    `no_new_privs` en controleert zij het verse bewakerstatusbestand én de interne
@@ -81,6 +111,33 @@ alleen leesrechten voor pakketten. Registry-login en GPU-doorgifte zijn **NIET G
    dat het installatiescherm sluit en dat opnieuw inloggen werkt. Configureer de
    koppelingen daarna in MediaGuard en begin met controleren en vergelijken.
 
+## Afgeschermde proefkopie
+
+1. Bereid een aparte TrueNAS-proef-VM voor met de benodigde formuliercatalogus en
+   beide gecontroleerde images in de lokale image-opslag. Plaats de VM **vóór het
+   importeren van de datasetkopieën en vóór de eerste start** op een intern virtueel
+   netwerk zonder uplink, router, productienetwerk, productie-DNS of toegang tot het
+   internet. Gebruik geen bridged of NAT-adapter naar buiten en koppel uitsluitend
+   proefdatasets. Beheer de VM vanaf de console of een proefbrowser op dat interne
+   netwerk. Controleer de isolatie in de hypervisor en toets vanaf het proefnetwerk
+   met een lokale testdienst aan de afgesloten kant dat die onbereikbaar is. Bij
+   een bereikbare dienst of twijfel blijft de proefapp gestopt.
+2. Kies voor de proefapp bij **Pull Policy** de optie **Never pull an image** en
+   start de proefkopie binnen die afscherming. De gekopieerde appdata kan nog
+   bestemmingen en sleutels bevatten van MediaGuard, de forks en de encoder.
+   Vervang via de betreffende instellingen de koppelingen, inclusief webhooks,
+   indexers, downloadclients en mediaservers, door lokale testdiensten met
+   testgegevens of schakel de koppeling uit. Controleer de ingestelde adressen
+   en bereikbaarheid vanuit de proefomgeving. Houd het netwerk gedurende de hele
+   proef afgeschermd, ook bij het terugzetten van een snapshot met oude koppelingen.
+3. Vergelijk op de kopie de MediaGuard-voortgang en het hersteljournaal met het
+   herstelpunt. Controleer per herstelbaar origineel dat het geregistreerde
+   quarantainebestand op het verwachte pad staat en overeenkomt met de vastgelegde
+   grootte en, indien vastgelegd, SHA-256. Leg bij originelen zonder geregistreerde
+   SHA-256 vóór migratie de checksum vast en vergelijk die met de snapshotkopie.
+   Oefen gericht herstel op de kopie en controleer ook de bijpassende
+   vorige image, inloggen en de koppelingen naar de testdiensten.
+
 ## Back-up en upgrade
 
 1. Lees de releaseopmerkingen en het upgradebewijs vanaf de vorige release. Stop bij
@@ -90,38 +147,73 @@ alleen leesrechten voor pakketten. Registry-login en GPU-doorgifte zijn **NIET G
    bestaande mediaserver of een ondersteunde export. Neem gezien-status, hervatpunten,
    favorieten, beoordelingen, spoorkeuzes, gebruikers en rechten mee. Emby blijft actief en
    beschikbaar als terugval; een overstap van mediaserver is een afzonderlijke handeling
-   die een vóór/na-rapport en uitdrukkelijk akkoord van de gebruiker vereist. De oude installatie blijft als terugval beschikbaar.
-3. Stop **alleen MediaGuard** via **Apps → mediaguard → Stop**. Wacht op **Stopped**.
-   Maak in **Datasets → Data Protection → Create Snapshot** een snapshot van de volledige
-   Host Path op `/config`, met de SQLite-databases, de sleutels, gebruikers en alle
-   Sonarr/Radarr-configuraties. Bewaar ook een herstelpunt voor `/work`, inclusief de
-   originelen. Bewaar back-ups afgeschermd. Verifieer de herstelpunten in een aparte kopie
-   voordat je de migratie start. Ontbreekt een bruikbaar herstelpunt, stel de upgrade uit.
-   Samen met het terugzetrecept vervangt dit geen reguliere back-up van de mediabibliotheek.
-4. Selecteer via **Apps → mediaguard → Edit** de nieuwe, vrijgegeven imageversie. Behoud
-   dezelfde drie datasets en bestaande formulierwaarden. Na het opslaan lopen de
-   applicatiemigraties bij de start. Een interne databaseback-up is aanvullend en dekt
+   die een vóór/na-rapport en uitdrukkelijk akkoord van de gebruiker vereist. De oude
+   installatie blijft als terugval beschikbaar.
+3. Pauzeer nieuwe MediaGuard-taken en wacht tot lopende encodes, imports en
+   hersteltransacties zijn afgerond. Stem ook schrijvende taken van gekoppelde
+   diensten af zodat de betrokken gegevens tijdens de snapshots stabiel blijven.
+   Laat Emby tijdens de hele procedure doordraaien.
+   Controleer de bestaande stoptijd. Waar het formulier **Stop Grace Period**
+   aanbiedt, gebruik je minimaal 60 seconden en dezelfde waarde voor
+   `MG_STOP_TIMEOUT`. Pas die formulierwaarden zo nodig aan nadat de herstelset
+   is geverifieerd. ix-app 1.4.8 biedt dat veld niet. Bij de standaard
+   Docker-stoptijd heeft de app 10 seconden.
+   Stop **alleen MediaGuard** via **Apps → mediaguard → Stop**. Wacht op **Stopped**
+   en controleer in het log en de stopstatus dat de diensten netjes zijn afgesloten
+   en de container zonder geforceerde beëindiging is gestopt. Stel de upgrade uit
+   als die controle faalt of de nette stop niet kan worden vastgesteld.
+4. Maak in **Datasets → Data Protection → Create Snapshot** één samenhangende
+   herstelset van alle datasets met werkelijk gebruikte gegevens. Neem bij elk
+   pad ook de gebruikte onderliggende datasets mee:
+   - `/config`: de volledige appdata met databases, sleutels, voortgang,
+     hersteljournaal, gebruikers en fork-configuraties.
+   - `/work`: werkgegevens, staging en de centrale quarantaine `/work/quarantine`
+     bij `central`.
+   - `/data`: bestaande media en downloads en de standaardquarantaine
+     `/data/.mediaguard-quarantine` bij `library_root` (onder iedere betrokken
+     bibliotheekroot bij een afwijkende indeling).
+
+   Bewaar ook originelen uit een eerder gebruikte quarantaine-instelling zolang
+   het journaal ernaar verwijst. Verifieer de set op een afgeschermde kopie. Maak
+   vóór de eerste echte wijziging per dienst waarvan MediaGuard of de forks
+   gegevens of instellingen kunnen wijzigen een herstelpunt via die dienst.
+   Neem bijvoorbeeld Seerr, Prowlarr en downloadclients mee als die schrijfbaar
+   gekoppeld zijn. Leg per dienst de versie, herstelhandeling en vóór-waarden vast
+   en verifieer het terugzetten op een afgeschermde kopie. Bewaar de herstelpunten
+   afgeschermd en stel de wijziging uit zolang een vereist herstelpunt ontbreekt.
+5. Selecteer via **Apps → mediaguard → Edit** de nieuwe, vrijgegeven imageversie. Behoud
+   dezelfde mounts en bestaande formulierwaarden. Sla op en kies
+   **Apps → mediaguard → Start**. Wacht op **Running**. De applicatiemigraties lopen
+   bij die start. Een interne databaseback-up is aanvullend en dekt
    de core- en encoderdatabases. De datasetsnapshot bevat ook de overige appdata.
-5. Controleer digest, appstatus, componenten, inloggen en de bestaande koppelingen vóór
+6. Controleer digest, appstatus, componenten, inloggen en de bestaande koppelingen vóór
    hervatting van het gebruik. Vergelijk de vóór-waarden voor MediaGuard-voortgang en
    de kijkgegevens van elke gebruiker met de na-waarden. Stop bij ontbrekende gegevens of een onverklaard verschil en
    behoud de bestaande mediaserver en herstelpunten.
 
 ## Terugzetten na een mislukte upgrade
 
-1. Stop MediaGuard en wacht op **Stopped**. Bewaar de actuele `/config` en `/work`
-   in herstelpunten die losstaan van de terug te rollen snapshot. Zo blijven gegevens
-   van na de upgrade beschikbaar. Laat de bestaande mediaserver doordraaien.
+1. Rond lopende taken af en stop MediaGuard zoals bij de upgrade. Bewaar de actuele
+   datasets voor `/config`, `/work` en `/data` in aparte herstelpunten, evenals de
+   actuele instellingen van betrokken diensten. Laat de bestaande mediaserver
+   doordraaien.
 2. Kies in de TrueNAS-webinterface **Datasets → Data Protection → Manage Snapshots**
-   de bij de vorige imageversie horende `/config`-snapshot en kies **Rollback**.
+   de bij de vorige imageversie horende snapshots voor `/config`, inclusief gebruikte
+   onderliggende datasets, en kies **Rollback**.
    Bewaar eventuele nieuwere snapshots eerst apart als TrueNAS vraagt ze te verwijderen.
-   Houd `/data` en de originelen in `/work` beschikbaar. Bij afwijkingen in het
-   hersteljournaal vergelijk je de originelen met het herstelpunt van `/work` voordat
-   je het gebruik hervat.
+   Vergelijk het teruggezette hersteljournaal met de originelen. Herstel ontbrekende
+   of afwijkende quarantainebestanden gericht uit de bijpassende kopieën van
+   `/data` en `/work` en verifieer hun inhoud. Bewaar bij een padconflict ook de
+   nieuwere versie apart. Laat de huidige bibliotheek en downloads op hun paden
+   staan en behoud nieuwere media. Herstel waar nodig de gewijzigde instellingen
+   per betrokken dienst met zijn vooraf geverifieerde herstelpunt.
 3. Herstel vervolgens in het **Custom App**-formulier de vorige imageversie met digest
-   en de vorige formulierwaarden. Sla op en controleer de digest, de oude schema- en
-   appversie, inloggen, de componenten en de eerder vastgelegde voortgang en kijkgegevens.
+   en de vorige formulierwaarden. Sla op, kies **Apps → mediaguard → Start** en
+   wacht op **Running**. Controleer de digest, de oude schema- en appversie,
+   inloggen, de componenten, de koppelingen en de vastgelegde voortgang en
+   kijkgegevens. Controleer ook de bestaande mediaservertitel op hetzelfde pad.
    De vorige image en de bijbehorende snapshot vormen samen één herstelpunt.
-4. Ontbreekt de passende snapshot, laat MediaGuard gestopt en bewaar de huidige data.
+4. Ontbreekt een passend herstelpunt of is het hersteljournaal nog inconsistent,
+   laat MediaGuard gestopt en bewaar de huidige data.
    Laat de beheerder eerst een volledig herstelplan verifiëren. De interne back-up
    bevat bijvoorbeeld de fork-configuraties niet.

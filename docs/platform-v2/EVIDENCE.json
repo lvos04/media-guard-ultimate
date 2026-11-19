@@ -193,9 +193,9 @@
   "id": "C1.3-MGU-09",
   "status": "Bezig",
   "validatie": "Sim-getest; NIET GEVALIDEERD (echte NAS)",
-  "bewijs": "S-P3-660: deploy/manifest/mediaguard.manifest.yaml strikt gevalideerd met jl-manifest (appstore-en-fork a994c2a). Proefkopieën met HUB_URL en compose geweigerd. Formulier en upgrade- en herstelroute: deploy/truenas/CUSTOM_APP.md.",
+  "bewijs": "S-P3-660: deploy/manifest/mediaguard.manifest.yaml strikt gevalideerd met jl-manifest (appstore-en-fork a994c2a). Proefkopieën met HUB_URL, compose en een waarschuwing zonder uitzondering geweigerd. Formuliersimulator vergeleek vijf poortparen en drie mounts. De lokale herstelproef vergeleek het journaal en originele inhoud voor library_root en central en behield nieuwere media bij gericht herstel. De mediaserversimulatie bleef dezelfde titel via hetzelfde pad leveren. Een lokale TCP-afscherming blokkeerde de oude Seerr-testkoppeling. Schrijven en terugzetten werkten op de toegestane testdienst. De Seerr-routetest bereikte de fork op een afwijkende poort. Formulier en upgrade- en herstelroute: deploy/truenas/CUSTOM_APP.md.",
   "blokkade": "Vrijgave van deze bronstand met registerdigest (BLOK-06). Installeren via het formulier op de echte NAS blijft open (STAPPEN_P6.md, N-P6-05).",
-  "opmerking": "De gepubliceerde image 1.2.2-aio gebruikt de oude healthcheck. Het manifest beschrijft de nieuwe bronstand. Maak vóór de migratie een volledige snapshot met MediaGuard gestopt en herstel bij terugval de passende snapshot en image samen.",
+  "opmerking": "De gepubliceerde image 1.2.2-aio gebruikt de oude healthcheck. Het manifest beschrijft de nieuwe bronstand. Verifieer de herstelset van appdata, werkdata en media op een vóór eerste start afgeschermde kopie en verifieer vóór wijziging ook de herstelpunten van schrijvend gekoppelde diensten. Start na Edit bij upgrade en terugzetten de app expliciet en controleer voortgang en kijkgegevens.",
   "repo": "media-guard-ultimate",
   "bijgewerkt": "2026-11-19"
  },

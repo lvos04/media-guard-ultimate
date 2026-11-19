@@ -54,14 +54,14 @@ parameters:
     dataset_role: mediaguard_work
     decision: D02
     required: true
-    description_nl: Werkdataset met staging, cache en quarantaine. Behoud de bestaande dataset bij een upgrade.
+    description_nl: Werkdataset met staging, cache en bij central de quarantaine. Behoud de bestaande dataset bij een upgrade.
   - name: media_path
     type: path
     source: dataset_picker
     dataset_role: mediaguard_media
     decision: D02
     required: true
-    description_nl: Gedeelde dataset voor media en downloads, zodat hardlinks werken. Behoud deze bij een upgrade.
+    description_nl: Bestaande mediadataset met de standaardquarantaine. Behoud de bestaande mediapaden voor de mediaserver.
   - name: public_host
     type: string
     source: default
@@ -102,12 +102,12 @@ storage:
     mount: /work
     kind: data
     required_dataset_role: mediaguard_work
-    description_nl: Staging, cache en quarantaine met bewaarde originelen die bij het hersteljournaal horen.
+    description_nl: Staging, cache en bij central de quarantaine met bewaarde originelen onder /work/quarantine.
   - name: media
     mount: /data
     kind: media
     required_dataset_role: mediaguard_media
-    description_nl: Bibliotheek en downloads op hetzelfde bestandssysteem.
+    description_nl: Bibliotheek, downloads en bij library_root de quarantaine met bewaarde originelen onder /data/.mediaguard-quarantine.
 network:
   ports:
     - {name: web, container_port: 30080, host_port: 30080, protocol: tcp, purpose_nl: Webinterface en API}
@@ -138,10 +138,11 @@ backup:
   db_export:
     method: stopped_snapshot
     description_nl: >-
-      Stop MediaGuard en verifieer vóór de migratie de snapshot van de volledige /config-dataset inclusief
-      SQLite, sleutels, gebruikersgegevens en MediaGuard-voortgang. De losse databaseback-up dekt de
-      fork-configuratie en sleutels niet volledig. Bewaar ook een herstelpunt voor /work met de originelen.
-  snapshot_datasets: [appdata, work]
+      Rond schrijvende taken af en stop MediaGuard netjes. Maak samenhangende snapshots van de volledige
+      /config met databases, sleutels, gebruikersgegevens, voortgang en hersteljournaal, de gebruikte
+      datasets onder /work en /data en alle quarantainepaden waar het journaal nog naar verwijst.
+      Verifieer vóór migratie op een afgeschermde kopie dat journaal en originele bestandsinhoud overeenkomen.
+  snapshot_datasets: [appdata, work, media]
   rpo: {param: rpo}
   rto: {param: rto}
 dependencies: []
@@ -154,12 +155,15 @@ upgrade:
   migrations: true
   tag_only_rollback_safe: false
   notes_nl: >-
-    Behoud de drie datasets en de vorige formulierwaarden inclusief imageversie en digest. Ga pas verder na
-    een release met upgradebewijs en een geverifieerd herstelpunt. Vergelijk voor en na de MediaGuard-voortgang
+    Behoud de mounts, bestaande mediapaden en vorige formulierwaarden inclusief imageversie en digest.
+    Scherm de proefkopie vóór de eerste start af van alle productiediensten en gebruik uitsluitend testdiensten.
+    Ga pas verder na een release met upgradebewijs, een geverifieerde herstelset en een geverifieerd herstelpunt
+    per dienst die bij de echte wijziging beschrijfbaar is. Vergelijk voor en na de MediaGuard-voortgang
     en per gebruiker gezien-status, hervatpunten, favorieten, beoordelingen en spoorkeuzes, inclusief gebruikers
     en rechten. Houd Emby actief als terugval. Bewaar vóór herstel ook de huidige toestand. Stop MediaGuard, zet
-    in de TrueNAS-webinterface de bijpassende snapshot van /config terug en selecteer daarna de vorige imageversie
-    met digest in het Custom App-formulier. Houd /data en de originelen in /work beschikbaar.
+    in de TrueNAS-webinterface de bijpassende snapshot van /config terug en herstel ontbrekende originelen
+    gericht uit de snapshots van /work en /data met behoud van nieuwere media. Selecteer daarna de vorige
+    imageversie met digest in het Custom App-formulier, start de app en controleer de herstelde toestand.
 decisions_required: [D01, D02, D03, D07, D08, D16]
 docs: [I03_MEDIAGUARD]
 validation_status: unvalidated
