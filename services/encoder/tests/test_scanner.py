@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -62,6 +64,32 @@ def test_dry_run_schrijft_niets_en_filtert_veilig(tmp_path: Path) -> None:
     assert by_name["Wadi Deel Twee (2024)-trailer.mkv"].actie == "opruimen"
     assert by_name["Making Of.mkv"].categorie == "extra"
     assert database.fetch_one("SELECT COUNT(*) FROM bestand")[0] == 0
+
+
+def test_cli_droogloop_telt_stabiele_en_recente_bestanden(tmp_path, monkeypatch, capsys):
+    from app import cli
+
+    films = tmp_path / "films"
+    films.mkdir()
+    db = _database_for_path(tmp_path / "catalogus", films)
+    monkeypatch.setattr(cli, "settings", db.settings)
+    stabiel = films / "Stabiel.mkv"
+    shutil.copyfile(TESTDATA / "al-av1.mkv", stabiel)
+    os.utime(stabiel, (1, 1))
+    (films / "Recent.mkv").touch()
+
+    def telling(*opties):
+        assert cli.main(["scan", "1", *opties]) == 0
+        uit = json.loads(capsys.readouterr().out)
+        return uit["gevonden"], uit["nieuw"], uit["gewijzigd"], uit["telling_onvolledig"]
+
+    droog = telling("--dry-run")
+    assert db.fetch_one("SELECT COUNT(*) FROM bestand")[0] == 0
+    assert db.fetch_one("SELECT COUNT(*) FROM scan_run")[0] == 0
+    assert droog == telling() == (2, 2, 0, False)
+    shutil.copyfile(TESTDATA / "lage-bitrate.mkv", stabiel)
+    os.utime(stabiel, (1, 1))
+    assert telling("--dry-run") == telling() == (2, 0, 1, False)
 
 
 def test_twee_scans_geven_geen_dubbele_rijen(tmp_path: Path) -> None:
@@ -263,6 +291,146 @@ def _historische_registratie(db, *, opgeslagen, midden_in_map):
             conn.execute("UPDATE scan_run SET gevonden=0,nieuw=0,uitgesteld=0,cursor=NULL "
                          "WHERE id=?", (scan_id,))
             conn.execute("UPDATE library SET scan_cursor=NULL WHERE id=1")
+
+
+def _cli_scan(db, films):
+    return subprocess.run(
+        [sys.executable, "-m", "app.cli", "scan", "1"],
+        env={**os.environ, "PIPELINE_ROOT": str(db.settings.pipeline_root),
+             "CONFIG_ROOT": str(db.settings.config_root), "LIBRARY_ROOT": str(films),
+             "DATABASE_URL": f"sqlite:///{db.path}"},
+        capture_output=True, text=True, timeout=30,
+    )
+
+
+@pytest.mark.parametrize("historisch", [False, True])
+async def test_cli_neemt_scan_van_achtergrondtaak_niet_over(tmp_path, monkeypatch, historisch):
+    from app.api import _scan_background
+
+    films = tmp_path / "films"
+    films.mkdir()
+    film = films / "Film.mkv"
+    shutil.copyfile(TESTDATA / "al-av1.mkv", film)
+    os.utime(film, (1, 1))
+    db = _database_for_path(tmp_path / "catalogus", films)
+    assert scan_library(db, 1).nieuw == 1
+    if historisch:
+        with monkeypatch.context() as patch:
+            patch.setattr(scanner_module, "DECISION_CODE_FINGERPRINT", "eerdere-scanner")
+            scan_library(db, 1, stop_after_directories=1)
+        _historische_registratie(db, opgeslagen=0, midden_in_map=False)
+    shutil.copyfile(TESTDATA / "lage-bitrate.mkv", film)
+    os.utime(film, (1, 1))
+
+    verwerk = scanner_module._process_file
+    pogingen = []
+
+    def bied_dezelfde_scan_aan(*args, **kwargs):
+        scan_id = db.fetch_one("SELECT id FROM scan_run WHERE status='bezig'")[0]
+        pogingen.append((scan_id, _cli_scan(db, films)))
+        verwerk(*args, **kwargs)
+
+    monkeypatch.setattr(scanner_module, "_process_file", bied_dezelfde_scan_aan)
+    await _scan_background(db, 1, False)
+    (scan_id, cli), = pogingen
+    heropend = Database(db.settings)
+    rij = heropend.fetch_one(
+        "SELECT s.status,s.gewijzigd,b.gewijzigd,f.grootte FROM scan_run s "
+        "JOIN scan_bijdrage b ON b.scan_id=s.id JOIN bestand f ON f.id=b.bestand_id "
+        "WHERE s.id=?", (scan_id,),
+    )
+    assert tuple(rij) == ("klaar", 1, 1, film.stat().st_size)
+    assert _api_telling(heropend) == (1, int(historisch))
+    assert cli.returncode == 2 and "draait al een" in cli.stderr
+
+
+async def test_bezette_achtergrondscan_laat_de_hervatbare_cursor_staan(tmp_path):
+    from app import api
+    from app.scanscheduler import LibraryScanScheduler
+
+    db = _database(tmp_path)
+    scan_library(db, 1, stop_after_directories=1)
+    db.execute("UPDATE library SET scan_interval=86400,volgende_scan='2000-01-01' WHERE id=1")
+
+    def toestand():
+        return tuple(db.fetch_one(
+            "SELECT s.id,s.status,s.fout,s.cursor,l.scan_cursor,l.laatste_scan_status "
+            "FROM scan_run s JOIN library l ON l.id=s.library_id"
+        ))
+
+    voor = toestand()
+    assert voor[1] == "bezig" and voor[3] == voor[4] and voor[4]
+    with scanner_module.SCAN_LOCK:
+        await api._scan_background(db, 1, False)
+        assert await LibraryScanScheduler(db).tick() == []
+    assert toestand() == voor
+
+
+async def test_foutmelding_houdt_de_scanclaim_tot_de_afmelding(tmp_path, monkeypatch):
+    from app import scanscheduler
+
+    films = tmp_path / "films"
+    films.mkdir()
+    db = _database_for_path(tmp_path / "catalogus", films)
+    db.execute("UPDATE library SET scan_interval=86400,volgende_scan='2000-01-01' WHERE id=1")
+    afmelden = scanscheduler.record_scan_failure
+    pogingen = []
+
+    def registreer(*args):
+        pogingen.append(_cli_scan(db, films))
+        afmelden(*args)
+
+    def weiger(*args, **kwargs):
+        raise scanner_module.SourceError("Proefbron niet beschikbaar")
+
+    monkeypatch.setattr(scanner_module, "validate_registered_source", weiger)
+    monkeypatch.setattr(scanscheduler, "record_scan_failure", registreer)
+    assert await scanscheduler.LibraryScanScheduler(db).tick() == []
+    cli, = pogingen
+    assert cli.returncode == 2 and "draait al een" in cli.stderr
+    assert [tuple(rij) for rij in db.fetch_all("SELECT status,fout FROM scan_run")] == [
+        ("mislukt", "Proefbron niet beschikbaar"),
+    ]
+
+
+def test_eerder_overschreven_totaal_toont_de_bewezen_ondergrens(tmp_path):
+    from app.live import _scan_states
+
+    films = tmp_path / "films"
+    films.mkdir()
+    film = films / "Film.mkv"
+    film.touch()
+    db = _database_for_path(tmp_path / "catalogus", films)
+    assert scan_library(db, 1).nieuw == 1
+    film.write_bytes(b"vervanging")
+    assert scan_library(db, 1).gewijzigd == 1
+    scan_id = db.fetch_one("SELECT MAX(id) FROM scan_run")[0]
+    db.execute("UPDATE scan_run SET gewijzigd=0 WHERE id=?", (scan_id,))
+    heropend = Database(db.settings)
+    assert _api_telling(heropend) == (1, 1)
+    afmelding = _scan_states(heropend, {scan_id: db.fetch_one("SELECT 1")})[scan_id]
+    assert (afmelding["gewijzigd"], afmelding["onvolledig"]) == (1, 1)
+    assert db.fetch_one("SELECT gewijzigd FROM scan_run WHERE id=?", (scan_id,))[0] == 0
+
+
+@pytest.mark.parametrize("moment", ["bestand", "afronding"])
+def test_verouderde_schrijver_kan_afgesloten_scan_niet_wijzigen(tmp_path, monkeypatch, moment):
+    films = tmp_path / "films"
+    films.mkdir()
+    db = _database_for_path(tmp_path / "catalogus", films)
+    if moment == "bestand":
+        (films / "Film.mkv").touch()
+    mappen = scanner_module._directories
+
+    def sluit_scan_na_claim(root):
+        db.execute("UPDATE scan_run SET status='klaar',gewijzigd=1 WHERE status='bezig'")
+        return mappen(root) if moment == "bestand" else []
+
+    monkeypatch.setattr(scanner_module, "_directories", sluit_scan_na_claim)
+    with pytest.raises(scanner_module.ScanInterrupted):
+        scan_library(db, 1)
+    assert tuple(db.fetch_one("SELECT status,gewijzigd,cursor FROM scan_run")) == ("klaar", 1, None)
+    assert db.fetch_one("SELECT COUNT(*) FROM bestand")[0] == 0
 
 
 @pytest.mark.parametrize("positie", ["midden", "mapcursor", "afgerond"])

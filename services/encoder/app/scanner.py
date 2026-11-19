@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import logging
@@ -9,6 +10,8 @@ import os
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,11 +31,11 @@ class ScanError(RuntimeError):
 
 
 class ScanBusy(ScanError):
-    """Een andere scan houdt de procesbrede scanlock vast; later opnieuw proberen."""
+    """De scanner is bezet of een ander proces scant deze bibliotheek."""
 
 
 class ScanInterrupted(ScanError):
-    """Service stopt: de scan staat netjes op zijn mapcursor en hervat later."""
+    """De dienst stopt of de scan is intussen afgesloten."""
 
 
 # Gezet bij het stoppen van de backend; een lopende scan stopt na de huidige map.
@@ -49,13 +52,17 @@ SCANTELLING_GEREGISTREERD = f"""EXISTS (
     SELECT 1 FROM staat WHERE sleutel='{SCANTELLING_SLEUTEL}' || s.id
     AND waarde=CAST(s.library_id AS TEXT) AND tijd=s.gestart_op
 )"""
-SCANTELLING_ONVOLLEDIG = f"""(
+# Een eerdere schrijver kon een lager totaal opslaan dan de bijdragen bewijzen.
+SCANTELLING_NIEUW = "MAX(COALESCE(s.nieuw,0), COALESCE(SUM(b.nieuw),0))"
+SCANTELLING_GEWIJZIGD = "MAX(COALESCE(s.gewijzigd,0), COALESCE(SUM(b.gewijzigd),0))"
+SCANTELLING_ONVOLLEDIG = f"""(s.id IS NOT NULL AND (
     COALESCE(s.fout LIKE 'telling onvolledig%', 0) OR NOT {SCANTELLING_GEREGISTREERD}
+    OR COALESCE(SUM(b.nieuw),0)>s.nieuw OR COALESCE(SUM(b.gewijzigd),0)>s.gewijzigd
     OR EXISTS (SELECT 1 FROM bestand f
                WHERE f.library_id=s.library_id AND f.gescand_op=s.gestart_op AND f.aanwezig=1
                AND NOT EXISTS (SELECT 1 FROM scan_bijdrage b
                                WHERE b.scan_id=s.id AND b.bestand_id=f.id))
-)"""
+))"""
 
 
 def _decision_code_fingerprint() -> str:
@@ -98,7 +105,7 @@ class ScanSummary:
     telling_onvolledig: bool = False
 
 
-def _library(database: Database, library_id: int) -> tuple[Any, dict[str, Any]]:
+def _library(database: Database, library_id: int) -> tuple[sqlite3.Row, dict[str, Any]]:
     row = database.fetch_one(
         """
         SELECT l.*, p.inst AS profiel_inst
@@ -152,6 +159,17 @@ class _ScanBijdragen:
     # Een oude tussentelling kan wijzigingen bevatten waarvan de bestands-id onbekend is.
     ongekoppeld_gewijzigd: int = 0
 
+    @contextmanager
+    def transactie(self, database: Database) -> Iterator[sqlite3.Connection]:
+        with database.connection() as conn, conn:
+            bezig = conn.execute(
+                "SELECT 1 FROM scan_run WHERE id=? AND gestart_op=? AND status='bezig'",
+                (self.scan_id, self.gestart_op),
+            ).fetchone()
+            if bezig is None:
+                raise ScanInterrupted("Deze scan is inmiddels afgesloten")
+            yield conn
+
     def hervat(
         self, conn: sqlite3.Connection, summary: ScanSummary, *, vanaf_begin: bool = False,
     ) -> None:
@@ -173,8 +191,9 @@ class _ScanBijdragen:
             "FROM scan_run s WHERE s.id=?", (self.scan_id,),
         ).fetchone()
         eerder_onvolledig = (rij["fout"] or "").startswith("telling onvolledig")
-        summary.telling_onvolledig = bool(ontbrekend or not rij["volledig"] or eerder_onvolledig)
-        if ontbrekend and rij["volledig"]:
+        lacune = ontbrekend or rij["nieuw"] < nieuw or rij["gewijzigd"] < gewijzigd
+        summary.telling_onvolledig = bool(lacune or not rij["volledig"] or eerder_onvolledig)
+        if lacune and rij["volledig"]:
             # Ook een latere scanfout mag deze lacune niet verhullen.
             conn.execute("DELETE FROM staat WHERE sleutel=?",
                          (f"{SCANTELLING_SLEUTEL}{self.scan_id}",))
@@ -254,20 +273,35 @@ def scan_library(
     *,
     dry_run: bool = False,
     stop_after_directories: int | None = None,
+    foutafhandeling: AbstractContextManager[None] | None = None,
 ) -> ScanSummary:
-    """Scan per map en commit onderweg; een test kan gecontroleerd onderbreken."""
-
-    if not SCAN_LOCK.acquire(blocking=False):
-        raise ScanBusy("Er draait al een bibliotheekscan")
-    try:
+    """Scan per map en behoud de schrijfclaim tot na de eventuele foutregistratie."""
+    with ExitStack() as slots:
+        if not SCAN_LOCK.acquire(blocking=False):
+            raise ScanBusy("Er draait al een bibliotheekscan")
+        slots.callback(SCAN_LOCK.release)
+        if not dry_run:
+            with database.startup_lock():
+                if database.fetch_one("SELECT 1 FROM library WHERE id=?", (library_id,)) is None:
+                    raise ScanError(f"Actieve library {library_id} bestaat niet")
+                # Dezelfde inode voor dienst en CLI. Alleen de open descriptor houdt
+                # het slot vast, ook een processtop geeft het onmiddellijk vrij.
+                db_pad = database.path.resolve()
+                slotpad = db_pad.with_name(f"{db_pad.name}.scan-{library_id}.lock")
+                fd = os.open(slotpad, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o660)
+                slots.callback(os.close, fd)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    raise ScanBusy("Voor deze bibliotheek draait al een scan") from exc
+        if foutafhandeling is not None:
+            slots.enter_context(foutafhandeling)
         return _scan_library_locked(
             database,
             library_id,
             dry_run=dry_run,
             stop_after_directories=stop_after_directories,
         )
-    finally:
-        SCAN_LOCK.release()
 
 
 def _scan_library_locked(
@@ -277,7 +311,7 @@ def _scan_library_locked(
     dry_run: bool,
     stop_after_directories: int | None,
 ) -> ScanSummary:
-    """Voer één procesbrede scan uit; SQLite bewaakt daarnaast de libraryclaim."""
+    """Verwerk de bibliotheek en bewaar voortgang tot aan de laatste cursor."""
 
     library, profile = _library(database, library_id)
     profile_fingerprint = _profile_fingerprint(profile)
@@ -295,7 +329,8 @@ def _scan_library_locked(
         )
     except SourceError as exc:
         raise ScanError(str(exc)) from exc
-    if str(library["bron_type"]) == "smb" and current_device != library["verwacht_device"]:
+    if (not dry_run and library["bron_type"] == "smb"
+            and current_device != library["verwacht_device"]):
         database.execute(
             "UPDATE library SET verwacht_device=? WHERE id=?", (current_device, library_id)
         )
@@ -341,35 +376,28 @@ def _scan_library_locked(
                     "ON CONFLICT(sleutel) DO UPDATE SET waarde=excluded.waarde,tijd=excluded.tijd",
                     (f"{SCANTELLING_SLEUTEL}{scan_id}", str(library_id), started_at),
                 )
-        database.execute(
-            "UPDATE library SET laatste_scan_status='bezig',laatste_scan_fout=NULL WHERE id=?",
-            (library_id,),
-        )
-
         bijdragen = _ScanBijdragen(scan_id, started_at)
-        # Een afgebroken scan kan vóór een profielwijziging zijn begonnen. In
-        # dat geval is de opgeslagen cursor niet meer geldig: ook de mappen vóór
-        # die cursor moeten opnieuw door de beslisboom met het nieuwste profiel.
-        stale_pass = database.fetch_one(
-            f"""
-            SELECT 1 FROM bestand
-            WHERE library_id=? AND gescand_op=?
-              AND COALESCE(profiel_fingerprint, '')<>?
-              AND NOT EXISTS (SELECT 1 FROM job WHERE bestand_id=bestand.id
-                              AND status IN {ACTIVE_SQL})
-            LIMIT 1
-            """,
-            (library_id, started_at, profile_fingerprint),
-        )
-        if stale_pass is not None:
-            cursor_path = ""
-            file_cursor = None
-            summary = ScanSummary(library_id=library_id, dry_run=False, hervat=True)
-            with database.connection() as connection, connection:
-                bijdragen.hervat(connection, summary, vanaf_begin=True)
-        elif summary.hervat:
-            with database.connection() as connection, connection:
-                bijdragen.hervat(connection, summary)
+        with bijdragen.transactie(database) as connection:
+            connection.execute(
+                "UPDATE library SET laatste_scan_status='bezig',laatste_scan_fout=NULL WHERE id=?",
+                (library_id,),
+            )
+            if summary.hervat:
+                # Na een profielwijziging moeten ook mappen vóór de cursor opnieuw
+                # worden beoordeeld. De ondergrens van de telling blijft bewaard.
+                stale_pass = connection.execute(
+                    f"""SELECT 1 FROM bestand WHERE library_id=? AND gescand_op=?
+                        AND COALESCE(profiel_fingerprint, '')<>?
+                        AND NOT EXISTS (SELECT 1 FROM job WHERE bestand_id=bestand.id
+                                        AND status IN {ACTIVE_SQL})
+                        LIMIT 1""",
+                    (library_id, started_at, profile_fingerprint),
+                ).fetchone()
+                if stale_pass is not None:
+                    cursor_path = ""
+                    file_cursor = None
+                    summary = ScanSummary(library_id=library_id, dry_run=False, hervat=True)
+                bijdragen.hervat(connection, summary, vanaf_begin=stale_pass is not None)
 
     processed_directories = 0
     while True:
@@ -399,7 +427,7 @@ def _scan_library_locked(
                     hervat=summary.hervat,
                 )
                 if bijdragen is not None:
-                    with database.connection() as connection, connection:
+                    with bijdragen.transactie(database) as connection:
                         bijdragen.hervat(connection, summary, vanaf_begin=True)
                 LOGGER.info(
                     "Profiel van library %s wijzigde tijdens de scan; herstart vanaf het begin",
@@ -444,8 +472,8 @@ def _scan_library_locked(
                     # de volgende scan markeert het als afwezig.
                     LOGGER.info("Bestand verdween tijdens de scan: %s", path)
                     continue
-            if not dry_run and scan_id is not None:
-                with database.connection() as connection:
+            if bijdragen is not None:
+                with bijdragen.transactie(database) as connection:
                     connection.execute(
                         "UPDATE scan_run SET cursor=? WHERE id=?", (directory_text, scan_id),
                     )
@@ -453,7 +481,6 @@ def _scan_library_locked(
                         "UPDATE library SET scan_cursor=? WHERE id=?",
                         (directory_text, library_id),
                     )
-                    connection.commit()
             file_cursor = None
             processed_directories += 1
             if (
@@ -484,7 +511,7 @@ def _scan_library_locked(
         if bijdragen is None:
             return summary
 
-        with database.connection() as connection:
+        with bijdragen.transactie(database) as connection:
             # BEGIN IMMEDIATE sluit het laatste kleine racevenster: een profiel-
             # wijziging kan niet tegelijk met het definitief afronden committen.
             latest_profile = _profile_from_connection(connection, library_id)
@@ -499,7 +526,6 @@ def _scan_library_locked(
                     hervat=summary.hervat,
                 )
                 bijdragen.hervat(connection, summary, vanaf_begin=True)
-                connection.commit()
                 LOGGER.info(
                     "Profiel van library %s wijzigde bij afronding; herstart vanaf het begin",
                     library_id,
@@ -551,7 +577,6 @@ def _scan_library_locked(
                 """,
                 (now, library_id),
             )
-            connection.commit()
         return summary
 
 
@@ -792,15 +817,16 @@ def _store_analysis(
             nlink=stat.st_nlink,
         )
     )
-    if dry_run:
-        return
-    probe_json = (json.dumps(analysis.probe_data, ensure_ascii=False)
-                  if analysis.probe_data is not None else None)
     changed = bool(
         existing is None
         or existing["scan_status"] != "gereed"
         or not (state.metadata_unchanged and state.profile_unchanged)
     )
+    state.count_change(summary, scan_marker, changed)
+    if dry_run:
+        return
+    probe_json = (json.dumps(analysis.probe_data, ensure_ascii=False)
+                  if analysis.probe_data is not None else None)
     now = datetime.now(UTC).isoformat()
     if existing is None:
         cursor = connection.execute(
@@ -853,7 +879,6 @@ def _store_analysis(
                 bestand_id,
             ),
         )
-    state.count_change(summary, scan_marker, changed)
     replay = (existing is not None and existing["gescand_op"] == scan_marker
               and state.metadata_unchanged)
     store_decision(connection, bestand_id, decision, changed,
@@ -873,7 +898,9 @@ def _process_file(
                 and time.time() - stat.st_mtime >= FILE_STABILITY_SECONDS):
             analysis = _analyse_file(state, path, stat, profile, root)
 
-        with database.connection(write=not dry_run) as conn, conn:
+        transactie = (bijdragen.transactie(database) if bijdragen is not None
+                      else database.connection(write=False))
+        with transactie as conn:
             # Een job kan het bestand tijdens de probe claimen of vrijgeven.
             state = _file_state(conn, path, stat, profile_fingerprint)
             voor = (summary.nieuw, summary.gewijzigd)

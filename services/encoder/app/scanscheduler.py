@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -56,34 +56,46 @@ def next_scan_at(
 
 def record_scan_failure(database: Database, library_id: int, message: str) -> None:
     now = datetime.now(UTC).isoformat()
-    changed = database.execute(
-        """
-        UPDATE scan_run
-        SET status='mislukt',fout=?,klaar_op=?
-        WHERE id=(
-            SELECT id FROM scan_run
-            WHERE library_id=? AND status='bezig'
-            ORDER BY id DESC LIMIT 1
+    with database.connection() as conn, conn:
+        changed = conn.execute(
+            "UPDATE scan_run SET status='mislukt',fout=?,klaar_op=? "
+            "WHERE library_id=? AND status='bezig'", (message, now, library_id),
+        ).rowcount
+        if not changed:
+            conn.execute(
+                "INSERT INTO scan_run(library_id,status,fout,gestart_op,klaar_op) "
+                "VALUES (?,'mislukt',?,?,?)", (library_id, message, now, now),
+            )
+        conn.execute(
+            "UPDATE library SET laatste_scan_status='mislukt',laatste_scan_fout=?,scan_cursor=NULL "
+            "WHERE id=?", (message, library_id),
         )
-        """,
-        (message, now, library_id),
-    )
-    if changed == 0:
-        database.execute_insert(
-            """
-            INSERT INTO scan_run(library_id,status,fout,gestart_op,klaar_op)
-            VALUES (?,'mislukt',?,?,?)
-            """,
-            (library_id, message, now, now),
-        )
-    database.execute(
-        """
-        UPDATE library
-        SET laatste_scan_status='mislukt',laatste_scan_fout=?,scan_cursor=NULL
-        WHERE id=?
-        """,
-        (message, library_id),
-    )
+
+
+@contextmanager
+def _registreer_scanfout(database: Database, library_id: int) -> Iterator[None]:
+    try:
+        yield
+    except (ScanBusy, ScanInterrupted):
+        raise
+    except Exception as exc:
+        message = (str(exc) if isinstance(exc, (ScanError, OSError, ValueError))
+                   else f"onverwachte scanfout: {type(exc).__name__}")
+        record_scan_failure(database, library_id, message)
+        raise
+
+
+def scan_als_dienst(
+    database: Database, library_id: int, *, dry_run: bool = False,
+    scan_function: ScanFunction = scan_library,
+) -> ScanSummary:
+    if dry_run:
+        return scan_library(database, library_id, dry_run=True)
+    fouten = _registreer_scanfout(database, library_id)
+    if scan_function is scan_library:
+        return scan_library(database, library_id, foutafhandeling=fouten)
+    with fouten:
+        return scan_function(database, library_id)
 
 
 class LibraryScanScheduler:
@@ -91,9 +103,7 @@ class LibraryScanScheduler:
 
     def __init__(self, database: Database, scan_function: ScanFunction | None = None) -> None:
         self.database = database
-        self.scan_function = scan_function or (
-            lambda db, library_id: scan_library(db, library_id)
-        )
+        self.scan_function = scan_function or scan_library
         self.stopping = False
         self._lock = asyncio.Lock()
         self.current_library_id: int | None = None
@@ -177,16 +187,9 @@ class LibraryScanScheduler:
             self.current_library_id = library_id
             retry_later = False
             try:
-                self.database.execute(
-                    """
-                    UPDATE library
-                    SET laatste_scan_status='bezig',laatste_scan_fout=NULL
-                    WHERE id=?
-                    """,
-                    (library_id,),
-                )
                 try:
-                    await asyncio.to_thread(self.scan_function, self.database, library_id)
+                    await asyncio.to_thread(scan_als_dienst, self.database, library_id,
+                                            scan_function=self.scan_function)
                 except ScanInterrupted:
                     # Servicestop: scan_run en cursor blijven staan; volgende_scan
                     # blijft in het verleden zodat hij na de herstart hervat.
@@ -195,8 +198,8 @@ class LibraryScanScheduler:
                     # Een handmatige scan loopt nog: geen mislukking, kort daarna opnieuw.
                     retry_at = datetime.now(UTC) + SCAN_BUSY_RETRY
                     self.database.execute(
-                        "UPDATE library SET laatste_scan_status=?,volgende_scan=? WHERE id=?",
-                        ("wacht", retry_at.isoformat(), library_id),
+                        "UPDATE library SET volgende_scan=? WHERE id=?",
+                        (retry_at.isoformat(), library_id),
                     )
                     LOGGER.info(
                         "Scan van library %s wacht op een andere scan; opnieuw om %s",
@@ -205,14 +208,10 @@ class LibraryScanScheduler:
                     )
                     retry_later = True
                 except (ScanError, OSError, ValueError) as exc:
-                    message = str(exc)
-                    record_scan_failure(self.database, library_id, message)
                     LOGGER.error(
                         "Automatische scan van library %s mislukt: %s", library_id, exc
                     )
-                except Exception as exc:
-                    message = f"onverwachte scanfout: {type(exc).__name__}"
-                    record_scan_failure(self.database, library_id, message)
+                except Exception:
                     LOGGER.exception(
                         "Automatische scan van library %s stopte onverwacht", library_id
                     )

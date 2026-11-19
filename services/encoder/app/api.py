@@ -84,13 +84,15 @@ from app.opslag import (
     transient_storage_is_empty,
 )
 from app.scanner import (
+    SCANTELLING_GEWIJZIGD,
+    SCANTELLING_NIEUW,
     SCANTELLING_ONVOLLEDIG,
     SCANTELLING_SLEUTEL,
+    ScanBusy,
     ScanError,
     ScanInterrupted,
-    scan_library,
 )
-from app.scanscheduler import LibraryScanScheduler, record_scan_failure
+from app.scanscheduler import LibraryScanScheduler, scan_als_dienst
 from app.systeem import GpuMonitor, mount_report, qsv_test, system_metrics
 from app.uitvoerder import ExecutionError, create_job_from_decision
 from app.vervanging import temporary_replacement_path
@@ -859,21 +861,13 @@ def _task_id(request: Request, task: asyncio.Task[Any], identifier: str | None =
 
 async def _scan_background(database: Database, library_id: int, dry_run: bool) -> None:
     try:
-        await asyncio.to_thread(scan_library, database, library_id, dry_run=dry_run)
-    except ScanInterrupted:
-        return  # servicestop: de scan hervat vanaf zijn cursor bij een volgende scan
+        await asyncio.to_thread(scan_als_dienst, database, library_id, dry_run=dry_run)
+    except (ScanBusy, ScanInterrupted):
+        return  # De eigenaar van de scan beheert zijn status en cursor.
     except ScanError as exc:
-        # De scan_run bevat bij een gewone scan de hervatbare toestand; de UI
-        # haalt de concrete fout via diagnose/logging op.
-        if not dry_run:
-            record_scan_failure(database, library_id, str(exc))
-    except Exception as exc:
-        # Zonder dit bleef de scan voor altijd op 'bezig' staan.
+        LOGGER.warning("Handmatige scan van library %s mislukt: %s", library_id, exc)
+    except Exception:
         LOGGER.exception("Handmatige scan van library %s stopte onverwacht", library_id)
-        if not dry_run:
-            record_scan_failure(
-                database, library_id, f"onverwachte scanfout: {type(exc).__name__}: {exc}"
-            )
 
 
 def _worker_rows(database: Database) -> list[dict[str, Any]]:
@@ -995,15 +989,10 @@ def create_api_router() -> APIRouter:
                     WHERE f.library_id=l.id AND j.status='wacht_op_commit') AS wacht_op_commit,
                    (SELECT COUNT(*) FROM bestand f WHERE f.library_id=l.id
                     AND f.scan_status='wacht_op_stabiliteit') AS stabiliteitswachtrij,
-                   COALESCE((SELECT s.nieuw FROM scan_run s WHERE s.library_id=l.id
-                    ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_nieuw,
-                   COALESCE((SELECT s.gewijzigd FROM scan_run s WHERE s.library_id=l.id
-                    ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_gewijzigd,
-                   COALESCE((SELECT {SCANTELLING_ONVOLLEDIG} FROM scan_run s
-                    WHERE s.library_id=l.id ORDER BY s.id DESC LIMIT 1),0)
-                       AS laatste_scan_telling_onvolledig,
-                   COALESCE((SELECT s.verdwenen FROM scan_run s WHERE s.library_id=l.id
-                    ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_verdwenen,
+                   {SCANTELLING_NIEUW} AS laatste_scan_nieuw,
+                   {SCANTELLING_GEWIJZIGD} AS laatste_scan_gewijzigd,
+                   {SCANTELLING_ONVOLLEDIG} AS laatste_scan_telling_onvolledig,
+                   COALESCE(s.verdwenen,0) AS laatste_scan_verdwenen,
                    (SELECT COUNT(*) FROM besluit b JOIN bestand f ON f.id=b.bestand_id
                     WHERE f.library_id=l.id AND b.goedkeuringsbron='ai_policy'
                     AND b.status IN ('goedgekeurd','ingepland')) AS ai_goedgekeurd,
@@ -1020,6 +1009,9 @@ def create_api_router() -> APIRouter:
                     WHERE f.library_id=l.id AND b.status='nieuw'
                     AND a.policy_uitkomst LIKE 'geblokkeerd:%') AS ai_geblokkeerd
             FROM library l JOIN profiel p ON p.id=l.profiel_id
+            LEFT JOIN scan_run s ON s.id=(SELECT MAX(id) FROM scan_run WHERE library_id=l.id)
+            LEFT JOIN scan_bijdrage b ON b.scan_id=s.id
+            GROUP BY l.id
             ORDER BY l.naam
             """
         )

@@ -14,7 +14,7 @@ from app.api import _worker_rows
 from app.config import Settings
 from app.db import Database
 from app.jobstatus import DONE_SQL, DONE_STATUSES
-from app.scanner import SCANTELLING_ONVOLLEDIG
+from app.scanner import SCANTELLING_GEWIJZIGD, SCANTELLING_NIEUW, SCANTELLING_ONVOLLEDIG
 from app.systeem import GpuMonitor, system_metrics
 from app.uitvoerder import JOB_PHASE_DETAIL, JOB_PHASES
 
@@ -194,9 +194,12 @@ def _scan_states(
     ids = list(previous or {})
     marks = ",".join("?" for _ in ids) or "NULL"
     rows = database.fetch_all(
-        f"""SELECT s.id,s.status,s.library_id,s.nieuw,s.gewijzigd,
+        f"""SELECT s.id,s.status,s.library_id,
+                   {SCANTELLING_NIEUW} AS nieuw, {SCANTELLING_GEWIJZIGD} AS gewijzigd,
                    CASE WHEN s.status='klaar' THEN {SCANTELLING_ONVOLLEDIG} END AS onvolledig
-            FROM scan_run s WHERE s.status='bezig' OR s.id IN ({marks})""",
+            FROM scan_run s LEFT JOIN scan_bijdrage b ON s.status='klaar' AND b.scan_id=s.id
+            WHERE s.status='bezig' OR s.id IN ({marks})
+            GROUP BY s.id""",
         tuple(ids),
     )
     return {row["id"]: row for row in rows}
