@@ -83,7 +83,13 @@ from app.opslag import (
     storage_validation_error,
     transient_storage_is_empty,
 )
-from app.scanner import ScanError, ScanInterrupted, scan_library
+from app.scanner import (
+    SCANTELLING_ONVOLLEDIG,
+    SCANTELLING_SLEUTEL,
+    ScanError,
+    ScanInterrupted,
+    scan_library,
+)
 from app.scanscheduler import LibraryScanScheduler, record_scan_failure
 from app.systeem import GpuMonitor, mount_report, qsv_test, system_metrics
 from app.uitvoerder import ExecutionError, create_job_from_decision
@@ -973,7 +979,7 @@ def create_api_router() -> APIRouter:
     @router.get("/libraries")
     async def libraries(request: Request) -> list[dict[str, Any]]:
         rows = _database(request).fetch_all(
-            """
+            f"""
             SELECT l.*,p.naam AS profiel_naam,
                    (SELECT COUNT(*) FROM bestand f
                     WHERE f.library_id=l.id AND f.aanwezig=1) AS aantal_bestanden,
@@ -993,12 +999,9 @@ def create_api_router() -> APIRouter:
                     ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_nieuw,
                    COALESCE((SELECT s.gewijzigd FROM scan_run s WHERE s.library_id=l.id
                     ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_gewijzigd,
-                   COALESCE((SELECT s.fout LIKE 'telling onvolledig%'
-                       OR (s.status='bezig' AND (SELECT COUNT(*) FROM bestand f
-                           WHERE f.library_id=s.library_id AND f.gescand_op=s.gestart_op
-                           AND f.aanwezig=1) > s.gevonden)
-                    FROM scan_run s WHERE s.library_id=l.id ORDER BY s.id DESC LIMIT 1),0)
-                    AS laatste_scan_telling_onvolledig,
+                   COALESCE((SELECT {SCANTELLING_ONVOLLEDIG} FROM scan_run s
+                    WHERE s.library_id=l.id ORDER BY s.id DESC LIMIT 1),0)
+                       AS laatste_scan_telling_onvolledig,
                    COALESCE((SELECT s.verdwenen FROM scan_run s WHERE s.library_id=l.id
                     ORDER BY s.id DESC LIMIT 1),0) AS laatste_scan_verdwenen,
                    (SELECT COUNT(*) FROM besluit b JOIN bestand f ON f.id=b.bestand_id
@@ -1390,6 +1393,11 @@ def create_api_router() -> APIRouter:
                 (library_id,),
             )
             connection.execute("DELETE FROM bestand WHERE library_id=?", (library_id,))
+            connection.execute(
+                "DELETE FROM staat WHERE sleutel IN "
+                "(SELECT ? || id FROM scan_run WHERE library_id=?)",
+                (SCANTELLING_SLEUTEL, library_id),
+            )
             connection.execute("DELETE FROM scan_run WHERE library_id=?", (library_id,))
             connection.execute("DELETE FROM library WHERE id=?", (library_id,))
             audit = {

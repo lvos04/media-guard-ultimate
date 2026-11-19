@@ -87,6 +87,7 @@ def _catalog_command(args: argparse.Namespace) -> object:
             "gevonden": summary.gevonden,
             "nieuw": summary.nieuw,
             "gewijzigd": summary.gewijzigd,
+            "telling_onvolledig": summary.telling_onvolledig,
             "verwijderd": summary.verwijderd,
             "hervat": summary.hervat,
             "items": [

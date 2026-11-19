@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,6 +14,7 @@ from app.api import _worker_rows
 from app.config import Settings
 from app.db import Database
 from app.jobstatus import DONE_SQL, DONE_STATUSES
+from app.scanner import SCANTELLING_ONVOLLEDIG
 from app.systeem import GpuMonitor, system_metrics
 from app.uitvoerder import JOB_PHASE_DETAIL, JOB_PHASES
 
@@ -187,27 +189,25 @@ def _job_states(
 
 
 def _scan_states(
-    database: Database, previous: dict[int, tuple[str, int, int]] | None = None
-) -> dict[int, tuple[str, int, int]]:
+    database: Database, previous: dict[int, sqlite3.Row] | None = None
+) -> dict[int, sqlite3.Row]:
     ids = list(previous or {})
     marks = ",".join("?" for _ in ids) or "NULL"
     rows = database.fetch_all(
-        "SELECT id,status,library_id,gevonden FROM scan_run "
-        f"WHERE status='bezig' OR id IN ({marks})",
+        f"""SELECT s.id,s.status,s.library_id,s.nieuw,s.gewijzigd,
+                   CASE WHEN s.status='klaar' THEN {SCANTELLING_ONVOLLEDIG} END AS onvolledig
+            FROM scan_run s WHERE s.status='bezig' OR s.id IN ({marks})""",
         tuple(ids),
     )
-    return {
-        int(row["id"]): (str(row["status"]), int(row["library_id"]), int(row["gevonden"]))
-        for row in rows
-    }
+    return {row["id"]: row for row in rows}
 
 
 async def _send_events(
     websocket: WebSocket,
     database: Database,
     previous_jobs: dict[int, tuple[str, int]],
-    previous_scans: dict[int, tuple[str, int, int]],
-) -> tuple[dict[int, tuple[str, int]], dict[int, tuple[str, int, int]]]:
+    previous_scans: dict[int, sqlite3.Row],
+) -> tuple[dict[int, tuple[str, int]], dict[int, sqlite3.Row]]:
     jobs = _job_states(database, previous_jobs)
     for job_id, (job_status, saving) in jobs.items():
         old_status = previous_jobs.get(job_id, (job_status, 0))[0]
@@ -225,20 +225,20 @@ async def _send_events(
                 }
             )
     scans = _scan_states(database, previous_scans)
-    for scan_id, (scan_status, library_id, found) in scans.items():
-        old_status = previous_scans.get(scan_id, (scan_status, library_id, found))[0]
-        if old_status != scan_status and scan_status == "klaar":
+    for scan_id, scan in scans.items():
+        if scan_id in previous_scans and scan["status"] == "klaar":
             await websocket.send_json(
                 {
                     "type": "scan_klaar",
-                    "library_id": library_id,
-                    "nieuw": found,
-                    "gewijzigd": 0,
+                    "library_id": scan["library_id"],
+                    "nieuw": scan["nieuw"],
+                    "gewijzigd": scan["gewijzigd"],
+                    "telling_onvolledig": bool(scan["onvolledig"]),
                 }
             )
     # afgeronde jobs/scans vallen na één ronde uit de volglijst
     jobs = {k: v for k, v in jobs.items() if v[0] in _OPEN_JOB}
-    scans = {k: v for k, v in scans.items() if v[0] == "bezig"}
+    scans = {k: v for k, v in scans.items() if v["status"] == "bezig"}
     return jobs, scans
 
 

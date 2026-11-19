@@ -43,6 +43,20 @@ SCAN_LOCK = threading.Lock()
 FILE_STABILITY_SECONDS = 3600
 LOGGER = logging.getLogger(__name__)
 
+# Een volgende scan mag het bewijs voor de vorige afmelding niet overschrijven.
+SCANTELLING_SLEUTEL = "volledige_scantelling:"
+SCANTELLING_GEREGISTREERD = f"""EXISTS (
+    SELECT 1 FROM staat WHERE sleutel='{SCANTELLING_SLEUTEL}' || s.id
+    AND waarde=CAST(s.library_id AS TEXT) AND tijd=s.gestart_op
+)"""
+SCANTELLING_ONVOLLEDIG = f"""(
+    COALESCE(s.fout LIKE 'telling onvolledig%', 0) OR NOT {SCANTELLING_GEREGISTREERD}
+    OR EXISTS (SELECT 1 FROM bestand f
+               WHERE f.library_id=s.library_id AND f.gescand_op=s.gestart_op AND f.aanwezig=1
+               AND NOT EXISTS (SELECT 1 FROM scan_bijdrage b
+                               WHERE b.scan_id=s.id AND b.bestand_id=f.id))
+)"""
+
 
 def _decision_code_fingerprint() -> str:
     root = Path(__file__).parent
@@ -81,6 +95,7 @@ class ScanSummary:
     uitgesteld: int = 0
     hervat: bool = False
     items: list[ScanItem] = field(default_factory=list)
+    telling_onvolledig: bool = False
 
 
 def _library(database: Database, library_id: int) -> tuple[Any, dict[str, Any]]:
@@ -130,73 +145,84 @@ def _profile_from_connection(connection: Any, library_id: int) -> dict[str, Any]
     return value
 
 
-def _bewaar_bijdragen(
-    connection: sqlite3.Connection, scan_id: int, library_id: int, scan_marker: str,
-) -> tuple[int, int]:
-    """Leg de bijdrage vast van bestanden die deze scan al verwerkte zonder bijdrage.
+@dataclass(slots=True)
+class _ScanBijdragen:
+    scan_id: int
+    gestart_op: str
+    # Een oude tussentelling kan wijzigingen bevatten waarvan de bestands-id onbekend is.
+    ongekoppeld_gewijzigd: int = 0
 
-    De telling van een scan is de som van de bijdragen per bestand en wordt nooit
-    lager dan de al opgeslagen waarde. Een eerdere scanner die tussentijds niets
-    bewaarde, herkennen we aan meer verwerkte bestanden dan `gevonden`: de telling is
-    dan zichtbaar onvolledig (scan_run.fout) en krijgt een ondergrens uit wachtende
-    bestanden die na de vorige voltooide scan zijn aangepast.
-    shortcut: die ondergrens mist een gewone vervanging zonder nieuwere mtime; exact
-    wordt het pas voor scans die vanaf deze versie draaien.
-    """
-
-    opgeslagen = connection.execute(
-        "SELECT gevonden,nieuw,gewijzigd FROM scan_run WHERE id=?", (scan_id,),
-    ).fetchone()
-    vorige = connection.execute(
-        "SELECT klaar_op FROM scan_run WHERE library_id=? AND status='klaar' "
-        "AND klaar_op IS NOT NULL ORDER BY id DESC LIMIT 1", (library_id,),
-    ).fetchone()
-    historisch = connection.execute(
-        """
-        SELECT id,scan_status,mtime,COALESCE(eerste_gezien,'') AS eerste FROM bestand
-        WHERE library_id=? AND gescand_op=? AND aanwezig=1
-          AND id NOT IN (SELECT bestand_id FROM scan_bijdrage WHERE scan_id=?)
-        """,
-        (library_id, scan_marker, scan_id),
-    ).fetchall()
-    zonder_tussentelling = len(historisch) > int(opgeslagen["gevonden"])
-    grens = datetime.fromisoformat(vorige[0]).timestamp() if vorige else float("inf")
-    for rij in historisch:
-        nieuw = int(rij["eerste"] >= scan_marker)
-        gewijzigd = int(
-            zonder_tussentelling and not nieuw
-            and rij["scan_status"] == "wacht_op_stabiliteit"
-            and grens < rij["mtime"] <= time.time()  # een voorlopende klok telt nooit
+    def hervat(
+        self, conn: sqlite3.Connection, summary: ScanSummary, *, vanaf_begin: bool = False,
+    ) -> None:
+        # Een eerdere scanner kon bestanden bewaren zonder bijdrage. Alleen het eerste
+        # zien is vastgelegd. De huidige mtime vertelt niets over de vorige meting.
+        ontbrekend = conn.execute(
+            """INSERT INTO scan_bijdrage(scan_id,bestand_id,nieuw,gewijzigd)
+               SELECT ?,id,COALESCE(eerste_gezien >= ?,0),0 FROM bestand
+               WHERE library_id=? AND gescand_op=? AND aanwezig=1
+               ON CONFLICT(scan_id,bestand_id) DO NOTHING""",
+            (self.scan_id, self.gestart_op, summary.library_id, self.gestart_op),
+        ).rowcount
+        nieuw, gewijzigd = conn.execute(
+            "SELECT COALESCE(SUM(nieuw),0),COALESCE(SUM(gewijzigd),0) FROM scan_bijdrage "
+            "WHERE scan_id=?", (self.scan_id,),
+        ).fetchone()
+        rij = conn.execute(
+            f"SELECT s.nieuw,s.gewijzigd,s.fout,{SCANTELLING_GEREGISTREERD} AS volledig "
+            "FROM scan_run s WHERE s.id=?", (self.scan_id,),
+        ).fetchone()
+        eerder_onvolledig = (rij["fout"] or "").startswith("telling onvolledig")
+        summary.telling_onvolledig = bool(ontbrekend or not rij["volledig"] or eerder_onvolledig)
+        if ontbrekend and rij["volledig"]:
+            # Ook een latere scanfout mag deze lacune niet verhullen.
+            conn.execute("DELETE FROM staat WHERE sleutel=?",
+                         (f"{SCANTELLING_SLEUTEL}{self.scan_id}",))
+        summary.nieuw = max(rij["nieuw"], nieuw)
+        summary.gewijzigd = max(rij["gewijzigd"], gewijzigd)
+        self.ongekoppeld_gewijzigd = summary.gewijzigd - gewijzigd
+        conn.execute(
+            "UPDATE scan_run SET nieuw=?,gewijzigd=?,"
+            "fout=CASE WHEN ? AND fout IS NULL THEN 'telling onvolledig: eerdere scanner' "
+            "ELSE fout END WHERE id=?",
+            (summary.nieuw, summary.gewijzigd, summary.telling_onvolledig, self.scan_id),
         )
-        connection.execute(
-            "INSERT OR IGNORE INTO scan_bijdrage(scan_id,bestand_id,nieuw,gewijzigd) "
-            "VALUES (?,?,?,?)", (scan_id, rij["id"], nieuw, gewijzigd),
-        )
-    som_nieuw, som_gewijzigd = connection.execute(
-        "SELECT COALESCE(SUM(nieuw),0),COALESCE(SUM(gewijzigd),0) FROM scan_bijdrage "
-        "WHERE scan_id=?", (scan_id,),
-    ).fetchone()
-    nieuw = max(int(opgeslagen["nieuw"]), int(som_nieuw))
-    gewijzigd = max(int(opgeslagen["gewijzigd"]), int(som_gewijzigd))
-    connection.execute(
-        "UPDATE scan_run SET nieuw=?,gewijzigd=?,"
-        "fout=CASE WHEN ? THEN 'telling onvolledig: gereconstrueerd na hervatten' ELSE fout END "
-        "WHERE id=?", (nieuw, gewijzigd, int(zonder_tussentelling), scan_id),
-    )
-    return nieuw, gewijzigd
+        if vanaf_begin:
+            conn.execute(
+                "UPDATE scan_run SET cursor=NULL,gevonden=0,uitgesteld=0 WHERE id=?",
+                (self.scan_id,),
+            )
+            conn.execute("UPDATE library SET scan_cursor=NULL WHERE id=?", (summary.library_id,))
 
+    def registreer(
+        self, conn: sqlite3.Connection, path: Path, summary: ScanSummary,
+        voor: tuple[int, int], bron_gewijzigd: bool,
+    ) -> None:
+        nieuw = summary.nieuw - voor[0]
+        gewijzigd = summary.gewijzigd - voor[1]
+        toegevoegd = conn.execute(
+            "INSERT INTO scan_bijdrage(scan_id,bestand_id,nieuw,gewijzigd) "
+            "SELECT ?,id,?,? FROM bestand WHERE pad=? "
+            "ON CONFLICT(scan_id,bestand_id) DO NOTHING",
+            (self.scan_id, nieuw, gewijzigd, str(path)),
+        ).rowcount
+        if toegevoegd:
+            return
 
-def _reset_scan_pass(
-    connection: sqlite3.Connection, scan_id: int, library_id: int, scan_marker: str,
-) -> tuple[int, int]:
-    """Wis alleen de voortgang; opgeslagen bijdragen aan de telling blijven staan."""
-
-    nieuw, gewijzigd = _bewaar_bijdragen(connection, scan_id, library_id, scan_marker)
-    connection.execute(
-        "UPDATE scan_run SET cursor=NULL,gevonden=0,uitgesteld=0 WHERE id=?", (scan_id,),
-    )
-    connection.execute("UPDATE library SET scan_cursor=NULL WHERE id=?", (library_id,))
-    return nieuw, gewijzigd
+        summary.nieuw, summary.gewijzigd = voor
+        if not (gewijzigd and bron_gewijzigd):
+            return
+        verhoogd = conn.execute(
+            "UPDATE scan_bijdrage SET gewijzigd=1 WHERE scan_id=? "
+            "AND bestand_id=(SELECT id FROM bestand WHERE pad=?) AND nieuw=0 AND gewijzigd=0",
+            (self.scan_id, str(path)),
+        ).rowcount
+        if verhoogd:
+            # Hetzelfde historische bestand kan al in het bewaarde totaal zitten.
+            if self.ongekoppeld_gewijzigd:
+                self.ongekoppeld_gewijzigd -= 1
+            else:
+                summary.gewijzigd += 1
 
 
 # Systeem-, prullenbak- en snapshotmappen van NAS'en; nooit media om te verwerken.
@@ -276,6 +302,7 @@ def _scan_library_locked(
 
     summary = ScanSummary(library_id=library_id, dry_run=dry_run)
     scan_id: int | None = None
+    bijdragen: _ScanBijdragen | None = None
     cursor_path = ""
     file_cursor: Path | None = None
     started_at = datetime.now(UTC).isoformat()
@@ -299,18 +326,27 @@ def _scan_library_locked(
             started_at = str(current["gestart_op"])
             summary.hervat = True
         else:
-            try:
-                scan_id = database.execute_insert(
-                    "INSERT INTO scan_run(library_id,status,gestart_op) VALUES (?, 'bezig', ?)",
-                    (library_id, started_at),
+            with database.connection() as conn, conn:
+                try:
+                    scan_id = conn.execute(
+                        "INSERT INTO scan_run(library_id,status,gestart_op) VALUES (?, 'bezig', ?)",
+                        (library_id, started_at),
+                    ).lastrowid
+                except sqlite3.IntegrityError as exc:
+                    raise ScanError("Voor deze library draait al een scan") from exc
+                if scan_id is None:
+                    raise sqlite3.DatabaseError("Nieuwe scan heeft geen id")
+                conn.execute(
+                    "INSERT INTO staat(sleutel,waarde,tijd) VALUES (?,?,?) "
+                    "ON CONFLICT(sleutel) DO UPDATE SET waarde=excluded.waarde,tijd=excluded.tijd",
+                    (f"{SCANTELLING_SLEUTEL}{scan_id}", str(library_id), started_at),
                 )
-            except sqlite3.IntegrityError as exc:
-                raise ScanError("Voor deze library draait al een scan") from exc
         database.execute(
             "UPDATE library SET laatste_scan_status='bezig',laatste_scan_fout=NULL WHERE id=?",
             (library_id,),
         )
 
+        bijdragen = _ScanBijdragen(scan_id, started_at)
         # Een afgebroken scan kan vóór een profielwijziging zijn begonnen. In
         # dat geval is de opgeslagen cursor niet meer geldig: ook de mappen vóór
         # die cursor moeten opnieuw door de beslisboom met het nieuwste profiel.
@@ -330,12 +366,10 @@ def _scan_library_locked(
             file_cursor = None
             summary = ScanSummary(library_id=library_id, dry_run=False, hervat=True)
             with database.connection() as connection, connection:
-                summary.nieuw, summary.gewijzigd = _reset_scan_pass(
-                    connection, scan_id, library_id, started_at)
+                bijdragen.hervat(connection, summary, vanaf_begin=True)
         elif summary.hervat:
             with database.connection() as connection, connection:
-                summary.nieuw, summary.gewijzigd = _bewaar_bijdragen(
-                    connection, scan_id, library_id, started_at)
+                bijdragen.hervat(connection, summary)
 
     processed_directories = 0
     while True:
@@ -364,10 +398,9 @@ def _scan_library_locked(
                     dry_run=dry_run,
                     hervat=summary.hervat,
                 )
-                if scan_id is not None:
+                if bijdragen is not None:
                     with database.connection() as connection, connection:
-                        summary.nieuw, summary.gewijzigd = _reset_scan_pass(
-                            connection, scan_id, library_id, started_at)
+                        bijdragen.hervat(connection, summary, vanaf_begin=True)
                 LOGGER.info(
                     "Profiel van library %s wijzigde tijdens de scan; herstart vanaf het begin",
                     library_id,
@@ -404,7 +437,7 @@ def _scan_library_locked(
                         dry_run,
                         summary,
                         root,
-                        scan_id,
+                        bijdragen,
                     )
                 except FileNotFoundError:
                     # Eén verdwenen bestand mag niet de hele scan afbreken;
@@ -448,7 +481,7 @@ def _scan_library_locked(
                 continue
             return summary
 
-        if scan_id is None:
+        if bijdragen is None:
             return summary
 
         with database.connection() as connection:
@@ -465,8 +498,7 @@ def _scan_library_locked(
                     dry_run=False,
                     hervat=summary.hervat,
                 )
-                summary.nieuw, summary.gewijzigd = _reset_scan_pass(
-                    connection, scan_id, library_id, started_at)
+                bijdragen.hervat(connection, summary, vanaf_begin=True)
                 connection.commit()
                 LOGGER.info(
                     "Profiel van library %s wijzigde bij afronding; herstart vanaf het begin",
@@ -736,7 +768,7 @@ def _store_analysis(
         )
         summary.gevonden += 1
         summary.uitgesteld += 1
-        state.count_change(summary, scan_marker, changed=not state.metadata_unchanged)
+        state.count_change(summary, scan_marker, changed=True)
         summary.items.append(
             ScanItem(
                 pad=str(path),
@@ -831,7 +863,7 @@ def _store_analysis(
 def _process_file(
     database: Database, library_id: int, path: Path, stat: os.stat_result,
     profile: dict[str, Any], profile_fingerprint: str, scan_marker: str, dry_run: bool,
-    summary: ScanSummary, root: Path, scan_id: int | None,
+    summary: ScanSummary, root: Path, bijdragen: _ScanBijdragen | None,
 ) -> None:
     while True:
         with database.connection(write=False) as conn:
@@ -851,19 +883,16 @@ def _process_file(
                     continue  # Inmiddels is een probe nodig. Laat het schrijfslot eerst los.
                 _store_analysis(conn, state, analysis, library_id, path, stat, profile_fingerprint,
                                 scan_marker, dry_run, summary)
-            if scan_id is not None:
-                # Elk bestand telt per scan precies één keer mee, ook bij heranalyse.
-                toegevoegd = conn.execute(
-                    "INSERT OR IGNORE INTO scan_bijdrage(scan_id,bestand_id,nieuw,gewijzigd) "
-                    "SELECT ?,id,?,? FROM bestand WHERE pad=?",
-                    (scan_id, summary.nieuw - voor[0], summary.gewijzigd - voor[1], str(path)),
-                ).rowcount
-                if not toegevoegd:
-                    summary.nieuw, summary.gewijzigd = voor
+            if bijdragen is not None:
+                tijdens_probe_gewijzigd = analysis is not None and analysis.decision is None
+                bijdragen.registreer(
+                    conn, path, summary, voor,
+                    bron_gewijzigd=not state.metadata_unchanged or tijdens_probe_gewijzigd,
+                )
                 conn.execute(
                     "UPDATE scan_run SET gevonden=?,nieuw=?,gewijzigd=?,uitgesteld=? WHERE id=?",
                     (summary.gevonden, summary.nieuw, summary.gewijzigd,
-                     summary.uitgesteld, scan_id),
+                     summary.uitgesteld, bijdragen.scan_id),
                 )
                 conn.execute("UPDATE library SET scan_cursor=? WHERE id=?", (str(path), library_id))
             return

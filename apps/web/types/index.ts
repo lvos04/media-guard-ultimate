@@ -102,7 +102,7 @@ export interface TickMessage {
 export type EventMessage =
   | { type: "job_klaar"; job_id: number; besparing_bytes: number }
   | { type: "job_mislukt"; job_id: number; reden: string }
-  | { type: "scan_klaar"; library_id: number; nieuw: number; gewijzigd: number }
+  | { type: "scan_klaar"; library_id: number; nieuw: number; gewijzigd: number; telling_onvolledig?: boolean }
   | { type: "log"; job_id: number; niveau: string; tekst: string; tijd: string }
   | { type: "melding"; soort: string; titel: string; actie?: string };
 
