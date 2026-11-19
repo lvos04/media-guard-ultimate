@@ -30,6 +30,7 @@ ACTIONS_NL: dict[str, str] = {
     "apikey.revoked": "API-sleutel ingetrokken",
     "apikey.rejected": "API-sleutel geweigerd",
     "job.started": "Uitvoeringspoging van de taak gestart",
+    "job.finished": "Uitvoeringspoging van de taak beëindigd",
     "system.emergency_stop_repeated": "Noodstop stond al aan: opnieuw gevraagd, niets gewijzigd",
     "storage.typo_fix": "Map hernoemd",
     "arr.removed_deleted_title": "Verwijderde titel opgeruimd",

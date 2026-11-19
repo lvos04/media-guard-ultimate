@@ -143,14 +143,19 @@ meettijd. Een poolincident gebruikt de laatste geslaagde poolmeting, ook als
 een latere controle mislukte. Voor `wanted` telt een geslaagde bibliotheekronde
 die de ontbrekende media opnieuw heeft bepaald. Zonder zo'n ronde geldt de
 eerste vastgelegde constatering. Bij ontbrekende brontijd is de pagina
-`unknown`. Een leesverzoek slaat geen configuratie of voortgang op.
+`unknown`. De oudste meting van alle open rijen en van actieve bronnen zonder
+open rijen bepaalt de versheid op elke pagina. Een actuele nul vereist een
+geslaagde synchronisatie die de ontbrekende media werkelijk heeft geteld.
 
-De downloadidentiteit gebruikt het protocol, het download-ID en de bekende
-client. Daardoor blijven twee clients met hetzelfde torrent-ID onderscheidbaar.
-Een gekoppelde Arr-wachtrij behoudt de identiteit van de aantoonbaar bijbehorende
-clientdownload. Bij een onleesbare of niet-ondersteunde downloadbron is het
-totaal onbekend. Een AV1-baan vereist een gemeten capaciteit, lijst van actieve
-jobs en pauzetoestand. Een gemeten capaciteit van nul is geldig.
+Voor een eenduidige download blijft de combinatie van protocol en download-ID
+de identiteit bij een upgrade vanaf schema 154 of ouder. Schema 156 gebruikte
+ook de clientnaam en behoudt die berekening. Bij hetzelfde download-ID op twee
+clients onderscheidt de connector beide clients. De door MediaGuard ingestelde
+Arr-naam en de lokale clientnaam tellen samen als één download zodra hun
+protocol en bron-ID overeenkomen. Een onleesbare configuratie of een
+wachtrijrij zonder identiteit geeft een onbekend totaal. De AV1-meting vereist
+één CPU-rij en één GPU-rij, elk met capaciteit, actieve jobs en pauzetoestand.
+Een gemeten capaciteit van nul is geldig.
 
 ## Bewijspakket
 
@@ -175,12 +180,26 @@ krijgt een eigen audit-ID met actie `job.started`, de gebruikte workerversie en
 de job als doel. Het aanmaken van dit bewijs en het ophalen van de job door de
 worker gebeuren in dezelfde databasetransactie.
 
-Vóór migraties 152 en 155 verifieert MediaGuard op een bestaande installatie de
-actuele herstelset. Migratie 155 bewaart de toestand en de auditkoppeling van de
-dan bestaande jobbewijzen in een extra tabel. Bij hervatting houdt het historische
-bewijs-ID dezelfde inhoud. De wachtrij zelf houdt de actuele voortgang bij.
+Migratie 157 verifieert de actuele herstelset en bewaart de geredigeerde inhoud
+van de bestaande job- en auditbewijzen. Onderhoud mag de operationele rijen
+opruimen. Hun bewijs-ID’s blijven opvraagbaar. Bij hervatting krijgt de
+afgesloten poging een afzonderlijk audit-ID met actie `job.finished`, eindtijd,
+status en de beschikbare resultaattellers. De wachtrij houdt de actuele voortgang bij.
 Een historisch bewijsstuk zonder vastgelegde versie heeft `app_version: null`
 en `details.app_version: "onbekend"`.
+
+Vanaf schema 154 of ouder bewaart migratie 157 de destijds leesbare
+resultaattellers en de oorspronkelijke lege request en response van profielbewijzen.
+Bij een al toegepaste migratie 155 blijft het toen afgegeven jobpakket beschikbaar.
+Verschilt het nog aanwezige eindresultaat van het pakket, dan komt dat resultaat
+onder een eigen `audit:<nummer>` met de job als doel in de audittijdlijn.
+
+Meerdere kernrevisies gebruikten schema 155. Bij een opgeslagen profielbewijs
+met toegestane booleans, een geconfigureerde downloadclient of een beschikbare
+Arr-wachtrij kan hetzelfde
+schema twee verschillende antwoorden hebben gegeven. De upgrade stopt in dat
+geval vóór wijzigingen aan het schema. De herstelset bevat de oorspronkelijke
+database. Voor voortzetting is de oorspronkelijke kernrevisie nodig.
 
 ## Grenzen en vervolg
 

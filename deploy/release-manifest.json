@@ -189,7 +189,8 @@
       "153_outbox_resume",
       "154_outbox_generation",
       "155_job_evidence_snapshot",
-      "156_outbox_cursor_history"
+      "156_outbox_cursor_history",
+      "157_connector_evidence"
     ],
     "encoder": [
       1,

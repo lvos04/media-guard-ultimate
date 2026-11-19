@@ -202,3 +202,271 @@ def test_bestaand_versiegebonden_jobresultaat_en_audit_blijven_bewaard(
             "SELECT result FROM job_evidence_snapshot WHERE job_id=?", (number,)
         )
         assert "privéfixture" not in saved["result"]
+
+
+def previous_schema(before_evidence, monkeypatch, maximum="154"):
+    settings, number, folder = before_evidence
+    for script in db.MIGRATIONS_DIR.glob("*.sql"):
+        if script.stem >= VERSION and script.stem[:3] <= maximum:
+            (folder / script.name).symlink_to(script)
+    with monkeypatch.context() as m, closing(db.Database(settings.db_path)) as database:
+        m.setattr(db, "MIGRATIONS_DIR", folder)
+        database.initialize()
+    return settings, number
+
+
+def login(client):
+    meta = json.loads((FIXTURES / "core-1.2.2.json").read_text())
+    assert client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": meta["user"],
+            "password": meta["password"],
+        },
+    ).is_success
+
+
+def proof(client, source, number):
+    response = client.get(f"/connector/v1/evidence/{source}:{number}")
+    assert response.is_success
+    return response
+
+
+def test_historische_tellers_volgen_de_oorspronkelijke_jsonlezer(before_evidence, monkeypatch):
+    settings, _ = previous_schema(before_evidence, monkeypatch)
+    with closing(db.Database(settings.db_path)) as database:
+        ids = {}
+        for raw in (
+            '{"episodes":17}',
+            '{"episodes":1,"episodes":17}',
+            '{"episodes":17,"extra":NaN}',
+            '{"episodes":17,"extra":' + "[" * 1001 + "0" + "]" * 1001 + "}",
+        ):
+            number = jobs.enqueue(database, "library.sync")
+            database.execute(
+                "UPDATE jobs SET status='succeeded',result=?,finished_at=? WHERE id=?",
+                (raw, db.utcnow(), number),
+            )
+            ids[number] = raw
+    app = create_app(settings)
+    with closing(app.state.ctx.db) as database, TestClient(app) as client:
+        login(client)
+        for number, raw in ids.items():
+            response = proof(client, "job", number).json()["response"]
+            assert response["status"] == "succeeded" and response["episodes"] == 17
+            assert database.fetch_one("SELECT result FROM jobs WHERE id=?", (number,))[0] == raw
+
+
+@pytest.mark.parametrize(("schema", "expanded"), [("154", False), ("156", True)])
+def test_profielbewijs_houdt_zijn_weergave_bij_upgrade(
+    before_evidence, monkeypatch, schema, expanded
+):
+    from mediaguard.audit import audit
+
+    settings, _ = previous_schema(before_evidence, monkeypatch, schema)
+    with closing(db.Database(settings.db_path)) as database:
+        old = audit(
+            database,
+            actor="proef",
+            action="policy.profile_update",
+            old_value={"prefer_hdr": False},
+            new_value={"prefer_hdr": True},
+        )
+    app = create_app(settings)
+    with closing(app.state.ctx.db) as database, TestClient(app) as client:
+        login(client)
+        original = proof(client, "audit", old).json()
+        assert original["request"] == ({"prefer_hdr": False} if expanded else None)
+        assert original["response"] == ({"prefer_hdr": True} if expanded else None)
+        new = audit(
+            database,
+            actor="proef",
+            action="policy.profile_update",
+            old_value={"prefer_hdr": True},
+            new_value={"prefer_hdr": False},
+        )
+        assert proof(client, "audit", new).json()["response"] == {"prefer_hdr": False}
+        assert proof(client, "audit", old).json() == original
+
+
+@pytest.mark.parametrize("check", ["auditretentie", "eindresultaat"])
+def test_poging_behoudt_audit_en_eindresultaat_na_onderhoud(before_evidence, monkeypatch, check):
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+
+    from mediaguard.audit import audit
+    from mediaguard.maintenance import housekeeping
+
+    settings, number = previous_schema(before_evidence, monkeypatch)
+    old_time = (datetime.now(UTC) - timedelta(days=400)).isoformat(timespec="seconds")
+    with closing(db.Database(settings.db_path)) as database, monkeypatch.context() as m:
+        database.execute(
+            "UPDATE jobs SET status='queued',created_at=? WHERE id=?", (old_time, number)
+        )
+        m.setattr("mediaguard.audit.utcnow", lambda: old_time)
+        old = audit(
+            database, actor="proef", action="job.retry", target_type="job", target_id=number
+        )
+
+    async def complete(job):
+        return {"episodes": 17, "movies": 0, "extra": "privéfixture"}
+
+    app = create_app(settings)
+    with closing(app.state.ctx.db) as database, TestClient(app) as client:
+        login(client)
+        initial = proof(client, "job", number).content
+        original = proof(client, "audit", old).content
+        if check == "auditretentie":
+            assert housekeeping.prune(app.state.ctx)["audit"] > 0
+        monkeypatch.setitem(jobs.HANDLERS, "library.sync", complete)
+        asyncio.run(app.state.ctx.services["jobs"].run_until_idle())
+        if check == "auditretentie":
+            assert proof(client, "audit", old).content == original
+        else:
+            assert client.get(f"/api/v1/jobs/{number}").json()["progress"] == 1
+            end = database.fetch_one(
+                "SELECT id FROM audit_events WHERE action='job.finished' "
+                "AND target_type='job' AND target_id=?",
+                (str(number),),
+            )
+            assert end is not None
+            package = proof(client, "audit", end["id"])
+            assert package.json()["started_at"] and package.json()["finished_at"]
+            assert package.json()["response"]["status"] == "succeeded"
+            assert (
+                package.json()["response"]["episodes"] == 17 and "privéfixture" not in package.text
+            )
+        assert proof(client, "job", number).content == initial
+    again = create_app(settings)
+    with closing(again.state.ctx.db), TestClient(again) as client:
+        login(client)
+        assert proof(client, "job", number).content == initial
+        assert proof(client, "audit", old).content == original
+        if check == "eindresultaat":
+            assert proof(client, "audit", end["id"]).content == package.content
+
+
+@pytest.mark.parametrize("bron", ["profiel", "download", "arr", "geen"])
+def test_schema_155_zonder_herkenbare_lezer_blijft_intact(before_evidence, monkeypatch, bron):
+    from mediaguard.audit import audit
+
+    settings, _ = previous_schema(before_evidence, monkeypatch, "155")
+    with closing(db.Database(settings.db_path)) as database:
+        database.execute("UPDATE instances SET suspended=1")
+        database.execute("UPDATE source_instances SET archived=1")
+        database.execute("DELETE FROM provisioning_config WHERE key='main'")
+        database.execute("DELETE FROM audit_events WHERE action='policy.profile_update'")
+        if bron == "profiel":
+            audit(
+                database,
+                actor="proef",
+                action="policy.profile_update",
+                new_value={"prefer_hdr": True},
+            )
+        elif bron == "download":
+            database.execute(
+                "INSERT OR REPLACE INTO provisioning_config(key,value_json,updated_at,updated_by) "
+                "VALUES ('main',?,?,'proef')",
+                (db.dumps({"download_clients": [{"name": "Proefbron"}]}), db.utcnow()),
+            )
+        elif bron == "arr":
+            database.execute("UPDATE instances SET suspended=0 WHERE archived=0")
+        else:
+            database.initialize()
+            assert database.fetch_one("SELECT MAX(version) FROM schema_migrations")[0][:3] == "157"
+            return
+        before = database_contents(settings.db_path)
+        with pytest.raises(RuntimeError, match="kernrevisie"):
+            database.initialize()
+        assert database_contents(settings.db_path) == before
+        folder = settings.backup_dir / preupdate.FOLDER
+        assert any(
+            not preupdate.verify(p.parent) and database_contents(p) == before
+            for p in folder.glob("*/mediaguard.db")
+        )
+
+
+def test_reeds_toegepaste_155_bewaart_pakket_en_ontsluit_brondetail(before_evidence, monkeypatch):
+    settings, number = previous_schema(before_evidence, monkeypatch)
+    folder = before_evidence[2]
+    raw = '{"episodes":1,"episodes":17}'
+    with closing(db.Database(settings.db_path)) as database:
+        database.execute(
+            "UPDATE jobs SET status='succeeded',started_at=?,finished_at=?,result=? WHERE id=?",
+            (db.utcnow(), db.utcnow(), raw, number),
+        )
+        for script in db.MIGRATIONS_DIR.glob("*.sql"):
+            if script.stem[:3] in ("155", "156"):
+                (folder / script.name).symlink_to(script)
+        with monkeypatch.context() as m:
+            m.setattr(db, "MIGRATIONS_DIR", folder)
+            database.initialize()
+            recorded = database.fetch_one(
+                "SELECT result FROM job_evidence_snapshot WHERE job_id=?", (number,)
+            )[0]
+            assert json.loads(recorded)["episodes"] == 1
+    app = create_app(settings)
+    with closing(app.state.ctx.db) as database, TestClient(app) as client:
+        login(client)
+        assert proof(client, "job", number).json()["response"]["episodes"] == 1
+        end = database.fetch_one(
+            "SELECT id FROM audit_events WHERE action='job.finished' AND target_id=?",
+            (str(number),),
+        )
+        assert end is not None
+        companion = proof(client, "audit", end["id"]).json()
+        assert companion["response"]["episodes"] == 17 and companion["finished_at"]
+        assert companion["app_version"] is None
+        assert database.fetch_one("SELECT result FROM jobs WHERE id=?", (number,))[0] == raw
+        assert (
+            database.fetch_one(
+                "SELECT result FROM job_evidence_snapshot WHERE job_id=?", (number,)
+            )[0]
+            == recorded
+        )
+
+
+def test_verlopen_auditnummer_uit_een_bestaande_155_blijft_bezet(before_evidence, monkeypatch):
+    from mediaguard.audit import audit
+
+    settings, _ = previous_schema(before_evidence, monkeypatch, "156")
+    with closing(db.Database(settings.db_path)) as database:
+        cutoff = database.fetch_one("SELECT MAX(audit_cutoff) FROM job_evidence_snapshot")[0]
+        assert cutoff > 0
+        database.execute("DELETE FROM audit_events")
+        database.initialize()
+        assert audit(database, actor="proef", action="job.retry") > cutoff
+
+
+def test_eindbewijs_en_jobstatus_vormen_een_transactie(ctx, monkeypatch):
+    import asyncio
+
+    async def voltooi(job):
+        return {"episodes": 17}
+
+    monkeypatch.setitem(jobs.HANDLERS, "library.sync", voltooi)
+    number = jobs.enqueue(ctx.db, "library.sync")
+    runner = ctx.services["jobs"]
+    claim = runner._claim_next()
+    assert claim["id"] == number
+    original_audit = jobs.audit
+
+    def geen_eindbewijs(db, **fields):
+        if fields["action"] == "job.finished":
+            raise sqlite3.OperationalError("proefopslag onbeschikbaar")
+        return original_audit(db, **fields)
+
+    with monkeypatch.context() as m:
+        m.setattr(jobs, "audit", geen_eindbewijs)
+        with pytest.raises(sqlite3.OperationalError, match="proefopslag"):
+            asyncio.run(runner._execute(claim))
+    row = ctx.db.fetch_one("SELECT status,finished_at,result FROM jobs WHERE id=?", (number,))
+    assert tuple(row) == ("running", None, None)
+    assert runner.recover_after_restart() == 1
+    asyncio.run(runner.run_until_idle())
+    row = ctx.db.fetch_one("SELECT status,progress,result FROM jobs WHERE id=?", (number,))
+    assert (row["status"], row["progress"], json.loads(row["result"])) == (
+        "succeeded",
+        1,
+        {"episodes": 17},
+    )

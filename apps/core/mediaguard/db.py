@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from mediaguard import event_keys, schema
+from mediaguard.read_observation import utc_measurement
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 # Zolang dit bestand bestaat (met een levend pid) werkt het proces de database bij; de
@@ -142,6 +143,7 @@ class Database:
             conn = sqlite3.connect(self.path, timeout=30, isolation_level=None,
                                    check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            conn.create_function("mg_utc_measurement", 1, utc_measurement, deterministic=True)
             conn.execute(f"PRAGMA synchronous={self.synchronous}")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("PRAGMA temp_store=MEMORY")
@@ -234,8 +236,9 @@ class Database:
         try:
             protected = {"151_outbox_event_identity", "152_connector_evidence_version",
                          "154_outbox_generation", "155_job_evidence_snapshot",
-                         "156_outbox_cursor_history"}
+                         "156_outbox_cursor_history", "157_connector_evidence"}
             first_protected = next((f for f in pending if f.stem in protected), None)
+            previous = max(applied, default="")
             with contextlib.ExitStack() as locks:
                 if applied and first_protected:
                     # Ook een oudere encoderschrijver kent het gedeelde mapslot nog niet.
@@ -258,7 +261,25 @@ class Database:
                         # niet. Een andere SQLite-commit vergt een nieuwe poging met verse set.
                         if conn.execute("PRAGMA data_version").fetchone()[0] != data_version:
                             raise RuntimeError("de kern is na de herstelset gewijzigd")
-                    self._apply_migration(conn, file)
+                        previous = conn.execute(
+                            "SELECT max(version) FROM schema_migrations"
+                        ).fetchone()[0] or ""
+                        if previous.startswith("155_") and any(
+                            f.stem == "157_connector_evidence" for f in pending
+                        ):
+                            from mediaguard.connector.evidence import check_155_reader
+
+                            check_155_reader(conn)
+                    if file.stem == "157_connector_evidence":
+                        from mediaguard.connector.evidence import freeze_existing
+
+                        with self._migration_transaction(conn):
+                            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=?",
+                                                (file.stem,)).fetchone():
+                                self._apply_migration(conn, file)
+                                freeze_existing(conn, previous=previous)
+                    else:
+                        self._apply_migration(conn, file)
         except schema.SchemaTooNew:
             raise  # normale herstelweergave, geen mislukte migratie
         except BaseException as exc:

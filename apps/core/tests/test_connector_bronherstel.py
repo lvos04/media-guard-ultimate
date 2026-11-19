@@ -14,6 +14,7 @@ from test_connector_lezen import assert_database_preserved, database_snapshot, k
 from mediaguard.db import dumps, utcnow
 from mediaguard.instances.registry import create_instance
 from mediaguard.provisioning import store
+from mediaguard.provisioning.templates import owned_name
 from mediaguard.storage_forecast import POOL_STATE, record_pool
 
 ITEMS = "/connector/v1/items"
@@ -110,12 +111,13 @@ def test_onbeschikbare_downloadbron_is_onbekend(client, ctx, monkeypatch, fault)
 )
 def test_baan_zonder_geldige_meting_is_onbekend(client, ctx, field, value):
     worker = {"baan": "cpu", "aantal": 0, "actieve_jobs": [], "gepauzeerd": False}
+    gpu = {**worker, "baan": "gpu"}
     if value is None:
         worker.pop(field)
     else:
         worker[field] = value
     ctx.services["encoder_transport"] = httpx.MockTransport(
-        lambda _: httpx.Response(200, json=[worker])
+        lambda _: httpx.Response(200, json=[worker, gpu])
     )
     page = client.get(ITEMS, params={"type": "av1_lanes"}).json()
     assert (page["status"], page["items"], page["total"]) == ("unknown", [], None)
@@ -124,11 +126,24 @@ def test_baan_zonder_geldige_meting_is_onbekend(client, ctx, field, value):
 def test_gemeten_nul_en_ongepauzeerde_baan(client, ctx):
     worker = {"baan": "cpu", "aantal": 0, "actieve_jobs": [], "gepauzeerd": False}
     ctx.services["encoder_transport"] = httpx.MockTransport(
-        lambda _: httpx.Response(200, json=[worker])
+        lambda _: httpx.Response(200, json=[worker, {**worker, "baan": "gpu"}])
     )
     page = client.get(ITEMS, params={"type": "av1_lanes"}).json()
-    (row,) = page["items"]
-    assert page["status"] == "ok" and (row["slots"], row["running"], row["paused"]) == (0, 0, False)
+    assert page["status"] == "ok" and page["total"] == 2
+    assert {r["lane"] for r in page["items"]} == {"cpu", "gpu"}
+    assert all((r["slots"], r["running"], r["paused"]) == (0, 0, False) for r in page["items"])
+
+
+@pytest.mark.parametrize("lanes", [["cpu"], ["cpu", "cpu"], ["gpu", "cpu", "gpu"]])
+def test_onvolledige_of_dubbele_werkermeting(client, ctx, lanes):
+    workers = [
+        {"baan": lane, "aantal": 0, "actieve_jobs": [], "gepauzeerd": False} for lane in lanes
+    ]
+    ctx.services["encoder_transport"] = httpx.MockTransport(
+        lambda _: httpx.Response(200, json=workers)
+    )
+    page = client.get(ITEMS, params={"type": "av1_lanes"}).json()
+    assert (page["status"], page["total"], page["items"]) == ("unknown", None, [])
 
 
 @pytest.mark.parametrize("failed_probe", [False, True])
@@ -155,6 +170,7 @@ def test_poolincident_houdt_laatste_succesvolle_meettijd(client, ctx, failed_pro
 
 @pytest.mark.parametrize("source", ["oud", "onleesbaar", "opnieuw_gemeten", "mislukte_sync"])
 def test_wanted_gebruikt_werkelijke_bronmeting(client, ctx, source):
+    ctx.db.execute("UPDATE instances SET suspended=1")
     inst = create_instance(
         ctx,
         {
@@ -259,3 +275,131 @@ def test_gelijke_download_ids_blijven_bij_hun_client(client, ctx):
         }
     ]
     assert ids() == original
+
+
+@pytest.mark.parametrize(
+    "fault", ["lege_configuratie", "lege_sab_id", "lege_torrent_id", "lege_lijst"]
+)
+def test_ongeldige_downloadbron_is_geen_nulmeting(client, ctx, fault):
+    sab = fault != "lege_torrent_id"
+    download_source(ctx, "Sabnzbd" if sab else "QBittorrent")
+    rows = [] if fault == "lege_lijst" else [{"state": "downloading"}]
+    ctx.services["live_download_transport"] = httpx.MockTransport(
+        lambda _: httpx.Response(200, json={"queue": {"slots": rows}} if sab else rows)
+    )
+    if fault == "lege_configuratie":
+        ctx.db.execute(
+            "UPDATE provisioning_config SET value_json='' WHERE key=?", (store.CONFIG_KEY,)
+        )
+    page = client.get(ITEMS, params={"type": "downloads"}).json()
+    assert (page["status"], page["total"]) == (
+        ("ok", 0) if fault == "lege_lijst" else ("unknown", None)
+    )
+
+
+def test_enkele_download_behoudt_historisch_id_bij_beheerde_koppeling(client, ctx):
+    from mediaguard.connector.items import content_hash
+
+    download_source(ctx, "QBittorrent")
+    inst = create_instance(
+        ctx,
+        {
+            "id": "wachtrij-proef",
+            "app": "radarr",
+            "media_type": "movie",
+            "name": "Wachtrij",
+            "url": "http://wachtrij.invalid",
+        },
+    )
+    arr = wire(ctx, inst.id, FakeArr("radarr"))
+    torrent = "ab" * 20
+    ctx.services["live_download_transport"] = httpx.MockTransport(
+        lambda _: httpx.Response(
+            200, json=[{"hash": torrent, "state": "downloading", "progress": 0.37}]
+        )
+    )
+    historical_id = content_hash(["torrent", torrent.upper()])
+    for linked in (False, True):
+        if linked:
+            arr.queue = [
+                {
+                    "id": 4,
+                    "title": "Proef",
+                    "downloadId": torrent.upper(),
+                    "protocol": "torrent",
+                    "downloadClient": owned_name("Proefbron"),
+                    "status": "queued",
+                    "statusMessages": [],
+                }
+            ]
+        ctx.services.pop("activity_cache", None)
+        ctx.services.pop("connector_items:downloads:admin", None)
+        page = client.get(ITEMS, params={"type": "downloads"}).json()
+        assert page["status"] == "ok" and page["total"] == 1
+        assert [(r["id"], r["progress"]) for r in page["items"]] == [(historical_id, 37.0)]
+        assert len(client.get("/api/v1/activity").json()["downloads"]) == 1
+
+
+@pytest.mark.parametrize("rows", [0, 2])
+def test_wanted_totaal_heeft_de_meettijd_van_de_hele_dataset(client, ctx, rows):
+    ctx.db.execute("UPDATE instances SET suspended=1")
+    inst = create_instance(
+        ctx,
+        {
+            "id": "wanted-proef",
+            "app": "radarr",
+            "media_type": "movie",
+            "name": "Wanted",
+            "url": "http://bron.invalid",
+        },
+    )
+    now = utcnow()
+    old = (datetime.now(UTC) - timedelta(hours=2)).isoformat(timespec="seconds")
+
+    def read(cursor=None):
+        params = {"type": "wanted", "limit": 1}
+        if cursor:
+            params["cursor"] = cursor
+        return client.get(ITEMS, params=params).json()
+
+    def sync(when, status):
+        ctx.db.execute(
+            "INSERT INTO library_sync_runs(instance_id,started_at,finished_at,status,counts_json) "
+            "VALUES (?,?,?,?,?)",
+            (inst.id, when, when, status, dumps({"wanted": {"open": rows}})),
+        )
+
+    if rows:
+        for provider, when in enumerate((now, old), start=1):
+            ctx.db.execute(
+                "INSERT INTO wanted_items(instance_id,kind,provider_id,item_provider_id,"
+                "reason,title,first_seen_at,updated_at) "
+                "VALUES (?,'movie',?,?,'missing','Proef',?,?)",
+                (inst.id, provider, provider, when, when),
+            )
+    else:
+        assert read()["status"] == "unknown"
+        sync(old, "succeeded")
+        sync(now, "failed")
+    page = read()
+    assert (page["status"], page["total"], page["reason_code"]) == (
+        "unknown",
+        None,
+        "meting_verouderd",
+    )
+    assert page["observed_at"] == old.replace("+00:00", "Z")
+    if rows:
+        assert len(page["items"]) == 1
+        following = read(page["next_cursor"])
+        assert (following["status"], following["total"], following["items"]) == (
+            "unknown",
+            None,
+            [],
+        )
+    sync(now, "succeeded")
+    fresh = read()
+    assert (fresh["status"], fresh["total"], fresh["observed_at"]) == (
+        "ok",
+        rows,
+        now.replace("+00:00", "Z"),
+    )

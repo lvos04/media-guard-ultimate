@@ -250,7 +250,7 @@ CONFIG_KEY = "main"
 def load(ctx: AppContext) -> ProvisioningConfig:
     row = ctx.db.fetch_one("SELECT value_json FROM provisioning_config WHERE key=?",
                            (CONFIG_KEY,))
-    data = loads(row["value_json"], {}) if row else {}
+    data = loads(row["value_json"]) if row else {}
     media = data.get("media") if isinstance(data, dict) else None
     if isinstance(media, dict) and media.get("propers") == "preferAndUpgrade" \
             and not ctx.state_get("provisioning:propers_r4", False):

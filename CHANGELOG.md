@@ -11,7 +11,10 @@ verantwoordelijke app, de bronoorzaak en waar mogelijk de instantie.
 zonder vastgelegde versie meldt de connector `onbekend`.
 Migratie 155 bewaart de bestaande jobbewijzen bij hervatting. Elke nieuwe
 uitvoeringspoging krijgt een eigen auditbewijs met de gebruikte appversie.
-Beide bewijsmigraties vereisen een geverifieerde herstelset.
+Migratie 157 bewaart geredigeerde bewijzen bij retentie. Een afgeronde poging
+krijgt een afzonderlijk bewijs met eindtijd en resultaat. De bewijsmigraties
+vereisen een geverifieerde herstelset. Bij een dubbelzinnige overgang vanaf
+schema 155 stopt de upgrade vóór de schemawijziging. Zie `docs/CONNECTOR.md`.
 
 Rechten (scopes) op API-sleutels (S-P3-600; contract 1.3 §2.3 regels 2 en 3, C1.3-MGU-05). Eén migratie
 (`005_api_key_scopes`, voegt alleen een kolom toe); sleutels zonder rechten (MSO, de Android-app) werken precies als

@@ -531,10 +531,20 @@ def test_items_validation_and_evidence_not_found(client, machine, caplog):
     assert supplied not in caplog.text
 
 
+def measure_empty_wanted_sources(ctx):
+    now = utcnow()
+    ctx.db.execute(
+        "INSERT INTO library_sync_runs(instance_id,started_at,finished_at,status,counts_json) "
+        "SELECT id,?,?,'succeeded',? FROM instances WHERE archived=0 AND suspended=0",
+        (now, now, json.dumps({"wanted": {"open": 0}})),
+    )
+
+
 def test_items_wanted_pagination(populated_installation):
     ctx, client, machine = populated_installation
     headers = key(client)
     instance = ctx.db.fetch_one("SELECT id FROM instances LIMIT 1")[0]
+    measure_empty_wanted_sources(ctx)
     now = utcnow()
     with ctx.db.transaction() as conn:
         conn.executemany(
@@ -624,6 +634,7 @@ def test_items_five_sources_and_exact_fields(populated_installation, monkeypatch
     }
     arr = [wire(ctx, row["id"], FakeArr(row["app"]))
            for row in ctx.db.fetch_all("SELECT id,app FROM instances")]
+    measure_empty_wanted_sources(ctx)
     instance = ctx.db.fetch_one(
         "SELECT id FROM instances WHERE archived=0 ORDER BY id LIMIT 1",
     )[0]

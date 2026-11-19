@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from mediaguard import __version__
 from mediaguard.audit import audit
 from mediaguard.db import Database, dumps, loads, utcnow
+from mediaguard.job_evidence import counts, object_value
 from mediaguard.secrets_store import redact
 
 if TYPE_CHECKING:
@@ -133,9 +134,11 @@ def enqueue(
                 return int(row["id"])
             db.execute("UPDATE jobs SET idempotency_key=NULL WHERE id=?", (row["id"],))
     return db.execute_insert(
-        "INSERT INTO jobs(job_type,status,instance_id,target_type,target_id,priority,payload,"
+        "INSERT INTO jobs(id,job_type,status,instance_id,target_type,target_id,priority,payload,"
         "max_attempts,idempotency_key,correlation_id,run_after,created_at,created_by,"
-        "evidence_app_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "evidence_app_version) VALUES (max((SELECT coalesce(max(id),0) FROM jobs),coalesce("
+        "(SELECT CAST(value_json AS INTEGER) FROM system_state WHERE key='evidence:job_floor'),"
+        "0))+1,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             job_type, "queued", instance_id, target_type,
             None if target_id is None else str(target_id), priority, dumps(payload or {}),
@@ -147,11 +150,29 @@ def enqueue(
 
 
 def cancel(db: Database, job_id: int) -> bool:
-    return db.execute(
-        "UPDATE jobs SET status='cancelled', finished_at=? WHERE id=? AND status IN "
-        "('queued','retry_scheduled','running','paused')",
-        (utcnow(), job_id),
-    ) > 0
+    with db.transaction():
+        previous = db.fetch_one("SELECT status,started_at FROM jobs WHERE id=?", (job_id,))
+        changed = db.execute(
+            "UPDATE jobs SET status='cancelled', finished_at=? WHERE id=? AND status IN "
+            "('queued','retry_scheduled','running','paused')", (utcnow(), job_id),
+        )
+        if changed and previous["status"] == "running":
+            _record_outcome(db, job_id, previous["started_at"])
+        return changed > 0
+
+
+def _record_outcome(db: Database, job_id: int, started_at: str | None) -> None:
+    """Leg de stand van deze poging vast binnen de transactie die haar afsluit."""
+    row = db.fetch_one("SELECT job_type,status,result,finished_at,correlation_id FROM jobs "
+                       "WHERE id=?", (job_id,))
+    status = row["status"]
+    outcome = {"status": status}
+    if row["job_type"] == "library.sync" and status == "succeeded":
+        outcome.update(counts(object_value(row["result"])))
+    audit(db, actor="system", action="job.finished", target_type="job", target_id=job_id,
+          correlation_id=row["correlation_id"], old_value={"started_at": started_at},
+          timestamp=row["finished_at"] if status in ("succeeded", "failed", "cancelled") else None,
+          new_value=outcome)
 
 
 class JobRunner:
@@ -176,9 +197,15 @@ class JobRunner:
         total = 0
         for i in range(0, len(mine), 500):
             chunk = mine[i:i + 500]
-            total += self.app.db.execute(
-                "UPDATE jobs SET status='queued', started_at=NULL WHERE status='running' AND "
-                f"id IN ({','.join('?' * len(chunk))})", chunk)  # noqa: S608
+            with self.app.db.transaction() as conn:
+                interrupted = conn.execute(
+                    "SELECT id,started_at FROM jobs WHERE status='running' AND "
+                    f"id IN ({','.join('?' * len(chunk))})", chunk).fetchall()
+                for row in interrupted:
+                    conn.execute("UPDATE jobs SET status='queued', started_at=NULL WHERE id=?",
+                                 (row["id"],))
+                    _record_outcome(self.app.db, row["id"], row["started_at"])
+                total += len(interrupted)
         return total
 
     def wake(self) -> None:
@@ -260,7 +287,7 @@ class JobRunner:
                 )
                 audit(self.app.db, actor="worker", action="job.started",
                       target_type="job", target_id=row["id"], correlation_id=row["correlation_id"])
-                return dict(row)
+                return {**dict(row), "claim_time": now}
         return None
 
     @property
@@ -305,13 +332,44 @@ class JobRunner:
         )
         self.app.events.publish("job.started", {"id": ctx.job_id, "type": ctx.job_type},
                                 instance_id=ctx.instance_id, persist=False)
+        result = None
+        error = None
         try:
             result = await HANDLERS[ctx.job_type](ctx)
-        except JobCancelled:
+        except Exception as exc:  # noqa: BLE001 - fout wordt persistent vastgelegd
+            error = exc
+        with db.transaction():
+            active = db.fetch_one("SELECT status,started_at,attempts FROM jobs WHERE id=?",
+                                  (ctx.job_id,))
+            if (active and active["status"] == "running"
+                    and active["started_at"] == job["claim_time"]
+                    and active["attempts"] == job["attempts"] + 1):
+                if error is None:
+                    db.execute("UPDATE jobs SET status='succeeded', result=?, progress=1, "
+                               "finished_at=?, error=NULL WHERE id=?",
+                               (dumps(result), utcnow(), ctx.job_id))
+                    resolve_earlier_failures(db, job)
+                else:
+                    self._handle_attempt_error(ctx, job, error)
+                _record_outcome(db, ctx.job_id, active["started_at"])
+        if ctx.job_type in HEAVY_JOBS:
+            from mediaguard import memory
+
+            await asyncio.to_thread(memory.trim)
+        row = db.fetch_one("SELECT status FROM jobs WHERE id=?", (ctx.job_id,))
+        self.app.events.publish(
+            "job.finished", {"id": ctx.job_id, "type": ctx.job_type,
+                             "status": row["status"] if row else "unknown"},
+            instance_id=ctx.instance_id, persist=False,
+        )
+
+    def _handle_attempt_error(self, ctx: JobContext, job: dict[str, Any], exc: Exception) -> None:
+        db = self.app.db
+        if isinstance(exc, JobCancelled):
             db.execute("UPDATE jobs SET status='cancelled', finished_at=? WHERE id=?",
                        (utcnow(), ctx.job_id))
             ctx.log("Geannuleerd (gebruiker of noodstop)", "warning")
-        except Waiting as exc:
+        elif isinstance(exc, Waiting):
             when = datetime.now(UTC) + timedelta(seconds=exc.delay_seconds)
             db.execute(
                 "UPDATE jobs SET status='retry_scheduled', run_after=?, error=?, "
@@ -319,7 +377,7 @@ class JobRunner:
                 (when.isoformat(timespec="seconds"), f"Wacht: {exc}", ctx.job_id),
             )
             ctx.log(f"Wacht: {exc}", "info")
-        except RetryLater as exc:
+        elif isinstance(exc, RetryLater):
             attempts = int(job["attempts"]) + 1
             if attempts >= int(job["max_attempts"]):
                 self._fail(ctx, f"Opgegeven na {attempts} pogingen: {exc}")
@@ -330,12 +388,12 @@ class JobRunner:
                     (when.isoformat(timespec="seconds"), redact(str(exc)), ctx.job_id),
                 )
                 ctx.log(f"Nieuwe poging gepland: {exc}", "warning")
-        except Exception as exc:  # noqa: BLE001 - fout wordt persistent vastgelegd
+        else:
             if _is_transient(exc):
                 # bv. Sonarr/Radarr nog niet gestart: één regel, geen traceback
                 LOGGER.warning("job %s (%s): %s", ctx.job_id, ctx.job_type, exc)
             else:
-                LOGGER.exception("job %s mislukt", ctx.job_id)
+                LOGGER.error("job %s mislukt", ctx.job_id, exc_info=exc)
             attempts = int(job["attempts"]) + 1
             if attempts < int(job["max_attempts"]):
                 delay = min(3600, 30 * (2 ** attempts))
@@ -347,23 +405,6 @@ class JobRunner:
                 )
             else:
                 self._fail(ctx, f"{type(exc).__name__}: {exc}")
-        else:
-            db.execute(
-                "UPDATE jobs SET status='succeeded', result=?, progress=1, finished_at=?, "
-                "error=NULL WHERE id=? AND status='running'",
-                (dumps(result), utcnow(), ctx.job_id),
-            )
-            resolve_earlier_failures(db, job)
-        if ctx.job_type in HEAVY_JOBS:
-            from mediaguard import memory
-
-            await asyncio.to_thread(memory.trim)
-        row = db.fetch_one("SELECT status FROM jobs WHERE id=?", (ctx.job_id,))
-        self.app.events.publish(
-            "job.finished", {"id": ctx.job_id, "type": ctx.job_type,
-                             "status": row["status"] if row else "unknown"},
-            instance_id=ctx.instance_id, persist=False,
-        )
 
     def _fail(self, ctx: JobContext, message: str) -> None:
         self.app.db.execute(

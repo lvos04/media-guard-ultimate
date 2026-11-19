@@ -12,10 +12,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from collections import Counter, defaultdict
+from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
 import httpx
+
+from mediaguard.provisioning.templates import owned_name
 
 if TYPE_CHECKING:
     from mediaguard.context import AppContext
@@ -60,6 +62,13 @@ def _sab_status(status: str) -> str:
     return "processing"
 
 
+def _download_id(row: dict[str, Any], field: str) -> str:
+    value = row.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Downloadrij zonder identiteit")
+    return value.strip().upper()
+
+
 async def _sab(ctx: AppContext, dc: Any) -> list[dict[str, Any]]:
     from mediaguard.provisioning.store import dc_secret
 
@@ -80,7 +89,7 @@ async def _sab(ctx: AppContext, dc: Any) -> list[dict[str, Any]]:
         mb, left = _float(s.get("mb")), _float(s.get("mbleft"))
         status = "paused" if paused_all else _sab_status(str(s.get("status") or ""))
         out.append({
-            "download_id": str(s.get("nzo_id") or "").upper(), "client": dc.name,
+            "download_id": _download_id(s, "nzo_id"), "client": dc.name,
             "protocol": "usenet", "release": str(s.get("filename") or ""),
             "category": str(s.get("cat") or ""), "status": status,
             "status_nl": STATUS_NL.get(status, status),
@@ -109,6 +118,7 @@ async def _qbit(ctx: AppContext, dc: Any) -> list[dict[str, Any]]:
         raise ValueError("qBittorrent gaf geen downloadlijst")
     out = []
     for t in rows:
+        identity = _download_id(t, "hash")
         state = str(t.get("state") or "")
         if state not in QBIT_ACTIVE:
             continue
@@ -118,7 +128,7 @@ async def _qbit(ctx: AppContext, dc: Any) -> list[dict[str, Any]]:
         size, left = int(_float(t.get("size"))), int(_float(t.get("amount_left")))
         eta = int(_float(t.get("eta")))
         out.append({
-            "download_id": str(t.get("hash") or "").upper(), "client": dc.name,
+            "download_id": identity, "client": dc.name,
             "protocol": "torrent", "release": str(t.get("name") or ""),
             "category": str(t.get("category") or ""), "status": status,
             "status_nl": STATUS_NL.get(status, status),
@@ -195,25 +205,29 @@ def merge(arr_items: list[dict[str, Any]], client_items: list[dict[str, Any]]
     """Voeg clientdownloads toe die geen enkele Sonarr/Radarr-wachtrij kent, en vul bij
     gekoppelde items voortgang/status uit de client aan (die is actueler)."""
     by_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in arr_items:
-        if row.get("download_id"):
-            by_id[str(row["download_id"]).upper()].append(row)
-    occurrences = Counter(c["download_id"] for c in client_items)
+    for client in client_items:
+        by_id[client["download_id"]].append(client)
+    linked: set[tuple[str, str, str]] = set()
     out = list(arr_items)
+    for hit in arr_items:
+        candidates = [
+            c for c in by_id.get(str(hit.get("download_id") or "").upper(), [])
+            if (not hit.get("protocol") or hit["protocol"].lower() == c["protocol"])
+            and (not hit.get("client") or hit["client"] in (c["client"], owned_name(c["client"])))
+        ]
+        if len(candidates) != 1:
+            continue
+        c = candidates[0]
+        if hit.get("progress") is None:
+            hit["progress"] = c["progress"]
+        if c["status"] == "downloading" and hit.get("status") in ("queued", "", None):
+            hit["status"] = "downloading"
+        hit.setdefault("time_left", c.get("time_left"))
+        hit["client"] = c["client"]
+        hit["protocol"] = c["protocol"]
+        linked.add((c["protocol"], c["download_id"], c["client"]))
     for c in client_items:
-        hits = [row for row in by_id.get(c["download_id"], [])
-                if (not row.get("protocol") or row["protocol"].lower() == c["protocol"])
-                and (row.get("client") == c["client"]
-                     or not row.get("client") and occurrences[c["download_id"]] == 1)]
-        for hit in hits:
-            if hit.get("progress") is None:
-                hit["progress"] = c["progress"]
-            if c["status"] == "downloading" and hit.get("status") in ("queued", "", None):
-                hit["status"] = "downloading"
-            hit.setdefault("time_left", c.get("time_left"))
-            hit["client"] = hit.get("client") or c["client"]
-            hit["protocol"] = hit.get("protocol") or c["protocol"]
-        if hits:
+        if (c["protocol"], c["download_id"], c["client"]) in linked:
             continue
         out.append({
             "id": None, "instance_id": None, "instance_name": None,

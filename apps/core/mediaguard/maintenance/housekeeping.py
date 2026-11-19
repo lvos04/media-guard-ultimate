@@ -89,12 +89,22 @@ def _batched_delete(ctx: AppContext, table: str, where: str, params: tuple[Any, 
         if not rows:
             return total
         keys = [r["k"] for r in rows]
+        last = keys[-1]
         marks = ",".join("?" * len(keys))
         with ctx.db.transaction() as conn:
+            if table in ("jobs", "audit_events"):
+                from mediaguard.connector.evidence import keep_for_retention
+
+                # Een wachtende schrijver kan een taak intussen opnieuw hebben ingepland.
+                keys = [r[0] for r in conn.execute(
+                    f"SELECT {key} FROM {table} WHERE {key} IN ({marks}) AND ({where})",
+                    (*keys, *params),
+                )]
+                marks = ",".join("?" for _ in keys)
+                keep_for_retention(conn, table, keys)
             total += conn.execute(f"DELETE FROM {table} WHERE {key} IN ({marks})",  # noqa: S608
                                   keys).rowcount
-        last = keys[-1]
-        if len(keys) < batch:
+        if len(rows) < batch:
             return total
         time.sleep(BATCH_PAUSE_S)
 

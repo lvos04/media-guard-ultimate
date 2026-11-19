@@ -8,6 +8,14 @@ from mediaguard import __version__
 from mediaguard.db import Database, dumps, utcnow
 from mediaguard.secrets_store import redact
 
+AUDIT_INSERT = (
+    "INSERT INTO audit_events(id,ts,actor,action,target_type,target_id,instance_id,"
+    "correlation_id,reason,old_value,new_value,undo_hint,evidence_app_version) "
+    "VALUES (max((SELECT coalesce(max(id),0) FROM audit_events),coalesce((SELECT "
+    "CAST(value_json AS INTEGER) FROM system_state WHERE key='evidence:audit_floor'),0))+1,"
+    "?,?,?,?,?,?,?,?,?,?,?,?)"
+)
+
 
 def audit(
     db: Database,
@@ -22,13 +30,12 @@ def audit(
     old_value: Any = None,
     new_value: Any = None,
     undo_hint: str | None = None,
+    timestamp: str | None = None,
 ) -> int:
     return db.execute_insert(
-        "INSERT INTO audit_events(ts,actor,action,target_type,target_id,instance_id,"
-        "correlation_id,reason,old_value,new_value,undo_hint,evidence_app_version) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        AUDIT_INSERT,
         (
-            utcnow(),
+            timestamp or utcnow(),
             actor,
             action,
             target_type,

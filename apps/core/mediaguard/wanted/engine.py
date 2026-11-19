@@ -283,25 +283,38 @@ WANTED_FROM = "FROM wanted_items w JOIN instances i ON i.id=w.instance_id"
 WANTED_OPEN = "w.status IN ('wanted','searching','unavailable')"
 
 
-def open_wanted_page(ctx: AppContext, after_id: int, limit: int) -> tuple[int, list[dict]]:
-    """Lees op persistent ID en tel in hetzelfde SQLite-statement."""
+def open_wanted_page(ctx: AppContext, after_id: int, limit: int) -> tuple[dict, list[dict]]:
+    """Lees de pagina en de meetgrenzen van alle bijdragende bronnen in één momentopname."""
     records = ctx.db.fetch_dicts(
-        f"""WITH total AS (SELECT COUNT(*) AS n {WANTED_FROM} WHERE {WANTED_OPEN})
-            SELECT total.n, p.* FROM total
-            LEFT JOIN (
-                SELECT w.id, w.instance_id, w.kind, w.reason, w.status,
-                    w.first_seen_at, w.updated_at,
-                    (SELECT s.finished_at FROM library_sync_runs s
-                     WHERE s.instance_id=w.instance_id AND s.status='succeeded'
-                       AND julianday(s.finished_at) >= julianday(w.first_seen_at)
+        f"""WITH sources AS MATERIALIZED (
+                SELECT i.id, i.archived, i.suspended,
+                    (SELECT mg_utc_measurement(s.finished_at) FROM library_sync_runs s
+                     WHERE s.instance_id=i.id AND s.status='succeeded'
                        AND CASE WHEN json_valid(s.counts_json)
-                                THEN json_type(s.counts_json, '$.wanted') END = 'object'
-                     ORDER BY s.id DESC LIMIT 1) AS sync_observed_at
-                {WANTED_FROM} WHERE {WANTED_OPEN} AND w.id > ? ORDER BY w.id LIMIT ?
-            ) p ON TRUE ORDER BY p.id""",
+                                THEN json_type(s.counts_json, '$.wanted.open') END = 'integer'
+                     ORDER BY s.id DESC LIMIT 1) AS synced
+                FROM instances i
+            ), open_items AS MATERIALIZED (
+                SELECT w.id, w.instance_id, w.kind, w.reason, w.status,
+                       CASE WHEN s.synced >= mg_utc_measurement(w.first_seen_at) THEN s.synced
+                            ELSE min(mg_utc_measurement(w.first_seen_at),
+                                     mg_utc_measurement(w.updated_at)) END AS observed
+                FROM wanted_items w JOIN sources s ON s.id=w.instance_id WHERE {WANTED_OPEN}
+            ), times AS (
+                SELECT observed FROM open_items
+                UNION ALL
+                SELECT synced FROM sources s WHERE NOT s.archived AND NOT s.suspended
+                  AND NOT EXISTS (SELECT 1 FROM open_items w WHERE w.instance_id=s.id)
+            ), summary AS (
+                SELECT (SELECT count(*) FROM open_items) AS total, min(observed) AS oldest,
+                       max(observed) AS newest, count(observed) < count(*) AS missing FROM times
+            )
+            SELECT summary.*, p.* FROM summary LEFT JOIN
+                (SELECT * FROM open_items WHERE id > ? ORDER BY id LIMIT ?) p ON TRUE
+            ORDER BY p.id""",
         (after_id, limit),
     )
-    return records[0]["n"], [row for row in records if row["id"] is not None]
+    return records[0], [row for row in records if row["id"] is not None]
 
 
 def list_wanted(ctx: AppContext, *, instance_id: str | None = None,

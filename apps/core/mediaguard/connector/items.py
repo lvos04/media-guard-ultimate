@@ -10,6 +10,7 @@ import json
 import re
 import time
 from bisect import bisect_right
+from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, get_args
 from urllib.parse import urlencode
@@ -27,7 +28,7 @@ from mediaguard.db import utcnow
 from mediaguard.encoding import resources
 from mediaguard.encoding.client import EncoderError
 from mediaguard.instances.registry import INSTANCE_ID_RE
-from mediaguard.read_observation import observation_read
+from mediaguard.read_observation import instant, observation_read
 from mediaguard.secrets_store import redact
 from mediaguard.storage_forecast import POOL_STATE, pool_observed_at
 from mediaguard.wanted.engine import open_wanted_page
@@ -115,17 +116,6 @@ def content_hash(value: Any) -> str:
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def instant(value: Any) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        dt = datetime.fromisoformat(value)
-        # Oudere lokale SQLite-waarden zonder offset stonden ook in UTC.
-        return dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
-    except (ValueError, OverflowError):
-        return None
-
-
 def _stale(observed: datetime) -> bool:
     return (datetime.now(UTC) - observed).total_seconds() > MAX_AGE
 
@@ -165,26 +155,20 @@ def _position(kind: ItemType, cursor: str) -> tuple[str, str | None]:
 
 
 def _wanted(ctx: AppContext, after: int, limit: int) -> ItemPage:
-    total, rows = open_wanted_page(ctx, after, limit + 1)
+    summary, rows = open_wanted_page(ctx, after, limit + 1)
     items = []
-    times = []
     reason = None
+    oldest, newest = instant(summary["oldest"]), instant(summary["newest"])
+    now = datetime.now(UTC)
+    if summary["missing"] or oldest is None or newest is None:
+        reason = "meting_ontbreekt"
+    elif _stale(oldest):
+        reason = "meting_verouderd"
+    elif newest > now:
+        reason = "meettijd_ongeldig"
     for r in rows[:limit]:
-        observed = instant(r["sync_observed_at"])
-        if observed is None:
-            # De eerste constatering is een bronmeting. Alleen een statuswijziging
-            # of zoekpoging (updated_at) bevestigt de bibliotheek niet opnieuw.
-            first, updated = instant(r["first_seen_at"]), instant(r["updated_at"])
-            observed = min(first, updated) if first and updated else None
-        if observed is None:
-            reason = "meting_ontbreekt"
-            continue
-        times.append(observed)
-        if _stale(observed):
-            reason = reason or "meting_verouderd"
-            continue
-        if observed > datetime.now(UTC):
-            reason = reason or "meettijd_ongeldig"
+        observed = instant(r["observed"])
+        if observed is None or _stale(observed) or observed > now:
             continue
         iid = _instance_id(r["instance_id"])
         filters = {"reason": r["reason"]}
@@ -196,9 +180,9 @@ def _wanted(ctx: AppContext, after: int, limit: int) -> ItemPage:
             kind=r["kind"], reason=r["reason"], status=r["status"],
         ))
     return ItemPage(
-        type="wanted", items=items, total=None if reason else total,
+        type="wanted", items=items, total=None if reason else summary["total"],
         status="unknown" if reason else "ok", reason_code=reason,
-        observed_at=None if reason == "meting_ontbreekt" else min(times, default=None),
+        observed_at=None if reason == "meting_ontbreekt" else oldest,
         snapshot_id=None,
         next_cursor=_cursor("wanted", str(rows[limit - 1]["id"]), None)
         if len(rows) > limit else None,
@@ -217,22 +201,27 @@ def _system(ctx: AppContext, measured: datetime) -> SystemItem:
     )
 
 
-def _downloads(value: dict[str, Any], measured: datetime) -> list[DownloadItem]:
+def _downloads(value: dict[str, Any], measured: datetime, *,
+               client_scoped: bool) -> list[DownloadItem]:
     items: dict[str, DownloadItem] = {}
     rows = value["downloads"]
+    clients: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for row in rows:
+        key = (str(row.get("protocol") or "").lower(), str(row.get("download_id") or "").upper())
+        clients[key].add(row.get("client") or "")
     for row in sorted(rows, key=lambda d: (str(d.get("instance_id")), str(d.get("id")))):
         download_id = str(row.get("download_id") or "").upper()
         protocol = str(row.get("protocol") or "").lower()
         if download_id:
             # Dezelfde sleutel voor een cliëntdownload als die later in de Arr-wachtrij verschijnt.
             source = [protocol, download_id]
-            if row.get("client"):
-                source.append(row["client"])
+            if (client_scoped and row.get("client")) or len(clients[protocol, download_id]) > 1:
+                source.append(row.get("client") or "")
             identity = content_hash(source)
         elif row.get("id") is not None and row.get("instance_id"):
             identity = content_hash([row["instance_id"], row["id"]])
         else:
-            continue
+            raise ValueError("Downloadrij zonder identiteit")
         if identity in items:
             # Een tweede bronrij voor hetzelfde cliënt-ID behoudt haar eigen wachtrij-identiteit.
             identity = content_hash([identity, row.get("instance_id"), row.get("id"),
@@ -256,13 +245,14 @@ async def _lanes(ctx: AppContext, measured: datetime) -> list[LaneItem]:
         raise EncoderError("AV1-werkermeting ontbreekt")
     for row in workers:
         lane = row.get("baan")
-        if lane in ("cpu", "gpu"):
-            lanes[lane] = LaneItem(
-                id=content_hash(["av1_lanes", lane]), observed_at=measured, deep_link="/av1",
-                lane=lane, desired_slots=configured[f"{lane}_workers"],
-                **resources.lane_counts(row, require_measurement=True),
-            )
-    if not lanes:
+        if lane not in ("cpu", "gpu") or lane in lanes:
+            raise EncoderError("Onbekende of dubbele AV1-baan")
+        lanes[lane] = LaneItem(
+            id=content_hash(["av1_lanes", lane]), observed_at=measured, deep_link="/av1",
+            lane=lane, desired_slots=configured[f"{lane}_workers"],
+            **resources.lane_counts(row, require_measurement=True),
+        )
+    if set(lanes) != {"cpu", "gpu"}:
         raise EncoderError("AV1-werkermeting ontbreekt")
     return list(lanes.values())
 
@@ -352,7 +342,9 @@ async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
             elif value["errors"] or not value["summary"].get("download_clients_ok", True):
                 reason = "bron_onbereikbaar"
             else:
-                rows.extend(_downloads(value, measured))
+                origin = ctx.db.fetch_one("SELECT schema_version FROM connector_evidence_origin")
+                rows.extend(_downloads(value, measured,
+                                       client_scoped=origin["schema_version"] >= "156"))
         elif kind == "av1_lanes":
             rows.extend(await _lanes(ctx, measured))
         else:
