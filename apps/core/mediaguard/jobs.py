@@ -150,15 +150,16 @@ def enqueue(
 
 
 def cancel(db: Database, job_id: int) -> bool:
-    with db.transaction():
-        previous = db.fetch_one("SELECT status,started_at FROM jobs WHERE id=?", (job_id,))
-        changed = db.execute(
+    with db.transaction() as conn:
+        changed = conn.execute(
             "UPDATE jobs SET status='cancelled', finished_at=? WHERE id=? AND status IN "
-            "('queued','retry_scheduled','running','paused')", (utcnow(), job_id),
-        )
-        if changed and previous["status"] == "running":
-            _record_outcome(db, job_id, previous["started_at"])
-        return changed > 0
+            "('queued','retry_scheduled','running','paused') RETURNING started_at",
+            (utcnow(), job_id),
+        ).fetchone()
+        if changed is None:
+            return False
+        _record_outcome(db, job_id, changed["started_at"])
+        return True
 
 
 def _record_outcome(db: Database, job_id: int, started_at: str | None) -> None:

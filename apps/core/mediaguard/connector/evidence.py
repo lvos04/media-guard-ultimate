@@ -15,7 +15,7 @@ from mediaguard.audit_labels import ACTIONS_NL
 from mediaguard.auth import Principal, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import Database, dumps
-from mediaguard.job_evidence import counts, object_value
+from mediaguard.job_evidence import counts, keep_cancelled_outcomes, object_value
 from mediaguard.jobs import HANDLERS
 from mediaguard.secrets_store import redact
 
@@ -288,6 +288,9 @@ def keep_for_retention(conn: sqlite3.Connection, table: str, ids: list[int]) -> 
         )
         for row in rows:
             _freeze_job(conn, row, had_snapshot=True)
+        # Het bestaande job-ID kan al een eerdere wachtrijstand bewaren.
+        # Bewaar eerst dat pakket, dan de aantoonbare annulering onder een eigen ID.
+        keep_cancelled_outcomes(conn, ids)
 
 
 def _read_audit(db: Database, number: int) -> EvidencePackage | None:

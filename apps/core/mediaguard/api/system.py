@@ -22,6 +22,7 @@ from mediaguard.auth import (
 )
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import loads, utcnow
+from mediaguard.job_evidence import keep_cancelled_outcomes
 
 router = APIRouter(prefix="/api/v1", tags=["system"])
 
@@ -248,13 +249,17 @@ def job_cancel(job_id: int, principal: Principal = Depends(require_operator),
 @router.post("/jobs/{job_id}/retry")
 def job_retry(job_id: int, principal: Principal = Depends(require_operator),
               ctx: AppContext = Depends(get_app_context)) -> dict[str, bool]:
-    n = ctx.db.execute(
-        "UPDATE jobs SET status='queued', run_after=NULL, attempts=0, error=NULL, "
-        "resolved_at=NULL, resolved_reason=NULL "
-        "WHERE id=? AND status IN ('failed','cancelled','retry_scheduled')", (job_id,))
+    with ctx.db.transaction() as conn:
+        keep_cancelled_outcomes(conn, [job_id])
+        n = conn.execute(
+            "UPDATE jobs SET status='queued', run_after=NULL, attempts=0, error=NULL, "
+            "resolved_at=NULL, resolved_reason=NULL "
+            "WHERE id=? AND status IN ('failed','cancelled','retry_scheduled')", (job_id,),
+        ).rowcount
+        if n:
+            audit(ctx.db, actor=principal.actor, action="job.retry", target_type="job",
+                  target_id=job_id)
     if n:
-        audit(ctx.db, actor=principal.actor, action="job.retry", target_type="job",
-              target_id=job_id)
         runner = ctx.services.get("jobs")
         if runner is not None:
             runner.wake()

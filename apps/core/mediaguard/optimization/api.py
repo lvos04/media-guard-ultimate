@@ -165,17 +165,19 @@ def confirm_downloads(plan_id: int, body: ConfirmDownloadsBody,
 @router.post("/plans/{plan_id}/pause")
 def pause(plan_id: int, principal: Principal = Depends(require_operator),
           ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
-    plan = planner.get_plan(ctx, plan_id)
-    if plan is None:
-        raise HTTPException(404, "Plan niet gevonden")
-    if plan["status"] != "running":
-        raise HTTPException(409, f"Plan loopt niet (status {plan['status']})")
-    ctx.db.execute("UPDATE optimization_plans SET status='paused', updated_at=? WHERE id=?",
-                   (utcnow(), plan_id))
-    if plan.get("run_job_id"):
-        jobs.cancel(ctx.db, int(plan["run_job_id"]))
-    audit(ctx.db, actor=principal.actor, action="optimization.pause",
-          target_type="optimization_plan", target_id=plan_id)
+    with ctx.db.transaction() as conn:
+        plan = conn.execute("SELECT status,run_job_id FROM optimization_plans WHERE id=?",
+                            (plan_id,)).fetchone()
+        if plan is None:
+            raise HTTPException(404, "Plan niet gevonden")
+        if plan["status"] != "running":
+            raise HTTPException(409, f"Plan loopt niet (status {plan['status']})")
+        if plan["run_job_id"]:
+            jobs.cancel(ctx.db, int(plan["run_job_id"]))
+        conn.execute("UPDATE optimization_plans SET status='paused', updated_at=? WHERE id=?",
+                     (utcnow(), plan_id))
+        audit(ctx.db, actor=principal.actor, action="optimization.pause",
+              target_type="optimization_plan", target_id=plan_id)
     return {"plan_id": plan_id, "status": "paused"}
 
 

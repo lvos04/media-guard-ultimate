@@ -7,7 +7,9 @@ import os
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -217,13 +219,15 @@ def previous_schema(before_evidence, monkeypatch, maximum="154"):
 
 def login(client):
     meta = json.loads((FIXTURES / "core-1.2.2.json").read_text())
-    assert client.post(
+    response = client.post(
         "/api/v1/auth/login",
         json={
             "username": meta["user"],
             "password": meta["password"],
         },
-    ).is_success
+    )
+    assert response.is_success
+    client.headers["X-CSRF-Token"] = response.json()["csrf_token"]
 
 
 def proof(client, source, number):
@@ -292,7 +296,6 @@ def test_profielbewijs_houdt_zijn_weergave_bij_upgrade(
 @pytest.mark.parametrize("check", ["auditretentie", "eindresultaat"])
 def test_poging_behoudt_audit_en_eindresultaat_na_onderhoud(before_evidence, monkeypatch, check):
     import asyncio
-    from datetime import UTC, datetime, timedelta
 
     from mediaguard.audit import audit
     from mediaguard.maintenance import housekeeping
@@ -470,3 +473,102 @@ def test_eindbewijs_en_jobstatus_vormen_een_transactie(ctx, monkeypatch):
         1,
         {"episodes": 17},
     )
+
+
+@pytest.mark.parametrize("scenario", ["planpauze", "eerder_geannuleerd"])
+def test_annulering_behoudt_historisch_en_afzonderlijk_eindbewijs(
+    before_evidence, monkeypatch, scenario
+):
+    from mediaguard.maintenance import housekeeping
+
+    settings, number = previous_schema(before_evidence, monkeypatch, "156")
+    now = db.utcnow()
+    with closing(db.Database(settings.db_path)) as database:
+        plan = database.execute_insert(
+            "INSERT INTO optimization_plans(status,created_at,updated_at,run_job_id) "
+            "VALUES ('running',?,?,?)", (now, now, number),
+        )
+        database.execute("UPDATE jobs SET job_type='optimize.run',target_type='optimization_plan',"
+                         "target_id=? WHERE id=?", (str(plan), number))
+    app = create_app(settings)
+    with closing(app.state.ctx.db) as database, TestClient(app) as client:
+        login(client)
+        original = proof(client, "job", number)
+        assert original.json()["response"]["status"] == "retry_scheduled"
+        if scenario == "planpauze":
+            paused = client.post(f"/api/v1/optimization/plans/{plan}/pause").raise_for_status()
+            assert paused.json()["status"] == "paused"
+        else:
+            # Op de oude kern werd alleen de operationele rij bijgewerkt.
+            database.execute("UPDATE jobs SET status='cancelled',finished_at=? WHERE id=?",
+                             (now, number))
+        assert not jobs.cancel(database, number)
+        current = client.get(f"/api/v1/jobs/{number}").raise_for_status().json()
+        assert (current["status"], current["progress"]) == ("cancelled", 0.37)
+        end_time = datetime.fromisoformat(current["finished_at"])
+        if scenario == "planpauze":
+            events = database.fetch_all("SELECT id FROM audit_events WHERE target_type='job' "
+                                        "AND target_id=? AND action='job.finished'", (str(number),))
+            assert len(events) == 1
+            terminal = proof(client, "audit", events[0]["id"])
+            assert terminal.json()["response"]["status"] == "cancelled"
+            assert datetime.fromisoformat(terminal.json()["finished_at"]) == end_time
+        with patch.object(housekeeping, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = end_time + timedelta(days=400)
+            assert housekeeping.prune(app.state.ctx)["jobs"] > 0
+
+    restarted = create_app(settings)
+    with closing(restarted.state.ctx.db) as database, TestClient(restarted) as client:
+        login(client)
+        assert client.get(f"/api/v1/jobs/{number}").status_code == 404
+        assert proof(client, "job", number).content == original.content
+        archived = database.fetch_all("SELECT id FROM connector_audit_evidence WHERE job_target=?",
+                                      (str(number),))
+        outcomes = [proof(client, "audit", row["id"]) for row in archived]
+        cancelled = [r for r in outcomes
+                     if (r.json()["response"] or {}).get("status") == "cancelled"]
+        assert len(cancelled) == 1
+        assert datetime.fromisoformat(cancelled[0].json()["finished_at"]) == end_time
+        if scenario == "planpauze":
+            assert cancelled[0].content == terminal.content
+        else:
+            assert cancelled[0].json()["app_version"] is None
+
+
+@pytest.mark.parametrize("state", ["queued", "retry_scheduled", "paused", "running"])
+def test_annulering_zonder_bewijsruimte_laat_plan_en_job_intact(client, ctx, monkeypatch, state):
+    number = jobs.enqueue(ctx.db, "optimize.run")
+    ctx.db.execute("UPDATE jobs SET status=?,progress=0.37 WHERE id=?", (state, number))
+    now = db.utcnow()
+    plan = ctx.db.execute_insert(
+        "INSERT INTO optimization_plans(status,created_at,updated_at,run_job_id) "
+        "VALUES ('running',?,?,?)", (now, now, number),
+    )
+
+    def deny(*args, **kw):
+        raise sqlite3.OperationalError("Geen ruimte voor het eindbewijs")
+
+    with monkeypatch.context() as m:
+        m.setattr(jobs, "audit", deny)
+        with TestClient(client.app, raise_server_exceptions=False) as reader:
+            reader.cookies.update(client.cookies)
+            reader.headers.update(client.headers)
+            assert reader.post(f"/api/v1/optimization/plans/{plan}/pause").status_code >= 500
+    assert tuple(ctx.db.fetch_one("SELECT status,progress,finished_at FROM jobs WHERE id=?",
+                                  (number,))) == (state, 0.37, None)
+    plan_row = ctx.db.fetch_one("SELECT status FROM optimization_plans WHERE id=?", (plan,))
+    assert plan_row["status"] == "running"
+    assert client.post(f"/api/v1/optimization/plans/{plan}/pause").is_success
+
+
+def test_herplannen_bewaart_de_annulering_uit_een_eerdere_kern(client, ctx):
+    number = jobs.enqueue(ctx.db, "optimize.run")
+    end = db.utcnow()
+    ctx.db.execute("UPDATE jobs SET status='cancelled',finished_at=? WHERE id=?", (end, number))
+    assert client.post(f"/api/v1/jobs/{number}/retry").json() == {"queued": True}
+    events = ctx.db.fetch_all("SELECT id FROM audit_events WHERE action='job.finished' "
+                              "AND target_type='job' AND target_id=?", (str(number),))
+    assert len(events) == 1
+    terminal = proof(client, "audit", events[0]["id"]).json()
+    assert datetime.fromisoformat(terminal["finished_at"]) == datetime.fromisoformat(end)
+    assert terminal["response"]["status"] == "cancelled" and terminal["app_version"] is None
