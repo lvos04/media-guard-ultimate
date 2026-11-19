@@ -17,7 +17,7 @@ routes `/healthz` en `/readyz` laten de hele database gelijk.
 |---|---|
 | `GET /connector/v1/discover` | Dienst, bronversie, schemaversie, `read`, rol `viewer`, `item_types`, lege `actions`, maximale meetleeftijd 900 seconden en paginagrootte 200 |
 | `GET /connector/v1/health` | Checks `database`, `worker`, `jobs`, `encoder` en `instances`; totaal is de slechtste check |
-| `GET /connector/v1/items?type=&cursor=&limit=` | Vijf datasets met vaste projecties, UTC-meettijd, deeplink en ETag |
+| `GET /connector/v1/items?type=&cursor=&limit=` | Zes datasets met vaste projecties, UTC-meettijd, deeplink en ETag |
 | `GET /connector/v1/evidence/{id}` | Geredigeerd pakket op basis van een auditregel of job |
 | `GET /connector/v1/events` | Geredigeerde outbox in de event-envelop van hoofdstuk 7, met cursor en maximaal 200 gebeurtenissen per pagina |
 | `POST /connector/v1/propose`, `/apply`, `/rollback` | Vaste weigering `501 capability_unavailable` na de bestaande toegangscontrole; geen uitvoering |
@@ -59,6 +59,40 @@ De volgorde voor het totaal is `healthy < unknown < degraded < down`.
 wachtrij met meer dan 900 seconden geen voortgang geeft `degraded`, behalve bij
 een bewuste noodstop. Ruwe foutteksten, instantienamen, paden en kijkgedrag worden
 niet doorgegeven. `hub_link` is niet van toepassing op deze bestaande app.
+
+## Herstelrapport
+
+`GET /connector/v1/items?type=backups` geeft één rapport met `observed_at`,
+`ETag` en een deeplink naar de back-ups van MediaGuard. Het paginaveld
+`status: ok` bevestigt dat de meting beschikbaar is. Gebruik `items[0].status`
+voor de dekking. Zodra één onderdeel `degraded` is, is de totale dekking
+ook `degraded`. `age_seconds` geeft de leeftijd op de meettijd aan.
+MediaGuard deelt een meting maximaal 60 seconden tussen lezers.
+
+- `core` en `encoder` tonen de laatste geverifieerde kopieën, inclusief
+  sha256 en de migratieversies van de opgeslagen SQLite-databases. Ook
+  geverifieerde sets van vóór een update tellen mee. Vanaf meer dan 48 uur
+  is de dekking verouderd.
+- `forks` geeft per geregistreerde, niet-gearchiveerde instantie de naam
+  en datum van de nieuwste herkenbare back-up. MediaGuard haalt het
+  bestaande archief via GET op en controleert de zip, configuratie en
+  SQLite-integriteit tijdelijk in een afgeschermde map. Ontbrekende of
+  oncontroleerbare kopieën geven `degraded`.
+- `bundle` toont de publieke sleutelvingerafdruk en of die overeenkomt met
+  de lokale herstelsleutel en de bundelkop. Bestandsverificatie vereist ook
+  een overeenkomende sha256 uit een geverifieerde offsite-kopie.
+  Daadwerkelijk ontsleutelen voor herstel vereist de herstelcode.
+- `offsite` toont het soort doel en de meetgegevens van de laatste
+  teruggelezen kopie voor de huidige configuratie. Een e-mailverzending
+  zonder teruglezing levert geen verificatie. Ook voor bundel en offsite
+  geldt de leeftijdsgrens van 48 uur.
+- `rollback` beschrijft of MediaGuard terugzetten van een pre-updateset
+  bij stoppen ondersteunt en of zo'n herstel is klaargezet. De Hub kan
+  uitsluitend het rapport en de deeplink gebruiken.
+
+Een `null` betekent dat het gegeven niet kon worden vastgesteld. Het
+rapport bevat uitsluitend geselecteerde metadata. De bestaande route
+`GET /api/v1/notify/offsite` vereist een beheerderssessie.
 
 ## Gebeurtenissen ophalen
 

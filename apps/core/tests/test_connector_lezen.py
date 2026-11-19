@@ -7,20 +7,26 @@ import json
 import secrets
 import sqlite3
 import time
+import zipfile
 from collections import Counter
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from uuid import UUID
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from test_migration_fakes import MigFakeArr
 
 from mediaguard import health_summary
 from mediaguard.app import create_app
 from mediaguard.auth import Principal, current_principal
 from mediaguard.db import utcnow
+from mediaguard.instances.registry import apikey_secret
+from mediaguard.maintenance import bundle, preupdate
+from mediaguard.notify import offsite
 from mediaguard.provisioning.templates import PREFIX, owned_name
 
 # Alleen de bestaande aanmeldadministratie mag wijzigen: gebruikstijdstippen in
@@ -94,7 +100,7 @@ def test_discover_advertises_only_existing_read_access(client, machine):
     assert d["schema_version"] == "1.0" and d["capabilities"] == ["read"]
     assert d["permissions"] == ["viewer"]
     assert d["actions"] == []
-    assert d["item_types"] == ["wanted", "status", "downloads", "av1_lanes", "incidents"]
+    assert d["item_types"] == ["wanted", "status", "downloads", "av1_lanes", "incidents", "backups"]
     assert all(d["limits"]["max_age_s"][name] == 900 for name in d["item_types"])
     assert d["limits"]["max_age_s"]["health"] == 900
     assert d["timestamp_utc"].endswith("Z")
@@ -259,7 +265,13 @@ def test_connector_openapi_documents_only_current_routes(app):
     items = paths["/connector/v1/items"]["get"]
     assert "ETag" in items["responses"]["200"]["headers"]
     params = {p["name"]: p["schema"] for p in items["parameters"]}
-    assert params["type"]["enum"] == ["wanted", "status", "downloads", "av1_lanes", "incidents"]
+    assert params["type"]["enum"] == [
+        "wanted", "status", "downloads", "av1_lanes", "incidents", "backups",
+    ]
+    models = app.openapi()["components"]["schemas"]
+    assert {"core", "encoder", "bundle", "offsite", "forks", "rollback"} <= set(
+        models["BackupItem"]["properties"]
+    )
     evidence = paths["/connector/v1/evidence/{id}"]["get"]
     for endpoint, statuses in ((items, ("401", "403", "409", "422", "503")),
                                (evidence, ("401", "403", "404", "422", "503"))):
@@ -301,6 +313,237 @@ def assert_database_preserved(ctx, before, *, allow_auth_timestamps=False,
         if new != old:
             changed.append(table[0])
     assert not changed, f"Onverwachte databasewijzigingen in {', '.join(changed)}"
+
+
+@pytest.fixture
+def herstelbronnen(client, ctx, tmp_path, monkeypatch):
+    monkeypatch.setenv("MG_AIO_CONFIG", str(tmp_path))
+    encoder = tmp_path / "encode"
+    encoder.mkdir()
+    with closing(sqlite3.connect(encoder / "encoder.db")) as db, db:
+        db.executescript("CREATE TABLE schema_versie (versie INTEGER); "
+                         "INSERT INTO schema_versie VALUES (1);")
+    backup = client.post("/api/v1/backups").json()
+    assert backup["integrity_ok"] is True
+    secret = bundle.setup(ctx, "test")
+    archive = bundle.create(ctx)
+    assert archive is not None
+    calls = []
+    forks = {}
+    transports = ctx.services.setdefault("arr_transports", {})
+    for row in ctx.db.fetch_dicts("SELECT id, app FROM instances ORDER BY id"):
+        fake = MigFakeArr(row["app"])
+        fake.add_backup()
+        transport = fake.transport()
+        iid = row["id"]
+        forks[iid] = fake
+
+        async def read(request, *, transport=transport, iid=iid):
+            calls.append((iid, request.method, request.url.path))
+            assert request.method == "GET"
+            return await transport.handle_async_request(request)
+
+        transports[iid] = httpx.MockTransport(read)
+        ctx.secrets.set(apikey_secret(iid), fake.api_key)
+    assert len(forks) == 4
+    return backup, secret, archive, forks, calls
+
+
+@pytest.fixture
+def geverifieerde_offsite(client, ctx, respx_mock, herstelbronnen):
+    _, _, archive, _, _ = herstelbronnen
+    target = "https://offsite.example.test/privemap"
+    ctx.config.set("global", "", "backup.offsite.kind", "webdav", "test")
+    ctx.config.set("global", "", "backup.offsite.webdav_url", target, "test")
+    archive_bytes = (bundle.bundle_dir(ctx) / archive["file"]).read_bytes()
+    respx_mock.put(f"{target}/{archive['file']}").respond(201)
+    respx_mock.get(f"{target}/{archive['file']}").respond(200, content=archive_bytes)
+    respx_mock.put(f"{target}/{offsite.KEYFILE}").respond(201)
+    assert client.post("/api/v1/notify/offsite/run").json()["ok"] is True
+    respx_mock.calls.clear()
+    return target
+
+
+def test_herstelrapport_geverifieerde_dekking_en_alleen_lezen(
+    client, machine, ctx, respx_mock, herstelbronnen, geverifieerde_offsite
+):
+    backup, secret, _, forks, calls = herstelbronnen
+    headers = key(client)
+    before = database_snapshot(ctx, allow_auth_timestamps=True)
+    files = {path: path.read_bytes() for path in ctx.settings.backup_dir.rglob("*")
+             if path.is_file()}
+    response = machine.get("/connector/v1/items?type=backups", headers=headers)
+    assert response.status_code == 200
+    page = response.json()
+    assert page["status"] == "ok" and page["total"] == 1 and page["next_cursor"] is None
+    report, = page["items"]
+    assert report["status"] == "healthy"
+    assert report["core"]["sha256"] == backup["sha256"]
+    assert report["core"]["schema_versions"] == sorted(backup["schema_versions"])
+    assert report["encoder"]["databases"][0]["schema_versions"] == ["1"]
+    assert report["bundle"]["fingerprint"] == secret["fingerprint"]
+    assert report["bundle"]["key_match"] is True
+    assert report["offsite"]["target_kind"] == "webdav"
+    assert report["offsite"]["age_seconds"] >= 0
+    assert report["rollback"] == {
+        "owner": "mediaguard", "pre_update_restore_mode": "handmatig", "staged": False,
+    }
+    assert {item["instance_id"] for item in report["forks"]} == forks.keys()
+    assert all(item["verified"] and item["name"] for item in report["forks"])
+    assert len(calls) == 8 and len(respx_mock.calls) == 0
+    repeated = machine.get("/connector/v1/items?type=backups", headers=headers)
+    assert repeated.headers["etag"] == response.headers["etag"] and len(calls) == 8
+    denied = machine.get("/api/v1/notify/offsite", headers=headers)
+    assert denied.status_code == 403
+    keyfile = json.loads((bundle.bundle_dir(ctx) / offsite.KEYFILE).read_text())
+    for reply in (response, repeated, denied):
+        assert secret["recovery_code"] not in reply.text
+        assert keyfile["wrapped"] not in reply.text
+        assert ctx.state_get(bundle.STATE_KEY)["public"] not in reply.text
+        assert geverifieerde_offsite not in reply.text
+    assert_database_preserved(ctx, before, allow_auth_timestamps=True)
+    assert files == {path: path.read_bytes() for path in ctx.settings.backup_dir.rglob("*")
+                     if path.is_file()}
+
+
+@pytest.mark.parametrize(
+    "variant", ["afwezig", "beschadigd", "deflate", "extern_pad", "toekomst"]
+)
+def test_herstelrapport_fork_zonder_actuele_verificatie_is_degraded(
+    client, machine, herstelbronnen, geverifieerde_offsite, variant
+):
+    _, _, _, forks, calls = herstelbronnen
+    iid, fake = next(iter(forks.items()))
+    entry = fake.backup_list[0]
+    if variant == "afwezig":
+        fake.backup_list.clear()
+    elif variant in ("beschadigd", "deflate"):
+        if variant == "beschadigd":
+            corrupt = b"onleesbare testkopie"
+        else:
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("config.xml", "<Config/>")
+                archive_offset = archive.getinfo("config.xml").FileHeader()
+            corrupt = bytearray(zip_buffer.getvalue())
+            corrupt[len(archive_offset)] = 0xFF  # Ongeldig DEFLATE-blok, geldige zip-map.
+            corrupt = bytes(corrupt)
+        fake.backup_blobs[entry["name"]] = corrupt
+        entry["size"] = len(corrupt)
+        entry["verified"] = True  # Een bronclaim zonder leesbare kopie telt niet.
+    elif variant == "extern_pad":
+        entry["path"] = "https://elders.example.test/archief"
+    else:
+        entry["time"] = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    response = machine.get("/connector/v1/items?type=backups", headers=key(client))
+    assert response.status_code == 200
+    report, = response.json()["items"]
+    assert report["status"] == "degraded"
+    assert all(report[part]["status"] == "healthy"
+               for part in ("core", "encoder", "bundle", "offsite"))
+    fork = next(row for row in report["forks"] if row["instance_id"] == iid)
+    assert fork["status"] == "degraded" and fork["verified"] is False
+    downloads = 2 if variant in ("beschadigd", "deflate") else 1
+    assert sum(instance == iid for instance, _, _ in calls) == downloads
+
+
+def test_herstelrapport_offsite_hoort_bij_huidige_doel(
+    client, machine, ctx, geverifieerde_offsite
+):
+    ctx.config.set("global", "", "backup.offsite.webdav_url", geverifieerde_offsite + "/nieuw",
+                   "test")
+    response = machine.get("/connector/v1/items?type=backups", headers=key(client))
+    assert response.status_code == 200
+    report, = response.json()["items"]
+    assert report["offsite"]["status"] == "degraded"
+    assert report["offsite"]["sha256"] is None
+    assert report["bundle"]["key_match"] is True and report["bundle"]["verified"] is False
+    assert geverifieerde_offsite not in response.text
+
+
+def test_herstelrapport_s3_doel_met_zelfde_bucket_blijft_onbevestigd(
+    client, machine, ctx, monkeypatch, herstelbronnen
+):
+    from mediaguard import settings_registry
+
+    backup, _, archive, _, _ = herstelbronnen
+    kopietijd = utcnow()
+    monkeypatch.setattr(settings_registry, "utcnow", lambda: kopietijd)
+    for veld, waarde in (("kind", "s3"), ("s3_bucket", "proef"), ("s3_endpoint",
+                                                               "https://nieuw.example.test")):
+        ctx.config.set("global", "", f"backup.offsite.{veld}", waarde, "test")
+    ctx.db.execute(
+        "INSERT INTO offsite_copies(bundle_name,target_kind,target,status,sha256,size,created_at)"
+        " VALUES (?,'s3',?,'ok',?,?,?)",
+        (archive["file"], offsite.target_label(ctx), backup["sha256"], 1, kopietijd),
+    )
+    response = machine.get("/connector/v1/items?type=backups", headers=key(client))
+    assert response.status_code == 200
+    report, = response.json()["items"]
+    assert report["offsite"]["target_kind"] == "s3"
+    assert report["offsite"]["status"] == "degraded"
+    assert report["offsite"]["verified"] is False
+
+
+def test_herstelrapport_bundel_met_oude_sleutel_is_degraded(
+    client, machine, ctx, geverifieerde_offsite
+):
+    current = bundle.setup(ctx, "test")
+    response = machine.get("/connector/v1/items?type=backups", headers=key(client))
+    assert response.status_code == 200
+    report, = response.json()["items"]
+    assert report["bundle"]["fingerprint"] == current["fingerprint"]
+    assert report["bundle"]["key_match"] is False
+    assert report["bundle"]["status"] == report["status"] == "degraded"
+    assert report["offsite"]["verified"] is True
+
+
+def test_herstelrapport_corrupt_lokaal_en_offsite_zonder_readback(
+    client, machine, ctx, herstelbronnen
+):
+    backup, _, archive, _, _ = herstelbronnen
+    core = ctx.settings.backup_dir / backup["file"]
+    with core.open("r+b") as handle:
+        handle.write(b"ongewijzigde grootte")
+    ctx.config.set("global", "", "backup.offsite.kind", "email", "test")
+    ctx.db.execute(
+        "INSERT INTO offsite_copies(bundle_name,target_kind,target,status,sha256,created_at)"
+        " VALUES (?,'email',?,'ok',?,?)",
+        (archive["file"], offsite.target_label(ctx), backup["sha256"], utcnow()),
+    )
+    response = machine.get("/connector/v1/items?type=backups", headers=key(client))
+    assert response.status_code == 200
+    report, = response.json()["items"]
+    assert report["core"]["status"] == "degraded" and report["core"]["sha256"] is None
+    assert report["encoder"]["status"] == "healthy"
+    assert report["bundle"]["status"] == "degraded"
+    assert report["offsite"]["status"] == "degraded"
+    assert report["offsite"]["age_seconds"] is None
+
+
+def test_herstelrapport_kiest_geverifieerde_set_voor_update(
+    client, machine, ctx, tmp_path, herstelbronnen
+):
+    backup, _, _, _, _ = herstelbronnen
+    path = ctx.settings.backup_dir / backup["file"]
+    meta_file = path.with_suffix(".json")
+    meta = json.loads(meta_file.read_text())
+    meta["integrity_ok"] = False
+    meta_file.write_text(json.dumps(meta))
+    folder = ctx.settings.backup_dir / preupdate.FOLDER
+    made = preupdate.make_set(folder, ctx.settings.db_path, encode_dir=tmp_path / "encode")
+    verified = {row["name"]: row for row in preupdate.list_sets(folder)}[made.name]
+    headers = key(client)
+    before = database_snapshot(ctx, allow_auth_timestamps=True)
+
+    response = machine.get("/connector/v1/items?type=backups", headers=headers)
+    assert response.status_code == 200
+    report, = response.json()["items"]
+    database, engine = verified["files"]
+    assert report["core"]["sha256"] == database["sha256"]
+    assert report["encoder"]["databases"][0]["sha256"] == engine["sha256"]
+    assert report["core"]["verified"] and report["encoder"]["verified"]
+    assert_database_preserved(ctx, before, allow_auth_timestamps=True)
 
 
 @pytest.fixture

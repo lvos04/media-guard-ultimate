@@ -51,13 +51,13 @@
  },
  {
   "id": "B04-006",
-  "status": "Niet gestart",
-  "validatie": "NIET GEVALIDEERD (echte NAS)",
-  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); INVENTARIS.md §5 en §8; DELTA_MATRIX.md §B04-006 en §K (006a, 006b, N-10)",
-  "blokkade": "",
-  "opmerking": "Nieuw werk nog niet gebouwd. Bestaand deel (1.2.2): geverifieerde back-ups, herstelbundel, set vóór elke update met terugzetten, en een offsite-kopie van de bundel met sha256-controle (status alleen voor admin leesbaar). Hiaat: read-only herstelrapport met dekking core/encoder/bundel/offsite/fork-back-ups en sleutelvingerafdruk (P3-06). Bestaande back-ups niet vervangen of dubbel bouwen.",
+  "status": "Bezig",
+  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "S-P3-635, rijen 006a–c. apps/core/tests/test_connector_lezen.py, apps/core/tests/test_bundle.py, apps/core/tests/test_notify.py en docs/CONNECTOR.md, Herstelrapport.",
+  "blokkade": "NIET GEVALIDEERD (echte NAS): herstelproef en appdata-snapshot via de executor, onderdeel N-P6-02.",
+  "opmerking": "Het herstelrapport leest de kern- en AV1-kopieën, versleutelde bundel, vier gesimuleerde forks en de teruggelezen WebDAV-kopie. Dekking is degraded bij ontbrekend of onzeker bewijs. De simulator controleert alleen-lezen forkverkeer, afscherming van de beheerroute en behoud van database en back-upbestanden.",
   "repo": "media-guard-ultimate",
-  "bijgewerkt": "2026-11-09"
+  "bijgewerkt": "2026-11-20"
  },
  {
   "id": "B04-007",

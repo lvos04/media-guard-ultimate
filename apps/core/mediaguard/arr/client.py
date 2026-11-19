@@ -16,8 +16,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from collections.abc import AsyncIterator, Iterable
-from typing import Any
+from typing import Any, BinaryIO
 
 import httpx
 
@@ -28,6 +29,7 @@ LOGGER = logging.getLogger(__name__)
 API_PREFIX = "/api/v3"
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 IDEMPOTENT = {"GET", "PUT", "DELETE", "HEAD"}
+BACKUP_ARCHIVE_PATH = re.compile(r"/backup/(?:manual|scheduled|update)/([A-Za-z0-9_.-]+\.zip)")
 
 # commando's die MediaGuard mag versturen (UI-acties + backfill)
 SONARR_COMMANDS = {
@@ -322,6 +324,25 @@ class ArrClient:
 
     async def backups(self) -> list[dict[str, Any]]:
         return await self.get("system/backup") or []
+
+    async def read_backup_archive(self, path: str, target: BinaryIO, max_bytes: int) -> int:
+        """Lees een bestaand back-uparchief binnen de al gekozen forkverbinding."""
+        if BACKUP_ARCHIVE_PATH.fullmatch(path) is None:
+            raise ValueError("Ongeldig pad voor een fork-back-up")
+        async with (
+            self._session() as client,
+            client.stream("GET", path, headers={"Accept-Encoding": "identity"}) as response,
+        ):
+            response.raise_for_status()
+            if response.status_code != 200:
+                raise ArrError("Fork-back-up gaf geen volledig antwoord")
+            size = 0
+            async for chunk in response.aiter_raw(chunk_size=1024 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise ArrError("Back-up groter dan toegestaan")
+                target.write(chunk)
+            return size
 
     async def create_backup(self) -> dict[str, Any]:
         return await self.command("Backup")

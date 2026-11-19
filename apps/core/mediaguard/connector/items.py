@@ -31,12 +31,13 @@ from mediaguard.secrets_store import redact
 from mediaguard.storage_forecast import POOL_STATE, pool_observed_at
 from mediaguard.wanted.engine import open_wanted_page
 
+from . import backups
 from .download_ids import content_hash, download_ids
 from .errors import DATABASE_UNAVAILABLE, ConnectorError, failure, query_faults
 from .events import MAX_SQLITE_ID
 
 router = APIRouter(prefix="/connector/v1")
-ItemType = Literal["wanted", "status", "downloads", "av1_lanes", "incidents"]
+ItemType = Literal["wanted", "status", "downloads", "av1_lanes", "incidents", "backups"]
 ITEM_TYPES: tuple[ItemType, ...] = get_args(ItemType)
 MAX_AGE = 900
 PAGE_LIMIT = 200
@@ -97,11 +98,16 @@ class IncidentItem(Item):
     count: int
 
 
+class BackupItem(Item, backups.BackupReport):
+    pass
+
+
+SnapshotItem = SystemItem | DownloadItem | LaneItem | IncidentItem | BackupItem
+
+
 class ItemPage(BaseModel):
     type: ItemType
-    items: list[WantedItem | SystemItem | DownloadItem | LaneItem | IncidentItem] = Field(
-        max_length=PAGE_LIMIT,
-    )
+    items: list[WantedItem | SnapshotItem] = Field(max_length=PAGE_LIMIT)
     status: Literal["ok", "unknown"]
     reason_code: str | None
     snapshot_id: str | None
@@ -131,7 +137,7 @@ def _position(kind: ItemType, cursor: str) -> tuple[str, str | None]:
     if not isinstance(value, list) or len(value) != 3:
         raise ValueError
     selected, last, snapshot = value
-    if selected != kind or not isinstance(last, str) or kind == "status":
+    if selected != kind or not isinstance(last, str) or kind in ("status", "backups"):
         raise ValueError
     if kind == "wanted":
         if snapshot is not None or not re.fullmatch(r"[1-9][0-9]{0,18}", last):
@@ -292,7 +298,7 @@ class Snapshot(BaseModel):
     id: str
     observed_at: AwareDatetime | None
     collected_at: float
-    rows: list[SystemItem | DownloadItem | LaneItem | IncidentItem]
+    rows: list[SnapshotItem]
     reason: str | None
 
 
@@ -300,7 +306,7 @@ async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
                    previous: Snapshot | None) -> Snapshot:
     measured = instant(utcnow())
     assert measured is not None
-    rows: list[SystemItem | DownloadItem | LaneItem | IncidentItem] = []
+    rows: list[SnapshotItem] = []
     reason = None
     token = observation_read.set(True)
     try:
@@ -318,6 +324,13 @@ async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
                 rows.extend(await asyncio.to_thread(_downloads, ctx, value, measured))
         elif kind == "av1_lanes":
             rows.extend(await _lanes(ctx, measured))
+        elif kind == "backups":
+            measured = datetime.now(UTC)
+            report = await backups.observe(ctx, measured)
+            rows.append(BackupItem(
+                id="backups", observed_at=measured, deep_link="/systeem#back-ups",
+                **report.model_dump(),
+            ))
         else:
             source, complete = await attention.collect_observation(ctx)
             visible = attention.for_role(source, principal.role)
@@ -369,14 +382,17 @@ async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
 
 
 async def _snapshot(ctx: AppContext, principal: Principal, kind: ItemType) -> Snapshot:
-    slot = f"connector_items:{kind}:{principal.role}"
+    # Elke geautoriseerde rol ziet hetzelfde herstelrapport. Deel de waarneming.
+    role = "viewer" if kind == "backups" else principal.role
+    slot = f"connector_items:{kind}:{role}"
+    cache_seconds = backups.CACHE_SECONDS if kind == "backups" else CACHE_SECONDS
     previous = ctx.services.get(slot)
-    if previous and time.monotonic() - previous.collected_at < CACHE_SECONDS:
+    if previous and time.monotonic() - previous.collected_at < cache_seconds:
         return previous
     lock = ctx.services.setdefault(f"{slot}:lock:{id(asyncio.get_running_loop())}", asyncio.Lock())
     async with lock:
         previous = ctx.services.get(slot)
-        if previous and time.monotonic() - previous.collected_at < CACHE_SECONDS:
+        if previous and time.monotonic() - previous.collected_at < cache_seconds:
             return previous
         result = await _observe(ctx, principal, kind, previous)
         ctx.services[slot] = result

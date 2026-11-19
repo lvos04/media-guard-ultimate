@@ -387,6 +387,75 @@
         "title": "BackupBody",
         "type": "object"
       },
+      "BackupItem": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle": {
+            "$ref": "#/components/schemas/BundleCoverage"
+          },
+          "core": {
+            "$ref": "#/components/schemas/CoreCoverage"
+          },
+          "deep_link": {
+            "title": "Deep Link",
+            "type": "string"
+          },
+          "encoder": {
+            "$ref": "#/components/schemas/EncoderCoverage"
+          },
+          "forks": {
+            "items": {
+              "$ref": "#/components/schemas/ForkCoverage"
+            },
+            "title": "Forks",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "offsite": {
+            "$ref": "#/components/schemas/OffsiteCoverage"
+          },
+          "rollback": {
+            "$ref": "#/components/schemas/RollbackPolicy"
+          },
+          "status": {
+            "enum": [
+              "healthy",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "core",
+          "encoder",
+          "bundle",
+          "offsite",
+          "forks",
+          "rollback",
+          "id",
+          "observed_at",
+          "deep_link"
+        ],
+        "title": "BackupItem",
+        "type": "object"
+      },
       "Body_av1_import_api_v1_migration_av1_import_post": {
         "properties": {
           "file": {
@@ -569,6 +638,89 @@
           "item_ids"
         ],
         "title": "BulkDeleteBody",
+        "type": "object"
+      },
+      "BundleCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint"
+          },
+          "key_match": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Match"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "backup_ontbreekt",
+            "title": "Reason Code"
+          },
+          "status": {
+            "default": "degraded",
+            "enum": [
+              "healthy",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "title": "BundleCoverage",
         "type": "object"
       },
       "BundleSetupBody": {
@@ -985,6 +1137,87 @@
         "title": "ControlBody",
         "type": "object"
       },
+      "CoreCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "backup_ontbreekt",
+            "title": "Reason Code"
+          },
+          "schema_versions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Versions"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "status": {
+            "default": "degraded",
+            "enum": [
+              "healthy",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "title": "CoreCoverage",
+        "type": "object"
+      },
       "Credentials": {
         "properties": {
           "password": {
@@ -1005,6 +1238,28 @@
           "password"
         ],
         "title": "Credentials",
+        "type": "object"
+      },
+      "DatabaseCopy": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_versions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Schema Versions",
+            "type": "array"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha256",
+          "schema_versions"
+        ],
+        "title": "DatabaseCopy",
         "type": "object"
       },
       "DcTestBody": {
@@ -1297,6 +1552,69 @@
           }
         },
         "title": "EnableBody",
+        "type": "object"
+      },
+      "EncoderCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "databases": {
+            "items": {
+              "$ref": "#/components/schemas/DatabaseCopy"
+            },
+            "title": "Databases",
+            "type": "array"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "backup_ontbreekt",
+            "title": "Reason Code"
+          },
+          "status": {
+            "default": "degraded",
+            "enum": [
+              "healthy",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "title": "EncoderCoverage",
         "type": "object"
       },
       "EpisodeIn": {
@@ -1987,6 +2305,80 @@
         "title": "FixBody",
         "type": "object"
       },
+      "ForkCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "instance_id": {
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "backup_ontbreekt",
+            "title": "Reason Code"
+          },
+          "status": {
+            "default": "degraded",
+            "enum": [
+              "healthy",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "instance_id"
+        ],
+        "title": "ForkCoverage",
+        "type": "object"
+      },
       "GrabBody": {
         "properties": {
           "guid": {
@@ -2250,6 +2642,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/IncidentItem"
+                },
+                {
+                  "$ref": "#/components/schemas/BackupItem"
                 }
               ]
             },
@@ -2327,7 +2722,8 @@
               "status",
               "downloads",
               "av1_lanes",
-              "incidents"
+              "incidents",
+              "backups"
             ],
             "title": "Type",
             "type": "string"
@@ -3011,6 +3407,91 @@
           }
         },
         "title": "OffsiteBody",
+        "type": "object"
+      },
+      "OffsiteCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "backup_ontbreekt",
+            "title": "Reason Code"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "status": {
+            "default": "degraded",
+            "enum": [
+              "healthy",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "path",
+                  "webdav",
+                  "s3",
+                  "email"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Kind"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "title": "OffsiteCoverage",
         "type": "object"
       },
       "OptimizeBody": {
@@ -4040,6 +4521,42 @@
           "tmdb_id"
         ],
         "title": "RequestBody",
+        "type": "object"
+      },
+      "RollbackPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "owner": {
+            "const": "mediaguard",
+            "default": "mediaguard",
+            "title": "Owner",
+            "type": "string"
+          },
+          "pre_update_restore_mode": {
+            "enum": [
+              "bij-stoppen",
+              "handmatig"
+            ],
+            "title": "Pre Update Restore Mode",
+            "type": "string"
+          },
+          "staged": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staged"
+          }
+        },
+        "required": [
+          "pre_update_restore_mode",
+          "staged"
+        ],
+        "title": "RollbackPolicy",
         "type": "object"
       },
       "RootFolderBody": {
@@ -26871,7 +27388,8 @@
                 "status",
                 "downloads",
                 "av1_lanes",
-                "incidents"
+                "incidents",
+                "backups"
               ],
               "title": "Type",
               "type": "string"
