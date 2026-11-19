@@ -67,8 +67,9 @@ de oudste bewaarde rij.
 Vanaf migratie 156 staat de ondertekeningssleutel in het bestand
 `secrets/core/outbox.key` op de appdata-opslag. SQLite bewaart de
 bestandsverwijzing en de publieke revisiekenmerken. Oude leesposities vervallen
-eenmalig bij deze migratie. Zolang de sleutel ontbreekt of een ongeldige lengte
-heeft, geven polling en het openen van een SSE-verbinding `409 cursor_expired`.
+eenmalig bij deze migratie. De kern controleert de eigenaar, de lengte en de
+rechten (0700 voor de map en 0600 voor het bestand). Bij een onbruikbare
+sleutel geven polling en het openen van een SSE-verbinding `409 cursor_expired`.
 Controleer dan de geheimenopslag voordat je opnieuw begint.
 
 De query accepteert uitsluitend één `cursor` en één `limit`, beide optioneel.
@@ -85,7 +86,9 @@ gelijk bij herlezing en bij een gewone herstart.
 Bij een bestaande installatie verifieert MediaGuard vóór de migratie de actuele
 back-up van kern en encoder, inclusief hun WAL. De alles-in-één-app houdt de
 schrijvers stil tot de kernmigratie is afgerond. Elke poging krijgt een unieke
-archiefnaam. Rotatie bewaart de set van de lopende upgrade.
+archiefnaam die ook de vorige supervisor herkent. De startmelding en
+`MG_PRE_UPDATE_SET` wijzen naar de set die de kern onder schrijfslot heeft
+geverifieerd. Rotatie bewaart de set van de lopende upgrade.
 
 Elke uitvoering van migratie 151 legt een nieuwe willekeurige
 generatie vast. Zet je een snapshot van vóór 151 terug en voer je
@@ -109,7 +112,9 @@ Op dezelfde verbinding volgen alle bewaarde gebeurtenissen vanaf de oudste
 rij. Een geldige leespositie hervat bij de eerstvolgende gebeurtenis. Ook
 retentie van een ongelezen rij veroorzaakt eerst een reset. Bij een tijdelijk
 bezette database houdt een geopende stream de laatst geleverde positie vast en
-leest na herstel verder.
+leest na herstel verder. Is de database al bij de sessie- of API-sleutelcontrole
+bezet, dan antwoordt de route vóór het openen met `503 database_unavailable`
+en de wachttijd in `Retry-After`.
 
 De classificatie is `internal`. Bekende brontopics krijgen een vast eventtype en
 een vast onderwerp binnen MediaGuard. Overige records krijgen

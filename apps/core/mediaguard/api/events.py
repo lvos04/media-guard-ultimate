@@ -15,22 +15,23 @@ from mediaguard.connector.errors import (
     DATABASE_UNAVAILABLE,
     ConnectorError,
     cursor_expired,
-    database_failure,
     temporary_database_error,
 )
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import loads
-from mediaguard.event_cursor import CursorUnavailable, EventBatch, ExpiredCursor, read_batch
+from mediaguard.event_cursor import (
+    MAX_SQLITE_ID,
+    CursorUnavailable,
+    EventBatch,
+    ExpiredCursor,
+    read_batch,
+)
 
 router = APIRouter(prefix="/api/v1/events", tags=["events"])
 
 
 def _reset() -> str:
     return f"event: reset\nid:\ndata: {cursor_expired().body.decode()}\n\n"
-
-
-def _latest(ctx: AppContext) -> int:
-    return ctx.db.fetch_one("SELECT COALESCE(MAX(id), 0) FROM outbox_events")[0]
 
 
 @router.get("/stream", response_model=None, response_class=StreamingResponse, responses={
@@ -45,30 +46,29 @@ async def stream(request: Request, _: Principal = Depends(require_viewer),
     cursor = last_id
     reset = False
     try:
-        end = _latest(ctx)
         try:
-            first = read_batch(ctx.db, cursor, channel="sse", through=end,
+            first = read_batch(ctx.db, cursor, channel="sse",
                                limit=500 if last_id else 1, newest=not last_id)
         except ExpiredCursor:
             reset = True
             cursor = None
-            first = read_batch(ctx.db, None, channel="sse", through=end, limit=500)
+            first = read_batch(ctx.db, None, channel="sse", limit=500)
     except CursorUnavailable:
         return cursor_expired()
-    except sqlite3.OperationalError as exc:
-        if response := database_failure("/api/v1/events/stream", exc):
-            return response
-        raise
 
-    async def replay(through: int, batch: EventBatch | None = None,
+    async def replay(through: int = MAX_SQLITE_ID, batch: EventBatch | None = None,
                      live_id: int | None = None) -> AsyncIterator[str]:
         nonlocal cursor
         while True:
             try:
                 if batch is None:
                     batch = read_batch(ctx.db, cursor, channel="sse", through=through, limit=500)
+                through = min(through, batch.issued_through)
             except ExpiredCursor:
                 cursor = None
+                # Herlees tot de grens uit de nieuwe momentopname. Het wachtrijbericht
+                # kan verwijzen naar een inmiddels verwijderde rij vóór de eerste bewaarde.
+                through = MAX_SQLITE_ID
                 yield _reset()
                 continue
             except sqlite3.OperationalError as exc:
@@ -97,7 +97,7 @@ async def stream(request: Request, _: Principal = Depends(require_viewer),
             if reset:
                 yield _reset()
             if last_id:
-                async for frame in replay(end, first):
+                async for frame in replay(batch=first):
                     yield frame
             else:
                 cursor = first.next_cursor()
@@ -106,13 +106,9 @@ async def stream(request: Request, _: Principal = Depends(require_viewer),
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15)
                 except TimeoutError:
-                    try:
-                        # Ook events van andere processen en een gemiste wachtrijmelding ophalen.
-                        async for frame in replay(_latest(ctx)):
-                            yield frame
-                    except sqlite3.OperationalError as exc:
-                        if not temporary_database_error(exc):
-                            raise
+                    # Ook events van andere processen en een gemiste wachtrijmelding ophalen.
+                    async for frame in replay():
+                        yield frame
                     yield ": keepalive\n\n"
                     continue
                 if "id" in event:

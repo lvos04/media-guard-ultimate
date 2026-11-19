@@ -75,8 +75,10 @@ def run(secrets_dir: Path, app_dirs: list[Path], data_dirs: list[Path]) -> list[
         if _ensure_dir(d, uid, gid):
             log.append(f"map aangemaakt: {d}")
     _ensure_dir(secrets_dir, uid, gid)
-    _ensure_dir(secrets_dir / "core", uid, gid, mode=0o700)
-    event_keys.ensure_key(secrets_dir / event_keys.KEY_REF, (uid, gid))
+    try:
+        event_keys.ensure_key(secrets_dir / event_keys.KEY_REF, (uid, gid))
+    except (OSError, ValueError):
+        log.append("Cursorsleutel onbruikbaar. Controleer eigenaar en rechten van de geheimenmap.")
     _ensure_dir(secrets_dir / "internal", uid, gid)
     if _write_secret(secrets_dir / "internal" / "token", secrets.token_hex(32), uid, gid):
         log.append("interne token gegenereerd")

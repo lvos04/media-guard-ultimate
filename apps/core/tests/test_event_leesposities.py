@@ -168,3 +168,104 @@ def test_gelijke_revisienummers_na_terugzetten_blijven_onderscheidbaar(settings,
         assert origineel["next_cursor"].split(".")[:-1] == actueel["next_cursor"].split(".")[:-1]
         expired(client.get(PATH, params={"cursor": origineel["next_cursor"]}))
         assert page(client, cursor=actueel["next_cursor"])["events"] == []
+
+
+async def test_open_stream_herleest_alle_bewaarde_rijen_na_reset(ctx):
+    request = Request({"type": "http", "headers": [], "query_string": b""},
+                      receive=AsyncMock(return_value={"type": "http.request", "body": b""}))
+    response = await stream(request, None, ctx)
+    async with aclosing(response.body_iterator) as frames:
+        assert (await anext(frames)).startswith("retry:")
+        for nr in range(1, 5):
+            publish(ctx, age=20 if nr % 2 else 0, payload={"nr": nr})
+        assert prune(ctx)["events"] == 2
+        controleer_sse_reset(await anext(frames))
+        tweede = await anext(frames)
+        assert '"nr": 2' in tweede
+        vierde = await anext(frames)
+        assert '"nr": 4' in vierde
+        positie = vierde.splitlines()[0].removeprefix("id: ")
+    assert await sse_herlezing(ctx, positie) == []
+
+
+async def test_reset_bij_openen_verliest_geen_rij_uit_nieuwere_momentopname(ctx, monkeypatch):
+    # Een andere schrijver publiceert en schoont op zodra de lezer de stand opvraagt.
+    # Zowel een losse grenslezing als een gecombineerde paginalezing is een mogelijk tijdstip.
+    oud = ctx.db.fetch_one
+    alle = ctx.db.fetch_all
+    gewijzigd = False
+
+    def wijzig():
+        nonlocal gewijzigd
+        if not gewijzigd:
+            gewijzigd = True
+            publish(ctx)
+            publish(ctx, age=20)
+            assert prune(ctx)["events"] == 1
+
+    def grens(sql, *args):
+        result = oud(sql, *args)
+        if "MAX(id)" in sql:
+            wijzig()
+        return result
+
+    def pagina(sql, *args):
+        if "FROM outbox_retention" in sql:
+            wijzig()
+        return alle(sql, *args)
+
+    request = Request({"type": "http", "headers": [(b"last-event-id", b"0")]},
+                      receive=AsyncMock(return_value={"type": "http.request", "body": b""}))
+    with monkeypatch.context() as patch:
+        patch.setattr(ctx.db, "fetch_one", grens)
+        patch.setattr(ctx.db, "fetch_all", pagina)
+        response = await stream(request, None, ctx)
+    async with aclosing(response.body_iterator) as frames:
+        controleer_sse_reset(await anext(frames))
+        assert gewijzigd and "library.synced" in await anext(frames)
+
+
+@pytest.mark.parametrize("bron", ["sessions", "api_keys"])
+def test_sse_aanmeldcontrole_bij_databaseslot(app, client, ctx, monkeypatch, bron):
+    from fastapi.testclient import TestClient
+    from test_connector_lezen import error, key
+
+    headers = ({"Cookie": client.build_request("GET", PATH).headers["cookie"]}
+               if bron == "sessions" else key(client))
+    publish(ctx)
+    normaal = ctx.db.fetch_one
+    geraakt = []
+
+    def bezet(sql, *args):
+        if f"FROM {bron}" in sql:
+            geraakt.append(bron)
+            raise sqlite3.OperationalError("database is locked")
+        return normaal(sql, *args)
+
+    monkeypatch.setattr(ctx.db, "fetch_one", bezet)
+    with TestClient(app, raise_server_exceptions=False) as bezoek:
+        response = bezoek.get("/api/v1/events/stream", headers=headers)
+    assert geraakt == [bron]
+    assert error(response, 503, "database_unavailable")["details"] == {}
+    assert int(response.headers["Retry-After"]) > 0
+    assert "text/event-stream" not in response.headers["Content-Type"]
+
+
+def test_te_ruime_sleutelrechten_weigeren_en_herstart_behoudt_cursor(ctx, client, monkeypatch):
+    from mediaguard import bootstrap, event_keys
+
+    publish(ctx)
+    positie = page(client)["next_cursor"]
+    bestand = event_keys.key_path(ctx.db.path.parent)
+    bestand.chmod(0o644)
+    expired(client.get(PATH, params={"cursor": positie}))
+    bestand.chmod(0o600)
+    bestand.parent.chmod(0o755)
+    expired(client.get(PATH))
+    bestand.chmod(0o644)
+    monkeypatch.setenv("MG_UID", str(os.geteuid()))
+    monkeypatch.setenv("MG_GID", str(os.getegid()))
+    bootstrap.run(bestand.parent.parent, [], [])
+    assert bestand.stat().st_mode & 0o777 == 0o600
+    assert bestand.parent.stat().st_mode & 0o777 == 0o700
+    assert page(client, cursor=positie)["events"] == []

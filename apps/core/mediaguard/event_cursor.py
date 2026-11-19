@@ -36,6 +36,7 @@ class EventBatch:
     witness: bytes
     position: int
     anchor: bytes | None
+    issued_through: int
 
     def sign(self, position: int, revision: int, birth: bytes | None, witness: bytes) -> str:
         body = f"v3.{position}.{revision}.{self.generation.hex()}"
@@ -92,8 +93,9 @@ def read_batch(db: Database, cursor: str | None, *, channel: Literal["poll", "ss
         raise CursorUnavailable
     batch = EventBatch(
         [row for row in rows if row["id"] is not None], key, state["generation"], channel,
-        state["revision"], state["witness"], position if cursor else state["deleted_through"],
-        state["anchor"],
+        state["revision"], state["witness"],
+        position if cursor else min(through, state["deleted_through"]),
+        state["anchor"], state["issued_through"],
     )
     if cursor is not None and (
         state["lost"] or position > state["issued_through"] or revision > state["revision"]

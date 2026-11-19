@@ -34,6 +34,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import tempfile
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -41,7 +42,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from mediaguard import schema
+from mediaguard import event_keys, schema
 from mediaguard.db import MIGRATIONS_DIR, Database, check_schema_versions
 
 FOLDER = "voor-update"
@@ -85,17 +86,55 @@ def _chown(paths: list[Path], owner: tuple[int, int] | None) -> None:
             os.chown(p, owner[0], owner[1])
 
 
+def _cursor_value(db: sqlite3.Connection) -> object:
+    if db.execute("SELECT 1 FROM pragma_table_info('outbox_retention') "
+                  "WHERE name='cursor_key'").fetchone():
+        row = db.execute("SELECT cursor_key FROM outbox_retention WHERE singleton=1").fetchone()
+        if row:
+            return row[0]
+    return None
+
+
+def _copy_legacy(source: sqlite3.Connection, core_dir: Path, dest: Path, value: bytes) -> str:
+    # De onbewerkte pagina's mogen ook bij een onderbroken kopie uitsluitend in de
+    # geheimenmap staan. De live verbinding blijft in dezelfde leestransactie.
+    ref = event_keys.store_legacy(core_dir, value)
+    with tempfile.TemporaryDirectory(dir=event_keys.key_path(core_dir).parent) as work:
+        private = Path(work) / "snapshot.db"
+        with contextlib.closing(sqlite3.connect(private)) as tmp:
+            source.backup(tmp)
+            tmp.execute("PRAGMA journal_mode=DELETE")
+            tmp.execute("PRAGMA secure_delete=ON")
+            with tmp:
+                tmp.execute("UPDATE outbox_retention SET cursor_key=? WHERE singleton=1", (ref,))
+        # Ook ongebruikte pagina's van een oudere SQLite-versie kunnen de waarde bevatten.
+        # Publiceer in dat geval niets. De oorspronkelijke database blijft beschikbaar.
+        tail = b""
+        with private.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                block = tail + chunk
+                if value in block:
+                    raise SetError("de historische cursorsleutel is nog aanwezig in de kopie")
+                tail = block[-(len(value) - 1):]
+        shutil.copyfile(private, dest)
+    return ref
+
+
 def _copy_sqlite(src: Path, dest: Path) -> dict[str, Any]:
     """Kopie via de backup-API (WAL-veilig) + hersteltest; nooit een half bestand."""
     part = dest.with_name(dest.name + ".part")
     try:
-        s = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=30)
-        d = sqlite3.connect(part)
-        try:
-            s.backup(d)
-        finally:
-            d.close()
-            s.close()
+        extra = {}
+        with contextlib.closing(sqlite3.connect(src.resolve().as_uri() + "?mode=ro", uri=True,
+                                               timeout=30)) as s:
+            s.execute("BEGIN")
+            core = dest.name == "mediaguard.db" and dest.parent.name != "encode"
+            value = _cursor_value(s) if core else None
+            if isinstance(value, bytes):
+                extra["legacy_cursor_key"] = _copy_legacy(s, src.parent, part, value)
+            else:
+                with contextlib.closing(sqlite3.connect(part)) as d:
+                    s.backup(d)
         # De SQLite-back-up is gesloten en staat op een uniek tijdelijk pad.
         check = sqlite3.connect(f"{part.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
         try:
@@ -112,10 +151,13 @@ def _copy_sqlite(src: Path, dest: Path) -> dict[str, Any]:
         part.unlink(missing_ok=True)
         disk = "disk is full" in str(exc) or "unable to open" in str(exc)
         raise SetError(f"kopie van {src.name} mislukt: {exc}", disk=disk) from exc
+    except ValueError as exc:
+        part.unlink(missing_ok=True)
+        raise SetError("historische cursorsleutel kan niet veilig worden bewaard") from exc
     except SetError:
         part.unlink(missing_ok=True)
         raise
-    return {"sha256": _sha256(dest), "size": dest.stat().st_size}
+    return {"sha256": _sha256(dest), "size": dest.stat().st_size, **extra}
 
 
 def _file_generation(path: Path) -> list[list[int]]:
@@ -188,7 +230,8 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
     folder.mkdir(parents=True, exist_ok=True)
     _chown([folder.parent, folder], owner)
     stamp = datetime.now(UTC)
-    name = f"{SET_PREFIX}{stamp:%Y%m%dT%H%M%SZ-%f}-{uuid4().hex}"
+    # Oudere supervisors accepteren na de seconde alleen één decimaal achtervoegsel.
+    name = f"{SET_PREFIX}{stamp:%Y%m%dT%H%M%SZ-%f}{uuid4().int:039d}"
     work = folder / (name + ".part")
     work.mkdir()
     files: list[dict[str, Any]] = []
@@ -221,7 +264,7 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
         if reason == "update":
             if encoder_problem or _read_meta(work) != meta:
                 raise SetError("de herstelset voor de update is onvolledig")
-            if problems := verify(work):
+            if problems := verify(work, core_dir=core_db.parent):
                 raise SetError(", ".join(problems))
         os.replace(work, folder / name)
     except BaseException:
@@ -236,7 +279,7 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
     if reason == "update":
         if _read_meta(done) != meta:
             raise SetError("de gepubliceerde herstelset voor deze update ontbreekt of is gewijzigd")
-        if problems := verify(done):
+        if problems := verify(done, core_dir=core_db.parent):
             raise SetError(", ".join(problems))
     return done
 
@@ -310,7 +353,7 @@ def find(folder: Path, name: str) -> Path | None:
     return path if path.exists() else None
 
 
-def verify(path: Path) -> list[str]:
+def verify(path: Path, *, core_dir: Path | None = None) -> list[str]:
     """Problemen (leeg = in orde): checksums en grootte van elk bestand in de set."""
     if path.is_file():  # oude losse kopie: alleen een snelle controle mogelijk
         try:
@@ -332,6 +375,12 @@ def verify(path: Path) -> list[str]:
             problems.append(f"{f.get('name')} ontbreekt")
         elif file.stat().st_size != int(f.get("size") or -1) or _sha256(file) != f.get("sha256"):
             problems.append(f"{f.get('name')} is beschadigd (checksum klopt niet)")
+        if "legacy_cursor_key" in f:
+            try:
+                folder = core_dir or path.parent.parent.parent
+                event_keys.load_legacy(folder, f["legacy_cursor_key"])
+            except (TypeError, ValueError, OSError):
+                problems.append("historische cursorsleutel ontbreekt of is beschadigd")
     return problems
 
 
@@ -426,6 +475,18 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
     migrations = encoder_migrations(os.environ)
     for rel, (src, size, digest) in pairs.items():
         _check_restore_copy(src, rel, size, digest, migrations)
+    core_rel = f"{core_dir.name}/mediaguard.db"
+    core_src = pairs[core_rel][0]
+    with contextlib.closing(sqlite3.connect(
+        core_src.resolve().as_uri() + "?mode=ro&immutable=1", uri=True,
+    )) as reader:
+        ref = _cursor_value(reader)
+    legacy = None
+    if isinstance(ref, str) and ref.startswith(event_keys.LEGACY_PREFIX):
+        try:
+            legacy = event_keys.load_legacy(core_dir, ref)
+        except (OSError, ValueError) as exc:
+            raise SetError("de historische cursorsleutel is niet beschikbaar") from exc
     need = sum(size for _, size, _ in pairs.values())
     free = shutil.disk_usage(config_root).free
     if free < need * 1.1 + 256 * 1024**2:
@@ -436,16 +497,31 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
     try:
         for live, (src, size, digest) in pairs.items():
             dest = _within(config_root, live + STAGED_SUFFIX)
-            part = dest.with_name(dest.name + ".part")
-            shutil.copyfile(src, part)
-            os.replace(part, dest)
+            with tempfile.NamedTemporaryFile(dir=dest.parent, suffix=".part", delete=False) as out:
+                part = Path(out.name)
+            try:
+                shutil.copyfile(src, part)
+                # Controleer de kopie tegen de gekozen set vóór het herstellen van de sleutel
+                # of het vrijgeven van een terugzetpaar voor handmatig herstel.
+                _check_restore_copy(part, live, size, digest, migrations)
+                if live == core_rel and legacy is not None:
+                    # Alleen de expliciet klaargezette database voor de oude lezer krijgt
+                    # zijn sleutel terug. De markering dekt de uiteindelijke bytes.
+                    with contextlib.closing(sqlite3.connect(part)) as old, old:
+                        old.execute("UPDATE outbox_retention SET cursor_key=? WHERE singleton=1",
+                                    (legacy,))
+                    size, digest = part.stat().st_size, _sha256(part)
+                    _check_restore_copy(part, live, size, digest, migrations)
+                os.replace(part, dest)
+            finally:
+                part.unlink(missing_ok=True)
             staged.append({"live": live, "staged": live + STAGED_SUFFIX,
                            "size": size, "sha256": digest})
-    except OSError as exc:
+    except (OSError, sqlite3.Error, SetError) as exc:
         for s in staged:
             with contextlib.suppress(OSError):
                 _within(config_root, s["staged"]).unlink()
-        raise SetError(f"klaarzetten mislukt: {exc}", disk=True) from exc
+        raise SetError(f"klaarzetten mislukt: {exc}", disk=isinstance(exc, OSError)) from exc
     info = {"set": path.name, "requested_at": _now(), "by": actor, "files": staged,
             "manifest": _manifest(path.name, staged)}
     marker = core_dir / STAGE_MARKER
@@ -724,8 +800,10 @@ def snapshot_before_start(config_root: Path, *, core_migrations: Path,
         if migrate_core and core:
             # Geen enkele dienst draait al. Houd beide mapsloten ook tijdens de kernmigratie.
             with contextlib.closing(Database(core_db)) as db:
-                db.initialize(pre_update_set=archive)
+                archive = db.initialize(pre_update_set=archive)
                 db.require_writable()
+                if archive is None:
+                    raise SetError("er is geen geverifieerde herstelset voor deze kernmigratie")
         elif core:
             marker.write_text(archive.name, encoding="ascii")
         return archive
@@ -747,8 +825,24 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - aangeroepe
         action.add_argument("--encoder-migrations", type=Path)
         if cmd != "inspect":
             action.add_argument("--version", required=True)
+    restore = sub.add_parser("zet-klaar", help="Maak de gecontroleerde terugzetkopieën")
+    restore.add_argument("--kernmap", required=True, type=Path)
+    restore.add_argument("--set", required=True)
     a = p.parse_args(argv)
     try:
+        if a.cmd == "zet-klaar":
+            core = a.kernmap.resolve()
+            with Database(core / "mediaguard.db").startup_lock(blocking=False):
+                archive = find(core / "backups" / FOLDER, a.set)
+                if archive is None:
+                    raise SetError("herstelset ontbreekt")
+                info = pending(core)
+                if info and info.get("set") != a.set:
+                    raise SetError("er staat al een andere set klaar")
+                info = stage(core, archive, actor="offline-herstel")
+                for entry in info["files"]:
+                    print(f"{entry['staged']} → {entry['live']}")
+                return 0
         if a.cmd == "inspect":
             inspect_schema(a.config, core_migrations=a.core_migrations,
                            encoder_migrations=a.encoder_migrations)

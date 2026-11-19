@@ -494,3 +494,81 @@ def test_healthcheck_refuses_to_check_if_privilege_drop_fails(monkeypatch, capsy
     assert aio_healthcheck.main([]) == aio_healthcheck.main(["--controle"]) == 1
     assert "rechtenwissel geweigerd" in capsys.readouterr().err
 
+
+def test_dienstprocessen_krijgen_geen_toegang_tot_kerngeheimen(tmp_path):
+    env = _env(tmp_path)
+    config = Path(env["MG_AIO_CONFIG"])
+    private = config / "secrets" / "core"
+    private.mkdir(parents=True)
+    # Een leesbare proeftekst maakt de procesgrens onafhankelijk van uid en bestandsmodus.
+    marker = private / "toegangsproef"
+    marker.write_text("proef")
+    shared = config / "secrets" / "internal"
+    shared.mkdir()
+    (shared / "toegangsproef").write_text("proef")
+    script = """
+from pathlib import Path
+import sys
+
+marker, gedeeld, proefmap = map(Path, sys.argv[1:])
+assert gedeeld.read_text() == "proef"
+try:
+    marker.open().close()
+except PermissionError:
+    pass
+else:
+    sys.exit(17)
+try:
+    proefmap.mkdir()
+except PermissionError:
+    sys.exit(0)
+sys.exit(18)
+"""
+    specs = aio.build_specs(env)
+    supervisor = aio.Supervisor(specs, None, None, config_dir=config)
+    codes = {}
+    for spec in specs:
+        if spec.name in {"core", "recovery"}:
+            continue
+        spec.argv = [sys.executable, "-I", "-c", script, str(marker), str(shared / marker.name),
+                     str(private / spec.name)]
+        spec.cwd = str(config)
+        supervisor.start(spec)
+        assert spec.proc is not None
+        codes[spec.name] = spec.proc.wait(timeout=10)
+    assert codes and all(code == 0 for code in codes.values()), codes
+
+
+def test_webbewaker_weigert_de_kerngeheimen_bij_rootstart(tmp_path, monkeypatch):
+    web = tmp_path / "web"
+    web.mkdir()
+    env = _env(tmp_path, MG_HOST="localhost", MG_AIO_NODE=sys.executable,
+               MG_AIO_WEB_DIR=str(web))
+    config = Path(env["MG_AIO_CONFIG"])
+    private = config / "secrets" / "core"
+    private.mkdir(parents=True)
+    (private / "toegangsproef").write_text("proef")
+    (web / "server.mjs").write_text(
+        "from pathlib import Path\n"
+        "try: Path('../config/secrets/core/toegangsproef').open().close()\n"
+        "except PermissionError: raise SystemExit(0)\n"
+        "raise SystemExit(17)\n"
+    )
+    # Doorloop de rootstart tot de bewaker zijn vaste webcommando ontvangt. De
+    # proef draait dat commando als de testgebruiker, met een gewoon leesbaar bestand.
+    monkeypatch.setenv("MG_UID", str(os.getuid()))
+    monkeypatch.setenv("MG_GID", str(os.getgid()))
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(signal, "signal", lambda *_: None)
+    monkeypatch.setattr(aio, "_dri_groups", lambda: [])
+    monkeypatch.setattr(aio, "prepare_start", lambda *_: [])
+    monkeypatch.setattr(aio, "prepare_runtime", lambda *args, **kwargs: None)
+    codes = []
+
+    def probeer_web(argv, env, cwd, _demote):
+        codes.append(subprocess.run(argv, env=env, cwd=cwd, timeout=10, check=False).returncode)
+        raise OSError("einde van de lokale startproef")
+
+    monkeypatch.setattr(aio, "WebLauncher", probeer_web)
+    assert aio._run(env, config) == 1
+    assert codes == [0]

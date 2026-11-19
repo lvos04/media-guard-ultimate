@@ -209,10 +209,27 @@ wisselt MediaGuard de databases om (alleen hernoemen, binnen een seconde). De da
 daarvoor blijven bewaard in `backups/voor-terugzetten/<tijd>/`. Daarna kies je in TrueNAS de
 vorige versie en start je de app. Annuleren kan zolang de app nog draait. Klaarzetten kan
 alleen in de alles-in-één-container (alleen daar is een supervisor die omwisselt). Met losse
-containers zonder supervisor maakt core vlak vóór zijn migratie zelf een set (alleen de
-core-database); die zie en download je in de app. Terugzetten doe je dan met alle containers
-gestopt: zet de huidige `core/mediaguard.db` met `-wal` en `-shm` eerst opzij en zet daarna
-`mediaguard.db` uit de set op die plek.
+containers zonder supervisor zie en download je de door de kern gemaakte set in de app.
+Stop voor het terugzetten alle diensten. Voer met de huidige kernversie, de gewone
+appgebruiker en de gekoppelde appdata- en geheimenmappen het volgende commando uit.
+Vul de datamap van de kern en de naam van de gekozen set in.
+
+```sh
+python -m mediaguard.maintenance.preupdate zet-klaar --kernmap <kernmap> --set <setnaam>
+```
+
+Het commando controleert de set en toont voor elke database de klaargezette kopie
+en het doelpad. Zet bij handmatig herstel eerst alle huidige databases met hun
+`-wal`, `-shm` en `-journal` apart. Hernoem vervolgens de klaargezette kopieën
+naar de aangegeven doelpaden. Verwijder de markering `terugzetten.json` uit de
+kernmap zodra alle kopieën op hun plek staan. Voor een set van een schema met een
+historische cursorsleutel is ook de oorspronkelijke map `secrets/core` nodig. De set
+bevat de verwijzing. Bij het klaarzetten krijgt de database voor de oude versie de
+oorspronkelijke sleutel terug. Bewaar de set en neem de geheimenmap mee in de herstelbundel.
+
+De alles-in-één-supervisor controleert vóór de migratie of de kernel Landlock ABI 3
+of hoger ondersteunt. Daarmee schermt hij de kerngeheimen af voor de nevendiensten
+die voor hun mediabestanden dezelfde gebruikersidentiteit nodig hebben.
 
 Die gewone back-ups bevatten de opgeslagen wachtwoorden en API-sleutels **versleuteld**;
 de sleutel daarvoor (`core/secret.key`) en de gegenereerde sleutels (`secrets/`) staan er

@@ -641,3 +641,144 @@ def test_ander_sqlite_schrijfslot_blijft_bezet_tot_151(
     archief, = settings.backup_dir.glob("voor-update/*/encode/app.db")
     with closing(sqlite3.connect(archief)) as kopie:
         assert kopie.execute("SELECT percent FROM job").fetchone()[0] == 75
+
+
+def test_gemelde_set_herstelt_laatste_kern_en_encodertransactie(settings, old_schema, monkeypatch):
+    config = settings.data_dir.parent / "aio"
+    core, encoder = config / "core", config / "encode"
+    encoder.mkdir(parents=True)
+    settings.data_dir.rename(core)
+    kernel = core / "mediaguard.db"
+    engine = encoder / "app.db"
+    with closing(sqlite3.connect(kernel)) as db, db:
+        db.execute("INSERT INTO jobs(job_type,status,progress,created_at) "
+                   "VALUES ('herstelproef','running',0.25,?)", (STAMP,))
+    with closing(sqlite3.connect(engine)) as db, db:
+        db.execute("CREATE TABLE job (percent INTEGER)")
+        db.execute("INSERT INTO job VALUES (25)")
+
+    make = preupdate._make_set
+    sets = []
+
+    def met_laatste_schrijver(*args, **kwargs):
+        archive = make(*args, **kwargs)
+        sets.append(archive)
+        if len(sets) == 1:
+            # De vorige release gebruikte alleen SQLite-sloten.
+            with closing(sqlite3.connect(engine, timeout=0)) as db, db:
+                db.execute("UPDATE job SET percent=75")
+            with closing(sqlite3.connect(kernel, timeout=0)) as db, db:
+                db.execute("UPDATE jobs SET progress=0.75 WHERE job_type='herstelproef'")
+                db.execute("INSERT INTO audit_events(ts,actor,action) VALUES (?,?,?)",
+                           (STAMP, "herstelproef", "job.retry"))
+                db.execute("INSERT INTO outbox_events(ts,topic,payload) VALUES (?,?,?)",
+                           (STAMP, "recovery.committed", "{}"))
+        return archive
+
+    monkeypatch.setattr(preupdate, "_make_set", met_laatste_schrijver)
+    env = {}
+    lines = aio.before_services(env, config, None, migrate_core=True)
+    picked = Path(env["MG_PRE_UPDATE_SET"])
+    assert any(picked.name in line for line in lines)
+    assert len(sets) == 2 and not preupdate.verify(picked)
+    preupdate.stage(core, picked, actor="herstelproef")
+    assert preupdate.apply_staged(core)["ok"]
+    with closing(sqlite3.connect(kernel)) as db, closing(sqlite3.connect(engine)) as enc:
+        actual = (
+            enc.execute("SELECT percent FROM job").fetchone()[0],
+            db.execute("SELECT progress FROM jobs WHERE job_type='herstelproef'").fetchone()[0],
+            db.execute("SELECT count(*) FROM audit_events WHERE actor=?",
+                       ("herstelproef",)).fetchone()[0],
+            db.execute("SELECT count(*) FROM outbox_events WHERE topic=?",
+                       ("recovery.committed",)).fetchone()[0],
+        )
+    assert actual == (75, 0.75, 1, 1)
+
+
+def test_terugzetmarkering_past_bij_de_vorige_supervisor(settings, old_schema):
+    import re
+
+    root = settings.data_dir.parent
+    core = root / "core"
+    settings.data_dir.rename(core)
+    env = {}
+    aio.before_services(env, root, None, migrate_core=True)
+    archive = Path(env["MG_PRE_UPDATE_SET"])
+    info = preupdate.stage(core, archive, actor="herstelproef")
+    # De lezer van schema 155 accepteert een UTC-tijd met één numeriek achtervoegsel.
+    assert re.fullmatch(r"voor-update-\d{8}T\d{6}Z(?:-\d+)?", info["set"])
+    assert info["set"] == archive.name
+    assert preupdate.apply_staged(core)["ok"]
+    with closing(sqlite3.connect(core / "mediaguard.db")) as db:
+        assert db.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] < "151_"
+        assert db.execute("SELECT topic FROM outbox_events").fetchone() == ("library.synced",)
+
+
+@pytest.mark.parametrize("onderbroken", [False, True])
+def test_oude_sleutel_alleen_bij_expliciet_terugzetten(tmp_path, monkeypatch, onderbroken):
+    root = tmp_path / "installatie"
+    pad = root / "core/mediaguard.db"
+    oud = tmp_path / "schema-155"
+    oud.mkdir()
+    for sql in database.MIGRATIONS_DIR.glob("*.sql"):
+        if sql.name < "156_":
+            (oud / sql.name).symlink_to(sql)
+    oud_materiaal = os.urandom(32)
+    with monkeypatch.context() as versie, closing(database.Database(pad)) as db:
+        versie.setattr(database, "MIGRATIONS_DIR", oud)
+        db.initialize()
+        db.execute("UPDATE outbox_retention SET cursor_key=?", (oud_materiaal,))
+        db.execute("INSERT INTO jobs(job_type,status,progress,created_at) "
+                   "VALUES ('herstelproef','running',0.75,?)", (STAMP,))
+        db.execute("INSERT INTO audit_events(ts,actor,action) VALUES (?,?,?)",
+                   (STAMP, "herstelproef", "job.retry"))
+    with monkeypatch.context() as storing:
+        if onderbroken:
+            def onderbreek(*_):
+                raise InterruptedError("onderbroken migratie")
+            storing.setattr(database.Database, "_apply_migration", onderbreek)
+            with pytest.raises(InterruptedError):
+                preupdate.snapshot_before_start(root, core_migrations=database.MIGRATIONS_DIR,
+                                               encoder_migrations=None, app_version="proef",
+                                               migrate_core=True)
+            with closing(sqlite3.connect(pad)) as db:
+                actief = db.execute("SELECT cursor_key FROM outbox_retention").fetchone()[0]
+                if actief != oud_materiaal:
+                    pytest.fail("De actieve oude sleutel is gewijzigd", pytrace=False)
+                versie = db.execute("SELECT max(version) FROM schema_migrations").fetchone()[0]
+                assert versie < "156_"
+        else:
+            aio.before_services({}, root, None, migrate_core=True)
+    archives = [p.parent for p in pad.parent.glob("backups/voor-update/*/meta.json")]
+    assert archives and all(not preupdate.verify(a) for a in archives)
+    copy = preupdate.shutil.copyfile
+
+    def afwijkende_kopie(src, dest):
+        # Een geldig SQLite-bestand kan toch andere taakgegevens bevatten dan de gekozen set.
+        copy(src, dest)
+        with closing(sqlite3.connect(dest)) as db, db:
+            db.execute("UPDATE jobs SET progress=0.25 WHERE job_type='herstelproef'")
+
+    for archive in archives:
+        if any(oud_materiaal in p.read_bytes() for p in archive.rglob("*") if p.is_file()):
+            pytest.fail("De historische cursorsleutel staat in de herstelset", pytrace=False)
+        kopie, = (root / "secrets/core").glob("outbox-historisch-*")
+        kopie.chmod(0o644)
+        assert preupdate.verify(archive)
+        with pytest.raises(preupdate.SetError, match="cursorsleutel"):
+            preupdate.stage(pad.parent, archive, actor="herstelproef")
+        assert preupdate.pending(pad.parent) is None
+        kopie.chmod(0o600)
+        with monkeypatch.context() as storing:
+            storing.setattr(preupdate.shutil, "copyfile", afwijkende_kopie)
+            with pytest.raises(preupdate.SetError, match="checksum"):
+                preupdate.stage(pad.parent, archive, actor="herstelproef")
+        assert preupdate.pending(pad.parent) is None
+        assert preupdate.main(["zet-klaar", "--kernmap", str(pad.parent),
+                               "--set", archive.name]) == 0
+        assert preupdate.apply_staged(pad.parent)["ok"]
+        with closing(sqlite3.connect(pad)) as db:
+            if db.execute("SELECT cursor_key FROM outbox_retention").fetchone()[0] != oud_materiaal:
+                pytest.fail("De historische cursorsleutel ontbreekt na terugzetten", pytrace=False)
+            assert db.execute("SELECT progress FROM jobs").fetchall() == [(0.75,)]
+            assert db.execute("SELECT action FROM audit_events").fetchall() == [("job.retry",)]

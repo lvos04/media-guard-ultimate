@@ -89,6 +89,13 @@ def database_failure(path: str, exc: Exception) -> JSONResponse | None:
 
 
 def install(app: FastAPI) -> None:
+    @app.exception_handler(sqlite3.OperationalError)
+    async def sqlite_error(request: Request, exc: sqlite3.OperationalError):
+        # Ook de sessie- en API-sleutelcontrole lopen vóór de SSE-response opent.
+        if response := database_failure(request.url.path, exc):
+            return response
+        raise exc
+
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
         if not is_connector(request.url.path):

@@ -179,7 +179,8 @@ class Database:
             self.path.parent, schema.encoder_dir(self.path.parent), blocking=blocking,
         )
 
-    def initialize(self, *, pre_update_set: Path | None = None) -> None:
+    def initialize(self, *, pre_update_set: Path | None = None) -> Path | None:
+        """Initialiseer de database en geef de werkelijk gebruikte herstelset terug."""
         if os.environ.get(schema.AIO_RECOVERY_ENV):
             self.check_schema()
             return
@@ -192,11 +193,11 @@ class Database:
         with self.startup_lock():
             if not self.check_schema():
                 try:
-                    self._initialize(pre_update_set)
+                    return self._initialize(pre_update_set)
                 except schema.SchemaTooNew:
                     self.read_only = True
 
-    def _initialize(self, pre_update_set: Path | None) -> None:
+    def _initialize(self, pre_update_set: Path | None) -> Path | None:
         folder = self.path.parent
         conn = self._connect()
         if conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
@@ -238,6 +239,9 @@ class Database:
                          "154_outbox_generation", "155_job_evidence_snapshot",
                          "156_outbox_cursor_history", "157_connector_evidence"}
             first_protected = next((f for f in pending if f.stem in protected), None)
+            if pre_update_set is not None and first_protected is None:
+                first_protected = pending[0]
+            used_set = None
             previous = max(applied, default="")
             with contextlib.ExitStack() as locks:
                 if applied and first_protected:
@@ -250,7 +254,7 @@ class Database:
                 if applied and (first_protected or other is None):
                     with self._migration_transaction(conn):
                         data_version = conn.execute("PRAGMA data_version").fetchone()[0]
-                        self._backup_before_migration(
+                        used_set = self._backup_before_migration(
                             max(applied), pending[-1].stem,
                             required=first_protected is not None, archive=pre_update_set,
                         )
@@ -295,6 +299,7 @@ class Database:
         finally:
             with contextlib.suppress(OSError):
                 marker.unlink()
+        return used_set
 
     def _check_write_schema(self, conn: sqlite3.Connection) -> None:
         try:
@@ -333,12 +338,13 @@ class Database:
                 (version, utcnow()),
             )
 
-    def _backup_before_migration(self, current: str, target: str, *,
-                                 required: bool = False, archive: Path | None = None) -> None:
+    def _backup_before_migration(
+        self, current: str, target: str, *, required: bool = False, archive: Path | None = None,
+    ) -> Path | None:
         """Verifieer bij een beschermde migratie een actuele herstelset."""
         made = archive or os.environ.get("MG_PRE_UPDATE_SET")
         if not required and made and (Path(made) / "meta.json").is_file():
-            return
+            return Path(made)
         from mediaguard import __version__
         from mediaguard.maintenance import preupdate
 
@@ -348,9 +354,9 @@ class Database:
                 current_turn = (archive is not None
                                 or preupdate.claim_snapshot(self.path.parent, path))
                 if current_turn and preupdate.matches_sources(path, self.path, current, target):
-                    return
+                    return path
             encoder = schema.encoder_dir(self.path.parent)
-            preupdate.make_set(
+            return preupdate.make_set(
                 self.path.parent / "backups" / preupdate.FOLDER, self.path,
                 encode_dir=encoder if required and encoder.is_dir() else None,
                 from_schema=current, to_schema=target,

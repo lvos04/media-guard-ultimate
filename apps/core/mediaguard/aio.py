@@ -119,9 +119,18 @@ class Spec:
     recent: deque = field(default_factory=lambda: deque(maxlen=40), repr=False)
     # eigen (uid, gid) i.p.v. de app-gebruiker, zonder extra groepen (alleen als root gestart)
     user: tuple[int, int] | None = None
+    # De AIO geeft alleen kern en recovery toegang tot de eigen geheime opslag.
+    restricted_roots: tuple[Path, Path, Path] | None = None
     # bestand dat bij een geplande stop (update/herstart) vóór SIGTERM wordt geschreven: de
     # encoder telt een daardoor afgebroken encode dan niet als herstartlus (verbeterpunt 30)
     planned_stop_marker: str | None = None
+
+    def start_command(self) -> list[str]:
+        """Hetzelfde afgeschermde commando voor de gewone bewaker en de webbewaker."""
+        if self.restricted_roots is None:
+            return self.argv
+        return [sys.executable, "-I", str(Path(__file__).with_name("aio_access.py")),
+                *map(str, self.restricted_roots), *self.argv]
 
 
 # Stop Grace Period uit de README (60 s) min een marge, zodat de supervisor zelf klaar is
@@ -341,6 +350,9 @@ def build_specs(env: dict[str, str]) -> list[Spec]:
         cwd=env.get("MG_AIO_WEB_DIR", "/opt/web"),
         health=f"http://{INTERNAL_HOST}:{web_port}/login", grace=60, stop_rank=1,
         user=web_identity(env)))
+    for spec in specs:
+        if spec.name not in {"core", "recovery"}:
+            spec.restricted_roots = (config, work, Path(data))
     if env.get(schema.AIO_RECOVERY_ENV):
         specs = [spec for spec in specs if spec.name in RECOVERY_SERVICES]
         for spec in specs:
@@ -588,8 +600,9 @@ class Supervisor:
                 spec.proc = self.web_launcher.start()
             else:
                 spec.proc = subprocess.Popen(  # noqa: S603 - vaste argv
-                    spec.argv, env=spec.env, cwd=spec.cwd, preexec_fn=preexec, umask=0o002,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+                    spec.start_command(), env=spec.env, cwd=spec.cwd, preexec_fn=preexec,
+                    umask=0o002, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    start_new_session=True)
                 threading.Thread(target=self._pump, args=(spec, spec.proc.stdout),
                                  daemon=True).start()
         except OSError as exc:
@@ -1113,7 +1126,8 @@ def _run(env: dict[str, str], config: Path) -> int:  # pragma: no cover - integr
                 prepare_runtime(config, web_state, (uid, gid),
                                 recovering=bool(env.get(schema.AIO_RECOVERY_ENV)))
                 web = next(spec for spec in build_specs(env) if spec.name == "web")
-                launcher = WebLauncher(web.argv, web.env, web.cwd, _demote(web_uid, web_gid, []))
+                launcher = WebLauncher(web.start_command(), web.env, web.cwd,
+                                       _demote(web_uid, web_gid, []))
                 cleanup.callback(launcher.close)
                 restrict_process(uid, gid, tuple(groups))
             else:
@@ -1155,6 +1169,14 @@ def _run_services(env: dict[str, str], config: Path, stop: threading.Event,
         fallback.close()
     if stop.is_set():
         return 0
+    # Ontbrekende kernelondersteuning moet vóór de eerste migratie blijken.
+    probe = subprocess.run(
+        [sys.executable, "-I", str(Path(__file__).with_name("aio_access.py")), str(config),
+         env.get("MG_AIO_WORK", "/work"), env.get("MG_AIO_DATA", "/data")], check=False,
+    )
+    if probe.returncode:
+        print("[mediaguard] Procesafscherming voor de kernsleutels niet beschikbaar.", flush=True)
+        return 1
     if not env.get(schema.AIO_RECOVERY_ENV):
         try:
             lines = before_services(env, config, None, migrate_core=True)
