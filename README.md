@@ -1,5 +1,7 @@
 # MediaGuard Ultimate
 
+[![Linux-CI](https://git.medialeon.nl/leon/media-guard-ultimate/badges/workflows/ci.yml/badge.svg)](https://git.medialeon.nl/leon/media-guard-ultimate/actions?workflow=ci.yml)
+
 Eén TrueNAS SCALE-app met een Nederlandstalig dashboard die je bestaande Sonarr/Radarr
 vervangt door vier beheerde instanties (eigen forks), ontbrekende afleveringen actief
 terugzoekt, iedere download controleert (juiste aflevering, Dual Audio, Nederlandse
@@ -13,8 +15,8 @@ openen.
 > repo). De overstap van je huidige Sonarr/Radarr (migratie → overschakelen) gebeurt alleen na
 > jouw bevestiging; loop vóór die stap de [controlelijst voor je eigen systeem](#11-controlelijst-op-je-eigen-truenas) door.
 
-> **Over deze repository** — dit is een nieuwe openbare repository met een schone historie, gestart
-> vanaf de stand van november 2026 (versie 1.2.2 plus de Peil-ronde). De ontwikkelhistorie van vóór
+> De broncode en CI staan in de [privérepository op Forgejo](https://git.medialeon.nl/leon/media-guard-ultimate).
+> De historie begint in november 2026 bij versie 1.2.2 plus de Peil-ronde. De ontwikkelhistorie van vóór
 > deze versie (commits, tags `v0.1.0`–`v1.2.2`, release-branches) staat in een privé-archief, omdat
 > die testrapporten en testgegevens van een echte installatie bevat. Commit-hashes die in
 > `CHANGELOG.md` en `docs/` worden genoemd, verwijzen naar dat archief. Licentie: GPL-3.0
@@ -358,7 +360,7 @@ nooit automatisch uitrollen) — [`docs/FORK_UPSTREAM_SYNC.md`](docs/FORK_UPSTRE
 - **Neem de appdata-dataset mee in je TrueNAS-snapshots/replicatie** (bevat `secrets/` en
   `core/secret.key`; zonder die bestanden zijn opgeslagen sleutels en wachtwoorden niet meer
   leesbaar).
-- **Nieuwe versie**: MediaGuard kijkt één keer per dag op GitHub en meldt een nieuwe versie
+- **Nieuwe versie**: MediaGuard 1.2.2 controleert dagelijks het openbare releasekanaal en meldt een nieuwe versie
   (melding + punt in *Wacht op jou*). Er wordt nooit vanzelf bijgewerkt. Uitzetten:
   *Instellingen › Systeem & back-ups → Updates*.
 - **Terug naar je oude Sonarr/Radarr**: *Instellingen › Migratie → Terugdraaien* per instantie

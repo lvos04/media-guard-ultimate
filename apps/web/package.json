@@ -2,6 +2,11 @@
   "name": "mediaguard-web",
   "version": "1.2.2",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://git.medialeon.nl/leon/media-guard-ultimate.git",
+    "directory": "apps/web"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",

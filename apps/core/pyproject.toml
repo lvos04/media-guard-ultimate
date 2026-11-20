@@ -17,6 +17,9 @@ dependencies = [
   "segno>=1.6,<2",
 ]
 
+[project.urls]
+Repository = "https://git.medialeon.nl/leon/media-guard-ultimate"
+
 [project.scripts]
 # noodtoegang vanuit de container-shell (wachtwoord/2FA kwijt), zie docs/SECURITY.md
 mediaguard-noodtoegang = "mediaguard.noodtoegang:main"
