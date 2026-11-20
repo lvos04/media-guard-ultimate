@@ -840,15 +840,21 @@ finally:
             if running != "running" or int(restarts):
                 break
             if health == verwacht:
-                uit = _docker("exec", self.naam, "/opt/venv/bin/python", "-c",
-                              "import json, urllib.error, urllib.request\n"
-                              "o = urllib.request.build_opener(urllib.request.ProxyHandler({}))\n"
-                              "try:\n"
-                              "    r = o.open('http://127.0.0.1:30080/api/v1/health', timeout=2)\n"
-                              "except urllib.error.HTTPError as exc:\n"
-                              "    r = exc\n"
-                              "print(json.dumps([r.code, json.load(r)]))", check=False,
-                              timeout=10)
+                try:
+                    uit = _docker("exec", self.naam, "/opt/venv/bin/python", "-c",
+                                  "import json, urllib.error, urllib.request\n"
+                                  "o = urllib.request.build_opener(urllib.request.ProxyHandler({}))\n"
+                                  "try:\n"
+                                  "    r = o.open('http://localhost:30080/api/v1/health', timeout=2)\n"
+                                  "except urllib.error.HTTPError as exc:\n"
+                                  "    r = exc\n"
+                                  "print(json.dumps([r.code, json.load(r)]))", check=False,
+                                  timeout=10)
+                except subprocess.TimeoutExpired:
+                    # Een ontbrekende meting telt niet mee voor de drie bewakingsrondes.
+                    # Begin de waarneming opnieuw binnen dezelfde totale tijdslimiet.
+                    waargenomen = None
+                    uit = ""
                 if uit:
                     code, body = json.loads(uit)
                     if code == http_code:
