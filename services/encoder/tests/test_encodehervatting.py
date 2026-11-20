@@ -204,6 +204,22 @@ def test_oude_staart_moet_alle_opeenvolgende_bronbeelden_bevatten(
         assert json.loads((tmp_path / "stand.json").read_text())["delen"][1]["beelden"] == behouden
 
 
+@pytest.mark.parametrize(("begin", "eerste"), [(-0.023, 0.0), (0.125, 0.148)])
+def test_bronklok_telt_vanaf_de_gemeten_containerstart(tmp_path, monkeypatch, begin, eerste):
+    from app import hervatpunten
+
+    uitvoer = (
+        f"frame|best_effort_timestamp_time={eerste}\n"
+        f"frame|best_effort_timestamp_time={eerste + 0.042}\n"
+        f"format|start_time={begin}\n"
+    )
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw:
+                        subprocess.CompletedProcess(args, 0, stdout=uitvoer, stderr=""))
+    bron = tmp_path / "bron.mkv"
+    assert hervatpunten._beeldtijden(bron, [], bronklok=True) == pytest.approx([0.023, 0.065])
+    assert hervatpunten._beeldtijden(bron, []) == pytest.approx([eerste, eerste + 0.042])
+
+
 def test_verschoven_begintijd_blokkeert_overname_van_oud_beeldwerk(tmp_path, monkeypatch):
     from app import hervatpunten
 

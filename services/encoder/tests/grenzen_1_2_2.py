@@ -126,9 +126,10 @@ def test_oud_beeldwerk_wordt_na_de_claim_hergebruikt(tmp_path, gepland):
         return gelukt
 
     with patch.object(uitvoerder, "_run_process", meet_start):
-        assert asyncio.run(
+        voltooid = asyncio.run(
             uitvoerder.run_job(db, instellingen, job, storage_validator=lambda: None)
         )
+    assert voltooid, tuple(db.fetch_one("SELECT status,foutsoort,fout FROM job WHERE id=?", (job,)))
     assert db.fetch_one("SELECT geslaagd FROM verificatie WHERE job_id=?", (job,))[0] == 1
     tijden = beeldtijden(bron)
     assert len(tijden) == len(proef["tijden"]) == 144

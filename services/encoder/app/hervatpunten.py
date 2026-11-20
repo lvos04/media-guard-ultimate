@@ -187,11 +187,12 @@ def _beeldtijden(path: Path, interval: list[str], *, onderbroken: bool = False,
         regels = result.stdout.splitlines()
         offset = 0.0
         if bronklok:
-            begin, = (float(r.removeprefix("format|start_time=")) for r in regels
-                      if r.startswith("format|start_time="))
-            if not math.isfinite(begin):
+            # FFmpeg rekent de encoderklok vanaf het begin van de container.
+            # Bij AAC-voorloop kan dat tijdstip vóór het eerste videobeeld liggen.
+            offset, = (float(r.removeprefix("format|start_time=")) for r in regels
+                       if r.startswith("format|start_time="))
+            if not math.isfinite(offset):
                 raise ValueError
-            offset = max(0.0, begin)
         tijden = [float(line.removeprefix(prefix).partition("|")[0]) - offset
                   for line in regels if line.startswith("frame|")]
         if not all(math.isfinite(t) for t in tijden) or any(
