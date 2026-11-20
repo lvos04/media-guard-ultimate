@@ -16,6 +16,7 @@ class WalCommit(NamedTuple):
     frames: int
     end: int
     sha256: str
+    cycle: tuple[int, int, int] | None = None
 
 
 def database_files(main: Path) -> dict[str, Path]:
@@ -86,27 +87,44 @@ def _committed_wal(conn: sqlite3.Connection, wal: Path, size: int, strict: bool)
                 if not 0 < age < (1 << 31) or salts[4:] == header[20:24]:
                     raise sqlite3.DatabaseError("ongelezen frames in de vorige SQLite-WAL")
                 old_cycle = True
-    return WalCommit(frames, end, wal_prefix_hash(wal, end))
+    return WalCommit(frames, end, wal_prefix_hash(wal, end), struct.unpack(">III", header[12:24]))
 
 
 @contextmanager
-def checked_database(work: Path, files: Mapping[str, Path], *,
-                     strict_wal: bool = True) -> Iterator[tuple[sqlite3.Connection, WalCommit]]:
-    """Combineer ook verspreid liggende originelen. Alleen SQLite op de kopie mag herstellen."""
+def copied_family(work: Path, files: Mapping[str, Path]) -> Iterator[dict[str, Path]]:
+    """Verzamel de bestanden één keer, ook als de vorige database deels is verplaatst."""
     with tempfile.TemporaryDirectory(dir=work, prefix=".controle-sqlite-") as tmp:
         main = Path(tmp) / "controle.db"
+        copied = {}
         for tail, source in files.items():
             if tail == "-shm":
                 continue
             if not stat.S_ISREG(source.lstat().st_mode):
                 raise sqlite3.DatabaseError(f"{source.name} is geen regulier databasebestand")
-            shutil.copyfile(source, main.with_name(main.name + tail))
+            copied[tail] = main.with_name(main.name + tail)
+            shutil.copyfile(source, copied[tail])
         if "" not in files or not main.stat().st_size:
             raise sqlite3.DatabaseError("het SQLite-hoofdbestand ontbreekt of is leeg")
+        yield copied
+
+
+@contextmanager
+def checked_database(work: Path, files: Mapping[str, Path], *,
+                     strict_wal: bool = True,
+                     wal_end: int | None = None) -> Iterator[tuple[sqlite3.Connection, WalCommit]]:
+    """Alleen SQLite op de kopie mag herstellen en de gecommitteerde inhoud overdragen."""
+    with copied_family(work, files) as copied:
+        main = copied[""]
         wal = main.with_name(main.name + "-wal")
         size = wal.stat().st_size if "-wal" in files else 0
+        if wal_end is not None:
+            if not 0 < wal_end <= size:
+                raise sqlite3.DatabaseError("het bewezen WAL-prefix ontbreekt")
+            with wal.open("r+b") as stream:
+                stream.truncate(wal_end)
+            size = wal_end
         with closing(sqlite3.connect(main)) as source, \
-                closing(sqlite3.connect(Path(tmp) / "stand.db")) as snapshot:
+                closing(sqlite3.connect(main.with_name("stand.db"))) as snapshot:
             commit = _committed_wal(source, wal, size, strict_wal)
             source.backup(snapshot)
             snapshot.execute("PRAGMA temp_store=MEMORY")

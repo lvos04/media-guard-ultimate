@@ -9,6 +9,8 @@ De CI-taak voor historische releases gebruikt de volledige Git-historie en draai
 | `aangewezen-bewijs` | 3 | A, B | `schrijver` |
 | `aangewezen-set` | 3 | A, B | `schrijver` |
 | `aanmeldslot` | 4 | Zelfstandige rechtenproef | `rechten` |
+| `aanvullend deelcheckpoint` | 8 | B, C, D | `deelcheckpoint zonder-checkpoint / deelcheckpoint / intact / latere-wal / nieuwe-wal` |
+| `aanvullend historische-keuze` | 8 | A, B, D | `historische-keuze stap-0 / actief-mediaguard.db / onvolledige-encoder` |
 | `archieffout` | 2, 3, 4, 5, 6, 7 | A, B | `proeven archieffout` |
 | `archiefrotatie` | 2, 3 | A, B | `archiefrotatie` |
 | `archiefrotatie PROEF_ARCHIEFKLOK=systeem` | 2, 3 | A, B | `archiefrotatie systeem` |
@@ -176,3 +178,5 @@ De twee onderbrekingsreeksen in `test_herstartpunten.py` bevatten twaalf updateg
 De varianten `terugval-gevuld herupgrade` en `terugval-gevuld herupgrade-schade` laten schema 155 een klaargezette aanvraag zelf afhandelen. Daarna toetst de huidige supervisor regel B op beide standen. Met de oorspronkelijke inhoud laat hij twee starts toe. Een leesbare wijziging van de opzijgezette encodervoortgang houdt beide starts tegen en bewaart de bestanden.
 
 Bij `proeven behoud` beginnen beide upgrades met dezelfde kopie van schema 150. Alle oorspronkelijke rijen blijven gelijk. De toen nog afwezige tabel voor de verificatiegeneratie van het offsite-doel krijgt in elke upgrade precies één rij met ID 1. De proef controleert het formaat van beide generaties en hun onafhankelijke uitgifte.
+
+De historische keuzeproef gebruikt de oorspronkelijke schrijver en zijn onderbrekingspunt. Voor de positieve proef komt de primaire AV1-database uit migratie 001 met één actieve taak. De oorspronkelijke minimale fixture mist verplichte voortgangstabellen en dient als weigerproef. De twee tegenproeven op de eerste versie met fasebestand vereisen de oorspronkelijke fout en de inhoudelijke slotregel.

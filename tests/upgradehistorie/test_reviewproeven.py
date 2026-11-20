@@ -33,6 +33,8 @@ VERSIES = {
 
 BRONPADEN = ["apps/core", "scripts", "tests/fixtures", "deploy", "services/encoder/app"]
 for naam, commit in {
+    "voor-fasebestand": "1739ee01a1d8a11d58d4163793705eff2b45eb21",
+    "eerste-fasebestand": "16c29bdaab5c313436fbf9bdb62fac8b7e4fb50a",
     "154": VERSIES["154"][0],
     "voor-155": "060ecfa8daa2efacbf8ed9ea06cdaa151096c696",
     "155": VERSIES["155"][0],
@@ -116,6 +118,14 @@ GEVALLEN = [
         for fase in ("half", "volledig")
         for storing in ("intact", "zonder-wal", "zonder-slotcommit")
     ),
+    "deelcheckpoint zonder-checkpoint",
+    "deelcheckpoint deelcheckpoint",
+    "deelcheckpoint intact",
+    "deelcheckpoint latere-wal",
+    "deelcheckpoint nieuwe-wal",
+    "historische-keuze stap-0",
+    "historische-keuze actief-mediaguard.db",
+    "historische-keuze onvolledige-encoder",
     "beschadigingsmatrix",
     "kijkpunten",
     "rechten",
@@ -129,6 +139,7 @@ def proefomgeving(tmp_path, historie, bron):
         PROEFBRON=str(bron),
         MG_REPO=str(bron),
         HISTORIE=str(historie),
+        TESTBRON=str(REPO),
         TMPDIR=str(tmp_path),
         SQLITE_TMPDIR=str(tmp_path),
         WERK=str(tmp_path),
@@ -201,6 +212,8 @@ def test_reviewproef(tmp_path, historie, geval):
 # Elke verwachte weigering moet de inhoudelijke slotregel van de oorspronkelijke proef
 # opleveren. Een importfout of een uitgevallen proefproces levert daardoor nooit bewijs.
 TEGENPROEVEN = [
+    ("eerste-fasebestand", "deelcheckpoint deelcheckpoint", 1, "vorige 90%, succes ja"),
+    ("eerste-fasebestand", "historische-keuze stap-0", 1, "aantal bevestigingswaarden bij gelijke stand 3"),
     ("154", "lege-pagina", 1, "HTTP 200, 0 events"),
     ("155", "lege-pagina", 1, "HTTP 200, 0 events"),
     ("voor-155", "lege-pagina", 0, "HTTP 409"),

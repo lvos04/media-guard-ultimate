@@ -47,7 +47,13 @@ from uuid import uuid4
 
 from mediaguard import event_keys, schema
 from mediaguard.db import MIGRATIONS_DIR, Database, check_schema_versions
-from mediaguard.maintenance.sqlite_recovery import checked_database, database_files, wal_prefix_hash
+from mediaguard.maintenance.sqlite_progress import contains_commit, content_proof, row_bytes
+from mediaguard.maintenance.sqlite_recovery import (
+    checked_database,
+    copied_family,
+    database_files,
+    wal_prefix_hash,
+)
 
 FOLDER = "voor-update"
 SET_PREFIX = "voor-update-"
@@ -83,6 +89,12 @@ class _SourceChanged(SetError):
 
 class _PreviousDataError(SetError):
     """De oorspronkelijke SQLite-bestanden moeten voor nader herstel bewaard blijven."""
+
+
+class _ChoiceRequired(_PreviousDataError):
+    def __init__(self, preview: dict):
+        super().__init__(MANUAL_CHOICE)
+        self.preview = preview
 
 
 def _now() -> str:
@@ -569,7 +581,8 @@ def _restore_primary(core: Path, targets: set[str]) -> str | None:
 
 
 def _check_restore_copy(path: Path, rel: str, size: int, digest: str,
-                        av1_migrations: Path, work: Path, primary: str | None) -> None:
+                        av1_migrations: Path, work: Path, primary: str | None, *,
+                        describe: bool = False) -> dict | None:
     try:
         if not path.is_file():
             raise SetError(f"klaargezette kopie ontbreekt: {path.name}")
@@ -590,6 +603,7 @@ def _check_restore_copy(path: Path, rel: str, size: int, digest: str,
                 encoder_copy_versions(db, av1_migrations, primary=rel == primary)
             else:
                 check_schema_versions(path, connection=db)
+            return _restore_state(db) if describe else None
     except (OSError, sqlite3.Error) as exc:
         raise SetError(f"{path.name} is onleesbaar: {exc}") from exc
 
@@ -656,7 +670,7 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
     if previous and previous.get("fase") == "klaarzetten":
         previous = previous["update"]
     preparation = {"fase": "klaarzetten", "poging": uuid4().hex, "set": path.name,
-                   "databases": [_source_state(core_dir, rel) for rel in pairs
+                   "databases": [_source_state(core_dir, rel, record_content=True) for rel in pairs
                                  if (config_root / rel).is_file()], "update": previous}
     _write_phase(core_dir, preparation)
     _protect_old_manifests(core_dir / "backups" / FOLDER)
@@ -747,12 +761,10 @@ def manual_choice_pending(core: Path) -> bool:
     if not (core / STAGE_MARKER).is_file() or not swapping(core):
         return False
     phase = _read_proof(core / COMMIT_ORIGIN)
-    return not phase or phase.get("fase") != "omwisseling"
-
-
-def _display_copy(core: Path, path: Path) -> dict:
-    with checked_database(core, {"": path}) as (db, _):
-        return _restore_state(db)
+    if not phase or phase.get("fase") != "omwisseling":
+        return True
+    return ("keuze" in phase and phase["stap"] <= phase["keuzestap"]
+            and staged_status(core) is not True)
 
 
 def _restore_state(db: sqlite3.Connection) -> dict:
@@ -889,7 +901,7 @@ def _legacy_asides(root: Path, pairs: list[_RestorePair], requested: datetime) -
 
 
 def _begin_swap(root: Path, pairs: list[_RestorePair], requested: datetime,
-                max_age_s: float, *, manual: bool = False) -> dict:
+                max_age_s: float, *, manual: bool = False, reserved: Path | None = None) -> dict:
     begun = any(not p.staged.exists() for p in pairs)
     candidates = _legacy_asides(root, pairs, requested)
     if len(candidates) > 1 or (begun and not candidates):
@@ -898,6 +910,10 @@ def _begin_swap(root: Path, pairs: list[_RestorePair], requested: datetime,
         if not manual:
             raise _PreviousDataError(MANUAL_CHOICE)
         aside, = candidates
+        if reserved is not None and reserved != aside:
+            raise SetError("de historische bewaarmap en de vorige databases spreken elkaar tegen")
+    elif reserved is not None:
+        aside = reserved
     else:
         age = (datetime.now(UTC) - requested).total_seconds()
         if not 0 <= age <= max_age_s:
@@ -927,16 +943,23 @@ def _begin_swap(root: Path, pairs: list[_RestorePair], requested: datetime,
 
 def _check_position(core: Path, work: Path, pairs: list[_RestorePair], aside: Path, originals: dict,
                     moves: list[tuple[Path, Path]], step: int, migrations: Path,
-                    proof: dict | None = None) -> dict:
+                    proof: dict | None = None, *, chosen: dict | None = None,
+                    prepared: dict | None = None) -> dict:
     """Bewijs elke volledige database, ook tussen de rename van de kern en haar WAL."""
     moved = dict(moves[:step])
     expected = set()
     allowed = set()
     measured = {}
+    prepared_hashes = prepared or {}
     primary = _restore_primary(core, {pair.rel for pair in pairs})
+    if aside.resolve() != aside.absolute() or (os.path.lexists(aside) and not aside.is_dir()):
+        raise SetError("ongeldig pad voor de vorige databases")
     for pair in pairs:
         restored = moved.get(pair.staged, pair.staged)
-        _check_restore_copy(restored, pair.rel, pair.size, pair.digest, migrations, work, primary)
+        selected = _check_restore_copy(restored, pair.rel, pair.size, pair.digest, migrations,
+                                       work, primary, describe=chosen is not None)
+        if chosen is not None:
+            chosen[pair.rel] = selected
         expected.add(restored)
         allowed.add(pair.staged)
         family = {}
@@ -953,7 +976,9 @@ def _check_position(core: Path, work: Path, pairs: list[_RestorePair], aside: Pa
             key = pair.rel + tail
             if key in originals:
                 source = moved.get(live, live)
-                if tail == "-wal" and proof is not None and not os.path.lexists(source):
+                if (tail == "-wal" and (proof is not None or chosen is not None
+                                        or pair.rel in prepared_hashes)
+                        and not os.path.lexists(source)):
                     continue  # De backup-API bewijst of alle gecommitteerde rijen er nog zijn.
                 if not source.is_file() or not stat.S_ISREG(source.lstat().st_mode):
                     raise _PreviousDataError(f"het oorspronkelijke bestand {source.name} "
@@ -981,11 +1006,21 @@ def _check_position(core: Path, work: Path, pairs: list[_RestorePair], aside: Pa
         raise SetError("onverwachte database of SQLite-hulpbestand bij de omwisseling")
     if proof is not None and measured != proof:
         raise _PreviousDataError("de vorige database wijkt af van de bewezen commit")
+    if any(measured.get(rel, {}).get("inhoud") != digest
+           for rel, digest in prepared_hashes.items()):
+        raise _PreviousDataError("de gecommitteerde inhoud veranderde vóór de omwisseling")
     return measured
 
 
+def _choice_preview(info: dict, aside: Path, previous: dict, chosen: dict) -> dict:
+    return {"status": MANUAL_CHOICE, "set": info["set"], "bewaarmap": aside.name,
+            "vorige": previous, "gekozen": chosen,
+            "bevestig": _checksum([info, aside.name, previous, chosen])}
+
+
 def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | None,
-               migrations: Path, max_age_s: float, work: Path, *, manual: bool = False) -> tuple[
+               migrations: Path, max_age_s: float, work: Path, *, manual: bool = False,
+               preview: dict | None = None) -> tuple[
                    Path, dict, list[tuple[Path, Path]], int, bool]:
     root = core / "backups" / ASIDE_FOLDER
     try:
@@ -996,18 +1031,28 @@ def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict 
         raise SetError("ongeldige datum in markering voor terugzetten") from exc
     phase = _read_proof(core / COMMIT_ORIGIN)
     continuing = phase is not None and phase.get("fase") == "omwisseling"
+    prepared = {}
     if continuing:
         state = phase.copy()
-        if state.pop("aanvraag") != info or journal not in (None, {"fasebestand": state["poging"]}):
+        original_journal = "keuze" in state and state["journaal"] == _checksum(journal)
+        if state.pop("aanvraag") != info or (
+            journal not in (None, {"fasebestand": state["poging"]}) and not original_journal
+        ):
             raise SetError("de terugzetaanvraag en het fasebestand horen niet bij elkaar")
         state.pop("fase")
     else:
-        if journal is not None and not manual:
-            raise _PreviousDataError(MANUAL_CHOICE)
-        state = _begin_swap(root, pairs, requested, max_age_s, manual=manual)
+        if journal is None:
+            state = _begin_swap(root, pairs, requested, max_age_s, manual=manual)
+        else:
+            if not manual:
+                raise _PreviousDataError(MANUAL_CHOICE)
+            state = journal.copy()
+            if (state.pop("controle", None) != _checksum([info, state])
+                    or state.keys() != {"vorige", "originelen", "stap"}):
+                raise SetError("de historische omwisselstap hoort niet bij deze aanvraag")
         if not manual and (info.get("voorbereiding") or
                                (phase and phase.get("fase") == "klaarzetten")):
-            _check_preparation(core, info.get("voorbereiding"), work=work)
+            prepared = _check_preparation(core, info.get("voorbereiding"), work=work)
         state["poging"] = uuid4().hex
     name, originals, step = state.get("vorige"), state.get("originelen"), state.get("stap")
     if not isinstance(name, str) or not _ASIDE_NAME.fullmatch(name):
@@ -1023,6 +1068,19 @@ def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict 
             or not all(isinstance(v, str) and re.fullmatch("[0-9a-f]{64}", v)
                        for v in originals.values())):
         raise SetError("ongeldige bestandenlijst voor de vorige databases")
+    if (step == 0 and (manual or "keuze" in state) and journal is not None
+            and all(p.staged.exists() for p in pairs)
+            and not any(os.path.lexists(p.saved(aside, tail))
+                        for p in pairs for tail in _SQLITE_TAILS)):
+        # Vóór de eerste rename kan een gewone schrijver een nieuwe WAL hebben geopend.
+        # De naam ligt vast in het journaal. Meet de huidige familie in diezelfde indeling.
+        if any(p.rel in originals and not p.live.is_file() for p in pairs):
+            raise _PreviousDataError("een oorspronkelijke database ontbreekt vóór de eerste wissel")
+        fresh = _begin_swap(root, pairs, requested, max_age_s, manual=True, reserved=aside)
+        if manual:
+            originals = state["originelen"] = fresh["originelen"]
+        elif fresh["originelen"].keys() != originals.keys():
+            raise _PreviousDataError(MANUAL_CHOICE)
     moves = []
     for p in pairs:
         for tail in _SQLITE_TAILS:
@@ -1038,10 +1096,19 @@ def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict 
             step += 1
     if continuing and "databases" not in state:
         raise SetError("het vorige databasebewijs ontbreekt in het fasebestand")
+    choosing = (manual and not continuing) or ("keuze" in state and step == state["keuzestap"])
+    chosen = {} if choosing else None
     measured = _check_position(core, work, pairs, aside, originals, moves, step, migrations,
-                               state.get("databases"))
-    if not continuing:
+                               None if choosing else state.get("databases"), chosen=chosen,
+                               prepared=prepared)
+    if not continuing or choosing:
         state["databases"] = measured
+    if choosing:
+        choice = _choice_preview(info, aside, measured, chosen)
+        if not manual and choice["bevestig"] != state["keuze"]:
+            raise _ChoiceRequired(choice)
+        if preview is not None:
+            preview.update(choice)
     return aside, state, moves, step, continuing
 
 
@@ -1074,19 +1141,19 @@ def _swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | Non
           owner: tuple[int, int] | None, migrations: Path, max_age_s: float,
           *, manual: str | None = None) -> dict:
     marker = core / STAGE_MARKER
+    preview = {}
     aside, state, moves, step, continuing = _swap_plan(
         core, info, pairs, journal, migrations, max_age_s, core, manual=manual is not None,
+        preview=preview,
     )
     root, originals = aside.parent, state["originelen"]
-    if not continuing:
-        if manual is not None:
-            measured = state["databases"]
-            choice = _checksum([info, aside.name, measured])
-            if manual != choice:
-                return {"status": MANUAL_CHOICE, "set": info["set"], "bevestig": choice,
-                        "vorige": measured, "gekozen": {
-                            p.rel: _display_copy(core, p.staged if p.staged.exists() else p.live)
-                            for p in pairs}}
+    if manual is not None and preview:
+        if manual != preview["bevestig"]:
+            return preview
+        state.update(keuze=manual, keuzestap=step)
+        if not continuing:
+            state["journaal"] = _checksum(journal)
+    if not continuing or (manual is not None and preview):
         _publish_step(marker, info, state, owner)
     reference = {"fasebestand": state["poging"]}
     if journal != reference and marker.exists():
@@ -1101,8 +1168,18 @@ def _swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | Non
                 raise SetError("de aanvraag is tijdens de omwisseling gewijzigd")
         elif position != len(moves):
             raise SetError("de aanvraag voor de onvoltooide omwisseling ontbreekt")
-        _check_position(core, core, pairs, aside, originals, moves, position, migrations,
-                        state["databases"])
+        if "keuze" in state and position == state["keuzestap"]:
+            fresh = {}
+            _, _, current_moves, current_step, _ = _swap_plan(
+                core, info, pairs, reference, migrations, max_age_s, core, manual=True,
+                preview=fresh)
+            if current_step != position or not fresh:
+                raise SetError("de bestandsposities veranderden vóór de bevestigde wissel")
+            if fresh["bevestig"] != state["keuze"] or current_moves != moves:
+                raise _ChoiceRequired(fresh)
+        else:
+            _check_position(core, core, pairs, aside, originals, moves, position, migrations,
+                            state["databases"])
 
     verify_step(step)
     aside.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1345,7 +1422,7 @@ def _archive_names(folder: Path) -> set[str]:
     return {p.name for p in folder.glob(SET_PREFIX + "*") if _SET_NAME.fullmatch(p.name)}
 
 
-def _source_state(core: Path, rel: str, *, strict_wal: bool = True,
+def _source_state(core: Path, rel: str, *, strict_wal: bool = True, record_content: bool = False,
                   work: Path | None = None) -> dict:
     main = core.parent / rel
     observed = None
@@ -1355,6 +1432,11 @@ def _source_state(core: Path, rel: str, *, strict_wal: bool = True,
             with checked_database(work or core, database_files(main),
                                   strict_wal=strict_wal) as (conn, wal):
                 stand = _logical_state(conn)
+                proof = {}
+                if record_content:
+                    proof["opvolging"] = content_proof(conn, stand["tabellen"])
+                    if wal.frames and wal.cycle is not None:
+                        proof["wal_cyclus"] = list(wal.cycle)
                 digest = _regular_digest(main)
         except (OSError, sqlite3.Error):
             if _file_generation(main) == generation:
@@ -1365,9 +1447,10 @@ def _source_state(core: Path, rel: str, *, strict_wal: bool = True,
         if observed is not None and stand != observed:
             break
         if _file_generation(main) == generation:
-            return {"bestand": rel, "kern": digest, "wal_frames": wal.frames,
+            return {"bestand": rel, "kern": digest, "hoofdbestand_id": generation[0][:2],
+                    "wal_frames": wal.frames,
                     "wal_positie": wal.end, "wal_sha256": wal.sha256, "inhoud": stand["inhoud"],
-                    "integriteit": "ok", "stand": stand}
+                    "integriteit": "ok", "stand": stand, **proof}
         observed = stand
     raise _SourceChanged("de database veranderde tijdens het meten van de commit")
 
@@ -1380,7 +1463,7 @@ def _bind_archive(core: Path, archive: Path, *, phase: str = "aanbod") -> str:
     if _source_generation(main, encode) != generation:
         raise _SourceChanged("de bronbestanden zijn sinds de herstelset gewijzigd")
     try:
-        databases = [_source_state(core, rel) for rel in entries]
+        databases = [_source_state(core, rel, record_content=True) for rel in entries]
     except (OSError, sqlite3.Error) as exc:
         if _source_generation(main, encode) != generation:
             raise _SourceChanged("de bronbestanden zijn tijdens het kopiëren gewijzigd") from exc
@@ -1455,7 +1538,56 @@ def _verify_archived_stands(core: Path, entries: dict, expected: dict) -> None:
             raise SetError("de herstelset mist de bewezen gecommitteerde inhoud")
 
 
-def _verify_progress(core: Path, previous: list[dict], databases: list[dict]) -> None:
+def _contains_previous(conn: sqlite3.Connection, old: dict) -> bool:
+    if _logical_state(conn) == old["stand"]:
+        return True
+    return "opvolging" in old and contains_commit(conn, old["opvolging"], old["stand"]["tabellen"])
+
+
+def _later_cycle(previous, current) -> bool:
+    if previous is None or current is None:
+        return False
+    # SQLite verhoogt zowel het checkpointnummer als salt-1 bij hergebruik van de WAL.
+    distance = (current[0] - previous[0]) % (1 << 32)
+    return (0 < distance < 1 << 31 and (current[1] - previous[1]) % (1 << 32) == distance
+            and current[2] != previous[2])
+
+
+def _verify_successor(core: Path, work: Path, old: dict, new: dict) -> None:
+    # Vergelijk de huidige commit en zijn mogelijke voorganger op precies dezelfde bytes.
+    with copied_family(work, database_files(core.parent / old["bestand"])) as family, \
+            checked_database(work, family) as (current, wal):
+        if _logical_state(current) != new["stand"]:
+            raise SetError("de gecommitteerde inhoud veranderde tijdens de controle")
+        positions = old["stand"]["tabellen"]
+        # Een oudere schrijver kan zijn laatste taakwijziging al in het hoofdbestand
+        # hebben vastgelegd. Vergelijk dan elke taak op identiteit en eigen voortgang.
+        main_only = (not old["wal_frames"] and not wal.frames
+                     and old.get("hoofdbestand_id") == new["hoofdbestand_id"])
+        if "opvolging" in old and contains_commit(current, old["opvolging"], positions,
+                                                  advanced_tasks=main_only):
+            return
+        if wal.frames:
+            end = old["wal_positie"]
+            if (old["wal_frames"] and wal.end >= end
+                    and wal_prefix_hash(family["-wal"], end) == old["wal_sha256"]):
+                with checked_database(work, family, wal_end=end) as (db, _):
+                    if _contains_previous(db, old):
+                        return
+            if not old["wal_frames"] or _later_cycle(old.get("wal_cyclus"), wal.cycle):
+                # Een oude, leesbare WAL kan de stand in een nieuwer hoofdbestand terugdraaien.
+                # Toets ook de inhoud ná het afspelen: elke bestaande taak behoudt haar identiteit.
+                base = {tail: path for tail, path in family.items() if tail != "-wal"}
+                with checked_database(work, base) as (db, _):
+                    if _contains_previous(db, old):
+                        proof = old.get("opvolging") or content_proof(db, positions)
+                        if contains_commit(current, proof, positions, replayed=True):
+                            return
+    raise SetError("de eerder bewezen gecommitteerde inhoud ontbreekt")
+
+
+def _verify_progress(core: Path, previous: list[dict], databases: list[dict], *,
+                     work: Path | None = None) -> None:
     actual = {db["bestand"]: db for db in databases}
     for old in previous:
         new = actual.get(old["bestand"])
@@ -1472,20 +1604,17 @@ def _verify_progress(core: Path, previous: list[dict], databases: list[dict]) ->
                     (position["hoogste"] is not None and
                      (now["hoogste"] is None or now["hoogste"] < position["hoogste"]))):
                 raise SetError("een eerder bewezen rij of event ontbreekt")
-        if old["kern"] == new["kern"] and old["wal_frames"]:
-            end = old["wal_positie"]
-            wal = core.parent / (old["bestand"] + "-wal")
-            if new["wal_positie"] < end or wal_prefix_hash(wal, end) != old["wal_sha256"]:
-                raise SetError("de eerder bewezen WAL-commit ontbreekt")
+        _verify_successor(core, work or core, old, new)
 
 
-def _check_preparation(core: Path, attempt: str | None, *, work: Path | None = None) -> None:
+def _check_preparation(core: Path, attempt: str | None, *, work: Path | None = None) -> dict:
     try:
         phase = _read_proof(core / COMMIT_ORIGIN)
         if not phase or phase.get("fase") != "klaarzetten" or phase["poging"] != attempt:
             raise SetError("de aanvraag mist haar vooraf vastgelegde stand")
         current = [_source_state(core, item["bestand"], work=work) for item in phase["databases"]]
-        _verify_progress(core, phase["databases"], current)
+        _verify_progress(core, phase["databases"], current, work=work)
+        return {db["bestand"]: db["inhoud"] for db in current}
     except (SetError, OSError, sqlite3.Error) as exc:
         raise _PreviousDataError(f"de stand van vóór het klaarzetten is onbewezen: {exc}") from exc
 
@@ -1530,7 +1659,7 @@ def _archive_intent(main: Path, encode: Path | None, name: str,
         sources.extend(f"encode/{p.name}" for p in sorted(encode.glob("*.db")))
     generation = _source_generation(main, encode)
     try:
-        databases = [_source_state(core, rel) for rel in sources]
+        databases = [_source_state(core, rel, record_content=True) for rel in sources]
     except (OSError, sqlite3.Error) as exc:
         if _source_generation(main, encode) != generation:
             raise _SourceChanged("de bron veranderde tijdens de fasemeting") from exc
@@ -1570,8 +1699,7 @@ def _logical_state(conn: sqlite3.Connection) -> dict:
     tables_state = {}
 
     def feed(row: tuple) -> None:
-        encoded = json.dumps(tuple(row), default=lambda blob: {"blob": blob.hex()})
-        digest.update(encoded.encode() + b"\n")
+        digest.update(row_bytes(row))
 
     for setting in ("user_version", "application_id", "encoding"):
         feed(conn.execute(f"PRAGMA {setting}").fetchone())
@@ -1927,18 +2055,23 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - aangeroepe
                 info = pending(core)
                 if info and info.get("set") != a.set:
                     raise SetError("er staat al een andere set klaar")
-                if manual_choice_pending(core):
+                phase = _read_proof(core / COMMIT_ORIGIN)
+                if manual_choice_pending(core) or (info and phase and "keuze" in phase):
                     assert info is not None
                     pairs = _restore_pairs(core, info)
                     request = _request(core) or {}
-                    result = _swap(core, info, pairs, request.get("omwisseling"), None,
-                                   encoder_migrations(os.environ), STAGE_MAX_AGE_S,
-                                   manual=a.bevestig_stand or "")
+                    try:
+                        result = _swap(core, info, pairs, request.get("omwisseling"), None,
+                                       encoder_migrations(os.environ), STAGE_MAX_AGE_S,
+                                       manual=a.bevestig_stand or "")
+                    except _ChoiceRequired as exc:
+                        result = exc.preview
                     if result.get("ok"):
                         print(f"De gekozen set {a.set} is teruggezet. "
                               f"Vorige stand: {result['previous']}")
                         return 0
                     print(MANUAL_CHOICE)
+                    print(f"Bewaarmap voor de vorige databases: {result['bewaarmap']}")
                     for group in ("vorige", "gekozen"):
                         for rel, value in result[group].items():
                             tables = value["tabellen"]
@@ -1946,7 +2079,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - aangeroepe
                             print(f"{group} {rel}: integriteit {value['integriteit']}, "
                                   f"{sum(t['rijen'] for t in tables.values())} rijen, "
                                   f"hoogste event {events.get('hoogste')}, "
-                                  f"voortgang {value.get('voortgang')}")
+                                  f"voortgang {value.get('voortgang')}, inhoud {value['inhoud']}")
                     print(f"Bevestig deze keuze met --bevestig-stand {result['bevestig']}")
                     return 1
                 if a.bevestig_stand:

@@ -315,3 +315,218 @@ def test_hub_toont_een_historische_aanvraag_ook_binnen_de_cachetermijn(client, c
     assert tweede["rollback"] == {"owner": "mediaguard", "staged": None,
                                   "pre_update_restore_mode": "wacht op handmatige keuze"}
     assert preupdate.pending(core) == request
+
+
+def historisch_journaal(core, request):
+    """De oude schrijver publiceerde de aangewezen bewaarmap vóór de eerste hernoeming."""
+    from datetime import datetime
+
+    pairs = preupdate._restore_pairs(core, request)
+    root = core / "backups" / preupdate.ASIDE_FOLDER
+    state = preupdate._begin_swap(root, pairs, datetime.fromisoformat(request["requested_at"]),
+                                  preupdate.STAGE_MAX_AGE_S)
+    marker = core / preupdate.STAGE_MARKER
+    marker.write_text(json.dumps({**request, "omwisseling": {
+        **state, "controle": preupdate._checksum([request, state])}}))
+    (core / preupdate.COMMIT_ORIGIN).unlink()
+    return root / state["vorige"]
+
+
+@pytest.mark.parametrize("onderbreking", [True, False])
+def test_keuze_hermeten_voor_de_eerste_hernoeming(tmp_path, installatie, capsys, monkeypatch,
+                                                  onderbreking):
+    core, enc = tmp_path / "core", tmp_path / "encode/app.db"
+    request, _, _ = punten.herstelvraag(tmp_path, installatie)
+    aside = historisch_journaal(core, request)
+    args = ["zet-klaar", "--kernmap", str(core), "--set", request["set"]]
+    assert preupdate.main(args) == 1
+    preview = capsys.readouterr().out
+    assert aside.name in preview and "voortgang [90" in preview
+    first = preview.split()[-1]
+    assert preupdate.main(args) == 1 and capsys.readouterr().out == preview
+
+    class Uitval(BaseException):
+        pass
+
+    publish = preupdate._publish_step
+
+    def na_stap_nul(marker, info, state, owner):
+        publish(marker, info, state, owner)
+        assert state["stap"] == 0 and state["keuze"] == first
+        if onderbreking:
+            raise Uitval
+        schrijf_en_stop(enc, "db.execute('UPDATE job SET percent=91')\ndb.commit()")
+
+    with monkeypatch.context() as grens:
+        grens.setattr(preupdate, "_publish_step", na_stap_nul)
+        if onderbreking:
+            with pytest.raises(Uitval):
+                preupdate.main([*args, "--bevestig-stand", first])
+            with closing(sqlite3.connect(enc)) as db, db:
+                db.execute("UPDATE job SET percent=91")
+        else:
+            assert preupdate.main([*args, "--bevestig-stand", first]) == 1
+            assert "voortgang [91" in capsys.readouterr().out
+    before = punten.bestandsinhoud(tmp_path)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match=preupdate.MANUAL_CHOICE):
+            punten.herstart(tmp_path)
+        assert punten.bestandsinhoud(tmp_path) == before
+    assert not list(aside.glob("*"))
+    assert preupdate.manual_choice_pending(core)
+    assert preupdate.main([*args, "--bevestig-stand", first]) == 1
+    current = capsys.readouterr().out
+    second = current.split()[-1]
+    assert aside.name in current and "voortgang [91" in current and second != first
+    assert punten.bestandsinhoud(tmp_path) == before
+    assert preupdate.main([*args, "--bevestig-stand", second]) == 0
+    assert Path(preupdate.take_result(core)["previous"]) == aside
+    assert punten.stand(aside / "core__mediaguard.db", aside / "encode__app.db")[3] == [(91,)]
+    assert punten.stand(core / "mediaguard.db", enc)[3] == [(75,)]
+
+
+def test_historische_bewaarmap_en_gekozen_inhoud_blijven_gebonden(tmp_path, installatie, capsys):
+    core = tmp_path / "core"
+    request, _, _ = punten.herstelvraag(tmp_path, installatie)
+    aside = historisch_journaal(core, request)
+    args = ["zet-klaar", "--kernmap", str(core), "--set", request["set"]]
+    assert preupdate.main(args) == 1
+    preview = capsys.readouterr().out
+    assert aside.name in preview
+    choice = preview.split()[-1]
+    marker = core / preupdate.STAGE_MARKER
+    journal = json.loads(marker.read_text())["omwisseling"]
+    del journal["controle"]
+    for bad in ("../onbekend", "onbekend"):
+        altered = {**journal, "vorige": bad}
+        marker.write_text(json.dumps({**request, "omwisseling": {
+            **altered, "controle": preupdate._checksum([request, altered])}}))
+        before = punten.bestandsinhoud(tmp_path)
+        assert preupdate.main([*args, "--bevestig-stand", choice]) == 1
+        assert "ongeldige map" in capsys.readouterr().err
+        assert punten.bestandsinhoud(tmp_path) == before
+    # Een andere geverifieerde kopie met hetzelfde rijaantal en dezelfde percentages.
+    staged = tmp_path / "encode/app.db.terugzetten"
+    with closing(sqlite3.connect(staged)) as db, db:
+        db.execute("UPDATE library SET naam='andere proefbibliotheek'")
+    selected = next(f for f in request["files"] if f["live"] == "encode/app.db")
+    selected.update(sha256=preupdate._sha256(staged), size=staged.stat().st_size)
+    request["manifest"] = preupdate._manifest(request["set"], request["files"])
+    marker.write_text(json.dumps({**request, "omwisseling": {
+        **journal, "controle": preupdate._checksum([request, journal])}}))
+    before = punten.bestandsinhoud(tmp_path)
+    assert preupdate.main([*args, "--bevestig-stand", choice]) == 1
+    new = capsys.readouterr().out
+    assert aside.name in new and new.split()[-1] != choice and "voortgang [75" in new
+    assert punten.bestandsinhoud(tmp_path) == before
+
+
+def test_opvolging_beschermt_elke_bestaande_taakrij(tmp_path):
+    core = tmp_path / "core"
+    core.mkdir()
+    rel = "core/mediaguard.db"
+    path = tmp_path / rel
+    with closing(sqlite3.connect(path)) as db, db:
+        db.executescript("CREATE TABLE job(id INTEGER PRIMARY KEY, percent INTEGER);"
+                         "INSERT INTO job VALUES (1, 92), (2, 90);")
+    old = preupdate._source_state(core, rel, record_content=True)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("INSERT INTO job VALUES (3, 95)")
+        db.execute("CREATE TABLE audit(id INTEGER PRIMARY KEY)")
+    later = preupdate._source_state(core, rel)
+    preupdate._verify_progress(core, [old], [later])
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("UPDATE job SET percent=182-percent WHERE id IN (1,2)")
+    changed = preupdate._source_state(core, rel)
+    assert later["stand"]["tabellen"] == changed["stand"]["tabellen"]
+    assert later["inhoud"] != changed["inhoud"]
+    for proof in (old, {k: v for k, v in old.items() if k != "opvolging"}):
+        with pytest.raises(preupdate.SetError, match="bewezen gecommitteerde inhoud ontbreekt"):
+            preupdate._verify_progress(core, [proof], [changed])
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("UPDATE job SET percent=93 WHERE id=1")
+    preupdate._verify_progress(core, [old], [preupdate._source_state(core, rel)])
+    other = core / "andere.db"
+    with closing(sqlite3.connect(path)) as source, closing(sqlite3.connect(other)) as copy:
+        source.backup(copy)
+    other.replace(path)
+    with pytest.raises(preupdate.SetError, match="bewezen gecommitteerde inhoud ontbreekt"):
+        preupdate._verify_progress(core, [old], [preupdate._source_state(core, rel)])
+
+
+@pytest.mark.parametrize("volledig_checkpoint", [False, True])
+def test_oude_wal_mag_een_vastgelegde_taak_niet_terugdraaien(tmp_path, installatie,
+                                                             volledig_checkpoint):
+    core, enc = tmp_path / "core", tmp_path / "encode/app.db"
+    request, _, _ = punten.herstelvraag(tmp_path, installatie)
+    assert preupdate.cancel(core)
+    archive = core / "backups" / preupdate.FOLDER / request["set"]
+    wal = enc.with_name("app.db-wal")
+    with closing(sqlite3.connect(enc)) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA wal_autocheckpoint=0")
+        db.execute("UPDATE job SET percent=89")
+        db.commit()
+        db.execute("UPDATE job SET percent=90")
+        db.commit()
+        old_wal = wal.read_bytes()
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        db.execute("UPDATE job SET percent=92")
+        db.commit()
+        if volledig_checkpoint:
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        preupdate.stage(core, archive, actor="lokale proef")
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    wal.write_bytes(old_wal)
+    with preupdate.checked_database(core, {"": enc}) as (main, _), \
+            preupdate.checked_database(core, preupdate.database_files(enc)) as (actual, _):
+        assert main.execute("SELECT percent FROM job").fetchone() == (92,)
+        assert actual.execute("SELECT percent FROM job").fetchone() == (90,)
+    before = punten.bestandsinhoud(tmp_path)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="onbewezen"):
+            punten.herstart(tmp_path)
+        assert punten.bestandsinhoud(tmp_path) == before and preupdate.take_result(core) is None
+    wal.rename(tmp_path / "oude-wal")
+    for _ in range(2):
+        punten.herstart(tmp_path)
+    aside = Path(preupdate.take_result(core)["previous"])
+    assert punten.stand(aside / "core__mediaguard.db", aside / "encode__app.db")[3] == [(92,)]
+
+
+@pytest.mark.parametrize("gecheckpoint", [False, True])
+def test_wal_verdwijnt_tussen_voorcontrole_en_eerste_wissel(tmp_path, installatie, monkeypatch,
+                                                            gecheckpoint):
+    core, enc = tmp_path / "core", tmp_path / "encode/app.db"
+    info, _, _ = punten.herstelvraag(tmp_path, installatie)
+    assert preupdate.cancel(core)
+    sql = "db.execute('UPDATE job SET percent=92'); db.commit()"
+    if gecheckpoint:
+        sql += "\nassert db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone() == (0, 0, 0)"
+    schrijf_en_stop(enc, sql)
+    preupdate.stage(core, core / "backups" / preupdate.FOLDER / info["set"], actor="lokale proef")
+    wal = enc.with_name("app.db-wal")
+    assert wal.is_file() and (wal.stat().st_size == 0) == gecheckpoint
+    controle = preupdate._check_preparation
+    na_uitval = {}
+
+    def na_controle(*args, **kwargs):
+        hashes = controle(*args, **kwargs)
+        if wal.exists():
+            wal.rename(tmp_path / "apart-gehouden-wal")
+            na_uitval.update(punten.bestandsinhoud(tmp_path))
+        return hashes
+
+    monkeypatch.setattr(preupdate, "_check_preparation", na_controle)
+    for _ in range(2):
+        if gecheckpoint:
+            aio.apply_staged_restore(tmp_path, None, before_start=True)
+        else:
+            with pytest.raises(RuntimeError, match="gecommitteerde inhoud|onbewezen"):
+                aio.apply_staged_restore(tmp_path, None, before_start=True)
+            assert na_uitval == punten.bestandsinhoud(tmp_path)
+            assert preupdate.pending(core) and preupdate.take_result(core) is None
+    assert na_uitval
+    if gecheckpoint:
+        aside = Path(preupdate.take_result(core)["previous"])
+        assert punten.stand(aside / "core__mediaguard.db", aside / "encode__app.db")[3] == [(92,)]

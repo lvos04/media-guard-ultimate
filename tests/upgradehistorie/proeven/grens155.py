@@ -10,7 +10,6 @@ from contextlib import closing
 from pathlib import Path
 
 from av1_fixture import maak_av1_v1
-
 from mediaguard import aio, db
 from mediaguard.maintenance import preupdate
 
