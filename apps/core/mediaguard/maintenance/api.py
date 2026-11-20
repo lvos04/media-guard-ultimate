@@ -167,7 +167,9 @@ def _backup_encoder_dbs(ctx: AppContext, core_copy: Path) -> list[dict[str, Any]
     mislukte kopie laat geen half bestand achter; de fout staat in de metadata."""
     import os
 
-    root = Path(os.environ.get("MG_AIO_CONFIG") or ctx.settings.data_dir.parent) / "encode"
+    from mediaguard.maintenance.preupdate import encoder_backup_dir
+
+    root = encoder_backup_dir(ctx.settings.data_dir)
     out = []
     for db in sorted(root.glob("*.db")):
         dest = core_copy.with_name(core_copy.stem + f".encode-{db.name}")

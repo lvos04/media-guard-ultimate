@@ -552,9 +552,7 @@ def _check_restore_copy(path: Path, rel: str, size: int, digest: str,
                 raise SetError(f"{path.name} heeft een ongecontroleerd SQLite-journaal")
         with checked_database(work, {"": path}) as (db, _):
             if rel.startswith("encode/"):
-                have = schema.versions_in(db, "schema_versie", "versie")
-                if have - _encoder_versions(av1_migrations):
-                    raise schema.SchemaTooNew()
+                encoder_copy_versions(db, av1_migrations)
             else:
                 check_schema_versions(path, connection=db)
     except (OSError, sqlite3.Error) as exc:
@@ -833,7 +831,7 @@ def _begin_swap(root: Path, pairs: list[_RestorePair], requested: datetime,
     return {"vorige": aside.name, "originelen": originals, "stap": step}
 
 
-def _check_position(core: Path, pairs: list[_RestorePair], aside: Path, originals: dict,
+def _check_position(work: Path, pairs: list[_RestorePair], aside: Path, originals: dict,
                     moves: list[tuple[Path, Path]], step: int, migrations: Path) -> None:
     """Bewijs elke volledige database, ook tussen de rename van de kern en haar WAL."""
     moved = dict(moves[:step])
@@ -841,7 +839,7 @@ def _check_position(core: Path, pairs: list[_RestorePair], aside: Path, original
     allowed = set()
     for pair in pairs:
         restored = moved.get(pair.staged, pair.staged)
-        _check_restore_copy(restored, pair.rel, pair.size, pair.digest, migrations, core)
+        _check_restore_copy(restored, pair.rel, pair.size, pair.digest, migrations, work)
         expected.add(restored)
         allowed.add(pair.staged)
         family = {}
@@ -873,7 +871,7 @@ def _check_position(core: Path, pairs: list[_RestorePair], aside: Path, original
                         expected.add(side)
         if family:
             try:
-                with checked_database(core, family):
+                with checked_database(work, family):
                     pass
             except (sqlite3.Error, OSError) as exc:
                 raise _PreviousDataError(
@@ -884,9 +882,9 @@ def _check_position(core: Path, pairs: list[_RestorePair], aside: Path, original
         raise SetError("onverwachte database of SQLite-hulpbestand bij de omwisseling")
 
 
-def _swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | None,
-          owner: tuple[int, int] | None, migrations: Path, max_age_s: float) -> dict:
-    marker = core / STAGE_MARKER
+def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | None,
+               migrations: Path, max_age_s: float, work: Path) -> tuple[
+                   Path, dict, list[tuple[Path, Path]], int]:
     root = core / "backups" / ASIDE_FOLDER
     try:
         requested = datetime.fromisoformat(info["requested_at"])
@@ -928,7 +926,40 @@ def _swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | Non
         src, dst = moves[step]
         if not os.path.lexists(src) and os.path.lexists(dst):
             step += 1
-    _check_position(core, pairs, aside, originals, moves, step, migrations)
+    _check_position(work, pairs, aside, originals, moves, step, migrations)
+    return aside, state, moves, step
+
+
+def staged_status(core: Path) -> bool | None:
+    """Pas de leescontroles van de omwisseling toe op een tijdelijke kopie."""
+    marker = core / STAGE_MARKER
+    try:
+        before = marker.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    try:
+        info = _request(core)
+        if info is None:
+            return None
+        pairs, journal = _restore_request(core, info)
+        with tempfile.TemporaryDirectory(prefix="mg-terugzetcontrole-") as work:
+            _swap_plan(core, info, pairs, journal, encoder_migrations(os.environ),
+                       STAGE_MAX_AGE_S, Path(work))
+        after = marker.lstat()
+        if before != after or before.st_mtime_ns != after.st_mtime_ns:
+            return None
+    except (OSError, ValueError, RuntimeError, SetError):
+        return None
+    return True
+
+
+def _swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | None,
+          owner: tuple[int, int] | None, migrations: Path, max_age_s: float) -> dict:
+    marker = core / STAGE_MARKER
+    aside, state, moves, step = _swap_plan(core, info, pairs, journal, migrations, max_age_s, core)
+    root, originals = aside.parent, state["originelen"]
     if journal is None:
         _publish_step(marker, info, state, owner)
     aside.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -967,11 +998,8 @@ def _apply_staged(core_dir: Path, owner: tuple[int, int] | None, max_age_s: floa
     if info is None:
         return None
     begun = "omwisseling" in info
-    journal = info.pop("omwisseling", None)
     try:
-        if begun and not isinstance(journal, dict):
-            raise SetError("ongeldige voortgangsmarkering voor terugzetten")
-        pairs = _restore_pairs(core_dir, info)
+        pairs, journal = _restore_request(core_dir, info)
         return _swap(core_dir, info, pairs, journal, owner, av1_migrations, max_age_s)
     except (SetError, schema.SchemaTooNew) as exc:
         result = {"ok": False, "set": info.get("set"), "at": _now(), "error": str(exc)}
@@ -986,6 +1014,14 @@ def _apply_staged(core_dir: Path, owner: tuple[int, int] | None, max_age_s: floa
         cancel(core_dir)
         _write_result(core_dir, result, owner)
         return result
+
+
+def _restore_request(core: Path, info: dict) -> tuple[list[_RestorePair], dict | None]:
+    begun = "omwisseling" in info
+    journal = info.pop("omwisseling", None)
+    if begun and not isinstance(journal, dict):
+        raise SetError("ongeldige voortgangsmarkering voor terugzetten")
+    return _restore_pairs(core, info), journal
 
 
 def _write_result(core_dir: Path, result: dict[str, Any],
@@ -1033,6 +1069,45 @@ def _encoder_versions(migrations_dir: Path) -> set[int]:
         raise RuntimeError("Migratiemap van de AV1-engine ontbreekt")
     return {int(m.group(1)) for p in migrations_dir.glob("*.sql")
             if (m := _ENC_VERSION.match(p.name))}
+
+
+_ENCODER_PROGRESS_TABLES = {
+    1: {"library", "bestand", "besluit", "job", "verificatie", "vervang_transactie", "scan_run"},
+    10: {"job_poging"},
+    16: {"trial_run", "encoding_trials", "quality_measurements"},
+    26: {"scan_bijdrage"},
+}
+
+
+def encoder_copy_versions(db: sqlite3.Connection, migrations: Path, *,
+                          primary: bool = False) -> set[int]:
+    have = schema.versions_in(db, "schema_versie", "versie")
+    if have - _encoder_versions(migrations):
+        raise schema.SchemaTooNew()
+    if primary:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+        if 1 not in have or any(version in have and not required <= tables
+                                for version, required in _ENCODER_PROGRESS_TABLES.items()):
+            raise SetError("Voortgangstabellen ontbreken in de primaire AV1-back-up")
+    return have
+
+
+def primary_encoder_db(folder: Path) -> Path | None:
+    configured = os.environ.get("DATABASE_URL")
+    if not configured:
+        return folder / "app.db"
+    if not configured.startswith("sqlite:///"):
+        return None
+    path = Path(configured.removeprefix("sqlite:///"))
+    if path.is_absolute() and path.parent.resolve() == folder.resolve() and path.suffix == ".db":
+        return path
+    return None
+
+
+def encoder_backup_dir(core: Path) -> Path:
+    if configured := os.environ.get("MG_SCHEMA_ENCODER_DIR"):
+        return Path(configured)
+    return Path(os.environ.get("MG_AIO_CONFIG") or core.parent) / "encode"
 
 
 @dataclass

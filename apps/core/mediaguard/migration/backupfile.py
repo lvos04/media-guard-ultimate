@@ -38,6 +38,7 @@ from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
+from xml.etree import ElementTree
 
 DB_NAMES = {"sonarr.db": "sonarr", "radarr.db": "radarr"}
 SHADOW_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -108,12 +109,18 @@ def extracted(zip_path: Path, max_uncompressed: int) -> Iterator[dict[str, Any]]
             app = DB_NAMES[PurePosixPath(db_info.filename).name.lower()]
             db_path = tmp / "source.db"
             _copy_member(zf, db_info, db_path, max_uncompressed)
-            cfg = next((i for i in infos if i.filename.lower() == "config.xml"), None)
+            configs = [i for i in infos if i.filename.lower() == "config.xml"]
+            if len(configs) > 1:
+                raise BackupInvalid("Zip bevat meer dan één config.xml")
             config_xml = None
-            if cfg is not None:
+            if configs:
+                cfg, = configs
                 if cfg.file_size > 1024 * 1024:
                     raise BackupInvalid("config.xml is onrealistisch groot")
-                config_xml = zf.read(cfg).decode("utf-8", errors="replace")
+                try:
+                    config_xml = zf.read(cfg).decode("utf-8")
+                except UnicodeError as exc:
+                    raise BackupInvalid("config.xml is onleesbaar") from exc
             yield {"app": app, "db_path": db_path, "db_member": db_info.filename,
                    "config_xml": config_xml, "members": [i.filename for i in infos]}
     finally:
@@ -143,12 +150,16 @@ COUNT_TABLES = ("Series", "Episodes", "EpisodeFiles", "Movies", "MovieFiles", "I
                 "RootFolders", "RemotePathMappings", "History")
 
 
-def config_values(config_xml: str | None) -> dict[str, str]:
-    """Leest eenvoudige <Sleutel>waarde</Sleutel>-paren (regex, geen XML-entiteiten)."""
-    if not config_xml:
-        return {}
-    return {m.group(1): m.group(2).strip() for m in
-            re.finditer(r"<([A-Za-z]+)>([^<]{0,500})</\1>", config_xml)}
+def _parse_config(xml: str) -> ElementTree.Element:
+    if re.search(r"<!\s*(DOCTYPE|ENTITY)\b", xml, re.IGNORECASE):
+        raise BackupInvalid("config.xml bevat een ongeoorloofde XML-declaratie")
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError as exc:
+        raise BackupInvalid("config.xml is onleesbaar") from exc
+    if root.tag != "Config":
+        raise BackupInvalid("config.xml mist het Config-hoofdelement")
+    return root
 
 
 def inspect_backup(zip_path: Path, max_uncompressed: int,
@@ -175,7 +186,10 @@ def inspect_backup(zip_path: Path, max_uncompressed: int,
                 schema_version = conn.execute("SELECT MAX(Version) FROM VersionInfo").fetchone()[0]
         finally:
             conn.close()
-        cfg = config_values(ex["config_xml"])
+        xml = ex["config_xml"]
+        cfg = {} if xml is None else {
+            node.tag: (node.text or "").strip() for node in _parse_config(xml) if not len(node)
+        }
         version = None
         m = _VERSION_IN_NAME.search(name or zip_path.name)
         if m:
@@ -283,18 +297,16 @@ def _camel(col: str) -> str:
 
 
 def rewrite_config_xml(xml: str, api_key: str, target_url: str) -> str:
+    root = _parse_config(xml)
     parts = urlsplit(target_url)
     port = parts.port or (443 if parts.scheme == "https" else 80)
     values = {"ApiKey": api_key, "Port": str(port), "UrlBase": parts.path.rstrip("/"),
               "EnableSsl": "False"}
-    out = xml
     for key, value in values.items():
-        pattern = re.compile(rf"<{key}>[^<]*</{key}>")
-        if pattern.search(out):
-            out = pattern.sub(f"<{key}>{value}</{key}>", out)
-        else:
-            out = out.replace("</Config>", f"  <{key}>{value}</{key}>\n</Config>")
-    return out
+        for node in root.findall(key):
+            root.remove(node)
+        ElementTree.SubElement(root, key).text = value
+    return ElementTree.tostring(root, encoding="unicode", short_empty_elements=False)
 
 
 def build_shadow_zip(src_zip: Path, dest_zip: Path, *, rules: list[tuple[str, str]],
@@ -305,7 +317,7 @@ def build_shadow_zip(src_zip: Path, dest_zip: Path, *, rules: list[tuple[str, st
     dest_zip.parent.mkdir(parents=True, exist_ok=True)
     with extracted(src_zip, max_uncompressed) as ex:
         state = _patch_db(ex["db_path"], rules)
-        xml = ex["config_xml"] or "<Config>\n</Config>\n"
+        xml = ex["config_xml"] if ex["config_xml"] is not None else "<Config>\n</Config>\n"
         new_xml = rewrite_config_xml(xml, target_api_key, target_url)
         tmp_zip = dest_zip.with_suffix(".partial")
         with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as out:

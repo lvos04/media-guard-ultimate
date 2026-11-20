@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import secrets
 import sqlite3
@@ -13,18 +14,23 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
+from xml.etree import ElementTree
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 from test_migration_fakes import MigFakeArr
+from test_upgradebewijs import ROOT, ub
 
 from mediaguard import health_summary
 from mediaguard.app import create_app
 from mediaguard.auth import Principal, current_principal
+from mediaguard.connector import backups
 from mediaguard.db import utcnow
-from mediaguard.instances.registry import apikey_secret
+from mediaguard.instances.registry import apikey_secret, list_instances
+from mediaguard.maintenance import api as onderhoud
 from mediaguard.maintenance import bundle, preupdate
 from mediaguard.notify import offsite
 from mediaguard.provisioning.templates import PREFIX, owned_name
@@ -320,7 +326,9 @@ def herstelbronnen(client, ctx, tmp_path, monkeypatch):
     monkeypatch.setenv("MG_AIO_CONFIG", str(tmp_path))
     encoder = tmp_path / "encode"
     encoder.mkdir()
-    with closing(sqlite3.connect(encoder / "encoder.db")) as db, db:
+    migration = preupdate.encoder_migrations({}) / "001_init.sql"
+    with closing(sqlite3.connect(encoder / "app.db")) as db, db:
+        db.executescript(migration.read_text())
         db.executescript("CREATE TABLE schema_versie (versie INTEGER); "
                          "INSERT INTO schema_versie VALUES (1);")
     backup = client.post("/api/v1/backups").json()
@@ -359,6 +367,9 @@ def geverifieerde_offsite(client, ctx, respx_mock, herstelbronnen):
     respx_mock.put(f"{target}/{archive['file']}").respond(201)
     respx_mock.get(f"{target}/{archive['file']}").respond(200, content=archive_bytes)
     respx_mock.put(f"{target}/{offsite.KEYFILE}").respond(201)
+    respx_mock.get(f"{target}/{offsite.KEYFILE}").respond(
+        200, content=(bundle.bundle_dir(ctx) / offsite.KEYFILE).read_bytes(),
+    )
     assert client.post("/api/v1/notify/offsite/run").json()["ok"] is True
     respx_mock.calls.clear()
     return target
@@ -390,9 +401,14 @@ def test_herstelrapport_geverifieerde_dekking_en_alleen_lezen(
     }
     assert {item["instance_id"] for item in report["forks"]} == forks.keys()
     assert all(item["verified"] and item["name"] for item in report["forks"])
-    assert len(calls) == 8 and len(respx_mock.calls) == 0
+    assert len(calls) == 8
+    assert [(call.request.method, call.request.url.path.rsplit("/", 1)[1])
+            for call in respx_mock.calls] == [
+                ("GET", herstelbronnen[2]["file"]), ("GET", offsite.KEYFILE),
+            ]
     repeated = machine.get("/connector/v1/items?type=backups", headers=headers)
     assert repeated.headers["etag"] == response.headers["etag"] and len(calls) == 8
+    assert len(respx_mock.calls) == 2
     denied = machine.get("/api/v1/notify/offsite", headers=headers)
     assert denied.status_code == 403
     keyfile = json.loads((bundle.bundle_dir(ctx) / offsite.KEYFILE).read_text())
@@ -1545,3 +1561,310 @@ def test_evidence_job_version_follows_worker_attempt(client, machine, ctx, monke
     monkeypatch.setattr(jobs, "__version__", "2.3.6")
     assert machine.get(url, headers=headers).json() == running
     assert machine.get(attempt_path, headers=headers).json() == attempt
+
+
+BACKUP_REPORT_ROUTE = "/connector/v1/items?type=backups"
+
+
+def rapport(machine, headers):
+    antwoord = machine.get(BACKUP_REPORT_ROUTE, headers=headers)
+    assert antwoord.status_code == 200
+    item, = antwoord.json()["items"]
+    return item
+
+
+@pytest.mark.parametrize("variant", ["sleutelbestand", "bundelinhoud"])
+def test_onherstelbare_bundel(client, machine, ctx, herstelbronnen, tmp_path, variant):
+    _, inrichting, archief, _, _ = herstelbronnen
+    lokale_map = bundle.bundle_dir(ctx)
+    bestand = lokale_map / archief["file"]
+    sleutel = lokale_map / offsite.KEYFILE
+    code = inrichting["recovery_code"]
+    assert "core/mediaguard.db" in bundle.restore(bestand, code, sleutel, tmp_path / "controle")
+    if variant == "sleutelbestand":
+        inhoud = json.loads(sleutel.read_text())
+        del inhoud["wrapped"]
+        sleutel.write_text(json.dumps(inhoud))
+    else:
+        with bestand.open("r+b") as kopie:
+            kopie.truncate(bestand.stat().st_size - 1)
+
+    externe_map = tmp_path / "externe-kopie"
+    externe_map.mkdir()
+    ctx.config.set("global", "", "backup.offsite.kind", "path", "proef")
+    ctx.config.set("global", "", "backup.offsite.path", str(externe_map), "proef")
+    assert client.post("/api/v1/notify/offsite/run").json()["ok"] is False
+    mislukt = 0
+    for bron in (lokale_map, externe_map):
+        try:
+            bundle.restore(bron / bestand.name, code, bron / offsite.KEYFILE, tmp_path / "herstel")
+        except (bundle.BundleError, FileNotFoundError):
+            mislukt += 1
+    assert mislukt == 2
+    item = rapport(machine, key(client))
+    dekking = item["bundle"]
+    print(f"{variant}: herstel vooraf=ok, herstel geweigerd={mislukt}/2, "
+          f"bundel={dekking['status']}, verified={dekking['verified']}, "
+          f"key_match={dekking['key_match']}, totaal={item['status']}")
+    assert dekking["status"] == item["status"] == "degraded" and not dekking["verified"]
+
+
+def test_encoder_zonder_actieve_voortgang(
+    client, machine, ctx, tmp_path, monkeypatch, herstelbronnen, geverifieerde_offsite
+):
+    # De primaire database is tijdens de kopie tijdelijk buiten de gekoppelde map.
+    monkeypatch.syspath_prepend(str(ROOT / "services" / "encoder"))
+    from app.db import Database
+
+    oorspronkelijke_kopie = ctx.settings.backup_dir / herstelbronnen[0]["file"]
+    oorspronkelijke_kopie.with_suffix(".json").unlink()
+    (tmp_path / "encode" / "app.db").unlink()
+    with closing(sqlite3.connect(tmp_path / "encode" / "encoder.db")) as db, db:
+        db.executescript("CREATE TABLE schema_versie (versie INTEGER); "
+                         "INSERT INTO schema_versie VALUES (1);")
+    afgekoppeld = tmp_path / "losgekoppelde-engine" / "app.db"
+    afgekoppeld.parent.mkdir()
+    Database(SimpleNamespace(database_path=afgekoppeld, config_root=afgekoppeld.parent,
+                             backup_root=tmp_path / "migratiekopie")).initialize()
+    assert ub.vul(afgekoppeld, "encode")["toegevoegd"]["job"] >= 1
+    with closing(sqlite3.connect(afgekoppeld)) as db, db:
+        db.execute("UPDATE job SET status='bezig' WHERE id=(SELECT MIN(id) FROM job)")
+    kopie = client.post("/api/v1/backups").json()
+    actief = tmp_path / "encode" / "app.db"
+    afgekoppeld.rename(actief)
+    with closing(sqlite3.connect(actief.as_uri() + "?immutable=1", uri=True)) as db:
+        assert db.execute("SELECT count(*) FROM job WHERE status='bezig'").fetchone()[0] == 1
+    hulpbestanden = []
+    for entry in kopie["extra_files"]:
+        pad = ctx.settings.backup_dir / entry["file"]
+        with closing(sqlite3.connect(pad.as_uri() + "?immutable=1", uri=True)) as db:
+            assert not db.execute("SELECT 1 FROM sqlite_schema WHERE name='job'").fetchall()
+        hulpbestanden.append(hashlib.sha256(pad.read_bytes()).hexdigest())
+    assert hulpbestanden
+    item = rapport(machine, key(client))
+    dekking = item["encoder"]
+    if dekking["verified"]:
+        assert [db["sha256"] for db in dekking["databases"]] == hulpbestanden
+    print(f"AV1: actieve taken=1, kopieën met taaktabel=0, encoder={dekking['status']}, "
+          f"verified={dekking['verified']}, totaal={item['status']}")
+    assert dekking["status"] == item["status"] == "degraded" and not dekking["verified"]
+
+
+def test_fork_met_lege_config(client, machine, herstelbronnen, geverifieerde_offsite):
+    _, _, _, forks, _ = herstelbronnen
+    iid, fork = next(iter(forks.items()))
+    entry = fork.backup_list[0]
+    naam = entry["name"]
+    leeg = b""
+    with pytest.raises(ElementTree.ParseError):
+        ElementTree.fromstring(leeg)
+    doel = BytesIO()
+    met_inhoud = BytesIO(fork.backup_blobs[naam])
+    with zipfile.ZipFile(met_inhoud) as bron, zipfile.ZipFile(doel, "w") as uit:
+        assert "config.xml" in bron.namelist()
+        for lid in bron.infolist():
+            data = leeg if lid.filename == "config.xml" else bron.read(lid)
+            uit.writestr(lid, data)
+    fork.backup_blobs[naam] = doel.getvalue()
+    entry["size"] = len(doel.getvalue())
+    item = rapport(machine, key(client))
+    dekking = next(rij for rij in item["forks"] if rij["instance_id"] == iid)
+    print(f"Fork: config.xml=0 bytes, XML=onleesbaar, fork={dekking['status']}, "
+          f"verified={dekking['verified']}, totaal={item['status']}")
+    assert dekking["status"] == item["status"] == "degraded" and not dekking["verified"]
+
+
+@pytest.mark.parametrize("variant", ["sleutelupload", "doelreset"])
+def test_offsite_bewijs_voor_huidig_doel(client, machine, ctx, herstelbronnen, variant):
+    # De simulatiedienst geeft elke identiteit een eigen lege opslagruimte.
+    _, _, archief, _, _ = herstelbronnen
+    inhoud = {}
+    weigeringen = []
+
+    def opslag(request):
+        doel = (request.headers.get("Authorization"), request.url.path)
+        if request.method == "PUT":
+            if variant == "sleutelupload" and request.url.path.endswith("/" + offsite.KEYFILE):
+                weigeringen.append(503)
+                return httpx.Response(503)
+            inhoud[doel] = request.content
+            return httpx.Response(201)
+        assert request.method == "GET"
+        if doel not in inhoud:
+            return httpx.Response(404)
+        return httpx.Response(200, content=inhoud[doel])
+
+    vervoer = httpx.MockTransport(opslag)
+    ctx.services["notify_transport"] = vervoer
+    basis = "https://opslag.invalid/review"
+    ctx.config.set("global", "", "backup.offsite.kind", "webdav", "proef")
+    ctx.config.set("global", "", "backup.offsite.webdav_url", basis, "proef")
+    if variant == "doelreset":
+        ctx.config.set("global", "", "backup.offsite.webdav_user", "eerste-ruimte", "proef")
+    run = client.post("/api/v1/notify/offsite/run").json()
+    assert run["ok"] is (variant == "doelreset")
+    if variant == "doelreset":
+        ctx.config.reset("global", "", "backup.offsite.webdav_user")
+    else:
+        assert weigeringen == [503]
+    nieuw = ctx.config.value("backup.offsite.webdav_user")
+    with httpx.Client(transport=vervoer, auth=(nieuw, "")) as lezer:
+        archiefstatus = lezer.get(f"{basis}/{archief['file']}").status_code
+        sleutelstatus = lezer.get(f"{basis}/{offsite.KEYFILE}").status_code
+    verwacht = (200, 404) if variant == "sleutelupload" else (404, 404)
+    assert (archiefstatus, sleutelstatus) == verwacht
+    item = rapport(machine, key(client))
+    dekking = item["offsite"]
+    print(f"{variant}: kopie={archiefstatus}, sleutelbestand={sleutelstatus}, "
+          f"offsite={dekking['status']}, verified={dekking['verified']}, totaal={item['status']}")
+    assert dekking["status"] == item["status"] == "degraded" and not dekking["verified"]
+
+
+def test_rechten_en_foutcontract(client, machine, ctx, monkeypatch):
+    error(machine.get(BACKUP_REPORT_ROUTE), 401, "unauthorized")
+    headers = key(client)
+    response = machine.get(BACKUP_REPORT_ROUTE + "&cursor=ongeldig", headers=headers)
+    error(response, 422, "validation_error")
+    assert machine.get("/api/v1/notify/offsite", headers=headers).status_code == 403
+    with monkeypatch.context() as patch:
+        patch.setitem(machine.app.dependency_overrides, current_principal,
+                      lambda: Principal("proef", "onbekend"))
+        error(machine.get(BACKUP_REPORT_ROUTE, headers=headers), 403, "forbidden")
+    async def bezet(*_):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(backups, "observe", bezet)
+    antwoord = machine.get(BACKUP_REPORT_ROUTE, headers=headers)
+    error(antwoord, 503, "database_unavailable")
+    assert int(antwoord.headers["Retry-After"]) >= 1 and "database is locked" not in antwoord.text
+
+
+@pytest.mark.parametrize("versie", ["999_toekomst", "999_toekomst-v2"])
+def test_kernschema_en_herstelroute(
+    client, machine, ctx, herstelbronnen, geverifieerde_offsite, versie
+):
+    kopie, _, _, _, _ = herstelbronnen
+    bestand = ctx.settings.backup_dir / kopie["file"]
+    with closing(sqlite3.connect(bestand)) as db, db:
+        db.execute("INSERT INTO schema_migrations(version,applied_at) VALUES (?,CURRENT_TIMESTAMP)",
+                   (versie,))
+    # Consistente kopie van een nieuwere versie; regenereer de echte integriteitsmeting.
+    ok, versies = onderhoud._verify_copy(bestand)
+    assert ok and versie in versies
+    meta = bestand.with_suffix(".json")
+    gegevens = json.loads(meta.read_text())
+    gegevens.update(integrity_ok=ok, schema_versions=versies, size=bestand.stat().st_size,
+                    sha256=hashlib.sha256(bestand.read_bytes()).hexdigest())
+    meta.write_text(json.dumps(gegevens))
+    item = rapport(machine, key(client))
+    antwoord = client.post(f"/api/v1/backups/{bestand.name}/restore",
+                           json={"confirm": bestand.name})
+    assert antwoord.status_code == 409 and antwoord.json()["code"] == "schema_nieuwer"
+    dekking = item["core"]
+    zichtbaar = versie in (dekking["schema_versions"] or [])
+    print(f"Kernschema {versie}: herstel=409 schema_nieuwer, versie getoond={zichtbaar}, "
+          f"kern={dekking['status']}, verified={dekking['verified']}, totaal={item['status']}")
+    assert dekking["status"] == item["status"] == "degraded" and not dekking["verified"]
+
+
+def test_onvolledige_terugzetmarkering(client, machine, ctx, tmp_path, geverifieerde_offsite):
+    marker = ctx.settings.data_dir / preupdate.STAGE_MARKER
+    marker.write_text("{}")
+    aparte_kopie = tmp_path / "terugzetproef" / "core"
+    aparte_kopie.mkdir(parents=True)
+    (aparte_kopie / preupdate.STAGE_MARKER).write_bytes(marker.read_bytes())
+    resultaat = preupdate.apply_staged(aparte_kopie)
+    assert resultaat["ok"] is False
+    item = rapport(machine, key(client))
+    staged = item["rollback"]["staged"]
+    print(f"Terugzetten: set ontbreekt, toepassen={resultaat['ok']}, staged={staged}")
+    assert staged is None and item["status"] == "degraded"
+
+
+def test_terugzetrapport_controleert_klaargezet_bestand(client, machine, ctx, monkeypatch):
+    headers = key(client)
+    monkeypatch.setattr(backups, "CACHE_SECONDS", 0)
+    core = ctx.settings.data_dir
+    folder = ctx.settings.backup_dir / preupdate.FOLDER
+    snapshot = preupdate.make_set(folder, ctx.settings.db_path, encode_dir=None)
+    preupdate.stage(core, snapshot, actor="proef")
+    marker = core / preupdate.STAGE_MARKER
+    stored = marker.read_bytes()
+    assert rapport(machine, headers)["rollback"]["staged"] is True
+    assert marker.read_bytes() == stored
+    staged = core / (ctx.settings.db_path.name + preupdate.STAGED_SUFFIX)
+    staged.write_bytes(staged.read_bytes()[:-1])
+    assert rapport(machine, headers)["rollback"]["staged"] is None
+    assert marker.read_bytes() == stored
+
+
+def test_offsite_reset_naar_dezelfde_doelwaarde_vervalt_direct(
+    client, machine, ctx, geverifieerde_offsite
+):
+    headers = key(client)
+    ctx.config.set("global", "", "backup.offsite.webdav_user", "", "proef")
+    assert client.post("/api/v1/notify/offsite/run").json()["ok"] is True
+    assert rapport(machine, headers)["offsite"]["verified"] is True
+    ctx.config.reset("global", "", "backup.offsite.webdav_user")
+    assert rapport(machine, headers)["offsite"]["verified"] is False
+    assert client.post("/api/v1/notify/offsite/run").json()["ok"] is True
+    # De mislukte waarneming blijft maximaal één meetinterval gedeeld.
+    ctx.services.pop("connector_items:backups:viewer")
+    assert rapport(machine, headers)["offsite"]["verified"] is True
+
+
+def test_offsite_sleutel_verdwijnt_op_hetzelfde_doel(
+    client, machine, ctx, respx_mock, geverifieerde_offsite, monkeypatch
+):
+    headers = key(client)
+    monkeypatch.setattr(backups, "CACHE_SECONDS", 0)
+    assert rapport(machine, headers)["offsite"]["verified"] is True
+    respx_mock.get(f"{geverifieerde_offsite}/{offsite.KEYFILE}").respond(404)
+    report = rapport(machine, headers)
+    assert report["bundle"]["verified"] is report["offsite"]["verified"] is False
+    assert report["status"] == "degraded"
+
+
+def test_encoder_mist_tabel_van_geregistreerde_versie(client, machine, ctx, herstelbronnen):
+    backup, *_ = herstelbronnen
+    engine, = backup["extra_files"]
+    path = ctx.settings.backup_dir / engine["file"]
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("INSERT INTO schema_versie VALUES (26)")
+    meta_path = (ctx.settings.backup_dir / backup["file"]).with_suffix(".json")
+    meta = json.loads(meta_path.read_text())
+    meta["extra_files"][0].update(
+        size=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    meta_path.write_text(json.dumps(meta))
+    assert not rapport(machine, key(client))["encoder"]["verified"]
+
+
+def test_lezen_op_gevulde_release(populated_installation):
+    ctx, admin, viewer = populated_installation
+    headers = key(admin)
+    aanvragen = []
+
+    def alleen_lezen(request):
+        assert request.method == "GET"
+        aanvragen.append(request.method)
+        return httpx.Response(200, json=[])
+
+    transports = ctx.services.setdefault("arr_transports", {})
+    for instantie in list_instances(ctx):
+        ctx.secrets.set(apikey_secret(instantie.id), secrets.token_urlsafe(20))
+        transports[instantie.id] = httpx.MockTransport(alleen_lezen)
+    voor = database_snapshot(ctx, allow_auth_timestamps=True)
+    open_werk = ctx.db.fetch_one(
+        "SELECT COUNT(*) AS n FROM mediaserver_pending WHERE done_at IS NULL"
+    )["n"]
+    assert open_werk > 0
+    assert ctx.db.fetch_one("SELECT COUNT(*) AS n FROM mediaserver_watch")["n"] > 0
+    for _ in range(2):
+        antwoord = viewer.get(BACKUP_REPORT_ROUTE, headers=headers)
+        assert antwoord.status_code == 200
+        assert antwoord.json()["items"][0]["status"] == "degraded"
+    assert aanvragen
+    assert_database_preserved(ctx, voor, allow_auth_timestamps=True)
+    print(f"Releasefixture: tabellen={len(voor)}, gevuld={sum(bool(v) for v in voor.values())}, "
+          f"open overdrachten={open_werk}, rijverschillen=0, fork-GET={len(aanvragen)}")

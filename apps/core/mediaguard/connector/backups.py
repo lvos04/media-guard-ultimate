@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import json
 import lzma
+import os
 import re
 import sqlite3
 import tempfile
@@ -23,6 +21,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from mediaguard import schema
 from mediaguard.arr.client import BACKUP_ARCHIVE_PATH, ArrError
 from mediaguard.context import AppContext
+from mediaguard.db import check_schema_versions
 from mediaguard.instances.registry import INSTANCE_ID_RE, Instance, arr_client, list_instances
 from mediaguard.maintenance import bundle, preupdate
 from mediaguard.maintenance import status as maintenance_status
@@ -38,17 +37,10 @@ FORK_READ_SECONDS = 10
 _COVERAGE_MAX_AGE = BACKUP_STALE_HOURS * 3600
 _SHA256 = re.compile(r"[a-f0-9]{64}")
 _FINGERPRINT = re.compile(r"[a-f0-9]{16}")
-_CORE_SCHEMA = re.compile(r"[0-9]+_[a-z0-9_]+")
 _ENGINE_FILE = r"[a-zA-Z0-9][a-zA-Z0-9_.-]*\.db"
-_BUNDLE_NAME = re.compile(r"mediaguard-bundel-(\d{8}T\d{6}Z)\.mgbundle")
 _FORK_NAME = re.compile(
     r"(sonarr|radarr|nzbdrone)_backup_v?[0-9][.0-9_]{0,55}\.zip", re.IGNORECASE
 )
-_OFFSITE_IDENTITY_SETTINGS = {
-    "path": (),
-    "webdav": ("webdav_user",),
-    "s3": ("s3_endpoint", "s3_region", "s3_access_key"),
-}
 
 
 class Coverage(BaseModel):
@@ -130,7 +122,8 @@ def _matches(pattern: re.Pattern[str], value: Any) -> bool:
     return isinstance(value, str) and pattern.fullmatch(value) is not None
 
 
-def _database(path: Path, meta: dict[str, Any], *, encoder: bool = False) -> DatabaseCopy | None:
+def _database(path: Path, meta: dict[str, Any], *, encoder: bool = False,
+              primary: bool = False) -> DatabaseCopy | None:
     digest, size = meta.get("sha256"), meta.get("size")
     if not (_matches(_SHA256, digest) and type(size) is int and size > 0):
         return None
@@ -138,20 +131,24 @@ def _database(path: Path, meta: dict[str, Any], *, encoder: bool = False) -> Dat
         if path.is_symlink() or not path.is_file():
             return None
         before = path.stat()
-        if before.st_size != size or _sha256(path) != digest:
+        if (before.st_size != size or _sha256(path) != digest
+                or any(os.path.lexists(path.with_name(path.name + suffix))
+                       for suffix in ("-wal", "-journal"))):
             return None
         # Gepubliceerde SQLite-back-ups zijn zelfstandige kopieën. Open zonder
         # SQLite-hulpbestanden te maken en lees het schema uit dezelfde kopie.
         with closing(sqlite3.connect(path.resolve().as_uri() + "?immutable=1", uri=True)) as db:
             if encoder:
-                values = schema.versions_in(db, "schema_versie", "versie")
-                versions = sorted(str(v) for v in values if type(v) is int and v >= 0)
+                values = preupdate.encoder_copy_versions(
+                    db, preupdate.encoder_migrations(os.environ), primary=primary,
+                )
+                versions = [str(v) for v in sorted(values)]
             else:
-                values = schema.versions_in(db, "schema_migrations", "version")
-                versions = sorted(v for v in values if _matches(_CORE_SCHEMA, v))
+                check_schema_versions(path, connection=db)
+                versions = sorted(schema.versions_in(db, "schema_migrations", "version"))
         if not versions or path.stat() != before:
             return None
-    except (OSError, sqlite3.Error):
+    except (OSError, sqlite3.Error, RuntimeError, preupdate.SetError):
         return None
     return DatabaseCopy(sha256=digest, schema_versions=versions)
 
@@ -169,11 +166,13 @@ def _local_databases(ctx: AppContext, now: datetime) -> tuple[CoreCoverage, Enco
                 candidates.append((created, root / preupdate.FOLDER / meta["name"], meta))
 
     core, encoder = CoreCoverage(), EncoderCoverage()
+    primary = preupdate.primary_encoder_db(preupdate.encoder_backup_dir(ctx.settings.data_dir))
     for created, path, meta in sorted(candidates, key=lambda entry: entry[0], reverse=True):
         files = meta.get("files") if meta.get("kind") == "pre-update" else meta.get("extra_files")
         core_path, core_meta = path, meta
         encoder_dir = path.parent
         pattern = re.escape(path.stem) + r"\.encode-" + _ENGINE_FILE
+        primary_name = f"{path.stem}.encode-{primary.name}" if primary is not None else None
         if meta.get("kind") == "pre-update":
             if meta.get("legacy") is True or path.is_symlink() or not isinstance(files, list):
                 continue
@@ -193,6 +192,7 @@ def _local_databases(ctx: AppContext, now: datetime) -> tuple[CoreCoverage, Enco
             core_meta = next((f for f in files if f["name"] == "mediaguard.db"), {})
             files = [f for f in files if f["name"] != "mediaguard.db"]
             encoder_dir, pattern = path, r"encode/" + _ENGINE_FILE
+            primary_name = f"encode/{primary.name}" if primary is not None else None
 
         # De integriteitscontrole bij het maken en de inhoudshash van nu zijn beide nodig.
         if not core.verified:
@@ -205,7 +205,7 @@ def _local_databases(ctx: AppContext, now: datetime) -> tuple[CoreCoverage, Enco
             if (meta.get("integrity_ok") is not True or meta.get("encoder_problem")
                     or meta.get("encoder_ok") is False):
                 continue
-            copies = _encoder_databases(encoder_dir, files, pattern)
+            copies = _encoder_databases(encoder_dir, files, pattern, primary_name)
             if copies:
                 encoder = EncoderCoverage(**_coverage(now, created, verified=True,
                     max_age=_COVERAGE_MAX_AGE), databases=copies)
@@ -214,75 +214,41 @@ def _local_databases(ctx: AppContext, now: datetime) -> tuple[CoreCoverage, Enco
     return core, encoder
 
 
-def _encoder_databases(folder: Path, files: Any, pattern: str) -> list[DatabaseCopy]:
+def _encoder_databases(folder: Path, files: Any, pattern: str,
+                       primary: str | None) -> list[DatabaseCopy]:
     copies = []
-    if not isinstance(files, list):
+    if not isinstance(files, list) or primary is None:
         return copies
+    seen = set()
     for row in files:
         name = row.get("file", row.get("name")) if isinstance(row, dict) else None
-        if not isinstance(name, str) or not re.fullmatch(pattern, name) or "error" in row:
+        if (not isinstance(name, str) or not re.fullmatch(pattern, name)
+                or "error" in row or name in seen):
             return []
-        if (copy := _database(folder / name, row, encoder=True)) is None:
+        if (copy := _database(folder / name, row, encoder=True, primary=name == primary)) is None:
             return []
         copies.append(copy)
-    return copies
+        seen.add(name)
+    return copies if primary in seen else []
 
 
-def _offsite(ctx: AppContext, now: datetime) -> tuple[OffsiteCoverage, str | None]:
+async def _offsite(ctx: AppContext, now: datetime) -> tuple[OffsiteCoverage, dict | None]:
     kind = ctx.config.value("backup.offsite.kind")
     result = OffsiteCoverage(target_kind=kind if kind in offsite.KINDS else None)
-    if kind not in _OFFSITE_IDENTITY_SETTINGS:
+    if kind not in offsite.READBACK_KINDS:
         result.reason_code = "verificatie_onbekend" if kind == "email" else "doel_onbekend"
         return result, None
-    # Het opgeslagen doellabel dekt reeds het pad, de URL of bucket/prefix. Voor
-    # de overige doelkenmerken bewijst pas een latere kopie de huidige inrichting.
-    settings = {"backup.offsite." + key for key in _OFFSITE_IDENTITY_SETTINGS[kind]}
-    changed = [
-        instant(row["updated_at"]) for row in ctx.config.overrides("global", "")
-        if row["key"] in settings
-    ]
-    if None in changed:
-        result.reason_code = "verificatie_onbekend"
-        return result, None
-    configured_at = max(changed, default=None)
-    rows = ctx.db.fetch_dicts(
-        "SELECT bundle_name, sha256, size, created_at FROM offsite_copies"
-        " WHERE status='ok' AND target_kind=? AND target=? ORDER BY created_at DESC, id DESC",
-        (kind, offsite.target_label(ctx)),
-    )
-    for row in rows:
-        name, digest = row["bundle_name"], row["sha256"]
-        created = _time(row["created_at"], now)
-        if (_matches(_BUNDLE_NAME, name) and _matches(_SHA256, digest) and created
-                and (configured_at is None or created > configured_at)
-                and type(row["size"]) is int and row["size"] > 0):
-            return OffsiteCoverage(
-                **_coverage(now, created, verified=True, max_age=_COVERAGE_MAX_AGE),
-                target_kind=kind, sha256=digest,
-            ), name
+    row = await offsite.verified_copy(ctx, kind)
+    if row is not None and (created := _time(row["created_at"], now)):
+        return OffsiteCoverage(
+            **_coverage(now, created, verified=True, max_age=_COVERAGE_MAX_AGE),
+            target_kind=kind, sha256=row["sha256"],
+        ), row
     return result, None
 
 
-def _bundle_key_match(path: Path, fingerprint: str) -> bool | None:
-    with path.open("rb") as handle:
-        if handle.read(len(bundle.MAGIC)) != bundle.MAGIC:
-            return None
-        size = int.from_bytes(handle.read(4), "big")
-        if not 0 < size <= 1024 * 1024:
-            return None
-        header = json.loads(handle.read(size))
-        if not isinstance(header, dict) or len(handle.read(17)) < 17:
-            return None
-    key = json.loads((path.parent / offsite.KEYFILE).read_text("utf-8"))
-    if not isinstance(key, dict) or not isinstance(key.get("public"), str):
-        return None
-    public = base64.b64decode(key["public"], validate=True)
-    return (len(public) == 32 and _matches(_FINGERPRINT, header.get("fingerprint"))
-            and header["fingerprint"] == fingerprint == hashlib.sha256(public).hexdigest()[:16])
-
-
 def _bundle(ctx: AppContext, now: datetime, remote: OffsiteCoverage,
-            remote_name: str | None) -> BundleCoverage:
+            row: dict | None) -> BundleCoverage:
     result = BundleCoverage()
     try:
         state = bundle.status(ctx)
@@ -293,19 +259,20 @@ def _bundle(ctx: AppContext, now: datetime, remote: OffsiteCoverage,
         if not state["bundles"]:
             return result
         name = state["bundles"][0]["file"]
-        match = _BUNDLE_NAME.fullmatch(name)
+        match = offsite.BUNDLE_NAME.fullmatch(name)
         if match:
             created = datetime.strptime(match[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
             if created <= now:
                 path = bundle.bundle_dir(ctx) / name
-                key_match = None
-                if result.enabled and result.fingerprint is not None:
-                    with suppress(OSError, ValueError, TypeError):
-                        key_match = _bundle_key_match(path, result.fingerprint)
-                # Een bijpassende sleutelvingerafdruk alleen bewijst geen intact archief.
-                verified = (key_match is True and name == remote_name and remote.verified
+                key_match, proof = None, None
+                if result.enabled and result.fingerprint:
+                    key_match, proof = bundle.verify_pair(path, path.parent / bundle.KEYFILE)
+                verified = (key_match is True and proof is not None and row is not None
+                            and result.fingerprint == proof["fingerprint"]
+                            and name == row["bundle_name"] and remote.verified
                             and remote.created_at is not None and remote.created_at >= created
-                            and _sha256(path) == remote.sha256)
+                            and proof["bundle"] == remote.sha256
+                            and proof["key"] == row["key_sha256"])
                 return BundleCoverage(**_coverage(now, created, verified=verified,
                     max_age=_COVERAGE_MAX_AGE), enabled=result.enabled,
                     fingerprint=result.fingerprint, key_match=key_match)
@@ -381,19 +348,18 @@ def _inspect_fork(work: tempfile.TemporaryDirectory, archive: Path, limit: int, 
 
 
 def _rollback(ctx: AppContext) -> RollbackPolicy:
-    root = ctx.settings.data_dir
-    staged = preupdate.pending(root) is not None
     return RollbackPolicy(
         pre_update_restore_mode="bij-stoppen" if maintenance_status.under_supervisor(ctx)
         else "handmatig",
-        staged=None if not staged and (root / preupdate.STAGE_MARKER).exists() else staged,
+        staged=preupdate.staged_status(ctx.settings.data_dir),
     )
 
 
 async def observe(ctx: AppContext, now: datetime) -> BackupReport:
     core, encoder = await asyncio.to_thread(_local_databases, ctx, now)
-    remote, remote_name = _offsite(ctx, now)
-    local_bundle = await asyncio.to_thread(_bundle, ctx, now, remote, remote_name)
+    remote, row = await _offsite(ctx, now)
+    local_bundle = await asyncio.to_thread(_bundle, ctx, now, remote, row)
+    rollback = await asyncio.to_thread(_rollback, ctx)
     gate = asyncio.Semaphore(2)
 
     async def fork(instance: Instance) -> ForkCoverage:
@@ -402,6 +368,6 @@ async def observe(ctx: AppContext, now: datetime) -> BackupReport:
 
     forks = await asyncio.gather(*(fork(instance) for instance in list_instances(ctx)))
     parts = (core, encoder, local_bundle, remote, *forks)
-    healthy = all(part.status == "healthy" for part in parts)
+    healthy = all(part.status == "healthy" for part in parts) and rollback.staged is not None
     return BackupReport(status="healthy" if healthy else "degraded", core=core, encoder=encoder,
-                        bundle=local_bundle, offsite=remote, forks=forks, rollback=_rollback(ctx))
+                        bundle=local_bundle, offsite=remote, forks=forks, rollback=rollback)

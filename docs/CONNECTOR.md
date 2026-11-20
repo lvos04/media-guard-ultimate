@@ -78,17 +78,32 @@ MediaGuard deelt een meting maximaal 60 seconden tussen lezers.
   bestaande archief via GET op en controleert de zip, configuratie en
   SQLite-integriteit tijdelijk in een afgeschermde map. Ontbrekende of
   oncontroleerbare kopieën geven `degraded`.
-- `bundle` toont de publieke sleutelvingerafdruk en of die overeenkomt met
-  de lokale herstelsleutel en de bundelkop. Bestandsverificatie vereist ook
-  een overeenkomende sha256 uit een geverifieerde offsite-kopie.
-  Daadwerkelijk ontsleutelen voor herstel vereist de herstelcode.
+- `bundle` toont de publieke sleutelvingerafdruk. MediaGuard verifieert
+  de bundel en het volledige herstelsleutelbestand tegen de SHA-256 die
+  bij aanmaak is vastgelegd. Beide moeten overeenkomen met de offsite-set.
+  De herstelcode is nodig om te ontsleutelen. Bestaande bundels en sleutels
+  zonder aanmaakbewijs blijven handmatig bruikbaar met hun herstelcode
+  en krijgen in het rapport `degraded`.
 - `offsite` toont het soort doel en de meetgegevens van de laatste
-  teruggelezen kopie voor de huidige configuratie. Een e-mailverzending
-  zonder teruglezing levert geen verificatie. Ook voor bundel en offsite
-  geldt de leeftijdsgrens van 48 uur.
+  kopie. Bij een nieuwe waarneming leest MediaGuard de twee bestanden
+  terug uit de huidige doelruimte. Een doelwijziging of reset maakt het
+  bewijs en de gedeelde waarneming direct ongeldig. Voor e-mail is
+  teruglezing onbekend en blijft de dekking `degraded`. Voor bundel en
+  offsite geldt de leeftijdsgrens van 48 uur.
 - `rollback` beschrijft of MediaGuard terugzetten van een pre-updateset
-  bij stoppen ondersteunt en of zo'n herstel is klaargezet. De Hub kan
-  uitsluitend het rapport en de deeplink gebruiken.
+  bij stoppen ondersteunt en of zo'n herstel is klaargezet. Een ongeldige
+  markering geeft `staged: null` en totale dekking `degraded`. De Hub
+  kan uitsluitend het rapport en de deeplink gebruiken.
+
+| Onderdeel | Controle voor herstel en rapport | Regressieproef in `test_connector_lezen.py` |
+|---|---|---|
+| Bundel | De gedeelde bundellezer valideert de kop en de volledige verpakte sleutel. De twee hashes uit het aanmaakbewijs moeten kloppen. | `test_onherstelbare_bundel[sleutelbestand]` en `test_onherstelbare_bundel[bundelinhoud]` |
+| Encoder | De kopie bevat de ingestelde primaire database en de voortgangstabellen voor de geregistreerde versies. Dezelfde schemacontrole wordt bij het terugzetten uitgevoerd. | `test_encoder_zonder_actieve_voortgang` en `test_encoder_mist_tabel_van_geregistreerde_versie` |
+| Kern | Dezelfde compatibiliteitscontrole als bij herstel toetst de volledige migratieverzameling van de kopie. | `test_kernschema_en_herstelroute` |
+| Offsite-overdracht | De kopieerfunctie en het rapport lezen bundel én sleutel terug en vergelijken lengte en SHA-256. | `test_offsite_bewijs_voor_huidig_doel[sleutelupload]` en `test_offsite_sleutel_verdwijnt_op_hetzelfde_doel` |
+| Offsite-doel | Het bewijs geldt voor de huidige generatie van doelinstellingen en inloggegevens. Een reset vereist teruglezing na een nieuwe kopie, ook bij dezelfde doelwaarden. | `test_offsite_bewijs_voor_huidig_doel[doelreset]` en `test_offsite_reset_naar_dezelfde_doelwaarde_vervalt_direct` |
+| Fork | Inspectie en herstelvoorbereiding gebruiken dezelfde XML-parser voor `config.xml` met hoofdelement `Config`. | `test_fork_met_lege_config` |
+| Terugzetten | Dezelfde voorcontrole als bij de omwisseling toetst de markering, de voortgang en de klaargezette bestanden. | `test_onvolledige_terugzetmarkering` en `test_terugzetrapport_controleert_klaargezet_bestand` |
 
 Een `null` betekent dat het gegeven niet kon worden vastgesteld. Het
 rapport bevat uitsluitend geselecteerde metadata. De bestaande route

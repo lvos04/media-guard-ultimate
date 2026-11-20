@@ -26,6 +26,7 @@ from mediaguard.db import utcnow
 from mediaguard.encoding import resources
 from mediaguard.encoding.client import EncoderError
 from mediaguard.instances.registry import INSTANCE_ID_RE
+from mediaguard.notify import offsite
 from mediaguard.read_observation import instant, observation_read
 from mediaguard.secrets_store import redact
 from mediaguard.storage_forecast import POOL_STATE, pool_observed_at
@@ -300,6 +301,7 @@ class Snapshot(BaseModel):
     collected_at: float
     rows: list[SnapshotItem]
     reason: str | None
+    target_generation: str | None = None
 
 
 async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
@@ -386,15 +388,23 @@ async def _snapshot(ctx: AppContext, principal: Principal, kind: ItemType) -> Sn
     role = "viewer" if kind == "backups" else principal.role
     slot = f"connector_items:{kind}:{role}"
     cache_seconds = backups.CACHE_SECONDS if kind == "backups" else CACHE_SECONDS
+
+    def fresh(previous: Snapshot | None, generation: str | None) -> bool:
+        return (previous is not None and previous.target_generation == generation
+                and time.monotonic() - previous.collected_at < cache_seconds)
+
+    current = offsite.generation(ctx) if kind == "backups" else None
     previous = ctx.services.get(slot)
-    if previous and time.monotonic() - previous.collected_at < cache_seconds:
+    if fresh(previous, current):
         return previous
     lock = ctx.services.setdefault(f"{slot}:lock:{id(asyncio.get_running_loop())}", asyncio.Lock())
     async with lock:
+        current = offsite.generation(ctx) if kind == "backups" else None
         previous = ctx.services.get(slot)
-        if previous and time.monotonic() - previous.collected_at < cache_seconds:
+        if fresh(previous, current):
             return previous
         result = await _observe(ctx, principal, kind, previous)
+        result.target_generation = current
         ctx.services[slot] = result
         return result
 

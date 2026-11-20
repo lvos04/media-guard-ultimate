@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
 MAGIC = b"MGBUNDLE1\n"
 STATE_KEY = "backup.bundle"
+KEYFILE = "herstelsleutel.json"
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # geen 0/O/1/I
 
 
@@ -87,8 +88,10 @@ def _setup(ctx: AppContext, actor: str) -> dict[str, Any]:
                "public": _b64(pub), "created_at": _now()}
     folder = bundle_dir(ctx)
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / "herstelsleutel.json").write_text(json.dumps(keyfile, indent=2), "utf-8")
+    raw_key = json.dumps(keyfile, indent=2).encode()
+    _publish(folder / KEYFILE, raw_key)
     ctx.state_set(STATE_KEY, {"public": _b64(pub), "enabled": True, "created_at": _now(),
+                              "key_sha256": _digest(raw_key),
                               "fingerprint": hashlib.sha256(pub).hexdigest()[:16]})
     from mediaguard.audit import audit
 
@@ -108,6 +111,19 @@ def status(ctx: AppContext) -> dict[str, Any]:
 # -- maken ------------------------------------------------------------------------------------
 def bundle_dir(ctx: AppContext) -> Path:
     return ctx.settings.backup_dir / "herstelbundel"
+
+
+def _publish(path: Path, data: bytes) -> None:
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp", delete=False) as handle:
+        tmp = Path(handle.name)
+    try:
+        if tmp.write_bytes(data) != len(data):
+            raise OSError("Herstelbestand onvolledig weggeschreven")
+        with tmp.open("rb") as handle:
+            os.fsync(handle.fileno())
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _config_root(ctx: AppContext) -> Path:
@@ -141,7 +157,7 @@ def _payload(ctx: AppContext) -> tuple[bytes, list[str]]:
             _add(tar, "core/mediaguard.db", core.read_bytes())
             names.append("core/mediaguard.db")
         root = _config_root(ctx)
-        for db in sorted((root / "encode").glob("*.db")):
+        for db in sorted(preupdate.encoder_backup_dir(ctx.settings.data_dir).glob("*.db")):
             _add(tar, f"encode/{db.name}", _sqlite_copy(db))
             names.append(f"encode/{db.name}")
         key = ctx.settings.secret_key_path
@@ -192,23 +208,20 @@ def _create(ctx: AppContext, actor: str) -> dict[str, Any] | None:
     folder.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     target = folder / f"mediaguard-bundel-{stamp}.mgbundle"
-    tmp = target.with_suffix(".tmp")
     blob = MAGIC + len(hdr).to_bytes(4, "big") + hdr + body
-    try:
-        tmp.write_bytes(blob)
-        os.chmod(tmp, 0o600)
-        # controle: volledig weggeschreven (een volle schijf kapt anders stil af)
-        if tmp.stat().st_size != len(blob):
-            raise OSError("herstelbundel onvolledig weggeschreven")
-        os.replace(tmp, target)
-    except BaseException:
-        tmp.unlink(missing_ok=True)  # geen half bestand achterlaten
-        raise
+    proof = _proof_path(target)
+    proof.unlink(missing_ok=True)
+    _publish(target, blob)
+    # Een bestaand sleutelbestand zonder aanmaakbewijs kan nog worden gebruikt
+    # met de herstelcode. Het levert geen passieve verificatie op.
+    if key_digest := st.get("key_sha256"):
+        _publish(proof, json.dumps({"bundle": _digest(blob), "key": key_digest}).encode())
     _sweep_partials(folder)
     keep = int(ctx.config.value("backup.bundle_retention"))
     # alleen opruimen na een geslaagde nieuwe bundel; tellen doen alleen complete bundels
     for old in sorted(folder.glob("mediaguard-bundel-*.mgbundle"))[:-keep]:
         old.unlink(missing_ok=True)
+        _proof_path(old).unlink(missing_ok=True)
     return {"file": target.name, "size": target.stat().st_size, "files": names}
 
 
@@ -232,14 +245,99 @@ class BundleError(Exception):
     pass
 
 
-def open_bundle(path: Path, code: str, keyfile: Path) -> tuple[dict[str, Any], bytes]:
-    raw = path.read_bytes()
-    if not raw.startswith(MAGIC):
+def _digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _proof_path(path: Path) -> Path:
+    return path.with_suffix(".sha256.json")
+
+
+def _read_header(handle: io.BufferedIOBase) -> tuple[dict[str, Any], bytes]:
+    if handle.read(len(MAGIC)) != MAGIC:
         raise BundleError("Geen MediaGuard-herstelbundel")
-    n = int.from_bytes(raw[len(MAGIC):len(MAGIC) + 4], "big")
-    hdr = raw[len(MAGIC) + 4:len(MAGIC) + 4 + n]
-    header = json.loads(hdr)
-    k = json.loads(keyfile.read_text("utf-8"))
+    size = int.from_bytes(handle.read(4), "big")
+    if not 0 < size <= 1024 * 1024:
+        raise BundleError("Ongeldige kop van de herstelbundel")
+    raw = handle.read(size)
+    header = _read_fields(raw, {"eph": 32, "n1": 12, "n2": 12, "wrapped": 48})
+    return header, raw
+
+
+def _read_fields(raw: bytes, fields: dict[str, int]) -> dict[str, Any]:
+    try:
+        value = json.loads(raw)
+        if (not isinstance(value, dict) or value.get("v") != 1
+                or any(len(base64.b64decode(value[name], validate=True)) != size
+                       for name, size in fields.items())):
+            raise ValueError()
+        return value
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BundleError("Ongeldig formaat van bundel of herstelsleutel") from exc
+
+
+def _read_key(raw: bytes) -> dict[str, Any]:
+    return _read_fields(raw, {"salt": 16, "nonce": 12, "wrapped": 48, "public": 32})
+
+
+def _key_matches(header: dict[str, Any], key: dict[str, Any]) -> bool:
+    return header.get("fingerprint") == _digest(base64.b64decode(key["public"]))[:16]
+
+
+def _check_pair_proof(path: Path, digests: dict[str, str]) -> bool:
+    try:
+        proof = json.loads(_proof_path(path).read_bytes())
+    except FileNotFoundError:
+        return False
+    except ValueError as exc:
+        raise BundleError("Ongeldig aanmaakbewijs van de herstelbundel") from exc
+    if proof != digests:
+        raise BundleError("Aanmaakbewijs van bundel en herstelsleutel klopt niet")
+    return True
+
+
+def verify_pair(path: Path, keyfile: Path) -> tuple[bool | None, dict[str, str] | None]:
+    """Controleer dezelfde bundelkop en herstelsleutel als bij het openen."""
+    try:
+        if any(p.is_symlink() or not p.is_file() for p in (path, keyfile)):
+            return None, None
+        raw_key = keyfile.read_bytes()
+        with path.open("rb") as handle:
+            header, _ = _read_header(handle)
+            if len(handle.read(17)) < 17:
+                return None, None
+            matches = _key_matches(header, _read_key(raw_key))
+            if not matches or not has_pair_proof(path):
+                return matches, None
+            proof = {"bundle": "", "key": _digest(raw_key)}
+            handle.seek(0)
+            proof["bundle"] = hashlib.file_digest(handle, "sha256").hexdigest()
+            try:
+                if _check_pair_proof(path, proof):
+                    return matches, {**proof, "fingerprint": header["fingerprint"]}
+            except BundleError:
+                pass
+            return matches, None
+    except (BundleError, OSError, ValueError):
+        return None, None
+
+
+def has_pair_proof(path: Path) -> bool:
+    return _proof_path(path).exists()
+
+
+def open_bundle(path: Path, code: str, keyfile: Path) -> tuple[dict[str, Any], bytes]:
+    with path.open("rb") as handle:
+        header, hdr = _read_header(handle)
+        body = handle.read()
+    raw_key = keyfile.read_bytes()
+    k = _read_key(raw_key)
+    if not _key_matches(header, k):
+        raise BundleError("Bundel hoort niet bij deze herstelsleutel")
+    if has_pair_proof(path):
+        digest = hashlib.sha256(MAGIC + len(hdr).to_bytes(4, "big") + hdr)
+        digest.update(body)
+        _check_pair_proof(path, {"bundle": digest.hexdigest(), "key": _digest(raw_key)})
     try:
         priv_raw = AESGCM(_code_key(code, base64.b64decode(k["salt"]))).decrypt(
             base64.b64decode(k["nonce"]), base64.b64decode(k["wrapped"]),
@@ -254,7 +352,7 @@ def open_bundle(path: Path, code: str, keyfile: Path) -> tuple[dict[str, Any], b
         data_key = AESGCM(kek).decrypt(base64.b64decode(header["n1"]),
                                        base64.b64decode(header["wrapped"]), b"key")
         payload = AESGCM(data_key).decrypt(base64.b64decode(header["n2"]),
-                                           raw[len(MAGIC) + 4 + n:], hdr)
+                                           body, hdr)
     except Exception as exc:  # noqa: BLE001
         raise BundleError("Bundel hoort niet bij deze herstelsleutel of is beschadigd") from exc
     return header, payload

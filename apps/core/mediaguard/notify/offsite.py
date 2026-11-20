@@ -13,7 +13,10 @@ import asyncio
 import hashlib
 import hmac
 import os
+import re
 import shutil
+import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -22,6 +25,7 @@ from urllib.parse import quote, urlparse
 import httpx
 
 from mediaguard.db import utcnow
+from mediaguard.maintenance import bundle
 from mediaguard.secrets_store import redact
 from mediaguard.settings_registry import REGISTRY, SettingDef
 
@@ -34,7 +38,10 @@ KIND_LABELS_NL = {"off": "Uit", "path": "Andere map (share)", "webdav": "WebDAV"
                   "s3": "S3-compatibel", "email": "E-mail"}
 SECRET_FIELDS = {"webdav": ("webdav_password",), "s3": ("s3_secret_key",)}
 EMAIL_MAX = 20 * 1024 * 1024
-KEYFILE = "herstelsleutel.json"
+KEYFILE = bundle.KEYFILE
+BUNDLE_NAME = re.compile(r"mediaguard-bundel-(\d{8}T\d{6}Z)\.mgbundle")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+READBACK_KINDS = ("path", "webdav", "s3")
 
 
 def register_settings() -> None:
@@ -86,6 +93,10 @@ def secret_name(field: str) -> str:
     return f"backup.offsite.{field}"
 
 
+def generation(ctx: AppContext) -> str:
+    return ctx.db.fetch_one("SELECT generation FROM offsite_target_generation WHERE id=1")[0]
+
+
 def config(ctx: AppContext) -> dict[str, Any]:
     kind = str(_v(ctx, "kind"))
     out: dict[str, Any] = {"kind": kind, "kind_nl": KIND_LABELS_NL.get(kind, kind)}
@@ -116,8 +127,6 @@ def _strip_auth(url: str) -> str:
 
 
 def _latest_bundle(ctx: AppContext) -> tuple[Path, Path | None] | None:
-    from mediaguard.maintenance import bundle
-
     folder = bundle.bundle_dir(ctx)
     files = sorted(folder.glob("mediaguard-bundel-*.mgbundle"))
     if not files:
@@ -154,9 +163,14 @@ async def maybe_run(ctx: AppContext) -> dict[str, Any] | None:
     if latest is None:
         return None
     target = target_label(ctx)
-    done = ctx.db.fetch_one("SELECT 1 FROM offsite_copies WHERE bundle_name=? AND "
-                            "target_kind=? AND target=? AND status='ok'",
-                            (latest[0].name, kind, target))
+    current = generation(ctx)
+    done = ctx.db.fetch_one(
+        "SELECT 1 FROM offsite_copies WHERE bundle_name=? AND target_kind=? AND target=? "
+        "AND status='ok' AND (EXISTS (SELECT 1 FROM offsite_verification "
+        "WHERE copy_id=offsite_copies.id AND generation=?) OR ?)",
+        (latest[0].name, kind, target, current,
+         kind == "email" or not bundle.has_pair_proof(latest[0])),
+    )
     if done is not None:
         return None
     # na een mislukte poging pas na een uur opnieuw
@@ -171,6 +185,8 @@ async def maybe_run(ctx: AppContext) -> dict[str, Any] | None:
 
 
 async def run(ctx: AppContext, *, actor: str = "svc:offsite") -> dict[str, Any]:
+    current = generation(ctx)
+    ctx.config.invalidate()
     kind = str(_v(ctx, "kind"))
     latest = _latest_bundle(ctx)
     if kind == "off":
@@ -179,17 +195,30 @@ async def run(ctx: AppContext, *, actor: str = "svc:offsite") -> dict[str, Any]:
         return {"ok": False, "error": "Er is nog geen herstelbundel om te kopiëren"}
     bundle_path, keyfile = latest
     target = target_label(ctx)
+    expected = None
     try:
-        if kind == "path":
-            digest = await asyncio.to_thread(_copy_path, ctx, bundle_path, keyfile)
-        elif kind == "webdav":
-            digest = await _copy_webdav(ctx, bundle_path, keyfile)
-        elif kind == "s3":
-            digest = await _copy_s3(ctx, bundle_path, keyfile)
+        if keyfile is not None:
+            _, expected = await asyncio.to_thread(bundle.verify_pair, bundle_path, keyfile)
+        if bundle.has_pair_proof(bundle_path) and expected is None:
+            raise OffsiteError("Aanmaakbewijs van bundel en herstelsleutel klopt niet")
+        if keyfile is None or keyfile.is_symlink() or bundle_path.is_symlink():
+            raise OffsiteError("Bundel of herstelsleutel ontbreekt of is geen regulier bestand")
+        files = await asyncio.to_thread(_copies, bundle_path, keyfile, expected)
+        destination = _destination(ctx, kind) if kind in READBACK_KINDS else None
+        if current != generation(ctx):
+            raise OffsiteError("Het offsite-doel is gewijzigd")
+        if isinstance(destination, Path):
+            await asyncio.to_thread(_copy_path, destination, files, int(_v(ctx, "keep")))
+        elif isinstance(destination, _Remote):
+            await _transfer_http(ctx, destination, files, upload=True)
         elif kind == "email":
             digest = await _copy_email(ctx, bundle_path, keyfile)
+            if digest != files[0].sha256:
+                raise OffsiteError("Bronbestand is gewijzigd")
         else:
             raise OffsiteError(f"Onbekend doel: {kind}")
+        if current != generation(ctx):
+            raise OffsiteError("Het offsite-doel is gewijzigd")
     except (OffsiteError, OSError, httpx.HTTPError) as exc:
         detail = redact(str(exc) or type(exc).__name__)
         ctx.db.execute_insert(
@@ -201,12 +230,21 @@ async def run(ctx: AppContext, *, actor: str = "svc:offsite") -> dict[str, Any]:
                f"{KIND_LABELS_NL.get(kind, kind)}: {detail}. MediaGuard probeert het over een "
                "uur opnieuw.", link="/systeem#back-ups", dedupe_key="backup.offsite.failed")
         return {"ok": False, "error": detail}
-    size = bundle_path.stat().st_size
-    ctx.db.execute_insert(
-        "INSERT INTO offsite_copies(bundle_name,target_kind,target,status,size,sha256,detail,"
-        "created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (bundle_path.name, kind, target, "ok", size, digest, "Gekopieerd en gecontroleerd",
-         utcnow()))
+    primary, key = files
+    size, digest = primary.size, primary.sha256
+    with ctx.db.transaction() as db:
+        copy = db.execute(
+            "INSERT INTO offsite_copies(bundle_name,target_kind,target,status,size,sha256,detail,"
+            "created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (bundle_path.name, kind, target, "ok", size, digest,
+             "Gekopieerd en gecontroleerd" if destination is not None else "Verzonden", utcnow()),
+        )
+        if destination is not None and expected is not None:
+            db.execute(
+                "INSERT INTO offsite_verification(copy_id,generation,key_sha256,key_size) "
+                "SELECT ?,generation,?,? FROM offsite_target_generation WHERE generation=?",
+                (copy.lastrowid, key.sha256, key.size, current),
+            )
     from mediaguard.api.system import resolve_notifications
     from mediaguard.audit import audit
 
@@ -217,57 +255,51 @@ async def run(ctx: AppContext, *, actor: str = "svc:offsite") -> dict[str, Any]:
 
 
 # -- doelen -------------------------------------------------------------------------------------
-def _copy_path(ctx: AppContext, bundle_path: Path, keyfile: Path | None) -> str:
-    raw = str(_v(ctx, "path")).strip()
-    if not raw or not raw.startswith("/"):
-        raise OffsiteError("Kies een map (een volledig pad dat met / begint)")
-    dest = Path(raw)
-    from mediaguard.maintenance import bundle
+@dataclass(frozen=True)
+class _Copy:
+    path: Path
+    sha256: str
+    size: int
 
-    if dest.resolve() == bundle.bundle_dir(ctx).resolve():
-        raise OffsiteError("Dit is dezelfde map als de herstelbundels zelf")
-    if not dest.is_dir():
-        raise OffsiteError(f"Map {dest} bestaat niet (koppel eerst een share in de app)")
-    digest = _sha(bundle_path)
-    out = dest / bundle_path.name
-    tmp = out.with_suffix(".tmp")
-    shutil.copyfile(bundle_path, tmp)
-    with tmp.open("rb") as fh:
-        os.fsync(fh.fileno())
-    tmp.replace(out)
-    if _sha(out) != digest:
-        out.unlink(missing_ok=True)
-        raise OffsiteError("Controle mislukt: de kopie wijkt af van het origineel")
-    if keyfile is not None:
-        shutil.copyfile(keyfile, dest / KEYFILE)
-    keep = int(_v(ctx, "keep"))
+
+def _copies(path: Path, keyfile: Path, expected: dict[str, str] | None) -> tuple[_Copy, _Copy]:
+    def describe(source: Path, label: str) -> _Copy:
+        digest = expected[label] if expected is not None else _sha(source)
+        return _Copy(source, digest, source.stat().st_size)
+
+    return describe(path, "bundle"), describe(keyfile, "key")
+
+
+def _verify_path(dest: Path, files: tuple[_Copy, _Copy]) -> None:
+    for copy in files:
+        path = dest / copy.path.name
+        if (path.is_symlink() or not path.is_file() or path.stat().st_size != copy.size
+                or _sha(path) != copy.sha256):
+            raise OffsiteError("Controle mislukt: teruggelezen kopie wijkt af")
+
+
+def _copy_path(dest: Path, files: tuple[_Copy, _Copy], keep: int) -> None:
+    for copy in files:
+        with tempfile.NamedTemporaryFile(dir=dest, delete=False) as handle:
+            tmp = Path(handle.name)
+            try:
+                with copy.path.open("rb") as source:
+                    shutil.copyfileobj(source, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+                if tmp.stat().st_size != copy.size or _sha(tmp) != copy.sha256:
+                    raise OffsiteError("Bronbestand is gewijzigd")
+                tmp.replace(dest / copy.path.name)
+            finally:
+                tmp.unlink(missing_ok=True)
+    _verify_path(dest, files)
     for old in sorted(dest.glob("mediaguard-bundel-*.mgbundle"))[:-keep]:
         old.unlink(missing_ok=True)
-    return digest
 
 
 def _client(ctx: AppContext) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10),
                              transport=ctx.services.get("notify_transport"))
-
-
-async def _copy_webdav(ctx: AppContext, bundle_path: Path, keyfile: Path | None) -> str:
-    base = str(_v(ctx, "webdav_url")).strip().rstrip("/")
-    if not base.startswith(("https://", "http://")):
-        raise OffsiteError("Vul een WebDAV-adres in (https://…)")
-    auth = (str(_v(ctx, "webdav_user")), ctx.secrets.get(secret_name("webdav_password")) or "")
-    digest = _sha(bundle_path)
-    url = f"{base}/{quote(bundle_path.name)}"
-    async with _client(ctx) as client:
-        put = await client.put(url, content=bundle_path.read_bytes(), auth=auth)
-        if put.status_code not in (200, 201, 204):
-            raise OffsiteError(f"WebDAV weigerde het uploaden ({put.status_code})")
-        got = await client.get(url, auth=auth)
-        if got.status_code != 200 or hashlib.sha256(got.content).hexdigest() != digest:
-            raise OffsiteError("Controle mislukt: teruggelezen kopie wijkt af")
-        if keyfile is not None:
-            await client.put(f"{base}/{KEYFILE}", content=keyfile.read_bytes(), auth=auth)
-    return digest
 
 
 def _sign(key: bytes, msg: str) -> bytes:
@@ -297,7 +329,37 @@ def sigv4_headers(method: str, url: str, body: bytes, *, access_key: str, secret
                              f"SignedHeaders={signed}, Signature={signature}"}
 
 
-async def _copy_s3(ctx: AppContext, bundle_path: Path, keyfile: Path | None) -> str:
+@dataclass(frozen=True)
+class _Remote:
+    base: str
+    auth: tuple[str, str] | None = None
+    access: str = ""
+    secret: str = ""
+    region: str = ""
+
+    def headers(self, method: str, url: str, body: bytes) -> dict[str, str]:
+        if self.auth is not None:
+            return {}
+        return sigv4_headers(method, url, body, access_key=self.access,
+                             secret_key=self.secret, region=self.region)
+
+
+def _destination(ctx: AppContext, kind: str) -> Path | _Remote:
+    if kind == "path":
+        dest = Path(str(_v(ctx, "path")).strip())
+        if not dest.is_absolute():
+            raise OffsiteError("Kies een map (een volledig pad dat met / begint)")
+        if dest.resolve() == bundle.bundle_dir(ctx).resolve():
+            raise OffsiteError("Dit is dezelfde map als de herstelbundels zelf")
+        if not dest.is_dir():
+            raise OffsiteError("De gekozen map bestaat niet (koppel eerst een share in de app)")
+        return dest
+    if kind == "webdav":
+        base = str(_v(ctx, "webdav_url")).strip().rstrip("/")
+        if not base.startswith(("https://", "http://")):
+            raise OffsiteError("Vul een WebDAV-adres in (https://…)")
+        auth = (str(_v(ctx, "webdav_user")), ctx.secrets.get(secret_name("webdav_password")) or "")
+        return _Remote(base, auth=auth)
     endpoint = str(_v(ctx, "s3_endpoint")).strip().rstrip("/")
     bucket = str(_v(ctx, "s3_bucket")).strip()
     access = str(_v(ctx, "s3_access_key")).strip()
@@ -306,26 +368,71 @@ async def _copy_s3(ctx: AppContext, bundle_path: Path, keyfile: Path | None) -> 
         raise OffsiteError("Vul S3-adres, bucket, toegangssleutel en geheime sleutel in")
     region = str(_v(ctx, "s3_region") or "us-east-1")
     prefix = str(_v(ctx, "s3_prefix") or "").strip("/")
-    prefix = f"{prefix}/" if prefix else ""
-    digest = _sha(bundle_path)
+    base = f"{endpoint}/{bucket}" + (f"/{quote(prefix)}" if prefix else "")
+    return _Remote(base, access=access, secret=secret, region=region)
+
+
+async def _transfer_http(ctx: AppContext, dest: _Remote, files: tuple[_Copy, _Copy], *,
+                         upload: bool = False) -> None:
     async with _client(ctx) as client:
-        for path, verify in ((bundle_path, True), (keyfile, False)):
-            if path is None:
-                continue
-            body = path.read_bytes()
-            url = f"{endpoint}/{bucket}/{quote(prefix + path.name)}"
-            headers = sigv4_headers("PUT", url, body, access_key=access, secret_key=secret,
-                                    region=region)
-            put = await client.put(url, content=body, headers=headers)
-            if put.status_code not in (200, 201, 204):
-                raise OffsiteError(f"S3 weigerde het uploaden ({put.status_code})")
-            if verify:
-                headers = sigv4_headers("GET", url, b"", access_key=access, secret_key=secret,
-                                        region=region)
-                got = await client.get(url, headers=headers)
-                if got.status_code != 200 or hashlib.sha256(got.content).hexdigest() != digest:
-                    raise OffsiteError("Controle mislukt: teruggelezen kopie wijkt af")
-    return digest
+        for copy in files:
+            url = f"{dest.base}/{quote(copy.path.name)}"
+            if upload:
+                body = await asyncio.to_thread(copy.path.read_bytes)
+                if len(body) != copy.size or hashlib.sha256(body).hexdigest() != copy.sha256:
+                    raise OffsiteError("Bronbestand is gewijzigd")
+                put = await client.put(url, content=body, auth=dest.auth,
+                                       headers=dest.headers("PUT", url, body))
+                if put.status_code not in (200, 201, 204):
+                    raise OffsiteError(f"Offsite-doel weigerde upload ({put.status_code})")
+            digest = hashlib.sha256()
+            size = 0
+            async with client.stream("GET", url, auth=dest.auth,
+                                     headers=dest.headers("GET", url, b"")) as got:
+                if got.status_code != 200:
+                    raise OffsiteError("Offsite-bestand kan niet worden teruggelezen")
+                async for chunk in got.aiter_bytes():
+                    size += len(chunk)
+                    if size > copy.size:
+                        raise OffsiteError("Controle mislukt: teruggelezen kopie is te groot")
+                    digest.update(chunk)
+            if size != copy.size or digest.hexdigest() != copy.sha256:
+                raise OffsiteError("Controle mislukt: teruggelezen kopie wijkt af")
+
+
+async def verified_copy(ctx: AppContext, kind: str) -> dict[str, Any] | None:
+    """Bewijs voor de huidige inrichting en herlezing van exact dezelfde twee bestanden."""
+    if kind not in READBACK_KINDS:
+        return None
+    current = generation(ctx)
+    ctx.config.invalidate()
+    if _v(ctx, "kind") != kind:
+        return None
+    row = ctx.db.fetch_one(
+        "SELECT c.bundle_name,c.created_at,c.size,c.sha256,v.key_size,v.key_sha256 "
+        "FROM offsite_copies AS c JOIN offsite_verification AS v ON v.copy_id=c.id "
+        "WHERE c.status='ok' AND c.target_kind=? AND c.target=? AND v.generation=? "
+        "ORDER BY c.id DESC LIMIT 1", (kind, target_label(ctx), current),
+    )
+    if row is None or not BUNDLE_NAME.fullmatch(row["bundle_name"]):
+        return None
+    files = (_Copy(Path(row["bundle_name"]), row["sha256"], row["size"]),
+             _Copy(Path(KEYFILE), row["key_sha256"], row["key_size"]))
+    if any(type(f.size) is not int or f.size <= 0 or not isinstance(f.sha256, str)
+           or not _SHA256.fullmatch(f.sha256) for f in files):
+        return None
+    try:
+        dest = _destination(ctx, kind)
+        if current != generation(ctx):
+            return None
+        if isinstance(dest, Path):
+            await asyncio.to_thread(_verify_path, dest, files)
+        else:
+            async with asyncio.timeout(10):
+                await _transfer_http(ctx, dest, files)
+    except (OffsiteError, OSError, httpx.HTTPError, ValueError, TimeoutError):
+        return None
+    return dict(row) if current == generation(ctx) else None
 
 
 async def _copy_email(ctx: AppContext, bundle_path: Path, keyfile: Path | None) -> str:

@@ -230,6 +230,14 @@ def vul(db: Path, profiel: str, rijen: int = 2) -> dict[str, Any]:
                 if al != 1 or geldig != 1:
                     mislukt[tabel] = "de door de migratie vastgelegde generatie ontbreekt of is ongeldig"
                 continue
+            if (profiel, tabel) == ("core", "offsite_target_generation"):
+                geldig = conn.execute(
+                    "SELECT COUNT(*) FROM offsite_target_generation WHERE id=1 "
+                    "AND typeof(generation)='text' AND length(generation)=32"
+                ).fetchone()[0]
+                if al != 1 or geldig != 1:
+                    mislukt[tabel] = "de door de migratie vastgelegde offsite-doelgeneratie is ongeldig"
+                continue
             if (profiel, tabel) == ("core", "outbox_cursor_history"):
                 geldig = conn.execute(
                     "SELECT COUNT(*) FROM outbox_cursor_history h JOIN outbox_retention r "
