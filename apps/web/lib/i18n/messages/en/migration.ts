@@ -1,7 +1,7 @@
 import type { nl } from "../migration";
 
 export const en: Record<keyof typeof nl, string> = {
-  "mig.sub": "Move your existing Sonarr/Radarr safely to the four MediaGuard instances. Your old installation is never changed before cutover.",
+  "mig.sub": "Plan the move from Sonarr or Radarr to the MediaGuard instances and review the plan before switching over.",
   "mig.tab.av1": "AV1 history",
   "mig.adminOnly": "Only an administrator can do this.",
   "mig.queued": "Started as a job — progress below",
@@ -318,7 +318,7 @@ export const en: Record<keyof typeof nl, string> = {
   "mig.phase.seerr_done": "Seerr switched to the target",
   "mig.phase.completed": "Completed",
   "mig.cutover.title": "Cutover to {target}",
-  "mig.cutover.body": "This is the first step that changes your old instance. Each phase is recorded before the next starts; after a power loss the cutover resumes safely.",
+  "mig.cutover.body": "From this step onward, MediaGuard changes your old instance. The wizard records progress for each phase.",
   "mig.cutover.activateTitle": "Activate search on {target}",
   "mig.cutover.activateBody": "This source is only a backup: there is no old instance to freeze. Confirm that your old instance is off or no longer searches by itself.",
   "mig.cutover.old": "Old instance",
@@ -353,7 +353,7 @@ export const en: Record<keyof typeof nl, string> = {
 
   "av1import.title": "Import AV1 history",
   "av1import.sub": "from the old AV1 app",
-  "av1import.body": "Upload the old AV1 app's SQLite database (or give its path). Only a copy is opened read-only; conversions are linked to MediaGuard files. Importing again is safe.",
+  "av1import.body": "Upload the old AV1 app’s SQLite database or provide its path. MediaGuard reads a copy and tries to match the conversions to files.",
   "av1import.sourceInstance": "Name of the old installation",
   "av1import.rules": "Path rules (optional)",
   "av1import.rulesHint": "One rule per line: old path => new path",

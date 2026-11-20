@@ -683,3 +683,63 @@ De eindcommit, de geheimenscan en de CI-uitkomst op exact die commit worden na p
 De bestaande bewijsstatussen blijven ongewijzigd: **Bezig**, **NIET GEVALIDEERD (echte NAS)** voor het gebouwde
 deel scopes; alleen NAS-test nodig voor dat deel. De nog ontbrekende Hub-acceptatie wordt hiermee niet afgevinkt.
 Geen echte NAS, Emby of accounts benaderd; geen losgekoppelde diagnosedienst of container gestart.
+
+## 14. S-P3-680 — ontwerp voor Overzicht, toetsenbord en opslagkleuren
+
+### 14.1 Afwijkingen en afbakening
+
+De bestaande 768-pixelmatrix in `peil.spec.ts` meet de hoofdroutes. De toetsenbordproef in
+`mediaguard.spec.ts` stopt bij sneltoetsen en de bestaande Peil-focusproef meet Instellingen.
+Op het Overzicht toetsen we ook de zichtbare bediening zelf, inclusief de doorklik vanuit
+Systeemstatus, en lopen we de vijf hoofdonderdelen door op 768 px.
+
+- Het statusblok toont één totaal, zonder herleidbare rijen. Het kan geruststellende tekst tonen
+  terwijl een bron nog laadt, geen resultaat gaf of een oude meting teruggaf.
+- Beschikbaar, Ontbrekend, Fouten en Nu bezig verversen niet allemaal zelfstandig. De kaart
+  Ontbrekend kan een bibliotheekteller gebruiken en die aan Ontbrekend toeschrijven.
+- De stapelbalk en detailbalken van het opslagoverzicht gebruiken verschillende kleurregels voor
+  dezelfde opslagpost. Het teken bij de hoeveelheid duidt de richting aan.
+
+### 14.2 Ontwerp binnen Peil
+
+- **Systeemstatus (C-04).** H2, totale StatusBadge en een lijst met één link per rij. De kern leest
+  `/status`, de AV1-engine `/encoder/health` en de gekoppelde instanties hun eigen gezondheidsmeting
+  uit `/instances`. Toon wat is gemeten en wanneer. Een laatst bekende gezonde of gepauzeerde
+  meting wordt Verouderd met tijd en reden. Een bekende storing blijft herkenbaar als oude stand.
+  Zonder meting volgt Onbekend. Uitval van één bron verandert de meting in andere rijen niet.
+  De telling voor Wat actie nodig heeft behoudt de bestaande bron en doorklik.
+- **Periodiek verversen.** Gebruik de bestaande browserbronnen met een interval per onderdeel.
+  Houd beschikbaarheid, ontbrekend, fouten, activiteit, kalender en opslag bij hun eigen bron.
+  Laat ontbrekende waarden weg en markeer laatst bekende waarden. Toon een voortgangspercentage
+  alleen als de beschikbare taakmeting het percentage zelf bevat en actueel is. Benoem de
+  geregistreerde noodstop zonder een uitspraak over alle werkzaamheden of gebruikersgegevens.
+  De kop- en zijbalk spreken over gemelde activiteit en fouten uit hun eigen meting.
+  Kernteksten bij noodstop, opslagwaarschuwing, migratie en het ontkoppelen of verwijderen
+  van een mediaserver beschrijven de actie of de gerapporteerde stand. De wachtrijtelling
+  bij opheffen van de noodstop bewijst alleen hoeveel werk er wacht.
+- **Opslag.** Eén vaste Peil-grafiekkleur per post in de stapel, legenda en detailbalk. Het teken en
+  de tekst duiden richting aan. Onverklaard behoudt zijn arcering. Beschikbare gestructureerde
+  gegevens voeden de Nederlandse en Engelse kerntekst.
+- **Uitgesteld.** De E13-woordkeuze voor indexers die niets vinden en de Android-ronde blijven
+  open. De stap bouwt met de bestaande Peil-versie en met bestaande leesroutes en gegevens.
+
+### 14.3 Browserbewijs
+
+De lokale Chromium-proef draaide op een productiebuild met een eigen testkern. Op de oude
+webbuild faalden de drie nieuwe bronproeven. De toetsenbord- en breedteproeven waren al
+groen. Op de gewijzigde webbuild waren 14 gerichte tests groen in 39.3s. De proef
+controleert bij een cacheantwoord zowel de gestippelde rand als het verschil met de kleur
+van de gemeten gezonde stand. De toets bedient ook de herhaalactie en bezoekt de vijf
+onderdelen met Tab en Enter. Te zien in
+[`docs/screenshots/peil/s-p3-680`](../screenshots/peil/s-p3-680/).
+
+De opslagafdruk gebruikt een Engelse browsersessie en synthetische opslagposten. De
+kerntekst en legendanamen zijn vertaald. Aanvullende brontekst uit het opslaglogboek
+volgt de taal waarin de kern die aanlevert. Geen echte schermlezer, NAS of tv gebruikt.
+
+De eerste volledige lokale run telde 252 groene en vijf rode tests. De browserproef had
+een lokale themakeuze opgeslagen die de kern overnam als gebruikersvoorkeur. De proef
+gebruikt nu de systeemkleur van Chromium. De ontkoppeldialoog behoudt de getoetste
+mededeling dat adres en sleutel bewaard blijven. De drie daaropvolgende fouten kwamen
+door de tweede testserver die de mislukte dialoogproef had achtergelaten. De bestaande
+thema- en mediaservercontroles zijn behouden.

@@ -6,9 +6,9 @@ import { useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 
 import { Button, Card, InlineState, Segmented, StatusChip } from "@/components/mg/primitives";
-import { ErrorState, StateView } from "@/components/mg/states";
+import { ErrorState, StaleMark, StateView } from "@/components/mg/states";
 import { useResource } from "@/lib/api/hooks";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type MessageKey } from "@/lib/i18n";
 
 type Period = "24h" | "7d" | "30d";
 
@@ -34,12 +34,17 @@ export interface Ledger {
   dirs: DirRow[]; dirs_measured_at?: string | null;
 }
 
-// Peil §7: vaste slot per post in de gestapelde balk (chart-1…5, "niet verklaard" = Overig + arcering); geen
-// status- of violette kleuren. De balk per post is één tint (chart-1), een negatieve post chart-2.
+// Peil §7: per opslagpost één kleur in de stapel, legenda en detailbalk. Het teken geeft de richting aan.
 const COLORS: Record<string, string> = {
   added: "var(--chart-1)", upgrades: "var(--chart-2)", av1: "var(--chart-3)",
   quarantine: "var(--chart-4)", downloads: "var(--chart-5)", unexplained: "var(--chart-other)",
 };
+const BUCKET_LABELS: Record<string, MessageKey> = {
+  added: "ledger.bucket.added", upgrades: "ledger.bucket.upgrades", av1: "ledger.bucket.av1",
+  quarantine: "ledger.bucket.quarantine", downloads: "ledger.bucket.downloads", unexplained: "ledger.bucket.unexplained",
+};
+const colorFor = (bucket: Bucket) => COLORS[bucket.key] ?? "var(--chart-other)";
+const patternFor = (bucket: Bucket) => bucket.key === "unexplained" ? "arcering-gat" : undefined;
 const PERIODS: Period[] = ["24h", "7d", "30d"];
 type SortKey = "at" | "title" | "kind" | "net" | "source" | "instance";
 
@@ -47,23 +52,36 @@ function signed(bytes: (v: number) => string, v: number): string {
   return `${v >= 0 ? "+" : "−"}${bytes(Math.abs(v))}`;
 }
 
+function ledgerSummary(d: Ledger, { t, tp, bytes }: ReturnType<typeof useI18n>) {
+  const { added, upgrades_net, av1_saved, library_net, episodes, movies } = d.totals;
+  if (![added, upgrades_net, av1_saved, library_net].every(Number.isFinite)) return d.summary_nl;
+  const imports = [episodes ? tp("ledger.episodes", episodes) : null, movies ? tp("ledger.movies", movies) : null].filter(Boolean);
+  return [t("ledger.summaryPeriod", { period: t(`ledger.p${d.period}`), change: signed(bytes, added + upgrades_net) })
+    + (imports.length ? ` — ${imports.join(", ")}` : ""),
+  av1_saved ? t("ledger.summaryAv1", { saved: bytes(av1_saved) }) : null,
+  t("ledger.summaryNet", { net: signed(bytes, library_net) })].filter(Boolean).join(" · ");
+}
+
 /** Eén regel voor het Overzicht: wat kwam er de laatste 24 uur bij (met doorklik). */
 export function StorageLedgerLine() {
-  const { t } = useI18n();
+  const i18n = useI18n();
+  const { t, time } = i18n;
   const res = useResource<Ledger>("/storage/ledger", { period: "24h" }, 300_000);
-  if (!res.data) return null;
+  if (!res.data && !res.error) return null;
   return (
     <p className="hint" style={{ margin: 0, display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" }} data-testid="storage-ledger-line">
       <HardDrive className="ico ico-sm" aria-hidden="true" style={{ alignSelf: "center" }} />
-      <span style={{ overflowWrap: "anywhere" }}>{res.data.summary_nl}</span>
-      <Link href="/av1#opslag">{t("ledger.look")}</Link>
+      <span className="[overflow-wrap:anywhere]">{res.data ? ledgerSummary(res.data, i18n) : t("ledger.error")}</span>
+      {res.stale ? <StaleMark>{t("overview.readingStale", { when: time(res.fetchedAt) })}</StaleMark> : null}
+      <Link className="link-more" href="/av1#opslag">{t("ledger.look")}</Link>
     </p>
   );
 }
 
 /** Opslag &amp; downloads: wat kwam erbij en waar ging de ruimte heen (per 24 u / 7 d / 30 d). */
 export function StorageLedger() {
-  const { t, bytes, num, dateTime, relative } = useI18n();
+  const i18n = useI18n();
+  const { t, bytes, num, dateTime, relative } = i18n;
   const params = useSearchParams();
   const initial = (params?.get("periode") ?? "24h") as Period;
   const [period, setPeriod] = useState<Period>(PERIODS.includes(initial) ? initial : "24h");
@@ -93,6 +111,7 @@ export function StorageLedger() {
     return <StateView kind="empty" title={t("ledger.unavailable")} />;
   }
   const positive = d.buckets.filter((b) => b.bytes > 0);
+  const labelFor = (bucket: Bucket) => BUCKET_LABELS[bucket.key] ? t(BUCKET_LABELS[bucket.key]) : bucket.label_nl;
   const posTotal = positive.reduce((s, b) => s + b.bytes, 0);
   const maxAbs = Math.max(1, ...d.buckets.map((b) => Math.abs(b.bytes)));
   const head = (key: SortKey, label: string, cls?: string) => (
@@ -108,27 +127,28 @@ export function StorageLedger() {
         actions={<Segmented label={t("ledger.period")} value={period} onChange={setPeriod}
           options={[{ value: "24h", label: t("ledger.p24h") }, { value: "7d", label: t("ledger.p7d") }, { value: "30d", label: t("ledger.p30d") }]} />}>
         <div style={{ display: "grid", gap: 12 }}>
-          <strong style={{ overflowWrap: "anywhere" }} data-testid="ledger-summary">{d.summary_nl}</strong>
+          <strong style={{ overflowWrap: "anywhere" }} data-testid="ledger-summary">{ledgerSummary(d, i18n)}</strong>
+          {res.stale ? <StaleMark>{t("state.stale", { age: relative(res.fetchedAt) })}</StaleMark> : null}
           {posTotal > 0 ? (
-            <div className="ledger-stack" role="img" aria-label={positive.map((b) => `${b.label_nl} ${b.bytes_nl}`).join(", ")}
+            <div className="ledger-stack" role="img" aria-label={positive.map((b) => `${labelFor(b)} ${signed(bytes, b.bytes)}`).join(", ")}
               style={{ display: "flex", gap: 2, height: 14, borderRadius: 7, overflow: "hidden", background: "var(--chart-meter-track)" }}>
               {positive.map((b) => (
-                <span key={b.key} title={`${b.label_nl}: ${b.bytes_nl}`} className={b.key === "unexplained" ? "arcering-gat" : undefined} style={{ width: `${(b.bytes / posTotal) * 100}%`, backgroundColor: COLORS[b.key] ?? "var(--chart-1)" }} />
+                <span key={b.key} data-bucket={b.key} title={`${labelFor(b)}: ${signed(bytes, b.bytes)}`} className={patternFor(b)} style={{ width: `${(b.bytes / posTotal) * 100}%`, backgroundColor: colorFor(b) }} />
               ))}
             </div>
           ) : null}
           <div style={{ display: "grid", gap: 8 }} data-testid="ledger-buckets">
             {d.buckets.map((b) => (
-              <div key={b.key} style={{ display: "grid", gap: 2 }}>
+              <div key={b.key} data-bucket={b.key} style={{ display: "grid", gap: 2 }}>
                 <div className="row-between" style={{ gap: 8, fontSize: 14 }}>
                   <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-                    <span aria-hidden="true" className={b.key === "unexplained" ? "arcering-gat" : undefined} style={{ width: 12, height: 12, borderRadius: 3, border: "1px solid var(--border)", backgroundColor: COLORS[b.key] ?? "var(--chart-1)", flex: "none" }} />
-                    <strong>{b.label_nl}</strong>
+                    <span aria-hidden="true" className={patternFor(b)} style={{ width: 12, height: 12, borderRadius: 3, border: "1px solid var(--border)", backgroundColor: colorFor(b), flex: "none" }} />
+                    <strong>{labelFor(b)}</strong>
                   </span>
-                  <span style={{ fontVariantNumeric: "tabular-nums" }}>{b.bytes_nl}</span>
+                  <span style={{ fontVariantNumeric: "tabular-nums" }}>{signed(bytes, b.bytes)}</span>
                 </div>
                 <div aria-hidden="true" style={{ height: 6, borderRadius: 3, background: "var(--chart-meter-track)", overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${(Math.abs(b.bytes) / maxAbs) * 100}%`, background: b.bytes < 0 ? "var(--chart-2)" : "var(--chart-1)" }} />
+                  <div className={patternFor(b)} style={{ height: "100%", width: `${(Math.abs(b.bytes) / maxAbs) * 100}%`, backgroundColor: colorFor(b) }} />
                 </div>
                 <span className="t-3" style={{ fontSize: 14 }}>{b.hint_nl}</span>
               </div>

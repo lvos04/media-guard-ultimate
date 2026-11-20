@@ -1,6 +1,6 @@
 /** Migration wizard wired to the real /api/v1/migration routes, AV1 history import, job view, uploads, anime routing (2026-11-02). */
 export const nl = {
-  "mig.sub": "Zet je bestaande Sonarr/Radarr veilig over naar de vier MediaGuard-instanties. Je oude installatie wordt tot de overschakeling nooit gewijzigd.",
+  "mig.sub": "Plan de overstap van Sonarr of Radarr naar de MediaGuard-instanties en controleer het plan vóór je overschakelt.",
   "mig.tab.av1": "AV1-historie",
   "mig.adminOnly": "Alleen een beheerder kan dit uitvoeren.",
   "mig.queued": "Gestart als job — voortgang hieronder",
@@ -317,7 +317,7 @@ export const nl = {
   "mig.phase.seerr_done": "Seerr omgezet naar het doel",
   "mig.phase.completed": "Afgerond",
   "mig.cutover.title": "Overschakelen naar {target}",
-  "mig.cutover.body": "Dit is de eerste stap die je oude instantie wijzigt. Elke fase wordt vastgelegd vóór de volgende begint; bij stroomuitval hervat de overschakeling veilig.",
+  "mig.cutover.body": "Vanaf deze stap wijzigt MediaGuard je oude instantie. De wizard legt de voortgang per fase vast.",
   "mig.cutover.activateTitle": "Zoeken activeren op {target}",
   "mig.cutover.activateBody": "Deze bron is alleen een back-up: er is geen oude instantie om te bevriezen. Bevestig dat je oude instantie uit staat of zelf niet meer zoekt.",
   "mig.cutover.old": "Oude instantie",
@@ -352,7 +352,7 @@ export const nl = {
 
   "av1import.title": "AV1-historie importeren",
   "av1import.sub": "uit de oude AV1-app",
-  "av1import.body": "Upload de SQLite-database van de oude AV1-app (of geef het pad op). Alleen een kopie wordt read-only geopend; conversies worden aan MediaGuard-bestanden gekoppeld. Herhaald importeren is veilig.",
+  "av1import.body": "Upload de SQLite-database van de oude AV1-app of geef het pad op. MediaGuard leest een kopie en probeert de omzettingen aan bestanden te koppelen.",
   "av1import.sourceInstance": "Naam van de oude installatie",
   "av1import.rules": "Padregels (optioneel)",
   "av1import.rulesHint": "Eén regel per lijn: oud pad => nieuw pad",

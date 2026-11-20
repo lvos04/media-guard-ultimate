@@ -15,10 +15,15 @@ export class ApiError extends Error {
 }
 
 export function api<T>(path: string, init?: RequestInit): Promise<T> {
-  return !init?.method || init.method === "GET" ? limited(() => apiNow<T>(path, init)) : apiNow<T>(path, init);
+  const read = async () => (await apiNow<T>(path, init)).value;
+  return !init?.method || init.method === "GET" ? limited(read) : read();
 }
 
-async function apiNow<T>(path: string, init?: RequestInit): Promise<T> {
+export function encoderReading<T>(path: string): Promise<{ value: T; staleSeconds: number | null }> {
+  return limited(() => apiNow<T>(path));
+}
+
+async function apiNow<T>(path: string, init?: RequestInit): Promise<{ value: T; staleSeconds: number | null }> {
   const response = await fetch(`${ENCODER_BASE}${path}`, {
     ...init,
     headers: {
@@ -38,7 +43,10 @@ async function apiNow<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = typeof rawDetail === "string" ? rawDetail : JSON.stringify(rawDetail);
     throw new ApiError(response.status, detail);
   }
-  return (await response.json()) as T;
+  const stale = response.headers.get("X-MediaGuard-Stale");
+  const age = Number(stale);
+  const staleSeconds = stale === null ? null : Number.isFinite(age) ? Math.max(0, age) : 0;
+  return { value: (await response.json()) as T, staleSeconds };
 }
 
 export function mutation<T>(path: string, method: string, body?: unknown): Promise<T> {

@@ -2,7 +2,7 @@ import type { nl } from "../r032";
 
 export const en: Record<keyof typeof nl, string> = {
   "hero.toList": "Go to the list",
-  "overview.kpi.errorsNone": "No errors in AV1, tasks or connections",
+  "overview.kpi.errorsNone": "No errors reported in this reading",
   "overview.moreEncodes": "and {count} more encode(s) in the queue →",
   "quarantine.pageTitle": "Restore",
   "quarantine.pageSub": "Originals MediaGuard keeps after a replacement. Restore or clean them up here.",

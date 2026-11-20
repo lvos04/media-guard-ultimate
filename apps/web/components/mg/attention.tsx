@@ -25,6 +25,17 @@ interface AttentionResponse { items: AttentionItem[]; count: number; errors: num
 export const DISMISS_PATH = "/attention/dismiss";
 export const isDismissAction = (a: AttentionAction) => a.path === DISMISS_PATH;
 
+export function attentionCopy(item: AttentionItem, t: ReturnType<typeof useI18n>["t"]) {
+  switch (item.key) {
+    case "backup.bundle_missing":
+      return { title: t("attention.recoveryCode"), detail: t("attention.recoveryCodeDetail") };
+    case "encoder.offline":
+      return { title: t("av1.engineDownTitle"), detail: t("attention.encoderUnreachableDetail") };
+    default:
+      return { title: item.title_nl, detail: item.detail_nl };
+  }
+}
+
 /** 'Wacht op jou' uit core (/attention): alles waar MediaGuard op een beslissing wacht. */
 export function useAttention() {
   const res = useResource<AttentionResponse>("/attention", undefined, 60_000);
@@ -91,12 +102,13 @@ export function AttentionList({ items, onChange }: { items: AttentionItem[]; onC
       {items.map((it) => {
         const Icon = ICON[it.severity] ?? CircleHelp;
         const tone = it.severity === "error" ? "danger" : it.severity === "warning" ? "warning" : "info";
+        const copy = attentionCopy(it, t);
         return (
-          <Card key={it.key} title={it.title_nl} icon={Icon} sub={it.count > 1 ? num(it.count) : undefined} flush>
+          <Card key={it.key} title={copy.title} icon={Icon} sub={it.count > 1 ? num(it.count) : undefined} flush>
             <div className="list">
               <div className="list-row list-row--wrap">
                 <span className={`list-icon list-icon--${tone}`}><Icon className="ico" aria-hidden="true" /></span>
-                <div className="list-main"><div className="list-sub" style={{ whiteSpace: "normal" }}>{plainText(it.detail_nl, locale)}</div></div>
+                <div className="list-main"><div className="list-sub" style={{ whiteSpace: "normal" }}>{plainText(copy.detail, locale)}</div></div>
                 <span className="list-aside" style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
                   {it.actions.map((a) => <ActionButton key={a.path} a={a} onDone={onChange} />)}
                   <Link className="btn btn--sm" href={it.href}>{t("attention.open")}</Link>

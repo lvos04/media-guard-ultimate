@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 /**
  * Runs serially against a real, freshly started core (see playwright.config.ts).
@@ -18,8 +18,17 @@ async function login(page: Page) {
 }
 
 async function noHorizontalScroll(page: Page) {
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth);
   expect(overflow, "page must not scroll horizontally").toBeLessThanOrEqual(1);
+}
+
+async function tabTo(page: Page, target: Locator) {
+  await expect(target).toBeVisible();
+  for (let i = 0; i < 60; i++) {
+    if (await target.evaluate((element) => document.activeElement === element)) return;
+    await page.keyboard.press("Tab");
+  }
+  await expect(target).toBeFocused();
 }
 
 async function contrastViolations(page: Page) {
@@ -147,6 +156,156 @@ test("toetsenbordnavigatie: skip-link, / zoeken, g s, Esc", async ({ page }) => 
   await expect(page.getByRole("dialog", { name: "Sneltoetsen" })).toHaveCount(0);
 });
 
+test("768 px: alle acties van het Overzicht zijn bereikbaar met zichtbare toetsenbordfocus", async ({ page }) => {
+  await page.setViewportSize({ width: 768, height: 900 });
+  await login(page);
+  await page.goto("/");
+  await expect(page.getByTestId("todo-card")).toBeVisible();
+  await expect(page.getByTestId("storage-ledger-line")).toBeVisible();
+  const main = page.getByRole("main");
+  const controls = main.locator('a[href], button, summary, [role="button"]');
+  const expected = await controls.evaluateAll((elements) => elements.flatMap((el, index) =>
+    el instanceof HTMLElement && el.getClientRects().length && !el.matches(":disabled") ? [index] : []));
+  expect(expected.length).toBeGreaterThan(6);
+  const visited = new Set<number>();
+  for (let i = 0; i < 60 && visited.size < expected.length; i++) {
+    await page.keyboard.press("Tab");
+    const focus = await controls.evaluateAll((elements) => {
+      const el = document.activeElement;
+      if (!(el instanceof HTMLElement) || !elements.includes(el)) return null;
+      const css = getComputedStyle(el);
+      const box = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + Math.min(12, box.height / 2));
+      return { index: elements.indexOf(el), name: el.textContent?.trim(),
+        ring: el.matches(":focus-visible") && css.outlineStyle !== "none"
+          && parseFloat(css.outlineWidth) >= 3 && css.outlineColor !== "rgba(0, 0, 0, 0)",
+        uncovered: Boolean(hit && el.contains(hit)) };
+    });
+    if (!focus) continue;
+    expect(focus.ring, focus.name).toBe(true);
+    expect(focus.uncovered, focus.name).toBe(true);
+    visited.add(focus.index);
+  }
+  expect([...visited].sort((a, b) => a - b)).toEqual(expected);
+  await noHorizontalScroll(page);
+  const navigation = page.getByRole("navigation", { name: "Mobiele navigatie" });
+  for (const [name, route] of [["Activiteit", "/activiteit"], ["Bibliotheek", "/bibliotheek"], ["Ruimte", "/av1"],
+    ["Aanvragen", "/aanvragen"], ["Overzicht", "/"]]) {
+    await tabTo(page, navigation.getByRole("link", { name, exact: true }));
+    await page.keyboard.press("Enter");
+    await expect.poll(() => new URL(page.url()).pathname).toBe(route);
+    await expect(main.getByRole("heading", { level: 1 })).toBeVisible();
+    await noHorizontalScroll(page);
+  }
+});
+
+for (const theme of ["light", "dark"] as const) {
+  test(`768 px: Systeemstatus toont bronuitval, veroudering en herstel · ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 768, height: 900 });
+    await page.emulateMedia({ colorScheme: theme });
+    await page.clock.install();
+    let mode: "fresh" | "stale" | "offline" = "fresh";
+    await page.route("**/api/v1/instances", (route) => route.fulfill({ json: [{
+      id: "testfilms", name: "Testfilms", app: "radarr", status: "healthy", last_check_at: "2025-01-01T00:00:00Z",
+    }] }));
+    await page.route("**/api/v1/encoder/health", (route) => route.fulfill(mode === "offline"
+      ? { status: 503, json: { detail: "Testbron reageert niet" } }
+      : { json: { status: "ok" }, headers: mode === "stale" ? { "X-MediaGuard-Stale": "90" } : {} }));
+    await login(page);
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    await page.addStyleTag({ content: 'body { font-family: "DejaVu Sans", sans-serif !important; }' });
+    const panel = page.getByRole("region", { name: "Systeemstatus" });
+    const encoder = panel.getByRole("link", { name: /AV1-engine/ });
+    const core = panel.getByRole("link", { name: /MediaGuard-core/ });
+    const instance = panel.getByRole("link", { name: /Testfilms/ });
+    const healthy = encoder.locator('[data-status="healthy"]');
+    const stale = encoder.locator('[data-status="stale"]');
+    await expect(healthy).toHaveText("Gezond");
+    const healthyColor = await healthy.evaluate((element) => getComputedStyle(element).color);
+    await expect(core.locator('[data-status="healthy"]')).toBeVisible();
+    await expect(instance.locator('[data-status="stale"]')).toHaveText("Verouderd");
+    mode = "stale";
+    await page.clock.fastForward(60_000);
+    await expect(stale).toHaveText("Verouderd");
+    await expect(stale).toHaveCSS("border-top-style", "dashed");
+    await expect(stale).not.toHaveCSS("color", healthyColor);
+    await expect(healthy).toHaveCount(0);
+    await expect(encoder).toContainText("Laatst bekend");
+    await expect(core.locator('[data-status="healthy"]')).toBeVisible();
+    const todo = page.getByTestId("todo-card");
+    await expect(todo).toContainText("Je hebt de code nodig om een versleutelde MediaGuard-herstelbundel te openen.");
+    await expect(todo).not.toContainText("alles na een schijfcrash terug kan");
+    await noHorizontalScroll(page);
+    if (process.env.MG_PEIL_680_SHOTS) {
+      await page.screenshot({ path: `${process.env.MG_PEIL_680_SHOTS}/overzicht-768-${theme}.png`, animations: "disabled" });
+    }
+    mode = "offline";
+    await page.clock.fastForward(60_000);
+    await expect(stale).toBeVisible();
+    await expect(healthy).toHaveCount(0);
+    mode = "fresh";
+    await tabTo(page, panel.getByRole("button", { name: "Opnieuw proberen" }));
+    await page.keyboard.press("Enter");
+    await expect(healthy).toBeVisible();
+    await page.addStyleTag({ content: `main * {
+      line-height: 1.5 !important;
+      letter-spacing: 0.12em !important;
+      word-spacing: 0.16em !important;
+    }` });
+    for (const width of [768, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      await noHorizontalScroll(page);
+      const overflow = await panel.getByRole("link").evaluateAll((rows) =>
+        Math.max(...rows.map((row) => row.scrollWidth - row.clientWidth)));
+      expect(overflow, `statusrijen met vergrote tekstafstand op ${width} px`).toBeLessThanOrEqual(1);
+    }
+  });
+}
+
+test("768 px: Overzicht ververst de eigen bronnen en toont geen onbevestigde voortgang", async ({ page }) => {
+  await page.setViewportSize({ width: 768, height: 900 });
+  await page.clock.install();
+  let available = 7;
+  let wanted: number | null = null;
+  let progress: number | null = null;
+  let jobsOffline = false;
+  await page.route("**/api/v1/library/kpis", (route) => route.fulfill({ json: { totals: {
+    available, total: 42, missing: 24, unmonitored: 0, upcoming: 0,
+  } } }));
+  await page.route("**/api/v1/wanted/kpis", (route) => route.fulfill(wanted === null
+    ? { status: 503, json: { detail: "Testbron reageert niet" } }
+    : { json: { missing: wanted, missing_aired_7d: 0, resolved_7d: 0 } }));
+  await page.route("**/api/v1/encoding/jobs", (route) => route.fulfill(jobsOffline
+    ? { status: 503, json: { detail: "Testbron reageert niet" } }
+    : { json: [{ id: 680, status: "running", source_path: "Testfilm.mkv", progress }] }));
+  await login(page);
+  const main = page.getByRole("main");
+  const library = main.locator(".kpi").filter({ hasText: "Beschikbaar" });
+  const missing = main.locator(".kpi").filter({ hasText: "Ontbrekend" });
+  const activity = main.getByRole("region", { name: "Nu bezig" });
+  await expect(library.locator(".kpi-value")).toHaveText("7");
+  await expect(missing.locator('[data-status="unknown"]')).toBeVisible();
+  await expect(missing.locator(".kpi-value")).toHaveCount(0);
+  await expect(activity.getByText("Voortgang onbekend")).toBeVisible();
+  await expect(activity.getByRole("progressbar")).toHaveCount(0);
+  available = 8;
+  wanted = 16;
+  progress = 0.42;
+  await page.clock.fastForward(30_001);
+  await expect(library.locator(".kpi-value")).toHaveText("8");
+  await expect(missing.locator(".kpi-value")).toHaveText("16");
+  await expect(activity.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "42");
+  wanted = null;
+  jobsOffline = true;
+  await page.clock.fastForward(30_001);
+  await expect(missing.locator('[data-status="stale"]')).toBeVisible();
+  await expect(missing.locator(".kpi-value")).toHaveText("16");
+  await expect(library.locator('[data-status="stale"]')).toHaveCount(0);
+  await expect(activity.getByText("Voortgang onbekend")).toBeVisible();
+  await expect(activity.getByRole("progressbar")).toHaveCount(0);
+  await noHorizontalScroll(page);
+});
+
 test("thema: standaard Systeem, wisselen (Donker → Licht) blijft bewaard, ook server-side per gebruiker", async ({ page }) => {
   // Peil (ADR-0016 punt 5): standaard Systeem; het script zet altijd het opgeloste thema
   await page.emulateMedia({ colorScheme: "dark" });
@@ -225,8 +384,8 @@ test.describe("mobiel", () => {
     await noHorizontalScroll(page);
   });
 
-  test("360 px: kernpagina's passen", async ({ page }) => {
-    await page.setViewportSize({ width: 360, height: 780 });
+  for (const width of [360, 768]) test(`${width} px: kernpagina's passen`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 780 });
     await login(page);
     for (const path of ["/", "/bibliotheek", "/ontbrekend", "/instellingen", "/instellingen/instanties", "/jobs", "/dolby-vision", "/ai", "/systeem"]) {
       await page.goto(path);

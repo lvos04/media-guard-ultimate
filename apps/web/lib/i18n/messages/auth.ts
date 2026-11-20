@@ -3,7 +3,7 @@ export const nl = {
   "auth.point1Title": "Vier gescheiden instanties",
   "auth.point1Body": "Series, Anime, Films en Animefilms — elk met eigen database en wachtrij.",
   "auth.point2Title": "Ontbrekende afleveringen terugvinden",
-  "auth.point2Body": "Per oorzaak gediagnosticeerd en veilig ingepland.",
+  "auth.point2Body": "Bekijk gemelde oorzaken en geplande zoekacties.",
   "auth.point3Title": "Niets zonder herstelroute",
   "auth.point3Body": "Elke vervanging is verifieerbaar en terug te draaien.",
   "auth.footer": "Draait lokaal op TrueNAS SCALE · geen gegevens verlaten je netwerk zonder toestemming",

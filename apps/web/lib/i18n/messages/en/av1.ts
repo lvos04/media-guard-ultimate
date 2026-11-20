@@ -88,7 +88,7 @@ export const en: Record<keyof typeof nl, string> = {
   "av1.phase.unknown": "Working",
   "av1.phase.step": "Step {n} of {total}",
   "av1.notice.storage": "Work storage unreachable",
-  "av1.notice.storageBody": "{error}. Both lanes are safely stopped; your files are not touched.",
+  "av1.notice.storageBody": "Storage check reported: {error}",
   "av1.notice.cache": "Encoding paused: work folder almost full",
   "av1.notice.cacheWarn": "Work folder filling up",
   "av1.notice.cacheBody": "{free} left after running reservations. Warning below {warn} GB, pause below {pause} GB (adjustable in Settings → Limits).",

@@ -94,7 +94,7 @@ export const nl = {
 
   // meldingen overzicht
   "av1.notice.storage": "Werkopslag niet bereikbaar",
-  "av1.notice.storageBody": "{error}. Beide banen staan veilig stil; je bestanden worden niet aangeraakt.",
+  "av1.notice.storageBody": "Melding van de opslagcontrole: {error}",
   "av1.notice.cache": "Encoderen gepauzeerd: werkmap bijna vol",
   "av1.notice.cacheWarn": "Werkmap raakt vol",
   "av1.notice.cacheBody": "Nog {free} vrij na lopende reserveringen. Waarschuwing onder {warn} GB, pauze onder {pause} GB (aan te passen bij Instellingen → Grenzen).",

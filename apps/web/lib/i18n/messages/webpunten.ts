@@ -41,6 +41,6 @@ export const nl = {
 
   // 39: kleine UI-punten
   "estop.releaseFailed": "Noodstop opheffen mislukt",
-  "hero.estop": "Noodstop staat aan: MediaGuard doet niets tot je hem opheft.",
+  "hero.estop": "Noodstop staat aan.",
   "hero.estopPaused": "Noodstop staat aan: {count} encode(s) gepauzeerd.",
 };

@@ -279,7 +279,7 @@ export interface WantedKpiBlock {
   backfill_30d: { searches: number; completed: number; grabbed: number; errors: number; success_rate: number | null };
   import_failed: number;
 }
-export interface WantedKpis extends WantedKpiBlock { per_instance: Record<string, WantedKpiBlock> }
+export interface WantedKpis extends WantedKpiBlock { missing_total?: number; per_instance: Record<string, WantedKpiBlock> }
 export type WantedReasons = Record<string, { code?: string; label_nl: string; fix_nl: string; needs_user?: boolean; automatic?: boolean; href?: string }>;
 export interface WantedItem {
   id: number;

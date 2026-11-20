@@ -38,6 +38,6 @@ export const en: Record<keyof typeof nl, string> = {
   "delivery.showAll": "Show all {count}",
 
   "estop.releaseFailed": "Could not release the emergency stop",
-  "hero.estop": "Emergency stop is on: MediaGuard does nothing until you release it.",
+  "hero.estop": "Emergency stop is on.",
   "hero.estopPaused": "Emergency stop is on: {count} encode(s) paused.",
 };

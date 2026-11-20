@@ -5,7 +5,7 @@ export const en: Record<keyof typeof nl, string> = {
   "auth.point1Title": "Four separate instances",
   "auth.point1Body": "Series, Anime, Movies and Anime movies — each with its own database and queue.",
   "auth.point2Title": "Recover missing episodes",
-  "auth.point2Body": "Diagnosed per cause and scheduled safely.",
+  "auth.point2Body": "See reported causes and scheduled searches.",
   "auth.point3Title": "Nothing without a way back",
   "auth.point3Body": "Every replacement is verifiable and reversible.",
   "auth.footer": "Runs locally on TrueNAS SCALE · no data leaves your network without consent",

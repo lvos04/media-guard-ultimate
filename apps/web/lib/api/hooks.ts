@@ -36,6 +36,7 @@ interface Entry {
   data: unknown;
   error: ApiError | null;
   fetchedAt: number | null;
+  invalidated: boolean;
   inflight: Promise<void> | null;
   again: boolean;
   subs: Set<() => void>;
@@ -47,7 +48,7 @@ const store = new Map<string, Entry>();
 function entryFor(key: string): Entry {
   let e = store.get(key);
   if (!e) {
-    e = { data: null, error: null, fetchedAt: null, inflight: null, again: false, subs: new Set() };
+    e = { data: null, error: null, fetchedAt: null, invalidated: false, inflight: null, again: false, subs: new Set() };
     store.set(key, e);
   }
   return e;
@@ -62,11 +63,14 @@ function fetchEntry(key: string, path: string, query: RequestOptions["query"], f
     return e.inflight;
   }
   const run = async (): Promise<void> => {
+    const invalidated = e.invalidated;
+    e.invalidated = false;
     try {
       e.data = await coreRequest<unknown>(path, { query });
       e.error = null;
       e.fetchedAt = Date.now();
     } catch (error) {
+      e.invalidated ||= invalidated;
       e.error = asApiError(error, path);
     }
     e.subs.forEach((fn) => fn());
@@ -81,7 +85,7 @@ function fetchEntry(key: string, path: string, query: RequestOptions["query"], f
 
 /** Na een mutatie: alle gecachte antwoorden onder dit pad als verouderd markeren. */
 export function invalidate(prefix = ""): void {
-  store.forEach((e, key) => { if (key.startsWith(prefix)) e.fetchedAt = null; });
+  store.forEach((e, key) => { if (key.startsWith(prefix)) e.invalidated = true; });
 }
 onMutation(() => invalidate());
 
@@ -121,7 +125,7 @@ export function useResource<T>(path: string | null, query?: RequestOptions["quer
     // met een werkende live-verbinding sturen events de verversing al aan: een paginawissel
     // hoeft dezelfde globale gegevens dan niet opnieuw op te halen (N25)
     const fresh = live ? LIVE_FRESH_MS : FRESH_MS;
-    if (e.fetchedAt === null || Date.now() - e.fetchedAt > fresh) void fetchEntry(key, path!, parsedQuery);
+    if (e.invalidated || e.fetchedAt === null || Date.now() - e.fetchedAt > fresh) void fetchEntry(key, path!, parsedQuery);
     else notify();
     return () => { e.subs.delete(notify); };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- live alleen bij het aankoppelen
@@ -132,7 +136,7 @@ export function useResource<T>(path: string | null, query?: RequestOptions["quer
     if (!every || !key || !visible) return;
     const e = entryFor(key);
     // na terugkomen meteen bijwerken als de laatste ophaling te oud is
-    if (e.fetchedAt !== null && Date.now() - e.fetchedAt > every) void fetchEntry(key, path!, parsedQuery);
+    if (e.fetchedAt !== null && (e.invalidated || Date.now() - e.fetchedAt > every)) void fetchEntry(key, path!, parsedQuery);
     const id = window.setInterval(() => void fetchEntry(key, path!, parsedQuery), every);
     return () => window.clearInterval(id);
   }, [every, key, path, parsedQuery, visible]);

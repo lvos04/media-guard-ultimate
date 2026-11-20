@@ -1,7 +1,7 @@
 // Teksten voor testrapport 2 (N3–N27).
 export const nl = {
   "hero.toList": "Naar de lijst",
-  "overview.kpi.errorsNone": "Geen fouten in AV1, taken en koppelingen",
+  "overview.kpi.errorsNone": "Geen fouten gemeld in deze meting",
   "overview.moreEncodes": "en nog {count} encode(s) in de wachtrij →",
   "quarantine.pageTitle": "Terugzetten",
   "quarantine.pageSub": "Originelen die MediaGuard bewaart na een vervanging. Hier zet je ze terug of ruim je ze op.",

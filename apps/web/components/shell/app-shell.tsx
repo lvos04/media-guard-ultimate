@@ -281,9 +281,12 @@ function SidebarHealth({ health }: { health: Health }) {
   const rows = useTodoRows();
   const todo = rows.length;
   if (health.level === "offline") return <div className="health-line flex items-center gap-2" data-testid="sidebar-health"><StatusChip tone="unknown">{t("health.offline")}</StatusChip></div>;
-  if (health.level === "unknown") return <div className="health-line" data-testid="sidebar-health" role="status"><span className="sr-only">{t("state.loading")}</span><span className="skeleton block h-3.5 w-3/4 rounded-md bg-muted" aria-hidden="true" /></div>;
   const total = totalStatus(health, rows);
-  const badge = <StatusChip tone={total}>{total === "warning" ? t("status.degraded") : t("health.allGood")}</StatusChip>;
+  const reading = health.measurement;
+  const badge = reading.stale ? <StatusChip tone="stale">{t("state.staleShort")}</StatusChip>
+    : reading.errors === null ? <StatusChip tone="unknown">{t("status.unknown")}</StatusChip>
+      : total === "warning" ? <StatusChip tone="warning">{t("status.degraded")}</StatusChip>
+        : <StatusChip tone="neutral">{t("overview.kpi.errorsNone")}</StatusChip>;
   if (!todo) return <div className="health-line flex items-center gap-2" data-testid="sidebar-health">{badge}</div>;
   return (
     <div className="health-line flex flex-col items-start gap-1.5" data-testid="sidebar-health">
@@ -357,23 +360,26 @@ function useNavPath(): string {
 function StatusPill() {
   const { t, num } = useI18n();
   const h = useHealth();
-  const todo = useTodoRows().length;
+  const rows = useTodoRows();
+  const todo = rows.length;
   // Peil: core onbereikbaar = Onbekend (stippel), nooit rood; rood alleen voor gemeten fouten
-  const tone = h.level === "action" ? "danger" : h.level === "warning" ? "warning" : null;
+  const reading = h.measurement;
+  const tone = reading.stale || reading.failed ? null : h.level === "action" ? "danger" : h.level === "warning" ? "warning" : null;
   const offline = h.level === "offline";
+  const active = reading.complete && !reading.stale ? reading.active : null;
   const parts = [
-    h.activeParts.downloads ? t("health.part.downloads", { count: h.activeParts.downloads }) : null,
-    h.activeParts.searches ? t("health.part.searches", { count: h.activeParts.searches }) : null,
-    h.activeParts.encodes ? t("health.part.encodes", { count: h.activeParts.encodes }) : null,
-    h.activeParts.tasks ? t("health.part.tasks", { count: h.activeParts.tasks }) : null,
+    active && h.activeParts.downloads ? t("health.part.downloads", { count: h.activeParts.downloads }) : null,
+    active && h.activeParts.searches ? t("health.part.searches", { count: h.activeParts.searches }) : null,
+    active && h.activeParts.encodes ? t("health.part.encodes", { count: h.activeParts.encodes }) : null,
+    active && h.activeParts.tasks ? t("health.part.tasks", { count: h.activeParts.tasks }) : null,
   ].filter(Boolean).join(" · ");
   const title = [parts || null, todo ? t("health.attentionPlain", { count: todo }) : null].filter(Boolean).join(" — ") || t("topbar.activeTitle");
   return (
     <Link className={cn("top-pill focus-ring hidden min-h-touch items-center gap-1.5 rounded-full border-2 border-border-strong px-3 text-sm font-semibold whitespace-nowrap text-foreground no-underline hover:bg-accent md:inline-flex", tone && `top-pill--${tone}`, offline && "border-dashed border-unknown bg-unknown-bg text-unknown-ink")} href={todo ? "/activiteit?tab=problemen" : "/activiteit"} title={title} data-testid="status-pill">
       {/* Peil: inktteller met tekst; nooit een rode of groene stip */}
-      {todo ? <ListChecks className="ico" aria-hidden="true" /> : h.active ? <Activity className="ico" aria-hidden="true" /> : offline ? <CircleHelp className="ico" aria-hidden="true" /> : null}
-      {todo ? t("health.attentionPlain", { count: todo }) : h.active ? t("topbar.busy", { count: num(h.active) }) : h.loaded ? t("topbar.allQuiet")
-        : offline ? t("status.unknown") : <><span className="sr-only">{t("state.loading")}</span><span className="skeleton inline-block h-3.5 w-10 rounded-md bg-muted" aria-hidden="true" /></>}
+      {todo ? <ListChecks className="ico" aria-hidden="true" /> : active ? <Activity className="ico" aria-hidden="true" /> : offline ? <CircleHelp className="ico" aria-hidden="true" /> : null}
+      {todo ? `${t("health.attentionPlain", { count: todo })}${rows.some((row) => row.stale) ? ` · ${t("state.staleShort")}` : ""}`
+        : active ? t("topbar.busy", { count: num(active) }) : active === 0 ? t("topbar.allQuiet") : t("status.unknown")}
     </Link>
   );
 }
@@ -664,13 +670,12 @@ function EmergencyStopDialog() {
   );
 }
 
-/** Wat core na het opheffen hervat (rapport 6, N1); oudere core geeft niets terug. */
-type EstopResult = { resumed?: { handoffs?: number; encodes?: number } | null; resumed_nl?: string | null } | null | undefined;
+/** De kern telt wachtende overdrachten en encodes op het moment van opheffen. */
+type EstopResult = { resumed?: { handoffs?: number; encodes?: number } | null } | null | undefined;
 function resumedText(t: ReturnType<typeof useI18n>["t"], res: EstopResult): string {
-  if (res?.resumed_nl) return `${t("estop.releasedPrefix")} ${res.resumed_nl}`;
   const r = res?.resumed;
-  return r && (typeof r.handoffs === "number" || typeof r.encodes === "number")
-    ? t("estop.resumed", { handoffs: r.handoffs ?? 0, encodes: r.encodes ?? 0 })
+  return r && typeof r.handoffs === "number" && typeof r.encodes === "number"
+    ? t("estop.resumed", { handoffs: r.handoffs, encodes: r.encodes })
     : t("estop.resumedGeneric");
 }
 

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { api, ApiError } from "@/lib/api";
+import { encoderReading, ApiError } from "@/lib/api";
 
 export interface EncoderResource<T> {
   data: T | null;
@@ -17,7 +17,7 @@ export interface EncoderResource<T> {
 
 // Laatst bekende antwoorden per pad (hele app): een nieuwe pagina of een trage engine toont dan
 // niet "Nog niet beschikbaar", maar de vorige waarde met "bijgewerkt X geleden" (R14).
-const lastKnown = new Map<string, { value: unknown; at: number }>();
+const lastKnown = new Map<string, { value: unknown; at: number; stale: boolean }>();
 
 /** GET on the AV1 engine (via core: /api/v1/encoder/*) with error state and optional polling. */
 export function useEncoder<T>(path: string | null, intervalMs?: number): EncoderResource<T> {
@@ -25,6 +25,7 @@ export function useEncoder<T>(path: string | null, intervalMs?: number): Encoder
   const [data, setData] = useState<T | null>((cached?.value as T | undefined) ?? null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(cached?.at ?? null);
   const [error, setError] = useState<string | null>(null);
+  const [sourceStale, setSourceStale] = useState(cached?.stale ?? false);
   const [loading, setLoading] = useState(Boolean(path) && !cached);
   const current = useRef(path);
   useEffect(() => { current.current = path; }, [path]);
@@ -35,15 +36,19 @@ export function useEncoder<T>(path: string | null, intervalMs?: number): Encoder
     if (!path) return;
     if (inflight.current) return inflight.current;
     const run = (async () => { try {
-      const value = await api<T>(path);
+      const { value, staleSeconds } = await encoderReading<T>(path);
       if (current.current !== path) return;
-      const at = Date.now();
-      lastKnown.set(path, { value, at });
+      const stale = staleSeconds !== null;
+      const at = Math.max(0, Date.now() - (staleSeconds ?? 0) * 1000);
+      lastKnown.set(path, { value, at, stale });
       setData(value);
       setFetchedAt(at);
+      setSourceStale(stale);
       setError(null);
     } catch (e) {
       if (current.current !== path) return;
+      const known = lastKnown.get(path);
+      if (known) known.stale = true;
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
       if (current.current === path) setLoading(false);
@@ -54,7 +59,7 @@ export function useEncoder<T>(path: string | null, intervalMs?: number): Encoder
 
   useEffect(() => {
     const known = path ? lastKnown.get(path) : undefined;
-    if (known) { setData(known.value as T); setFetchedAt(known.at); }
+    if (known) { setData(known.value as T); setFetchedAt(known.at); setSourceStale(known.stale); }
     setLoading(Boolean(path) && !known);
     void reload();
     if (!intervalMs || !path) return;
@@ -62,7 +67,7 @@ export function useEncoder<T>(path: string | null, intervalMs?: number): Encoder
     return () => window.clearInterval(id);
   }, [intervalMs, path, reload]);
 
-  return { data, error, loading, fetchedAt, stale: Boolean(error && data), reload };
+  return { data, error, loading, fetchedAt, stale: sourceStale || Boolean(error && data), reload };
 }
 
 export function errorText(e: unknown): string {

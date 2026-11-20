@@ -87,3 +87,38 @@ test("link vanuit de opslagtrend naar het overzicht", async ({ page }) => {
   await expect(page).toHaveURL(/\/av1#opslag$/);
   await expect(page.getByTestId("storage-ledger")).toBeVisible();
 });
+
+test("768 px: opslagposten houden dezelfde Peil-kleur en de kerntekst volgt de taal", async ({ page }) => {
+  await page.setViewportSize({ width: 768, height: 900 });
+  await page.route("**/api/v1/storage/ledger**", (route) => route.fulfill({ json: LEDGER }));
+  expect((await page.request.post("/api/v1/auth/login", { data: ADMIN })).ok()).toBeTruthy();
+  const me = await (await page.request.get("/api/v1/auth/me")).json();
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { ...me, locale: "en-US" } }));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "System status", exact: true })).toBeVisible();
+  await expect(page.getByTestId("storage-ledger-line")).toContainText("Last 24 hours: +412 GB");
+  await page.getByRole("link", { name: "View storage", exact: true }).click();
+  const ledger = page.getByTestId("storage-ledger");
+  await expect(ledger.getByRole("heading", { name: "What was added and where the space went" })).toBeVisible();
+  await expect(page.getByTestId("ledger-summary")).toContainText("AV1 saved 96 GB");
+  for (const [key, color] of [["added", "chart-1"], ["upgrades", "chart-2"], ["av1", "chart-3"],
+    ["quarantine", "chart-4"], ["downloads", "chart-5"], ["unexplained", "chart-other"]]) {
+    const row = page.getByTestId("ledger-buckets").locator(`[data-bucket="${key}"]`);
+    const detail = row.locator("div[aria-hidden] > div");
+    const swatch = row.locator("span[aria-hidden]");
+    expect(await detail.evaluate((el) => (el as HTMLElement).style.backgroundColor)).toBe(`var(--${color})`);
+    await expect(detail).toHaveCSS("background-color", await swatch.evaluate((el) => getComputedStyle(el).backgroundColor));
+    if (key !== "av1") {
+      const segment = ledger.locator(`.ledger-stack [data-bucket="${key}"]`);
+      await expect(segment).toHaveCSS("background-color", await detail.evaluate((el) => getComputedStyle(el).backgroundColor));
+    } else {
+      await expect(row).toContainText("−96 GB");
+    }
+  }
+  const overloop = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+  expect(overloop).toBeLessThanOrEqual(1);
+  if (process.env.MG_PEIL_680_SHOTS) {
+    await ledger.getByRole("region", { name: "What was added and where the space went" })
+      .screenshot({ path: `${process.env.MG_PEIL_680_SHOTS}/opslag-768-en.png`, animations: "disabled" });
+  }
+});
