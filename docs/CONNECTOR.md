@@ -72,9 +72,13 @@ MediaGuard deelt een meting maximaal 60 seconden tussen lezers.
 - `core` en `encoder` tonen de laatste geverifieerde kopieën, inclusief
   sha256 en de migratieversies van de opgeslagen SQLite-databases. Ook
   geverifieerde sets van vóór een update tellen mee. Vanaf meer dan 48 uur
-  is de dekking verouderd. Een set telt pas mee als de herstelroute haar
-  manifest, doelpaden en alle bijbehorende databasekopieën accepteert.
-  Bij een onbruikbare set zoekt MediaGuard verder naar een oudere kopie.
+  is de dekking verouderd. MediaGuard zet de set terug op lege tijdelijke
+  appdata met de offline wissel van de supervisor. Daar controleert het de
+  cursorsleutel en leest het de primaire wachtrij met de SQL van de encoder.
+  Bij twee manifestnamen wordt de set geweigerd. Een oudere kopie krijgt
+  dezelfde proef. Ontbreekt een bruikbare kernkopie, dan blijft de kernhash
+  leeg. Losse AV1-back-ups kunnen ook worden hersteld naast de huidige kern.
+  Het rapport baseert die dekking op een proef met een kopie van die kern.
 - `forks` geeft per geregistreerde, niet-gearchiveerde instantie de naam
   en datum van de nieuwste herkenbare back-up. MediaGuard haalt het
   bestaande archief via GET op en controleert de zip, configuratie en
@@ -83,10 +87,11 @@ MediaGuard deelt een meting maximaal 60 seconden tussen lezers.
 - `bundle` toont de publieke sleutelvingerafdruk. MediaGuard verifieert
   de bundel en het volledige herstelsleutelbestand tegen de SHA-256 die
   bij aanmaak is vastgelegd. Beide moeten overeenkomen met de offsite-set.
-  Bij aanmaak toetst MediaGuard de opgeslagen koppelingen met de meegeleverde
-  kernsleutel. Ook controleert het de ingestelde primaire AV1-database en de
-  voortgangstabellen van haar migratieversies. Het resultaat staat in de
-  geauthenticeerde bundelkop. De herstelcode blijft nodig om uit te pakken.
+  Vóór versleuteling pakt MediaGuard dezelfde archiefinhoud uit met de
+  herstelroutine. Op die lege appdatamap controleert het de start van de kern,
+  ontsleutelt het de opgeslagen koppelingen en leest het de AV1-taakvoortgang.
+  De geauthenticeerde bundelkop vermeldt de uitkomst en de proefversie.
+  De herstelcode blijft nodig om uit te pakken.
   Een gedeeltelijke bundel en een oudere bundel zonder deze inhoudscontrole
   blijven handmatig uitpakbaar en krijgen lokaal en offsite `degraded`.
 - `offsite` toont het soort doel en de meetgegevens van de laatste
@@ -97,18 +102,21 @@ MediaGuard deelt een meting maximaal 60 seconden tussen lezers.
   offsite geldt de leeftijdsgrens van 48 uur.
 - `rollback` beschrijft of MediaGuard terugzetten van een pre-updateset
   bij stoppen ondersteunt en of zo'n herstel is klaargezet. Een ongeldige
-  markering geeft `staged: null` en totale dekking `degraded`. De Hub
+  markering of mislukte proef met de actueel klaargezette bestanden
+  geeft `staged: null` en totale dekking `degraded`. De Hub
   kan uitsluitend het rapport en de deeplink gebruiken.
 
 Direct na herstel van een kernkopie van vóór de offsite-verificatie geeft het
 rapport HTTP 200 met `degraded` voor offsite. Een bevoegd rapportverzoek laat
 ook de gebruikstijdstippen van de sessie en de API-sleutel ongemoeid.
 
-| Onderdeel | Controle voor herstel en rapport | Regressieproef in `test_connector_lezen.py` |
+Testnamen zonder bestandspad verwijzen naar `test_connector_lezen.py`.
+
+| Onderdeel | Controle voor herstel en rapport | Regressieproeven |
 |---|---|---|
-| Bundel | De twee hashes binden bundel en verpakte sleutel aan het aanmaakbewijs. De inhoudscontrole bewijst dat koppelingen en AV1-voortgang in de kopie zitten. | `test_onherstelbare_bundel[sleutelbestand]`, `test_onherstelbare_bundel[bundelinhoud]`, `test_herstelde_bundel_is_bruikbaar` en `test_oud_aanmaakbewijs_bewijst_geen_bundelinhoud` |
-| Encoder | MediaGuard controleert de ingestelde primaire database en haar versiegebonden voortgangstabellen bij klaarzetten en opnieuw vóór omwisselen. | `test_encoder_zonder_actieve_voortgang`, `test_encoder_mist_tabel_van_geregistreerde_versie` en `test_klaargezette_primaire_database_behoudt_taken` |
-| Kern | De herstelcontrole toetst de migraties, de doelpaden en de volledigheid van de set. Bij een geweigerde set toont het rapport de hash van een bruikbare kopie als die er is. | `test_kernschema_en_herstelroute`, `test_set_met_afwijkend_herstelpad` en `test_deels_gemaakte_set_met_andere_geldige_kopie` |
+| Bundel | De twee hashes binden bundel en verpakte sleutel aan het aanmaakbewijs. De uitgepakte kopie doorloopt de startcontrole en levert de koppelingen en de percentages van twee taken. | `test_onherstelbare_bundel[sleutelbestand]`, `test_onherstelbare_bundel[bundelinhoud]`, `test_herstelde_bundel_is_bruikbaar` en `test_oud_aanmaakbewijs_bewijst_geen_bundelinhoud`, plus `test_proefherstel.py::test_bundel_na_uitpakken_startbaar` |
+| Encoder | Bij klaarzetten en opnieuw vóór omwisselen leest de wachtrijopdracht de taakpercentages uit de teruggezette primaire database. | `test_encoder_zonder_actieve_voortgang`, `test_encoder_mist_tabel_van_geregistreerde_versie` en `test_klaargezette_primaire_database_behoudt_taken`, plus `test_proefherstel.py::test_primaire_kopie_behoudt_leesbare_taakvoortgang` |
+| Kern | De herstelcontrole toetst de migraties, de doelpaden en de volledigheid van de set. Bij een geweigerde set toont het rapport de hash van een bruikbare kopie als die er is. | `test_kernschema_en_herstelroute`, `test_set_met_afwijkend_herstelpad` en `test_deels_gemaakte_set_met_andere_geldige_kopie`, plus `test_proefherstel.py::test_twee_manifesten_naast_elkaar` |
 | Offsite-overdracht | De kopieerfunctie en het rapport lezen bundel én sleutel terug en vergelijken lengte en SHA-256. | `test_offsite_bewijs_voor_huidig_doel[sleutelupload]` en `test_offsite_sleutel_verdwijnt_op_hetzelfde_doel` |
 | Offsite-doel | Het bewijs geldt voor de huidige generatie van doelinstellingen en inloggegevens. Een reset vereist teruglezing na een nieuwe kopie, ook bij dezelfde doelwaarden. Een historische kernkopie zonder generatie levert geen dekking op. | `test_offsite_bewijs_voor_huidig_doel[doelreset]`, `test_offsite_reset_naar_dezelfde_doelwaarde_vervalt_direct` en `test_direct_herstel_voor_migratie_120` |
 | Fork | Inspectie en herstelvoorbereiding gebruiken dezelfde XML-parser voor `config.xml` met hoofdelement `Config`. | `test_fork_met_lege_config` |

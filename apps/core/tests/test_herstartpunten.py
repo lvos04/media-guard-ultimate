@@ -7,10 +7,12 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import unquote, urlsplit
 
 import pytest
 from av1_fixture import maak_av1_v1
@@ -168,16 +170,21 @@ def kind(config, actie, punt):
             grens("resultaat")
         elif doel.parent.name == preupdate.FOLDER and preupdate.is_set_name(doel.name):
             grens("archief-gepubliceerd")
-        elif doel.parent.parent.name == preupdate.ASIDE_FOLDER:
+        elif doel.parent.parent == core / "backups" / preupdate.ASIDE_FOLDER:
             grens("opzij-" + doel.name)
-        elif Path(src).name.endswith(preupdate.STAGED_SUFFIX):
+        elif doel.parent in (core, config / "encode") and Path(src).name.endswith(
+            preupdate.STAGED_SUFFIX
+        ):
             grens("actief-" + doel.name)
-        elif doel.name.endswith(preupdate.STAGED_SUFFIX):
+        elif doel.parent in (core, config / "encode") and doel.name.endswith(
+            preupdate.STAGED_SUFFIX
+        ):
             grens("klaar-" + doel.name)
 
     def weg(pad, *args, **kwargs):
         verwijder(pad, *args, **kwargs)
-        if pad.name in (preupdate.COMMIT_ORIGIN, preupdate.COMMIT_MARKER, preupdate.STAGE_MARKER):
+        if pad.parent == core and pad.name in (preupdate.COMMIT_ORIGIN, preupdate.COMMIT_MARKER,
+                                                preupdate.STAGE_MARKER):
             grens("verwijderd-" + pad.name)
 
     with patch.object(preupdate, "_publish", schrijf), patch.object(os, "replace", wissel), \
@@ -517,17 +524,26 @@ def test_sqlite_opent_bij_hervatten_uitsluitend_controlekopieen(tmp_path, instal
     onderbreek(tmp_path, "omwisselen", "opzij-core__mediaguard.db")
     openen = sqlite3.connect
     geopend = []
+    werk = tmp_path / "afzonderlijke-proefmap"
+    werk.mkdir()
 
     def op_kopie(pad, *args, **kwargs):
-        pad = Path(pad)
-        assert pad.parent.parent == core and pad.parent.name.startswith(".controle-sqlite-")
-        geopend.append(pad)
+        locatie = Path(unquote(urlsplit(str(pad)).path)).resolve()
+        if locatie.is_relative_to(werk):
+            proef, *_ = locatie.relative_to(werk).parts
+            assert proef.startswith("mg-proefherstel-")
+        else:
+            assert locatie.parent.parent == core
+            assert locatie.parent.name.startswith(".controle-sqlite-")
+        geopend.append(locatie)
         return openen(pad, *args, **kwargs)
 
     with monkeypatch.context() as controle:
+        controle.setattr(tempfile, "tempdir", str(werk))
         controle.setattr(sqlite3, "connect", op_kopie)
         resultaat = preupdate.apply_staged(core)
     assert resultaat["ok"] and geopend and all(not p.exists() for p in geopend)
+    assert any(p.is_relative_to(werk) for p in geopend) and not list(werk.iterdir())
     aside = Path(resultaat["previous"])
     vorige = stand(aside / "core__mediaguard.db", aside / "encode__app.db")
     assert vorige[2][-1][1] == "library.laatste"

@@ -2120,16 +2120,17 @@ def test_direct_herstel_voor_migratie_120(populated_installation, tmp_path):
     assert [tuple(r) for r in na] == overdrachten
 
 
+@pytest.mark.parametrize("ontbreekt", ["complete", "proefherstel"])
 def test_oud_aanmaakbewijs_bewijst_geen_bundelinhoud(
-    client, machine, ctx, herstelbronnen, tmp_path, monkeypatch, respx_mock,
+    client, machine, ctx, herstelbronnen, tmp_path, monkeypatch, respx_mock, ontbreekt,
 ):
     _, inrichting, *_ = herstelbronnen
     schrijf_json = json.dumps
 
     def historisch_formaat(obj, **kwargs):
-        # De vorige schrijver bond dezelfde hashes aan een kop zonder inhoudscontrole.
+        # Ook een historisch complete=true bewijst geen proefherstel.
         if isinstance(obj, dict) and "eph" in obj:
-            obj = {k: v for k, v in obj.items() if k != "complete"}
+            obj = {k: v for k, v in obj.items() if k != ontbreekt}
         return schrijf_json(obj, **kwargs)
 
     with monkeypatch.context() as oud:

@@ -11,7 +11,6 @@ import platform
 import shutil
 import sqlite3
 import zipfile
-from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +25,7 @@ from mediaguard.audit import audit
 from mediaguard.auth import Principal, require_admin, require_operator, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import check_schema_versions, utcnow
+from mediaguard.maintenance import preupdate, restore_trial
 from mediaguard.secrets_store import redact
 from mediaguard.settings_registry import REGISTRY, SettingDef
 
@@ -202,15 +202,23 @@ def _meta(db: Path) -> dict[str, Any] | None:
     return row if isinstance(row, dict) else None
 
 
-def verified(db: Path, meta: dict[str, Any] | None = None) -> bool:
-    """Telt mee als goede back-up: hersteltest geslaagd, checksum vastgelegd en het bestand
-    is nog even groot als bij het maken (afgekapt = kapot)."""
+def _published(db: Path, meta: dict[str, Any] | None = None) -> bool:
+    """Herken een volledig gepubliceerd bestand voor de bestaande opruimtermijn."""
     meta = _meta(db) if meta is None else meta
     if not meta or not meta.get("integrity_ok") or not meta.get("sha256"):
         return False
     try:
         return db.stat().st_size == int(meta.get("size") or -1)
     except OSError:
+        return False
+
+
+def verified(db: Path, meta: dict[str, Any] | None = None) -> bool:
+    try:
+        row = meta if meta is not None else _meta(db) or {}
+        proof = preupdate.trial_regular(db.parent.parent, db, row)
+        return bool(proof["core/mediaguard.db"][1])
+    except (OSError, sqlite3.Error, RuntimeError, preupdate.SetError, ValueError, TypeError):
         return False
 
 
@@ -234,8 +242,11 @@ def _prune(ctx: AppContext, now: float | None = None) -> dict[str, int]:
     for db in sorted(folder.glob("mediaguard-auto-*.db")):
         if ".encode-" in db.name:
             continue
-        if verified(db):
-            good.append(db)
+        meta = _meta(db)
+        if _published(db, meta):
+            if verified(db, meta):
+                good.append(db)
+            # Bij een onbesliste proef kunnen dit de laatste herstelbare bytes zijn.
             continue
         try:
             age = now - db.stat().st_mtime
@@ -283,7 +294,6 @@ def list_backups(_: Principal = Depends(require_viewer),
         # 'name'/'id' zijn wat de web-UI in de downloadlink gebruikt (was: /backups/undefined)
         row.update(name=name, id=name,
                    download_path=f"/api/v1/backups/{name}/download",
-                   # elke back-up wordt direct na het maken teruggelezen (integriteit + schema)
                    verified=ok, restore_mode="direct",
                    verified_nl="Hersteltest geslaagd" if ok else
                    "Hersteltest mislukt of bestand onvolledig: maak een nieuwe back-up")
@@ -302,6 +312,9 @@ def _pre_update_rows(ctx: AppContext) -> list[dict[str, Any]]:
     from mediaguard.maintenance import status as maint_status
 
     pending = preupdate.pending(ctx.settings.data_dir) or {}
+    core = ctx.settings.data_dir
+    staged = (preupdate.staged_status(core, manual=preupdate.manual_choice_pending(core))
+              if pending else False)
     aio = maint_status.under_supervisor(ctx)
     rows = []
     for st in preupdate.list_sets(_backup_dir(ctx) / preupdate.FOLDER):
@@ -312,15 +325,23 @@ def _pre_update_rows(ctx: AppContext) -> list[dict[str, Any]]:
         else:
             label = f"Vóór databasewijziging {st.get('to_schema') or ''}".strip()
         encoder = "met AV1-database" if st.get("encoder_included") else "zonder AV1-database"
+        ok = False
+        if st.get("integrity_ok") is True:
+            try:
+                preupdate.trial_set(core, _backup_dir(ctx) / preupdate.FOLDER / name)
+                ok = True
+            except (OSError, sqlite3.Error, RuntimeError, preupdate.SetError,
+                    ValueError, TypeError):
+                pass
         rows.append({
             **{k: v for k, v in st.items() if k != "files"},
             "file": name, "id": name, "kind": "pre-update", "label_nl": label,
             "download_path": f"/api/v1/backups/{name}/download",
-            "verified": st.get("integrity_ok") is True,
-            "verified_nl": ("Hersteltest geslaagd, " + encoder) if st.get("integrity_ok")
-            else "Oude kopie (alleen MediaGuard-database); wordt gecontroleerd bij terugzetten",
+            "verified": ok,
+            "verified_nl": ("Proefherstel gelukt, " + encoder) if ok
+            else "Herstelbaarheid van de set is niet bevestigd",
             "restore_mode": "bij-stoppen" if aio else "handmatig",
-            "staged": pending.get("set") == name,
+            "staged": pending.get("set") == name and staged is True,
             "restore_nl": "Wordt teruggezet als de app stopt; daarna kun je in TrueNAS de "
                           "vorige versie starten." if aio else NO_SUPERVISOR_NL})
     return rows
@@ -486,10 +507,7 @@ def _restore_backup(name: str, body: RestoreBody, request: Request, principal: P
             raise HTTPException(409, "Checksum klopt niet; back-up is beschadigd")
     # Een schone geweigerde kopie kan zonder SQLite-hulpbestanden worden gelezen.
     check_schema_versions(path)
-    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as src:
-        # Houd dezelfde leessnapshot vast vanaf de versietoets tot en met het terugzetten.
-        src.execute("BEGIN")
-        check_schema_versions(path, connection=src)
+    with restore_trial.core_source(path) as src:
         if touch is not None:
             touch()
         try:

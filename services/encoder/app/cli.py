@@ -149,10 +149,8 @@ def _planner_command(args: argparse.Namespace) -> object:
     database.initialize()
     database.require_writable()
     if args.opdracht == "wachtrij":
-        rows = database.fetch_all(
-            "SELECT id,baan,status,prioriteit,percent,fout FROM job "
-            "ORDER BY baan,prioriteit DESC,id"
-        )
+        query = Path(__file__).with_name("migrations") / "leesopdrachten/wachtrij.sql"
+        rows = database.fetch_all(query.read_text(encoding="utf-8"))
         return [dict(row) for row in rows]
     if args.opdracht == "pauzeer":
         set_hold(database, "handmatig", "handmatig gepauzeerd", (args.baan,))

@@ -28,6 +28,7 @@ import io
 import json
 import os
 import secrets
+import shutil
 import sqlite3
 import sys
 import tarfile
@@ -37,14 +38,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-from mediaguard.maintenance import preupdate
+from mediaguard import event_keys
+from mediaguard.maintenance import preupdate, restore_trial
 from mediaguard.schema import SchemaTooNew
 
 if TYPE_CHECKING:
@@ -133,35 +134,13 @@ def _config_root(ctx: AppContext) -> Path:
     return Path(os.environ.get("MG_AIO_CONFIG") or ctx.settings.data_dir.parent)
 
 
-def _sqlite_copy(src: Path, *, primary: bool) -> tuple[bytes, bool]:
+def _sqlite_copy(src: Path) -> bytes:
     with tempfile.TemporaryDirectory() as tmp:
         dest = Path(tmp) / "copy.db"
         with closing(sqlite3.connect(src.resolve().as_uri() + "?mode=ro", uri=True)) as s, \
                 closing(sqlite3.connect(dest)) as d:
             s.backup(d)
-            try:
-                preupdate.encoder_copy_versions(d, preupdate.encoder_migrations(os.environ),
-                                               primary=primary)
-                usable = d.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
-            except (sqlite3.Error, RuntimeError, preupdate.SetError):
-                usable = False
-        return dest.read_bytes(), usable
-
-
-def _core_readable(core: Path, key: bytes | None) -> bool:
-    """Toets de versleutelde rijen met precies de sleutelbytes die meegaan in het archief."""
-    with closing(sqlite3.connect(core.as_uri() + "?immutable=1", uri=True)) as db:
-        try:
-            if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
-                return False
-            cipher = Fernet(key.strip()) if key is not None else None
-            for (token,) in db.execute("SELECT ciphertext FROM secrets"):
-                if cipher is None:
-                    return False
-                cipher.decrypt(token).decode("utf-8")
-        except (InvalidToken, ValueError, TypeError, sqlite3.Error):
-            return False
-    return True
+        return dest.read_bytes()
 
 
 def _add(tar: tarfile.TarFile, name: str, data: bytes) -> None:
@@ -170,7 +149,7 @@ def _add(tar: tarfile.TarFile, name: str, data: bytes) -> None:
     tar.addfile(info, io.BytesIO(data))
 
 
-def _payload(ctx: AppContext) -> tuple[bytes, list[str], bool]:
+def _payload(ctx: AppContext) -> tuple[bytes, list[str], int]:
     buf, names = io.BytesIO(), []
     key_path = ctx.settings.secret_key_path
     key = key_path.read_bytes() if key_path.exists() else None
@@ -178,19 +157,12 @@ def _payload(ctx: AppContext) -> tuple[bytes, list[str], bool]:
         with tempfile.TemporaryDirectory() as tmp:
             core = Path(tmp) / "core.db"
             ctx.db.backup_to(core)
-            usable = _core_readable(core, key)
             _add(tar, "core/mediaguard.db", core.read_bytes())
             names.append("core/mediaguard.db")
         root = _config_root(ctx)
         encoder = preupdate.encoder_backup_dir(ctx.settings.data_dir)
-        primary = preupdate.primary_encoder_db(encoder)
-        primary_included = False
         for db in sorted(encoder.glob("*.db")):
-            is_primary = primary is not None and db.name == primary.name
-            data, db_ok = _sqlite_copy(db, primary=is_primary)
-            primary_included |= is_primary
-            usable = usable and db_ok
-            _add(tar, f"encode/{db.name}", data)
+            _add(tar, f"encode/{db.name}", _sqlite_copy(db))
             names.append(f"encode/{db.name}")
         if key is not None:
             _add(tar, "core/secret.key", key)
@@ -202,12 +174,20 @@ def _payload(ctx: AppContext) -> tuple[bytes, list[str], bool]:
             _add(tar, f"core/{index.name}", index.read_bytes())
             names.append(f"core/{index.name}")
         sec = Path(os.environ.get("MG_SECRETS_DIR") or root / "secrets")
-        if sec.is_dir():
-            for f in sorted(p for p in sec.rglob("*") if p.is_file()):
-                rel = f"secrets/{f.relative_to(sec)}"
+        cursor = event_keys.key_path(ctx.settings.data_dir)
+        for f in sorted(p for p in sec.rglob("*") if p.is_file()):
+            rel = f"secrets/{f.relative_to(sec)}"
+            if rel != f"secrets/{event_keys.KEY_REF}":
                 _add(tar, rel, f.read_bytes())
                 names.append(rel)
-    return buf.getvalue(), names, usable and primary_included
+        # Ook de zelfstandige kern heeft een eigen geheimenmap. Gebruik de sleutel
+        # van de gekopieerde kern, op de plaats waar de supervisor hem terugleest.
+        if cursor.is_file() and not cursor.is_symlink():
+            rel = f"secrets/{event_keys.KEY_REF}"
+            _add(tar, rel, cursor.read_bytes())
+            names.append(rel)
+        size = tar.offset
+    return buf.getvalue(), names, size
 
 
 def create(ctx: AppContext, *, actor: str = "system") -> dict[str, Any] | None:
@@ -221,7 +201,17 @@ def _create(ctx: AppContext, actor: str) -> dict[str, Any] | None:
     st = ctx.state_get(STATE_KEY, {}) or {}
     if not st.get("public"):
         return None
-    payload, names, complete = _payload(ctx)
+    payload, names, size = _payload(ctx)
+    primary = preupdate.primary_encoder_db(preupdate.encoder_backup_dir(ctx.settings.data_dir))
+    try:
+        restore_trial.proefherstel(
+            lambda target: _extract_payload(payload, target),
+            primary=f"encode/{primary.name}" if primary else None,
+            migrations=preupdate.encoder_migrations(os.environ), size=size, bundle=True,
+        )
+        complete = True
+    except (preupdate.SetError, SchemaTooNew):
+        complete = False
     pub = X25519PublicKey.from_public_bytes(base64.b64decode(st["public"]))
     eph = X25519PrivateKey.generate()
     eph_pub = eph.public_key().public_bytes(serialization.Encoding.Raw,
@@ -230,6 +220,7 @@ def _create(ctx: AppContext, actor: str) -> dict[str, Any] | None:
     kek = HKDF(hashes.SHA256(), 32, salt=eph_pub, info=b"mediaguard-bundle").derive(shared)
     data_key, n1, n2 = AESGCM.generate_key(bit_length=256), os.urandom(12), os.urandom(12)
     header = {"v": 1, "created_at": _now(), "files": names, "complete": complete,
+              "proefherstel": 1,
               "eph": _b64(eph_pub),
               "n1": _b64(n1), "n2": _b64(n2),
               "wrapped": _b64(AESGCM(kek).encrypt(n1, data_key, b"key")),
@@ -296,9 +287,13 @@ def _read_header(handle: io.BufferedIOBase) -> tuple[dict[str, Any], bytes]:
     return header, raw
 
 
+def _has_restore_proof(header: dict) -> bool:
+    return header.get("complete") is True and header.get("proefherstel") == 1
+
+
 def require_complete(handle: io.BufferedIOBase) -> None:
     header, _ = _read_header(handle)
-    if header.get("complete") is not True:
+    if not _has_restore_proof(header):
         raise BundleError("De herstelinhoud van deze bundel is niet geverifieerd")
 
 
@@ -348,7 +343,7 @@ def verify_pair(
                 return None, None
             matches = _key_matches(header, _read_key(raw_key))
             if (not matches or not has_pair_proof(path)
-                    or (require_content and header.get("complete") is not True)):
+                    or (require_content and not _has_restore_proof(header))):
                 return matches, None
             proof = {"bundle": "", "key": _digest(raw_key)}
             handle.seek(0)
@@ -406,11 +401,11 @@ def restore(path: Path, code: str, keyfile: Path, target: Path) -> list[str]:
         preupdate.inspect_schema(
             target, encoder_migrations=preupdate.encoder_migrations(os.environ),
         )
-        return _restore(path, code, keyfile, target)
+        _header, payload = open_bundle(path, code, keyfile)
+        return _extract_payload(payload, target)
 
 
-def _restore(path: Path, code: str, keyfile: Path, target: Path) -> list[str]:
-    _header, payload = open_bundle(path, code, keyfile)
+def _extract_payload(payload: bytes, target: Path) -> list[str]:
     written = []
     with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
         for m in tar.getmembers():
@@ -422,7 +417,8 @@ def _restore(path: Path, code: str, keyfile: Path, target: Path) -> list[str]:
                 dest.rename(dest.with_name(dest.name + ".voor-herstel"))
             f = tar.extractfile(m)
             assert f is not None
-            dest.write_bytes(f.read())
+            with f, dest.open("wb") as output:
+                shutil.copyfileobj(f, output)
             os.chmod(dest, 0o600)
             written.append(m.name)
     return written

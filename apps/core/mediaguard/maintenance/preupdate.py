@@ -47,6 +47,7 @@ from uuid import uuid4
 
 from mediaguard import event_keys, schema
 from mediaguard.db import MIGRATIONS_DIR, Database, check_schema_versions
+from mediaguard.maintenance import restore_trial
 from mediaguard.maintenance.sqlite_progress import contains_commit, content_proof, row_bytes
 from mediaguard.maintenance.sqlite_recovery import (
     checked_database,
@@ -73,6 +74,7 @@ STAGE_MAX_AGE_S = 24 * 3600  # daarna niet meer omwisselen (geen verrassing weke
 _SET_NAME = re.compile(r"^voor-update-\d{8}T\d{6}Z(?:-\d+|-[0-9]{6}-[a-f0-9]{32})?$")
 _LEGACY_NAME = re.compile(r"^mediaguard-[\w.-]+-naar-[\w.-]+-\d{8}T\d{6}Z\.db$")
 _ENC_VERSION = re.compile(r"^(\d+)_")
+_ENGINE_FILE = r"[a-zA-Z0-9][a-zA-Z0-9_.-]*\.db"
 _ASIDE_NAME = re.compile(r"[0-9]{8}T[0-9]{6}Z(?:-[0-9]+)?")
 _SQLITE_TAILS = ("", "-wal", "-shm", "-journal")
 
@@ -441,18 +443,33 @@ def _read_meta(set_dir: Path) -> dict[str, Any] | None:
     return meta if isinstance(meta, dict) else None
 
 
-def _protect_old_manifests(folder: Path) -> None:
-    """Verberg ook eerdere sets met verwijzingen voor een beheerder van schema 155."""
+def _single_manifest(folder: Path) -> Path:
+    legacy, normal = folder / LEGACY_KEY_META, folder / "meta.json"
+    if os.path.lexists(legacy) and os.path.lexists(normal):
+        raise _PreviousDataError("de herstelset heeft twee verschillende manifesten")
+    manifest = legacy if os.path.lexists(legacy) else normal
+    if manifest.is_symlink():
+        raise _PreviousDataError("het manifest is geen zelfstandig bestand")
+    return manifest
+
+
+def _old_manifests(folder: Path) -> Iterator[Path]:
+    """Dezelfde leescontrole vóór de proef en vóór de naamswijzigingen."""
     for manifest in folder.glob(SET_PREFIX + "*/meta.json"):
         if not _SET_NAME.fullmatch(manifest.parent.name):
             continue
+        _single_manifest(manifest.parent)
         meta = _read_meta(manifest.parent) or {}
-        if any(isinstance(f, dict) and "legacy_cursor_key" in f for f in meta.get("files", [])):
-            target = manifest.with_name(LEGACY_KEY_META)
-            if target.exists():
-                raise SetError("de herstelset heeft twee verschillende manifesten")
-            manifest.rename(target)
-            _sync(target.parent)
+        files = meta.get("files")
+        if isinstance(files, list) and any(isinstance(f, dict) and "legacy_cursor_key" in f
+                                           for f in files):
+            yield manifest
+
+
+def _protect_old_manifests(folder: Path) -> None:
+    for manifest in list(_old_manifests(folder)):
+        manifest.rename(manifest.with_name(LEGACY_KEY_META))
+        _sync(manifest.parent)
 
 
 def list_sets(folder: Path) -> list[dict[str, Any]]:
@@ -540,6 +557,7 @@ def _live_name(core_dir: Path, rel: str) -> bool:
 def _set_files(core_dir: Path, path: Path) -> dict[str, tuple[Path, int, str]]:
     if path.is_file():
         return {f"{core_dir.name}/mediaguard.db": (path, path.stat().st_size, _sha256(path))}
+    _single_manifest(path)
     meta = _read_meta(path) or {}
     files = meta.get("files")
     if not isinstance(files, list) or meta.get("encoder_problem"):
@@ -580,24 +598,28 @@ def _restore_primary(core: Path, targets: set[str]) -> str | None:
     return f"encode/{primary.name}"
 
 
+def _check_source_file(path: Path, size: int, digest: str) -> None:
+    if not path.is_file():
+        raise SetError(f"klaargezette kopie ontbreekt: {path.name}")
+    if path.is_symlink() or path.stat().st_size != size or _sha256(path) != digest:
+        raise SetError(f"{path.name} ontbreekt of is beschadigd (checksum klopt niet)")
+    # Een eerdere release kon bij het lezen een lege WAL en een SHM achterlaten.
+    # Alleen het gecontroleerde hoofdbestand wordt klaargezet en teruggezet.
+    for suffix in ("-wal", "-shm", "-journal"):
+        try:
+            info = path.with_name(path.name + suffix).lstat()
+        except FileNotFoundError:
+            continue
+        if (not stat.S_ISREG(info.st_mode) or suffix == "-journal"
+                or (suffix == "-wal" and info.st_size)):
+            raise SetError(f"{path.name} heeft een ongecontroleerd SQLite-journaal")
+
+
 def _check_restore_copy(path: Path, rel: str, size: int, digest: str,
                         av1_migrations: Path, work: Path, primary: str | None, *,
                         describe: bool = False) -> dict | None:
     try:
-        if not path.is_file():
-            raise SetError(f"klaargezette kopie ontbreekt: {path.name}")
-        if path.is_symlink() or path.stat().st_size != size or _sha256(path) != digest:
-            raise SetError(f"{path.name} ontbreekt of is beschadigd (checksum klopt niet)")
-        # Een eerdere release kon bij het lezen een lege WAL en een SHM achterlaten.
-        # Alleen het gecontroleerde hoofdbestand wordt klaargezet en teruggezet.
-        for suffix in ("-wal", "-shm", "-journal"):
-            try:
-                info = path.with_name(path.name + suffix).lstat()
-            except FileNotFoundError:
-                continue
-            if (not stat.S_ISREG(info.st_mode) or suffix == "-journal"
-                    or (suffix == "-wal" and info.st_size)):
-                raise SetError(f"{path.name} heeft een ongecontroleerd SQLite-journaal")
+        _check_source_file(path, size, digest)
         with checked_database(work, {"": path}) as (db, _):
             if rel.startswith("encode/"):
                 encoder_copy_versions(db, av1_migrations, primary=rel == primary)
@@ -630,9 +652,149 @@ def stage(core_dir: Path, path: Path, *, actor: str) -> dict[str, Any]:
         return _stage(core_dir, path, actor)
 
 
-def checked_restore_sources(core_dir: Path, path: Path, work: Path) -> tuple[
-        dict[str, tuple[Path, int, str]], bytes | None, str | None]:
-    """Gedeelde leescontrole vóór de rapportage of enige wijziging aan een herstelopdracht."""
+def _install_copy(destination: Path, entry: tuple[Path, int, str], rel: str, migrations: Path,
+                  work: Path, primary: str | None, legacy: bytes | None,
+                  before_publish: Callable[[], None] | None = None) -> tuple[int, str]:
+    """Installeer dezelfde gecontroleerde bytes voor de proef en het echte klaarzetten."""
+    src, size, digest = entry
+    with tempfile.NamedTemporaryFile(dir=destination.parent, suffix=".part", delete=False) as out:
+        part = Path(out.name)
+    try:
+        shutil.copyfile(src, part)
+        _check_restore_copy(part, rel, size, digest, migrations, work, primary)
+        if not rel.startswith("encode/") and legacy is not None:
+            with contextlib.closing(sqlite3.connect(part)) as old, old:
+                old.execute("UPDATE outbox_retention SET cursor_key=? WHERE singleton=1", (legacy,))
+            size, digest = part.stat().st_size, _sha256(part)
+            _check_restore_copy(part, rel, size, digest, migrations, work, primary)
+        _sync(part)
+        if before_publish is not None:
+            before_publish()
+        os.replace(part, destination)
+        _sync(destination.parent)
+        return size, digest
+    finally:
+        part.unlink(missing_ok=True)
+
+
+def trial_databases(core: Path, entries: dict[str, tuple[Path, int, str]], primary: str | None,
+                    migrations: Path, *, legacy: bytes | None = None,
+                    online_core: bool = False, keep_core: bool = False,
+                    source_set: Path | None = None) -> dict[str, list[str]]:
+    """Klaarzetten en omwisselen op lege appdata, inclusief historische sleutelomzetting."""
+    family = database_files(core / "mediaguard.db") if keep_core else {}
+    sizes = [entry[1] for entry in entries.values()]
+    if keep_core:
+        sizes.append(sum(p.stat().st_size for p in family.values()))
+
+    def restore(root: Path) -> None:
+        copies = entries.copy()
+        if keep_core:
+            snapshot = root / "bestaande-kern.db"
+            with checked_database(root, family, strict_wal=False) as (db, _), \
+                    contextlib.closing(sqlite3.connect(snapshot)) as writer:
+                db.backup(writer)
+            copies["core/mediaguard.db"] = snapshot, snapshot.stat().st_size, _sha256(snapshot)
+        restore_trial.copy_cursor_key(core, root / "secrets" / event_keys.KEY_REF)
+        files = []
+        for live, entry in copies.items():
+            rel = live if live.startswith("encode/") else "core/mediaguard.db"
+            target = root / rel
+            target.parent.mkdir(exist_ok=True)
+            staged = target.with_name(target.name + STAGED_SUFFIX)
+            size, digest = _install_copy(staged, entry, rel, migrations, root, primary, legacy)
+            if online_core and rel == "core/mediaguard.db":
+                source = staged.with_suffix(".bron")
+                staged.rename(source)
+                with restore_trial.core_source(source, immutable=True) as reader, \
+                        contextlib.closing(sqlite3.connect(staged)) as writer:
+                    reader.backup(writer)
+                source.unlink()
+                size, digest = staged.stat().st_size, _sha256(staged)
+            files.append({"live": rel, "staged": rel + STAGED_SUFFIX,
+                          "size": size, "sha256": digest})
+        # Dezelfde lezers, wisselplanning, uitvoering en eindcontrole als bij een
+        # offline herstel. Alleen de lege proefmap krijgt een nieuwe aanvraag.
+        trial_core = root / "core"
+        name = datetime.now(UTC).strftime(SET_PREFIX + "%Y%m%dT%H%M%SZ")
+        info = {"set": name, "requested_at": _now(), "files": files,
+                "manifest": _manifest(name, files)}
+        _publish(trial_core / STAGE_MARKER, json.dumps(info))
+        pairs = _restore_pairs(trial_core, info)
+        plan = _swap_plan(trial_core, info, pairs, None, migrations, STAGE_MAX_AGE_S, root,
+                          primary=primary)
+        _execute_swap(trial_core, info, pairs, None, None, migrations, primary,
+                      STAGE_MAX_AGE_S, plan)
+
+    return restore_trial.proefherstel(restore, primary=primary, migrations=migrations,
+                                      size=sum(sizes) + 3 * max(sizes), source_set=source_set)
+
+
+def _regular_entry(path: Path, row: dict) -> tuple[Path, int, str]:
+    digest, size = row.get("sha256"), row.get("size")
+    if (not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)
+            or type(size) is not int or size <= 0
+            or path.resolve() != path.absolute()):
+        raise SetError("ongeldige metadata van de databasekopie")
+    _check_source_file(path, size, digest)
+    return path, size, digest
+
+
+def trial_regular(
+    core: Path, path: Path, meta: dict, *, independent_encoder: bool = False,
+) -> dict[str, tuple[str, list[str]]]:
+    """Bewijs de losse back-upbestanden van de gewone kernherstelroute."""
+    if meta.get("integrity_ok") is not True:
+        raise SetError("de integriteitsmeting van de kernkopie ontbreekt")
+    folder = encoder_backup_dir(core)
+    configured = primary_encoder_db(folder)
+    primary = f"encode/{configured.name}" if configured else None
+    files = meta.get("extra_files", [])
+    if (not isinstance(files, list) or meta.get("encoder_problem")
+            or meta.get("encoder_ok") is False
+            or (primary is None and (files or os.environ.get("DATABASE_URL")))):
+        raise SetError("de AV1-kopie is onvolledig")
+    entries = {}
+    prefix = f"{path.stem}.encode-"
+    for row in files:
+        name = row.get("file") if isinstance(row, dict) else None
+        if not isinstance(name, str) or not re.fullmatch(re.escape(prefix) + _ENGINE_FILE, name):
+            raise SetError("ongeldig AV1-bestand in de back-up")
+        rel = "encode/" + name.removeprefix(prefix)
+        if rel in entries or "error" in row:
+            raise SetError("de AV1-kopie is onvolledig")
+        entries[rel] = _regular_entry(path.parent / name, row)
+    if not files and not os.environ.get("DATABASE_URL") and not any(folder.glob("*.db")):
+        primary = None
+    if primary is not None and primary not in entries:
+        raise SetError("de primaire AV1-kopie ontbreekt")
+
+    migrations = encoder_migrations(os.environ)
+    core_rel = "core/mediaguard.db"
+    try:
+        entries[core_rel] = _regular_entry(path, meta)
+        versions = trial_databases(core, entries, primary, migrations, online_core=True)
+    except (OSError, sqlite3.Error, RuntimeError, SetError):
+        # De gewone AV1-kopieën zijn ook afzonderlijk herstelbaar naast de huidige kern.
+        # Bewijs die combinatie op lege appdata. Alleen de AV1-bestanden krijgen dekking.
+        if not files or not independent_encoder:
+            raise
+        entries.pop(core_rel, None)
+        versions = trial_databases(core, entries, primary, migrations, online_core=True,
+                                   keep_core=True)
+    return {rel: (row[2], versions[rel])
+            for rel, row in entries.items()}
+
+
+def trial_set(core_dir: Path, path: Path) -> tuple[
+        dict[str, tuple[Path, int, str]], bytes | None, str | None, dict[str, list[str]]]:
+    # Ook een oude supervisor moet alle historische manifesten veilig kunnen verbergen.
+    list(_old_manifests(core_dir / "backups" / FOLDER))
+    manifest = _single_manifest(path) if path.is_dir() else path
+    try:
+        generation = schema._generation(manifest)
+    except OSError as exc:
+        raise SetError("meta.json ontbreekt of het archief is onleesbaar") from exc
     pairs = _set_files(core_dir, path)
     primary = _restore_primary(core_dir, set(pairs))
     migrations = encoder_migrations(os.environ)
@@ -642,38 +804,43 @@ def checked_restore_sources(core_dir: Path, path: Path, work: Path) -> tuple[
         if (dest.resolve() != dest.absolute() or live.resolve() != live.absolute()
                 or not dest.parent.is_dir() or src.resolve() != src.absolute()):
             raise SetError("ongeldig pad naar de klaargezette database")
-        _check_restore_copy(src, rel, size, digest, migrations, work, primary)
-    core_rel = f"{core_dir.name}/mediaguard.db"
-    core_src = pairs[core_rel][0]
-    with checked_database(work, {"": core_src}) as (reader, _):
-        ref = _cursor_value(reader)
+        _check_source_file(src, size, digest)
+    core_src = pairs[f"{core_dir.name}/mediaguard.db"][0]
+    try:
+        uri = core_src.resolve().as_uri() + "?immutable=1"
+        with contextlib.closing(sqlite3.connect(uri, uri=True)) as db:
+            ref = _cursor_value(db)
+    except sqlite3.Error as exc:
+        raise SetError("de kern in de back-upset is onleesbaar") from exc
     legacy = None
     if isinstance(ref, str) and ref.startswith(event_keys.LEGACY_PREFIX):
         try:
             legacy = event_keys.load_legacy(core_dir, ref)
         except (OSError, ValueError) as exc:
             raise SetError("de historische cursorsleutel is niet beschikbaar") from exc
-    return pairs, legacy, primary
+    versions = trial_databases(core_dir, pairs, primary, migrations, legacy=legacy,
+                               source_set=path if path.is_dir() else None)
+    try:
+        if schema._generation(manifest) != generation:
+            raise SetError("het bronmanifest is tijdens het proefherstel gewijzigd")
+    except OSError as exc:
+        raise SetError("de bron is tijdens het proefherstel verdwenen") from exc
+    return pairs, legacy, primary, versions
 
 
 def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
     config_root = core_dir.parent
-    pairs, legacy, primary = checked_restore_sources(core_dir, path, core_dir)
-    core_rel = f"{core_dir.name}/mediaguard.db"
+    pairs, legacy, primary, _ = trial_set(core_dir, path)
     migrations = encoder_migrations(os.environ)
-    need = sum(size for _, size, _ in pairs.values())
-    free = shutil.disk_usage(config_root).free
-    if free < need * 1.1 + 256 * 1024**2:
-        raise SetError(f"niet genoeg vrije ruimte in /config (nodig ±{need // 1024**2} MB)",
-                       disk=True)
+    restore_trial.require_space(config_root, sum(size for _, size, _ in pairs.values()))
     previous = _read_proof(core_dir / COMMIT_ORIGIN)
     if previous and previous.get("fase") == "klaarzetten":
         previous = previous["update"]
     preparation = {"fase": "klaarzetten", "poging": uuid4().hex, "set": path.name,
                    "databases": [_source_state(core_dir, rel, record_content=True) for rel in pairs
                                  if (config_root / rel).is_file()], "update": previous}
-    _write_phase(core_dir, preparation)
     _protect_old_manifests(core_dir / "backups" / FOLDER)
+    _write_phase(core_dir, preparation)
     _cancel(core_dir)
     staged: list[dict[str, Any]] = []
     chosen = []
@@ -682,27 +849,10 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
             dest = _within(config_root, live + STAGED_SUFFIX)
             if dest != (config_root / (live + STAGED_SUFFIX)).absolute():
                 raise SetError("ongeldig pad naar de klaargezette database")
-            with tempfile.NamedTemporaryFile(dir=dest.parent, suffix=".part", delete=False) as out:
-                part = Path(out.name)
-            try:
-                shutil.copyfile(src, part)
-                # Controleer de kopie tegen de gekozen set vóór het herstellen van de sleutel
-                # of het vrijgeven van een terugzetpaar voor handmatig herstel.
-                _check_restore_copy(part, live, size, digest, migrations, core_dir, primary)
-                if live == core_rel and legacy is not None:
-                    # Alleen de expliciet klaargezette database voor de oude lezer krijgt
-                    # zijn sleutel terug. De markering dekt de uiteindelijke bytes.
-                    with contextlib.closing(sqlite3.connect(part)) as old, old:
-                        old.execute("UPDATE outbox_retention SET cursor_key=? WHERE singleton=1",
-                                    (legacy,))
-                    size, digest = part.stat().st_size, _sha256(part)
-                    _check_restore_copy(part, live, size, digest, migrations, core_dir, primary)
-                _sync(part)
-                _check_preparation(core_dir, preparation["poging"])
-                os.replace(part, dest)
-                _sync(dest.parent)
-            finally:
-                part.unlink(missing_ok=True)
+            size, digest = _install_copy(
+                dest, (src, size, digest), live, migrations, core_dir, primary, legacy,
+                partial(_check_preparation, core_dir, preparation["poging"]),
+            )
             staged.append({"live": live, "staged": live + STAGED_SUFFIX,
                            "size": size, "sha256": digest})
             chosen.append({**_source_state(core_dir, live + STAGED_SUFFIX), "bestand": live})
@@ -943,7 +1093,7 @@ def _begin_swap(root: Path, pairs: list[_RestorePair], requested: datetime,
 
 def _check_position(core: Path, work: Path, pairs: list[_RestorePair], aside: Path, originals: dict,
                     moves: list[tuple[Path, Path]], step: int, migrations: Path,
-                    proof: dict | None = None, *, chosen: dict | None = None,
+                    primary: str | None, proof: dict | None = None, *, chosen: dict | None = None,
                     prepared: dict | None = None) -> dict:
     """Bewijs elke volledige database, ook tussen de rename van de kern en haar WAL."""
     moved = dict(moves[:step])
@@ -951,7 +1101,6 @@ def _check_position(core: Path, work: Path, pairs: list[_RestorePair], aside: Pa
     allowed = set()
     measured = {}
     prepared_hashes = prepared or {}
-    primary = _restore_primary(core, {pair.rel for pair in pairs})
     if aside.resolve() != aside.absolute() or (os.path.lexists(aside) and not aside.is_dir()):
         raise SetError("ongeldig pad voor de vorige databases")
     for pair in pairs:
@@ -1019,7 +1168,8 @@ def _choice_preview(info: dict, aside: Path, previous: dict, chosen: dict) -> di
 
 
 def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | None,
-               migrations: Path, max_age_s: float, work: Path, *, manual: bool = False,
+               migrations: Path, max_age_s: float, work: Path, *, primary: str | None,
+               manual: bool = False,
                preview: dict | None = None) -> tuple[
                    Path, dict, list[tuple[Path, Path]], int, bool]:
     root = core / "backups" / ASIDE_FOLDER
@@ -1099,7 +1249,7 @@ def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict 
     choosing = (manual and not continuing) or ("keuze" in state and step == state["keuzestap"])
     chosen = {} if choosing else None
     measured = _check_position(core, work, pairs, aside, originals, moves, step, migrations,
-                               None if choosing else state.get("databases"), chosen=chosen,
+                               primary, None if choosing else state.get("databases"), chosen=chosen,
                                prepared=prepared)
     if not continuing or choosing:
         state["databases"] = measured
@@ -1110,6 +1260,25 @@ def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict 
         if preview is not None:
             preview.update(choice)
     return aside, state, moves, step, continuing
+
+
+def _proven_swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | None,
+                 migrations: Path, max_age_s: float, work: Path, *, manual: bool = False,
+                 preview: dict | None = None):
+    primary = _restore_primary(core, {p.rel for p in pairs})
+    plan = _swap_plan(core, info, pairs, journal, migrations, max_age_s, work,
+                      primary=primary, manual=manual, preview=preview)
+    _, _, moves, step, _ = plan
+    # Bij hervatten kan de gekozen kopie al op haar eindnaam staan. Herhaal de proef
+    # op precies die bytes, vóór de eerste of een volgende publicatie in echte appdata.
+    moved = dict(moves[:step])
+    entries = {p.rel: (moved.get(p.staged, p.staged), p.size, p.digest) for p in pairs}
+    try:
+        trial_databases(core, entries, primary, migrations,
+                        source_set=core / "backups" / FOLDER / info["set"])
+    except SetError as exc:
+        raise _PreviousDataError(str(exc), disk=exc.disk) from exc
+    return primary, plan
 
 
 def staged_status(core: Path, *, manual: bool = False) -> bool | None:
@@ -1128,8 +1297,8 @@ def staged_status(core: Path, *, manual: bool = False) -> bool | None:
             return None
         pairs, journal = _restore_request(core, info)
         with tempfile.TemporaryDirectory(prefix="mg-terugzetcontrole-") as work:
-            _swap_plan(core, info, pairs, journal, encoder_migrations(os.environ),
-                       STAGE_MAX_AGE_S, Path(work), manual=manual)
+            _proven_swap(core, info, pairs, journal, encoder_migrations(os.environ),
+                         STAGE_MAX_AGE_S, Path(work), manual=manual)
         if before != schema._generation(marker) or _read_proof(core / COMMIT_ORIGIN) != phase:
             return None
     except (OSError, ValueError, RuntimeError, SetError):
@@ -1140,12 +1309,19 @@ def staged_status(core: Path, *, manual: bool = False) -> bool | None:
 def _swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | None,
           owner: tuple[int, int] | None, migrations: Path, max_age_s: float,
           *, manual: str | None = None) -> dict:
-    marker = core / STAGE_MARKER
     preview = {}
-    aside, state, moves, step, continuing = _swap_plan(
-        core, info, pairs, journal, migrations, max_age_s, core, manual=manual is not None,
-        preview=preview,
-    )
+    primary, plan = _proven_swap(core, info, pairs, journal, migrations, max_age_s, core,
+                                 manual=manual is not None, preview=preview)
+    return _execute_swap(core, info, pairs, journal, owner, migrations, primary, max_age_s, plan,
+                         manual=manual, preview=preview)
+
+
+def _execute_swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | None,
+                  owner: tuple[int, int] | None, migrations: Path, primary: str | None,
+                  max_age_s: float, plan: tuple, *, manual: str | None = None,
+                  preview: dict | None = None) -> dict:
+    marker = core / STAGE_MARKER
+    aside, state, moves, step, continuing = plan
     root, originals = aside.parent, state["originelen"]
     if manual is not None and preview:
         if manual != preview["bevestig"]:
@@ -1171,15 +1347,15 @@ def _swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | Non
         if "keuze" in state and position == state["keuzestap"]:
             fresh = {}
             _, _, current_moves, current_step, _ = _swap_plan(
-                core, info, pairs, reference, migrations, max_age_s, core, manual=True,
-                preview=fresh)
+                core, info, pairs, reference, migrations, max_age_s, core, primary=primary,
+                manual=True, preview=fresh)
             if current_step != position or not fresh:
                 raise SetError("de bestandsposities veranderden vóór de bevestigde wissel")
             if fresh["bevestig"] != state["keuze"] or current_moves != moves:
                 raise _ChoiceRequired(fresh)
         else:
             _check_position(core, core, pairs, aside, originals, moves, position, migrations,
-                            state["databases"])
+                            primary, state["databases"])
 
     verify_step(step)
     aside.mkdir(mode=0o700, parents=True, exist_ok=True)

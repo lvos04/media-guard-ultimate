@@ -352,6 +352,8 @@ def test_keuze_hermeten_voor_de_eerste_hernoeming(tmp_path, installatie, capsys,
 
     def na_stap_nul(marker, info, state, owner):
         publish(marker, info, state, owner)
+        if marker != core / preupdate.STAGE_MARKER:
+            return  # Onderbreek de gekozen wissel in de gevulde installatie.
         assert state["stap"] == 0 and state["keuze"] == first
         if onderbreking:
             raise Uitval
