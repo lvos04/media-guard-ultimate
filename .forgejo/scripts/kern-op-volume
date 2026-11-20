@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Gebruik de Python en SQLite van het losse kernimage en een eigen schijfvolume voor de proefdata.
+set -euo pipefail
+bron=${MG_CI_BRON:?werkkopie ontbreekt}
+basis=$(awk '$1 == "FROM" { image = $2 } END { print image }' "$bron/apps/core/Dockerfile")
+if [[ "$basis" != *@sha256:* ]]; then
+  echo "De runtimebasis van het kernimage heeft geen vaste digest." >&2
+  exit 1
+fi
+client=$(docker create --mount type=volume,target=/proef --workdir /proef \
+  --env TMPDIR=/proef/tijdelijk --entrypoint sleep "$basis" infinity)
+afsluiten() {
+  local code=$?
+  trap - EXIT
+  docker rm -fv "$client" >/dev/null || code=1
+  exit "$code"
+}
+trap afsluiten EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+docker start "$client" >/dev/null
+docker exec "$client" mkdir -p /proef/bron /proef/tijdelijk
+docker cp "$bron/." "$client:/proef/bron/"
+docker exec "$client" bash -eu -o pipefail -c '
+  python -c "import sqlite3, sys; assert sys.version_info[:2] == (3, 12); print(sys.version, sqlite3.sqlite_version)"
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg mediainfo git jq
+  useradd --create-home --home-dir /proef/thuis mg-proef
+  chown -R mg-proef /proef/bron /proef/tijdelijk
+  python -m venv /proef/python
+  /proef/python/bin/pip install -e "/proef/bron/apps/core[test]"
+'
+docker exec -i --user mg-proef --env HOME=/proef/thuis \
+  --env PATH=/proef/python/bin:/usr/local/bin:/usr/bin:/bin \
+  --workdir /proef/bron/apps/core "$client" "$@"

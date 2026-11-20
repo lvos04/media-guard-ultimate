@@ -57,7 +57,7 @@ jobs:
     name: core (python ${{ matrix.python }}, ruff, pytest)
     if: github.event_name != 'schedule' && format('{0}', inputs.dagproeven) != 'false'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 100
     strategy:
       fail-fast: false
       matrix:
@@ -68,26 +68,28 @@ jobs:
         id: bron
         run: bash .forgejo/scripts/werkkopie --testgebruiker
       - uses: https://code.forgejo.org/actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        if: matrix.python == '3.14'
         with:
           python-version: ${{ matrix.python }}
-      - name: ffprobe/mediainfo (lichte analyse in core-tests)
-        run: bash .forgejo/scripts/installeer-pakketten ffmpeg mediainfo
-      - name: Testafhankelijkheden in de gekozen Python-versie installeren
+      - name: Testafhankelijkheden voor de alles-in-één-versie van Python
+        if: matrix.python == '3.14'
         run: |
+          bash .forgejo/scripts/installeer-pakketten ffmpeg mediainfo
           python -m venv "$RUNNER_TEMP/core-python"
           "$RUNNER_TEMP/core-python/bin/pip" install -e "$MG_CI_BRON/apps/core[test]"
           echo "$RUNNER_TEMP/core-python/bin" >> "$GITHUB_PATH"
-      - name: ruff
+      - name: Ruff, volledige kernsuite en MSO-contracttest
         working-directory: ${{ steps.bron.outputs.pad }}/apps/core
-        run: ruff check .
-      - name: pytest
-        working-directory: ${{ steps.bron.outputs.pad }}/apps/core
-        run: >-
-          bash "$GITHUB_WORKSPACE/.forgejo/scripts/als-testgebruiker" python -m pytest -v -rfEs
-          -o faulthandler_timeout=180 --durations=5 -p no:cacheprovider
-      - name: MSO-contracttest
-        working-directory: ${{ steps.bron.outputs.pad }}/apps/core
-        run: bash "$GITHUB_WORKSPACE/.forgejo/scripts/als-testgebruiker" python -m pytest -q -rfEs -p no:cacheprovider ../../tests/contract/mso
+        env:
+          PYTHON_REEKS: ${{ matrix.python }}
+        run: |
+          omgeving=als-testgebruiker
+          if [[ "$PYTHON_REEKS" == 3.12 ]]; then omgeving=kern-op-volume; fi
+          bash "$GITHUB_WORKSPACE/.forgejo/scripts/$omgeving" bash -se <<'PROEVEN'
+          ruff check .
+          python -m pytest -v -rfEs -o faulthandler_timeout=180 --durations=5 -p no:cacheprovider
+          python -m pytest -q -rfEs -p no:cacheprovider ../../tests/contract/mso
+          PROEVEN
 
   upgradehistorie:
     name: herstart en gegevensbehoud met historische releases
