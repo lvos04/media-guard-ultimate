@@ -219,7 +219,8 @@ function NavList({ onNavigate, only }: { onNavigate?: () => void; only?: (key: s
   const pathname = useNavPath();
   const { t, num } = useI18n();
   const todo = useTodoList();
-  const count = useTodoLabel(todo, num(todo.rows.length));
+  const count = useTodoLabel(todo, num(todo.rows.length), true);
+  const details = useTodoLabel(todo, num(todo.rows.length));
   const runs = useResource<Array<{ status: string }>>("/migration/runs", undefined, OVERVIEW_REFRESH_MS);
   const migrating = sourceReading(runs, useReadingTime()).state === "fresh" && runs.data?.some(r => r.status === "active")
     || isActive("/migratie", pathname);
@@ -233,7 +234,7 @@ function NavList({ onNavigate, only }: { onNavigate?: () => void; only?: (key: s
             const showCount = item.key === "activity" && Boolean(todo.rows.length || todo.missing.length);
             return (
               // actief = bg-accent + 4 px balk + aria-current (Peil C-01); teller in inkt, nooit rood
-              <Link key={item.key} href={item.href} aria-current={active ? "page" : undefined} onClick={onNavigate} prefetch={false}
+              <Link key={item.key} href={item.href} aria-current={active ? "page" : undefined} aria-description={showCount && todo.missing.length ? details : undefined} onClick={onNavigate} prefetch={false}
                 className={cn("nav-item focus-ring relative flex min-h-touch items-center gap-3 rounded-lg px-3 text-base text-foreground no-underline hover:bg-accent",
                   "aria-[current=page]:bg-accent aria-[current=page]:font-semibold",
                   "aria-[current=page]:before:absolute aria-[current=page]:before:inset-y-2 aria-[current=page]:before:-left-3 aria-[current=page]:before:w-1 aria-[current=page]:before:rounded-r-full aria-[current=page]:before:bg-primary")}>
@@ -283,7 +284,9 @@ function SidebarHealth({ health }: { health: Health }) {
   // zelfde telling als 'Wat actie nodig heeft' op Overzicht
   const list = useTodoList();
   const todo = list.rows.length;
-  const count = useTodoLabel(list, t("health.attention", { count: todo }));
+  const label = t("health.attention", { count: todo });
+  const count = useTodoLabel(list, label, true);
+  const detail = useTodoLabel(list, label);
   const reading = health.measurement;
   const total = totalStatus({ errors: reading.errors ?? 0, level: reading.state },
     list.rows.filter(r => r.reading.state === "fresh"));
@@ -294,7 +297,7 @@ function SidebarHealth({ health }: { health: Health }) {
   if (!todo && !list.missing.length) return <div className="health-line flex items-center gap-2" data-testid="sidebar-health">{badge}</div>;
   return (
     <div className="health-line flex flex-col items-start gap-1.5" data-testid="sidebar-health">
-      <Link className="focus-ring inline-flex min-h-touch items-center gap-2 rounded-lg font-semibold text-foreground no-underline hover:underline" href="/#todo"><ListChecks className="ico size-[1.125rem]" aria-hidden="true" />{count}</Link>
+      <Link className="focus-ring inline-flex min-h-touch items-center gap-2 rounded-lg font-semibold text-foreground no-underline hover:underline" href="/#todo" aria-description={list.missing.length ? detail : undefined}><ListChecks className="ico size-[1.125rem]" aria-hidden="true" />{count}</Link>
       {badge}
     </div>
   );
@@ -333,7 +336,7 @@ function Topbar() {
     <header className="topbar sticky top-0 z-nav flex min-h-header items-center gap-1 border-b border-border bg-background px-3 lg:gap-3 lg:px-6">
       <span className="hidden min-w-0 flex-[0_1_28rem] lg:flex"><GlobalSearch /></span>
       <div className="topbar-spacer flex-1" />
-      <div className="topbar-cluster flex shrink-0 items-center gap-1 lg:gap-2">
+      <div className="topbar-cluster flex min-w-0 items-center gap-1 lg:gap-2">
         <button type="button" className={cn(buttonVariants({ variant: "stil", size: "icoon" }), "icon-btn lg:hidden")} aria-label={t("topbar.searchLabel")} onClick={() => setSearchOpen(true)} data-testid="mobile-search"><Search className="ico" aria-hidden="true" /></button>
         <StatusPill />
         <Link href="/hoe-werkt-het" className={cn(buttonVariants({ variant: "stil", size: "icoon" }), "icon-btn help-link hidden min-[30rem]:inline-flex")} aria-label={t("help.title")} title={t("help.title")} data-testid="help-link"><CircleHelp className="ico" aria-hidden="true" /></Link>
@@ -366,7 +369,9 @@ function StatusPill() {
   const h = useHealth();
   const list = useTodoList();
   const todo = list.rows.length;
-  const count = useTodoLabel(list, t("health.attentionPlain", { count: todo }));
+  const label = t("health.attentionPlain", { count: todo });
+  const count = useTodoLabel(list, label, true);
+  const detail = useTodoLabel(list, label);
   const reading = h.measurement;
   const tone = reading.state !== "fresh" ? null : reading.errors ? "danger" : list.known ? "warning" : null;
   const offline = reading.state !== "fresh";
@@ -377,12 +382,12 @@ function StatusPill() {
     active && h.activeParts.encodes ? t("health.part.encodes", { count: h.activeParts.encodes }) : null,
     active && h.activeParts.tasks ? t("health.part.tasks", { count: h.activeParts.tasks }) : null,
   ].filter(Boolean).join(" · ");
-  const title = [parts || null, todo || list.missing.length ? count : null].filter(Boolean).join(" — ") || t("topbar.activeTitle");
+  const title = [parts || null, todo || list.missing.length ? detail : null].filter(Boolean).join(" — ") || t("topbar.activeTitle");
   return (
-    <Link className={cn("top-pill focus-ring hidden min-h-touch min-w-0 max-w-64 flex-wrap items-center gap-1.5 rounded-full border-2 border-border-strong px-3 text-sm font-semibold text-foreground no-underline hover:bg-accent md:inline-flex", tone && `top-pill--${tone}`, offline && "border-dashed border-unknown bg-unknown-bg text-unknown-ink")} href={todo ? "/activiteit?tab=problemen" : "/activiteit"} title={title} data-testid="status-pill">
+    <Link className={cn("top-pill focus-ring hidden min-h-touch min-w-0 max-w-64 items-center gap-1.5 rounded-full border-2 border-border-strong px-3 text-sm font-semibold text-foreground no-underline hover:bg-accent md:inline-flex", list.missing.length > 0 && "rounded-lg", tone && `top-pill--${tone}`, offline && "border-dashed border-unknown bg-unknown-bg text-unknown-ink")} href={todo ? "/activiteit?tab=problemen" : "/activiteit"} title={title} aria-description={list.missing.length ? detail : undefined} data-testid="status-pill">
       {/* Peil: inktteller met tekst; nooit een rode of groene stip */}
       {todo ? <ListChecks className="ico" aria-hidden="true" /> : active ? <Activity className="ico" aria-hidden="true" /> : offline ? <CircleHelp className="ico" aria-hidden="true" /> : null}
-      {todo || list.missing.length ? count
+      {todo || list.missing.length ? <span className="min-w-0 leading-tight">{count}</span>
         : active ? t("topbar.busy", { count: num(active) }) : active === 0 ? t(reading.errors ? "status.degraded" : "topbar.allQuiet") : reading.state === "fresh" ? t("status.unknown") : <ReadingMark reading={reading} />}
       {todo && !list.missing.length && reading.state !== "fresh" ? <ReadingMark reading={reading} /> : null}
     </Link>
@@ -560,7 +565,7 @@ function NotificationItem({ n, count, onNavigate }: { n: NotificationRow; count:
 }
 
 function Notifications() {
-  const { t, time } = useI18n();
+  const { t, time, dateTime } = useI18n();
   const { status, reloadStatus, reading: coreReading } = useShell();
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -576,6 +581,7 @@ function Notifications() {
   const waiting = unread ? 0 : olderCore ? todo.known : counts.data?.attention;
   const badge = olderCore ? (unread || waiting) : counts.data?.badge;
   const badgeReading = olderCore ? (unread ? coreReading : combinedReading([coreReading, todo.reading])) : countReading;
+  const showReading = badgeReading.state !== "fresh" && !counts.loading;
   useCoreEvents("notification", () => void counts.reload());
   useCoreEvents("notification", () => { void reloadStatus(); if (open) void list.reload(); });
   // een mislukte klik meldt zich (punt 39); niet stil laten falen
@@ -591,10 +597,12 @@ function Notifications() {
   const ref = useDismiss(open, () => setOpen(false));
   return (
     <div className="notif-wrap static lg:relative" ref={ref}>
-      <button type="button" className={cn(buttonVariants({ variant: "stil", size: "icoon" }), "icon-btn relative")} aria-label={badgeReading.state !== "fresh" ? `${t("topbar.notifications")} · ${badgeReading.at === null ? t("status.unknown") : t("overview.readingStale", { when: time(badgeReading.at) })}` : unread ? t("topbar.notificationsUnread", { count: unread }) : waiting ? t("help.bellWaiting", { count: waiting }) : t("topbar.notifications")} aria-expanded={open} onClick={() => setOpen((v) => !v)} data-testid="bell">
+      <button type="button" className={cn(buttonVariants({ variant: "stil", size: "icoon" }), "icon-btn relative", showReading && "h-auto w-auto max-w-32 gap-1 px-1")} aria-label={badgeReading.state !== "fresh" ? `${t("topbar.notifications")} · ${badgeReading.at === null ? t("status.unknown") : t("overview.readingStale", { when: time(badgeReading.at) })}` : unread ? t("topbar.notificationsUnread", { count: unread }) : waiting ? t("help.bellWaiting", { count: waiting }) : t("topbar.notifications")} aria-expanded={open} onClick={() => setOpen((v) => !v)} data-testid="bell">
         <Bell className="ico" aria-hidden="true" />{badgeReading.state === "fresh" && badge ? <span className="dot-badge cijfers absolute -top-0.5 -right-0.5 min-w-5 rounded-full bg-foreground px-1 text-center text-sm leading-5 font-bold text-background" data-testid="bell-badge">{badge > 99 ? "99+" : badge}</span> : null}
+        {showReading ? <span className="min-w-0 text-left text-sm leading-tight text-unknown-ink" data-testid="bell-reading">
+          {badgeReading.at === null ? t("status.unknown") : <time dateTime={new Date(badgeReading.at).toISOString()} title={dateTime(badgeReading.at)}>{t("overview.lastKnownAt", { when: time(badgeReading.at) })}</time>}
+        </span> : null}
       </button>
-      {badgeReading.state !== "fresh" && !counts.loading ? <span className="text-sm" data-testid="bell-reading"><ReadingMark reading={badgeReading} /></span> : null}
       {open ? (
         // op de telefoon over de hele breedte onder de kopbalk, nooit links buiten beeld (punt 24)
         <div className="popover notif-popover absolute top-full right-3 left-3 z-overlay mt-1 w-auto lg:left-auto lg:right-0 lg:w-[min(24rem,calc(100vw-1.5rem))]" role="dialog" aria-label={t("topbar.notifications")} data-testid="notif-panel">

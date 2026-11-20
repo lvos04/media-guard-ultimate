@@ -43,9 +43,14 @@ export interface TodoList {
 export const TodoContext = createContext<TodoList>({ rows: [], known: 0, missing: [], reading: unknownReading });
 export const useTodoList = () => useContext(TodoContext);
 
-export function useTodoLabel(list: TodoList, label: string) {
+export function useTodoLabel(list: TodoList, label: string, compact = false) {
   const { t, time } = useI18n();
   if (!list.missing.length) return label;
+  if (compact) {
+    const source = list.missing.length === 1 ? list.missing[0][0] : t("overview.sourceCount", { count: list.missing.length });
+    const measured = list.reading.at === null ? t("status.unknown") : t("overview.lastKnownAt", { when: time(list.reading.at) });
+    return t("overview.todoPartial", { count: list.known, sources: `${source} · ${measured}` });
+  }
   const sources = list.missing.map(([name, reading]) => {
     const state = reading.at === null ? t("status.unknown") : t("overview.readingStale", { when: time(reading.at) });
     return `${name} (${state})`;

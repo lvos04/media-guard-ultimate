@@ -614,3 +614,50 @@ for (const taal of ["nl-NL", "en-US"] as const) {
     }
   });
 }
+
+test("R-HARDE-EIS kopbalk bij gelijktijdige veroudering en weigering", async ({ page }) => {
+  await legeActielijst(page);
+  await jsonBron(page, "seerr/settings", { api_key_set: false });
+  await page.route("**/api/v1/health/summary", async route =>
+    route.fulfill({ json: samenvatting(await page.evaluate(() => new Date().toISOString()), 0) }));
+  let geweigerd = false;
+  for (const [pad, inhoud] of [["migration/runs", []], ["provisioning/status", { needs: [] }],
+    ["notifications/count", { unread: 2, badge: 2 }]] as const) {
+    await page.route("**/api/v1/" + pad, route => geweigerd
+      ? route.fulfill({ status: 403, json: { detail: "Geen testrecht" } })
+      : route.fulfill({ json: inhoud, headers: { date: new Date(oudeTijd).toUTCString() } }));
+  }
+  await page.goto("/");
+  const kop = page.getByTestId("status-pill");
+  const bel = page.getByTestId("bell");
+  const kaart = page.getByTestId("todo-card");
+  const balk = page.getByRole("banner");
+  for (const toestand of ["oud", "geweigerd"] as const) {
+    if (toestand === "geweigerd") {
+      geweigerd = true;
+      await page.clock.fastForward(30_001);
+    }
+    const label = toestand === "oud" ? /Laatst bekend \d{2}:\d{2}/i : /Onbekend/i;
+    await expect(bel).toHaveAccessibleName(label);
+    await page.setViewportSize({ width: 320, height: 900 });
+    expect.soft(await page.evaluate(() => Math.max(document.body.scrollWidth, document.documentElement.scrollWidth) - innerWidth), "Meldingen en bronstatus passen samen op 320 px").toBeLessThanOrEqual(1);
+    await page.setViewportSize({ width: 768, height: 900 });
+    await expect(kop).toContainText("Minstens 1 bekend · 2 bronnen");
+    await expect(kop).toContainText(label);
+    await expect(kop).toHaveAttribute("title", /Migratie.*Inrichten/);
+    await expect(kop).toHaveAccessibleDescription(/Migratie.*Inrichten/);
+    for (const bron of ["Migratie", "Inrichten"]) await expect(kaart).toContainText(bron);
+    await expect(page.getByTestId("bell-reading")).toContainText(label);
+    for (const breedte of [320, 360, 390, 768, 1024, 1440]) {
+      await page.setViewportSize({ width: breedte, height: 900 });
+      const hoogte = await balk.evaluate(el => el.getBoundingClientRect().height);
+      expect(hoogte, `kophoogte tijdens ${toestand} op ${breedte} px`).toBeLessThanOrEqual(88);
+      expect(await page.evaluate(() => Math.max(document.body.scrollWidth, document.documentElement.scrollWidth) - innerWidth)).toBeLessThanOrEqual(1);
+      await bel.focus();
+      await page.keyboard.press("Enter");
+      await expect(page.getByTestId("notif-panel")).toBeVisible();
+      await page.keyboard.press("Escape");
+    }
+    await page.setViewportSize({ width: 768, height: 900 });
+  }
+});

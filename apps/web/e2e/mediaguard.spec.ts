@@ -9,6 +9,11 @@ test.describe.configure({ mode: "default" });
 
 import { ADMIN } from "./fixtures/admin";
 
+test.afterEach(async ({ page }) => {
+  // Een lopende route.fetch moet haar antwoord nog kunnen lezen vóór de testcontext sluit.
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 async function login(page: Page) {
   await page.goto("/login");
   await page.getByLabel("Gebruikersnaam").fill(ADMIN.username);
@@ -162,6 +167,12 @@ test("768 px: alle acties van het Overzicht zijn bereikbaar met zichtbare toetse
   await page.goto("/");
   await expect(page.getByTestId("todo-card")).toBeVisible();
   await expect(page.getByTestId("storage-ledger-line")).toBeVisible();
+  // Tel pas als de asynchrone actierijen en de ingestelde instanties in de DOM staan.
+  await expect(page.getByTestId("status-pill")).toHaveText(/^Aandacht \d+$/);
+  const instances = await (await page.request.get("/api/v1/instances")).json() as Array<{ name: string; archived?: boolean }>;
+  for (const instance of instances.filter(row => !row.archived)) {
+    await expect(page.getByTestId("status-hero").getByRole("link").filter({ hasText: instance.name }).first()).toBeVisible();
+  }
   const main = page.getByRole("main");
   const controls = main.locator('a[href], button, summary, [role="button"]');
   const expected = await controls.evaluateAll((elements) => elements.flatMap((el, index) =>
@@ -205,7 +216,15 @@ for (const theme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: theme });
     await page.clock.install();
     let mode: "fresh" | "stale" | "offline" = "fresh";
-    // De echte kern deelt de vooruitgezette browserklok niet.
+    // De gezonde lokale testbronnen bemonsteren op dezelfde klok als de nagebootste engine.
+    await page.route(/\/api\/v1\/(?:attention|provisioning\/status|migration\/runs|seerr\/settings|jobs|wanted\/kpis|health\/summary|library\/kpis|notifications\/count|recovery\/readiness)(?:\?|$)/, async route => {
+      const response = await route.fetch();
+      if (!response.ok()) return route.fulfill({ response });
+      const data = await response.json();
+      const measured = await page.evaluate(() => new Date().toISOString());
+      if (data && typeof data === "object" && "generated_at" in data) data.generated_at = measured;
+      return route.fulfill({ json: data, headers: { date: new Date(measured).toUTCString() } });
+    });
     await page.route("**/api/v1/status", async route => {
       const res = await route.fetch();
       return route.fulfill({ json: { ...await res.json(), time: await page.evaluate(() => new Date().toISOString()) } });

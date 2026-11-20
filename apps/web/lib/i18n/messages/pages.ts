@@ -3,6 +3,8 @@ export const nl = {
 
   // Overzicht
   "overview.todoPartial": "Minstens {count} bekend · {sources}",
+  "overview.sourceCount": "{count} bronnen",
+  "overview.lastKnownAt": "Laatst bekend {when}",
   "overview.sourceJobs": "Taken",
   "overview.sourceReasons": "Oorzaken",
   "overview.safetyUnverified": "De actuele stand kon niet worden bevestigd.",
