@@ -122,6 +122,10 @@ Testnamen zonder bestandspad verwijzen naar `test_connector_lezen.py`.
 | Fork | Inspectie en herstelvoorbereiding gebruiken dezelfde XML-parser voor `config.xml` met hoofdelement `Config`. | `test_fork_met_lege_config` |
 | Terugzetten | Dezelfde voorcontrole als bij de omwisseling toetst de markering, de voortgang en de klaargezette bestanden. | `test_onvolledige_terugzetmarkering` en `test_terugzetrapport_controleert_klaargezet_bestand` |
 
+De historische proef `tests/upgradehistorie/proeven/bundelpaar.py` laat de oude
+release zelf een bundel maken. De huidige release herstelt die lokaal en vanaf
+het offsite-doel. Zonder aanmaakbewijs blijven beide dekkingen `degraded`.
+
 Een `null` betekent dat het gegeven niet kon worden vastgesteld. Het
 rapport bevat uitsluitend geselecteerde metadata. De bestaande route
 `GET /api/v1/notify/offsite` vereist een beheerderssessie.

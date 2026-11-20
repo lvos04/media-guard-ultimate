@@ -11,6 +11,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 PROEVEN = Path(__file__).with_name("proeven")
 VERSIES = {
+    "voor-bundelbewijs": ("e1c121d4a29bff7228f56bd6ede5f9548ac00ae5", ["apps/core/mediaguard"]),
     "122": ("3998bea1880229e8351b4b28e8f912275cdd15c1", ["apps/core/mediaguard"]),
     "150": (
         "29b9af2e55385d1f9f9c536d55dd3f42d8e92368",
@@ -64,6 +65,7 @@ def historie(tmp_path_factory):
 
 
 GEVALLEN = [
+    "bundelpaar",
     "proeven behoud",
     "proeven archieffout",
     "proeven oude-client",

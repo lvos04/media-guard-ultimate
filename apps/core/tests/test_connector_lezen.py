@@ -32,6 +32,7 @@ from mediaguard.db import utcnow
 from mediaguard.instances.registry import apikey_secret, list_instances
 from mediaguard.maintenance import api as onderhoud
 from mediaguard.maintenance import bundle, preupdate
+from mediaguard.migration import backupfile
 from mediaguard.notify import offsite
 from mediaguard.provisioning.templates import PREFIX, owned_name
 
@@ -1650,11 +1651,18 @@ def test_encoder_zonder_actieve_voortgang(
     assert dekking["status"] == item["status"] == "degraded" and not dekking["verified"]
 
 
-def test_fork_met_lege_config(client, machine, herstelbronnen, geverifieerde_offsite):
+def test_fork_met_lege_config(client, machine, herstelbronnen, geverifieerde_offsite, tmp_path):
     _, _, _, forks, _ = herstelbronnen
     iid, fork = next(iter(forks.items()))
     entry = fork.backup_list[0]
     naam = entry["name"]
+    bronpad = tmp_path / naam
+    bronpad.write_bytes(fork.backup_blobs[naam])
+    opties = {"rules": [], "target_api_key": fork.api_key, "target_url": "https://fork.invalid",
+              "max_uncompressed": 16 * 1024 * 1024}
+    geldig = tmp_path / "geldig.zip"
+    backupfile.build_shadow_zip(bronpad, geldig, **opties)
+    assert geldig.is_file()
     leeg = b""
     with pytest.raises(ElementTree.ParseError):
         ElementTree.fromstring(leeg)
@@ -1667,6 +1675,9 @@ def test_fork_met_lege_config(client, machine, herstelbronnen, geverifieerde_off
             uit.writestr(lid, data)
     fork.backup_blobs[naam] = doel.getvalue()
     entry["size"] = len(doel.getvalue())
+    bronpad.write_bytes(doel.getvalue())
+    with pytest.raises(backupfile.BackupInvalid, match="config.xml"):
+        backupfile.build_shadow_zip(bronpad, tmp_path / "geweigerd.zip", **opties)
     item = rapport(machine, key(client))
     dekking = next(rij for rij in item["forks"] if rij["instance_id"] == iid)
     print(f"Fork: config.xml=0 bytes, XML=onleesbaar, fork={dekking['status']}, "
