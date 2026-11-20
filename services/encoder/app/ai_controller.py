@@ -23,6 +23,7 @@ from app.bronnen import SourceError, validate_registered_source
 from app.config import Settings
 from app.db import Database
 from app.geheimen import SecretError, SecretStore
+from app.hervatpunten import heeft_tussenresultaat
 from app.jobstatus import ACTIVE_SQL
 from app.media.beslissen import Besluit
 from app.wachtrijherstel import QueueRecoveryError, remove_job_temporary_output
@@ -907,6 +908,7 @@ class AiController:
             JOIN library l ON l.id=f.library_id
             JOIN profiel p ON p.id=l.profiel_id
             WHERE j.status='mislukt' AND j.automatische_retry_pogingen<1
+              AND COALESCE(j.foutsoort,'')<>'Hervatfout'
               AND l.actief=1
             ORDER BY j.id LIMIT 250
             """
@@ -971,6 +973,8 @@ class AiController:
         try:
             for row in rows:
                 if int(row["automatische_retry_pogingen"] or 0) >= 1:
+                    return False
+                if heeft_tussenresultaat(self.settings.cache_root / str(row["id"]), row["percent"]):
                     return False
                 # Een ontbrekende tijdelijke map is ook een veilige toestand.
                 # De routine weigert symlinks en onbekende paden; bronmedia

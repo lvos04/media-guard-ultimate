@@ -1491,9 +1491,7 @@ async def _sample_saving_check(
 
 def _clear_leftover_cache(database: Database, settings: Settings, job_id: int,
                           row: Any) -> None:
-    """Een cachemap van een eerdere poging (onverwachte fout, harde stop) blokkeerde de job
-    voorgoed ('File exists'). Nooit hergebruiken, wel opruimen als er aantoonbaar geen
-    mediaproces meer voor deze job loopt (verbeterpunt 28)."""
+    """Ruim een verlaten jobmap pas op als er geen tussenresultaat te hervatten is."""
 
     from app.wachtrijherstel import (
         QueueRecoveryError,
@@ -1596,17 +1594,27 @@ async def run_job(
         checkpoint = await asyncio.to_thread(hervatpunten.Hervatpunt.lees, cache_dir)
         prior_result = checkpoint is None and hervatpunten.eerder_geverifieerd(
             database, cache_dir, job_id)
+        oud_deel = (not prior_result and not (checkpoint and checkpoint.delen)
+                    and hervatpunten.heeft_oud_deel(cache_dir, row["percent"]))
+        if oud_deel:
+            from app.wachtrijherstel import media_process_alive
+
+            if media_process_alive(row["proces_pid"]):
+                raise hervatpunten.Hervatfout("Het proces van de oude encoderpoging is nog actief")
+            hervatpunten.oud_bestand(cache_dir)
     except hervatpunten.Hervatfout as exc:
         record_failure(database, job_id, str(exc), "Hervatfout")
         return False
     if prior_result:
         HERVAT_PERCENT[job_id] = 99.9
+    elif oud_deel:
+        HERVAT_PERCENT[job_id] = float(row["percent"] or 0)
     elif checkpoint is None:
         if cache_dir.exists() or cache_dir.is_symlink():
             _clear_leftover_cache(database, settings, job_id, row)
         cache_dir.mkdir(parents=True, exist_ok=False)
-    elif checkpoint.delen:
-        HERVAT_PERCENT[job_id] = checkpoint.percent
+    elif checkpoint.delen or row["percent"]:
+        HERVAT_PERCENT[job_id] = max(float(row["percent"] or 0), checkpoint.percent)
     _set_phase(database, job_id, "analyse")
     work_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1616,10 +1624,10 @@ async def run_job(
     result_path = cache_dir / "resultaat.mkv"
     try:
         source_stat = source.stat()
-        if prior_result and (source_stat.st_dev, source_stat.st_ino, source_stat.st_size,
-                             source_stat.st_mtime) != (row["bron_device"], row["bron_inode"],
-                                                       row["bron_grootte"], row["bron_mtime"]):
-            raise hervatpunten.Hervatfout("De bron van het geverifieerde resultaat is gewijzigd")
+        if (prior_result or oud_deel) and (
+            source_stat.st_dev, source_stat.st_ino, source_stat.st_size, source_stat.st_mtime
+        ) != (row["bron_device"], row["bron_inode"], row["bron_grootte"], row["bron_mtime"]):
+            raise hervatpunten.Hervatfout("De bronidentiteit van het tussenresultaat wijkt af")
         if source_stat.st_size != int(row["grootte"]) or source_stat.st_mtime != float(
             row["mtime"]
         ):
@@ -1650,6 +1658,10 @@ async def run_job(
         decision = Besluit.model_validate_json(str(row["payload"]))
         # HDR10+ blijft overgeslagen tenzij het besluit een expliciete,
         # gecontroleerde HDR10+-route draagt (behouden of expliciete fallback).
+        if oud_deel and (decision.actie != "hercoderen" or command_override is not None
+                         or not float(source_probe["duration"]) > 0
+                         or (source_probe.get("hdr10plus") and not decision.hdr10plus_route)):
+            raise hervatpunten.Hervatfout("De beeldroute van het oude deelbestand is onzeker")
         if bool(source_probe.get("hdr10plus")) and not decision.hdr10plus_route:
             database.execute(
                 "UPDATE job SET status='overgeslagen',fout=?,klaar_op=? WHERE id=?",
@@ -1773,7 +1785,8 @@ async def run_job(
                 lookahead=lookahead, rate_factor=factor)
             return [*built[:-1], "-f", "matroska", built[-1]]
 
-        hervat_encode = bool(checkpoint and checkpoint.delen)
+        hervat_encode = oud_deel or bool(checkpoint and (
+            checkpoint.delen or checkpoint.pad(0).exists()))
         if command_override is not None:
             arguments = command_override
         elif decision.actie == "opschonen":
@@ -1801,6 +1814,8 @@ async def run_job(
             # Een .deel-suffix is bewust niet als mediasuffix herkenbaar; geef
             # de muxer daarom expliciet op en hernoem pas na encode-succes.
             arguments = [*arguments[:-1], "-f", "matroska", arguments[-1]]
+        if oud_deel:
+            hervatpunten.controleer_oud_plan(row["commando"], arguments)
         # Geen proefstuk voor libaom (0,03×: 60 s proef = ruim een half uur rekenwerk en
         # een voortgang die van 66 % naar 0 % springt; rapport 5, T2).
         if (not prior_result and not hervat_encode and decision.actie == "hercoderen"
@@ -1839,7 +1854,7 @@ async def run_job(
                                       duration)
 
         def vastgelegd(percent: float) -> None:
-            HERVAT_PERCENT[job_id] = percent
+            HERVAT_PERCENT[job_id] = max(HERVAT_PERCENT.get(job_id, 0), percent)
 
         async def encode(args: list[str]) -> bool:
             if command_override is None and decision.actie == "hercoderen" and duration > 0:
@@ -1847,8 +1862,16 @@ async def run_job(
                 if decision.encoder == "av1_qsv":
                     gpu = hervatpunten.GpuKeuze(gpu_state["factor"], "-hwaccel" in args,
                                                 "-look_ahead_depth" in args)
-                return await hervatpunten.encode(args, source, job_id, duration, run_media,
-                                                 vastgelegd, gpu)
+                try:
+                    gelukt = await hervatpunten.encode(args, source, job_id, duration, run_media,
+                                                       vastgelegd, gpu)
+                    if not gelukt and job_id in HERVAT_PERCENT:
+                        raise _step_failed(database, job_id, "encoderproces faalde")
+                    return gelukt
+                except ExecutionError as exc:
+                    if job_id not in HERVAT_PERCENT:
+                        raise
+                    raise hervatpunten.Hervatfout(str(exc)) from exc
             return await run_media(args)
 
         succeeded = prior_result or await encode(arguments)
@@ -2237,19 +2260,6 @@ async def run_job(
 
             wake_planner()
         return False
-    except EncodePreempted as exc:
-        shutil.rmtree(cache_dir, ignore_errors=True)
-        database.execute(
-            "UPDATE job SET status='wacht',alleen_nacht=1,fout=?,foutsoort=NULL,proces_pid=NULL,"
-            "worker_id=NULL,cache_reservering=0,percent=0,klaar_op=NULL,resultaat_pad=NULL,"
-            "resultaat_grootte=NULL WHERE id=?", (str(exc)[:500], job_id))
-        append_job_log(database, job_id, "info", str(exc))
-        _finish_attempt(database, job_id, "afgebroken", error=str(exc), error_type="Uitgesteld")
-        with suppress(Exception):
-            from app.planner import wake_planner
-
-            wake_planner()
-        return False
     except EncodeStalled as exc:
         shutil.rmtree(cache_dir, ignore_errors=True)
         return _handle_stall(database, job_id, decision, exc)
@@ -2266,15 +2276,28 @@ async def run_job(
     except hervatpunten.Hervatfout as exc:
         record_failure(database, job_id, str(exc), "Hervatfout")
         return False
-    except ProcessInterrupted as exc:
+    except (ProcessInterrupted, EncodePreempted) as exc:
         try:
             checkpoint = await asyncio.to_thread(hervatpunten.Hervatpunt.lees, cache_dir)
         except hervatpunten.Hervatfout as problem:
             record_failure(database, job_id, str(problem), "Hervatfout")
             return False
-        percent = checkpoint.percent if checkpoint else HERVAT_PERCENT.get(job_id, 0.0)
-        if not checkpoint and not prior_result:
+        percent = max(checkpoint.percent if checkpoint else 0.0, HERVAT_PERCENT.get(job_id, 0.0))
+        if not checkpoint and not prior_result and not oud_deel:
             shutil.rmtree(cache_dir, ignore_errors=True)
+        if isinstance(exc, EncodePreempted):
+            database.execute(
+                "UPDATE job SET status='wacht',alleen_nacht=1,fout=?,foutsoort=NULL,"
+                "proces_pid=NULL,worker_id=NULL,cache_reservering=0,percent=?,klaar_op=NULL,"
+                "resultaat_pad=NULL,resultaat_grootte=NULL WHERE id=?",
+                (str(exc)[:500], percent, job_id))
+            append_job_log(database, job_id, "info", str(exc))
+            _finish_attempt(database, job_id, "afgebroken", error=str(exc), error_type="Uitgesteld")
+            with suppress(Exception):
+                from app.planner import wake_planner
+
+                wake_planner()
+            return False
         if noodstop.active():
             requeue_for_emergency(database, job_id, percent)
             return False
@@ -2302,6 +2325,9 @@ async def run_job(
         cap_restart_loop(database, job_id)
         return False
     except FileNotFoundError as exc:
+        if oud_deel or checkpoint:
+            record_failure(database, job_id, f"Hervatten wacht op een bestand: {exc}", "Hervatfout")
+            return False
         shutil.rmtree(cache_dir, ignore_errors=True)
         if source.exists():
             # Een ontbrekend hulpprogramma (mkvmerge, getfacl, HDR10+-ffmpeg) of
@@ -2338,6 +2364,9 @@ async def run_job(
         record_failure(database, job_id, str(exc), type(exc).__name__)
         return False
     except (ExecutionError, MetadataError, OSError, ValueError) as exc:
+        if oud_deel or checkpoint:
+            record_failure(database, job_id, f"Hervatten onderbroken: {exc}", "Hervatfout")
+            return False
         # Een volledig .deel-resultaat van tientallen GB mag niet blijven staan.
         shutil.rmtree(cache_dir, ignore_errors=True)
         record_failure(database, job_id, str(exc), type(exc).__name__)
@@ -2349,6 +2378,9 @@ async def run_job(
         LOGGER.exception("Onverwachte fout in job %s", job_id)
         replacing = settings.replacement_mode != "handoff" and (
             JOB_PHASES.get(job_id) or ("",))[0] == "vervangen"
+        if oud_deel or checkpoint:
+            record_failure(database, job_id, f"Hervatten onderbroken: {exc}", "Hervatfout")
+            return False
         if not replacing:
             shutil.rmtree(cache_dir, ignore_errors=True)
         record_failure(

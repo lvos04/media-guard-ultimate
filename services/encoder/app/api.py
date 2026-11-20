@@ -40,6 +40,7 @@ from app.cpubudget import effective_cpu_percent
 from app.db import Database
 from app.geheimen import SecretError, SecretStore
 from app.health import cached_dependency_report
+from app.hervatpunten import heeft_tussenresultaat
 from app.hostlimits import effective_memory
 from app.integraties import mediaserver_headers, mediaserver_product, valid_key
 from app.jobstatus import (
@@ -2025,17 +2026,20 @@ def create_api_router() -> APIRouter:
             int(row["proces_pid"]) if row["proces_pid"] is not None else None
         ):
             raise HTTPException(409, "Deze job heeft nog een actief mediaproces")
-        try:
-            await asyncio.to_thread(remove_job_temporary_output, _settings(request), job_id)
-        except QueueRecoveryError as exc:
-            raise HTTPException(409, str(exc)) from exc
+        hervat = row["foutsoort"] == "Hervatfout" or heeft_tussenresultaat(
+            _settings(request).cache_root / str(job_id), row["percent"])
+        if not hervat:
+            try:
+                await asyncio.to_thread(remove_job_temporary_output, _settings(request), job_id)
+            except QueueRecoveryError as exc:
+                raise HTTPException(409, str(exc)) from exc
         database.execute(
             """
             UPDATE job SET status='wacht',fout=NULL,foutsoort=NULL,afbreken_gevraagd=0,
-                           percent=0,proces_pid=NULL,worker_id=NULL,klaar_op=NULL,
+                           percent=?,proces_pid=NULL,worker_id=NULL,klaar_op=NULL,
                            cache_reservering=0 WHERE id=?
             """,
-            (job_id,),
+            (row["percent"] if hervat else 0, job_id),
         )
         return {"id": job_id, "status": "wacht"}
 

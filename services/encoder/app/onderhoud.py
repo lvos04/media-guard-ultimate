@@ -46,6 +46,8 @@ def append_job_log(database: Database, job_id: int, level: str, text: str) -> No
 
 
 def record_failure(database: Database, job_id: int, message: str, error_type: str) -> int:
+    if error_type == "Hervatfout":
+        message = f"Hervatten gepauzeerd. {message}"
     signature = hashlib.sha256(f"{error_type}\0{message}".encode()).hexdigest()
     row = database.fetch_one(
         "SELECT laatste_fout_handtekening,zelfde_fout_pogingen FROM job WHERE id=?",
@@ -310,6 +312,7 @@ def sweep_finished_job_cache(database: Database, settings: Settings) -> list[int
     Alleen numerieke mappen van bekende jobs, nooit als er nog een mediaproces van de job
     loopt of (direct-modus) een vervangtransactie openstaat. Onbekende inhoud blijft staan."""
 
+    from app.hervatpunten import heeft_tussenresultaat
     from app.wachtrijherstel import (
         QueueRecoveryError,
         media_process_alive,
@@ -328,11 +331,15 @@ def sweep_finished_job_cache(database: Database, settings: Settings) -> list[int
             if job_id <= 0 or job_id in removed:
                 continue
             row = database.fetch_one(
-                f"SELECT proces_pid FROM job WHERE id=? AND status IN ({marks}) "  # noqa: S608
+                f"SELECT status,proces_pid,percent FROM job WHERE id=? AND status IN ({marks}) "  # noqa: S608
+                "AND COALESCE(foutsoort,'')<>'Hervatfout' "
                 "AND NOT (COALESCE(foutsoort,'')='AiToestemmingIngetrokken' "
                 "AND (gestart_op IS NOT NULL OR COALESCE(percent,0)>0))",
                 (job_id, *CACHE_SWEEP_STATUSES))
             if row is None or media_process_alive(int(row["proces_pid"] or 0)):
+                continue
+            if row["status"] == "mislukt" and heeft_tussenresultaat(
+                    settings.cache_root / str(job_id), row["percent"]):
                 continue
             with suppress(sqlite3.OperationalError):
                 open_txn = database.fetch_one(

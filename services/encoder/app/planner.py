@@ -21,7 +21,13 @@ import psutil
 from app.config import Settings
 from app.cpubudget import effective_cpu_percent
 from app.db import Database
-from app.hervatpunten import Hervatfout, Hervatpunt, eerder_geverifieerd
+from app.hervatpunten import (
+    Hervatfout,
+    Hervatpunt,
+    eerder_geverifieerd,
+    heeft_oud_deel,
+    heeft_tussenresultaat,
+)
 from app.hostlimits import cpu_temperature, effective_memory
 from app.mediaguard.holds import LANE_SELECT, expire_platform_hold, pause_reason
 from app.onderhoud import record_failure, storage_guard
@@ -187,8 +193,8 @@ def _orphan_process(pid: int, job_id: int, settings: Settings) -> bool:
     name = Path(command[0]).name if command else ""
     if not (name.startswith("ffmpeg") or name in {"mkvmerge", "dovi_tool"}):
         return False
-    markers = (str(settings.cache_root / str(job_id)), str(settings.work_root / str(job_id)))
-    return any(marker in argument for argument in command for marker in markers)
+    mappen = (settings.cache_root / str(job_id), settings.work_root / str(job_id))
+    return any(Path(argument).is_relative_to(map_) for argument in command for map_ in mappen)
 
 
 def _stop_orphan(pid: int) -> None:
@@ -249,19 +255,24 @@ def _recover_orphaned_jobs(database: Database, settings: Settings,
         if _orphan_process(pid, job_id, settings):
             LOGGER.warning("Verweesd mediaproces %s van job %s wordt gestopt", pid, job_id)
             _stop_orphan(pid)
+            if _orphan_process(pid, job_id, settings):
+                database.execute("UPDATE job SET fout=? WHERE id=?",
+                                 ("Herstel wacht tot de vorige encoder is gestopt", job_id))
+                continue
         cache = settings.cache_root / str(job_id)
         try:
             checkpoint = Hervatpunt.lees(cache)
-            percent = checkpoint.percent if checkpoint else 0.0
+            percent = 0.0
             if checkpoint is not None:
+                percent = max(float(row["percent"] or 0), checkpoint.percent)
                 preserved.add(job_id)
             elif eerder_geverifieerd(database, cache, job_id):
                 percent = 99.9
                 preserved.add(job_id)
-            elif row["percent"] and cache.is_dir() and any(cache.glob("*.deel")):
+            elif heeft_oud_deel(cache, row["percent"]):
                 # Oud schema zonder fragmentbewijs. Bewaar de oorspronkelijke
                 # meting en het deelbestand tot de worker de bron opnieuw controleert.
-                percent = float(row["percent"])
+                percent = float(row["percent"] or 0)
                 preserved.add(job_id)
             else:
                 remove_job_temporary_output(settings, job_id)
@@ -341,14 +352,12 @@ def _recover_orphaned_jobs(database: Database, settings: Settings,
         try:
             checkpoint = Hervatpunt.lees(cache)
             if checkpoint is not None:
-                database.execute("UPDATE job SET percent=? WHERE id=?",
+                database.execute("UPDATE job SET percent=MAX(COALESCE(percent,0),?) WHERE id=?",
                                  (checkpoint.percent, job_id))
                 continue
             if eerder_geverifieerd(database, cache, job_id):
                 continue
-            if (row["percent"]
-                    and row["fout"] in (PLANNED_STOP_ERROR, "hersteld na backendherstart")
-                    and cache.is_dir() and any(cache.glob("*.deel"))):
+            if heeft_oud_deel(cache, row["percent"]):
                 continue
             removed = remove_job_temporary_output(settings, job_id)
         except (QueueRecoveryError, Hervatfout) as exc:
@@ -790,19 +799,21 @@ class Planner:
             # uitvoerder-try (zoals een achtergebleven cachemap) mag de job
             # nooit stil als 'bezig' achterlaten.
             LOGGER.exception("Worker voor job %s faalde buiten de uitvoerder", job_id)
+            row = self.database.fetch_one(
+                "SELECT proces_pid,percent FROM job WHERE id=?", (job_id,))
+            bewaren = row is not None and heeft_tussenresultaat(
+                self.settings.cache_root / str(job_id), row["percent"])
             record_failure(
                 self.database, job_id,
                 f"onverwachte fout vóór of na de encode ({type(exc).__name__}): "
                 f"{str(exc)[:400] or 'geen details'}; het origineel is niet aangeraakt",
-                type(exc).__name__)
+                "Hervatfout" if bewaren else type(exc).__name__)
             # Geen tientallen GB cache laten staan (verbeterpunt 28); alleen de eigen,
             # numerieke job-mappen en alleen als er geen mediaproces meer loopt.
             with suppress(Exception):
-                row = self.database.fetch_one("SELECT proces_pid FROM job WHERE id=?",
-                                              (job_id,))
                 from app.wachtrijherstel import media_process_alive
 
-                if row is None or not media_process_alive(int(row["proces_pid"] or 0)):
+                if row is not None and not bewaren and not media_process_alive(row["proces_pid"]):
                     remove_job_temporary_output(self.settings, job_id)
             return False
         finally:

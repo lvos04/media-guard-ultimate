@@ -32,6 +32,7 @@ class Fragment:
     begin: float
     einde: float
     sha256: str
+    kopie: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,55 @@ def eerder_geverifieerd(database: Database, cache: Path, job: int) -> bool:
     ) is not None
 
 
+def heeft_oud_deel(cache: Path, percent: float | None) -> bool:
+    # 1.2.2 kan al beelden hebben geschreven vóór de eerste percentagemeting.
+    paden = (cache / "resultaat.mkv.deel", cache / "resultaat.mkv")
+    return any(p.exists() or p.is_symlink() for p in paden) or bool(
+        percent and any(cache.glob("*.deel")))
+
+
+def heeft_tussenresultaat(cache: Path, percent: float | None) -> bool:
+    if cache.is_symlink():
+        return False  # De opruimer weigert de koppeling zelf.
+    return (cache / MAP).exists() or heeft_oud_deel(cache, percent)
+
+
+def oud_bestand(cache: Path) -> Path:
+    kandidaten = list(cache.glob("*.deel"))
+    resultaat = cache / "resultaat.mkv"
+    if resultaat.exists() or resultaat.is_symlink():
+        kandidaten.append(resultaat)
+    if len(kandidaten) != 1 or kandidaten[0].name not in {"resultaat.mkv.deel", "resultaat.mkv"}:
+        raise Hervatfout("Het tussenresultaat hoort niet eenduidig bij deze job")
+    _bestand(kandidaten[0])
+    return kandidaten[0]
+
+
+def _mediaplan(args: list[str]) -> list[str]:
+    plan = args.copy()
+    if "-threads" in plan:
+        plan[plan.index("-threads") + 1] = "automatisch"
+    if "-svtav1-params" in plan:
+        i = plan.index("-svtav1-params") + 1
+        plan[i] = re.sub(r"(^|:)lp=\d+(?=:|$)", r"\1lp=automatisch", plan[i])
+    return plan
+
+
+def controleer_oud_plan(opgeslagen: str | None, args: list[str]) -> None:
+    try:
+        oud = json.loads(opgeslagen or "null")
+        if not isinstance(oud, list) or not all(isinstance(a, str) for a in oud):
+            raise ValueError
+        # Een bovengrens op het aantal uitvoerbeelden verandert de prefix niet.
+        if len(oud) >= 3 and oud[-3] == "-frames:v" and oud[-2].isdecimal():
+            del oud[-3:-1]
+        if _mediaplan(oud) == _mediaplan(args):
+            return
+    except (IndexError, ValueError):
+        pass
+    raise Hervatfout("De opgeslagen encoderopdracht past niet bij het oude deelbestand")
+
+
 def _probe(path: Path, timeout: float = 300) -> dict[str, Any]:
     try:
         result = subprocess.run(
@@ -96,9 +146,9 @@ def _probe(path: Path, timeout: float = 300) -> dict[str, Any]:
     return dict(json.loads(result.stdout))
 
 
-def _meet(path: Path) -> Fragment:
+def _meet(path: Path, *, timeout: float = 300) -> Fragment:
     _bestand(path)
-    probe = _probe(path)
+    probe = _probe(path, timeout)
     stream = probe["streams"][0]
     frames = int(stream["nb_read_frames"])
     start, end = float(stream["start_time"]), float(probe["format"]["duration"])
@@ -110,22 +160,44 @@ def _meet(path: Path) -> Fragment:
     return Fragment(frames, start, end, digest)
 
 
-def _beeldtijden(path: Path, interval: list[str]) -> list[float]:
+def _leesbaar(stderr: str, onderbroken: bool) -> bool:
+    # Bij een harde stop kan de laatste Matroska-cluster zonder trailer eindigen.
+    # Alleen die containerdiagnose is toelaatbaar bij het lezen van het origineel.
+    return all(onderbroken and re.fullmatch(
+        r"(?:\[matroska,webm @ [^]]+\] )?File ended prematurely(?: at pos\..*)?", line.strip())
+        for line in stderr.splitlines() if line.strip())
+
+
+def _beeldtijden(path: Path, interval: list[str], *, onderbroken: bool = False,
+                 bronklok: bool = False, timeout: float = 300) -> list[float]:
     try:
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-threads", "1", "-select_streams", "v:0", *interval,
-             "-show_frames", "-show_entries", "frame=best_effort_timestamp_time",
+             "-show_frames", "-show_entries",
+             "frame=best_effort_timestamp_time:frame_side_data=:format=start_time",
              "-of", "compact=p=1:nk=0", str(path)],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
         raise Hervatfout("De controle van de laatste beeldtijden duurde te lang") from exc
-    if result.returncode or result.stderr.strip():
+    if result.returncode or not _leesbaar(result.stderr, onderbroken):
         raise Hervatfout("De laatste beeldtijden konden niet worden gecontroleerd")
     prefix = "frame|best_effort_timestamp_time="
     try:
-        return [float(line[len(prefix):].partition("|")[0]) for line in result.stdout.splitlines()
-                if line.startswith(prefix)]
+        regels = result.stdout.splitlines()
+        offset = 0.0
+        if bronklok:
+            begin, = (float(r.removeprefix("format|start_time=")) for r in regels
+                      if r.startswith("format|start_time="))
+            if not math.isfinite(begin):
+                raise ValueError
+            offset = max(0.0, begin)
+        tijden = [float(line.removeprefix(prefix).partition("|")[0]) - offset
+                  for line in regels if line.startswith("frame|")]
+        if not all(math.isfinite(t) for t in tijden) or any(
+                b <= a for a, b in zip(tijden, tijden[1:], strict=False)):
+            raise ValueError
+        return tijden
     except ValueError as exc:
         raise Hervatfout("De laatste beeldstroom bevat geen meetbare beeldtijd") from exc
 
@@ -165,7 +237,8 @@ class Hervatpunt:
             for i, chunk in enumerate(state.delen):
                 path = state.pad(i)
                 _bestand(path)
-                if (type(chunk.beelden) is not int or chunk.beelden <= 0
+                if (type(chunk.kopie) is not bool or type(chunk.beelden) is not int
+                        or chunk.beelden <= 0
                         or not 0 <= chunk.begin < chunk.einde < math.inf
                         or (i and chunk.begin <= state.delen[i - 1].begin)):
                     raise Hervatfout(f"Ongeldige beeldmeting van fragment {i}")
@@ -179,25 +252,93 @@ class Hervatpunt:
             raise Hervatfout("Het hervatbewijs is onleesbaar") from exc
 
     def pad(self, i: int) -> Path:
+        if i < len(self.delen) and self.delen[i].kopie:
+            return self.map / f"prefix-{i:06d}.mkv"
         return self.map / f"beeld-{i:06d}.mkv"
 
-    def controleer_oude_staart(self, invoer: Path, bronbegin: float) -> None:
-        # Oudere registers konden de bij SIGTERM gesloten staart al meetellen.
-        # Behoud ook die beelden als ze aaneengesloten in de bron terug te vinden zijn.
-        deel = self.delen[-1]
-        offset = bronbegin - self.delen[0].begin
-        begin = deel.begin + offset
-        interval = f"{begin:.6f}%{deel.einde + offset + 1:.6f}"
-        bron = _beeldtijden(invoer, ["-read_intervals", interval])
-        tijden = _beeldtijden(self.pad(len(self.delen) - 1), [])
-        start = next((i for i, tijd in enumerate(bron) if abs(tijd - begin) <= 0.002), len(bron))
-        vergelijk = bron[start:start + deel.beelden]
-        if len(vergelijk) == len(tijden) == deel.beelden and all(
-            abs(b - (t + offset)) <= 0.002 for b, t in zip(vergelijk, tijden, strict=True)
+    def borg_prefix(self, invoer: Path, bestand: Path, i: int) -> None:
+        """Kopieer uitsluitend de opeenvolgende beelden vanaf de bewezen bronpositie."""
+        try:
+            self._borg_prefix(invoer, bestand, i)
+        except (OSError, ValueError, KeyError, IndexError, subprocess.TimeoutExpired) as exc:
+            raise Hervatfout("De beeldprefix kon niet veilig worden vastgelegd") from exc
+
+    def _borg_prefix(self, invoer: Path, bestand: Path, i: int) -> None:
+        _bestand(bestand)
+        tijden = _beeldtijden(bestand, [], onderbroken=True, timeout=max(300, 2 * self.duur))
+        start = sum(d.beelden for d in self.delen[:i])
+        # Lees vanaf het eerste beeld zodat ook bij variabele beeldsnelheid de
+        # bronpositie vaststaat. Extra pakketten vangen de decoderherordening op.
+        bron = _beeldtijden(invoer, ["-read_intervals", f"%+#{start + len(tijden) + 32}"],
+                            bronklok=True, timeout=max(300, 2 * self.duur))
+        if not tijden or start >= len(bron):
+            raise Hervatfout("Geen aaneengesloten AV1-beelden op de verwachte bronpositie")
+        if not i:
+            # De beeldtijd kan bij het coderen op een halve beeldperiode afronden.
+            marge = (bron[1] - bron[0]) / 2 if len(bron) > 1 else 0.0
+            if abs(tijden[0] - bron[0]) > marge + 0.002:
+                raise Hervatfout("Het deelbestand begint niet bij het eerste bronbeeld")
+        else:
+            # Het oude meer-sporenbestand kan een andere mux-offset hebben.
+            # Vanaf het eerste native fragment geldt steeds dezelfde beeldklok.
+            anker = 0
+            if i > 1 and self.delen[0].kopie and not (self.map / "beeld-000000.mkv").exists():
+                anker = 1
+            bronanker = self.delen[0].beelden if anker else 0
+            verwacht = bron[start] - bron[bronanker] + self.delen[anker].begin
+            if abs(tijden[0] - verwacht) > 0.002:
+                raise Hervatfout("Het fragment begint niet op het eerstvolgende bronbeeld")
+        aantal = 0
+        for tijd, origineel in zip(tijden, bron[start:], strict=False):
+            if abs((tijd - tijden[0]) - (origineel - bron[start])) > 0.002:
+                break
+            aantal += 1
+        if i < len(self.delen) and aantal == len(tijden) == self.delen[i].beelden:
+            return  # De laatste registratie uit een ouder register klopt al.
+
+        # Laat het origineel én een eventueel oud register staan tot de kopie
+        # zelfstandig decodeert. Na een crash mag dezelfde kopie opnieuw ontstaan.
+        tijdelijk = self.map / "prefix.nieuw"
+        doel = self.map / f"prefix-{i:06d}.mkv"
+        result = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-y", "-copyts", "-i", str(bestand),
+             "-map", "0:v:0", "-c:v", "copy", "-frames:v", str(aantal), "-map_chapters", "-1",
+             "-avoid_negative_ts", "disabled", "-f", "matroska", str(tijdelijk)],
+            capture_output=True, text=True, timeout=max(300, 2 * self.duur),
+        )
+        if result.returncode or not _leesbaar(result.stderr, onderbroken=True):
+            raise Hervatfout("De AV1-beelden konden niet zonder hercoderen worden gekopieerd")
+        timeout = max(300, 2 * self.duur)
+        meting = _meet(tijdelijk, timeout=timeout)
+        kopie = _beeldtijden(tijdelijk, [], timeout=timeout)
+        if meting.beelden != aantal or len(kopie) != aantal or any(
+            abs(t - b) > 0.002 for t, b in zip(kopie, tijden[:aantal], strict=True)
         ):
-            return
-        self.delen.pop()
+            raise Hervatfout("De gekopieerde AV1-beelden wijken af van het deelbestand")
+        einde = meting.einde
+        if start + aantal < len(bron):
+            einde = meting.begin + bron[start + aantal] - bron[start]
+        tijdelijk.replace(doel)
+        _sync_map(self.map)
+        self.delen[i:] = [Fragment(aantal, meting.begin, einde, meting.sha256, kopie=True)]
         self.bewaar()
+
+    def borg_lopend_fragment(self, invoer: Path) -> None:
+        i = len(self.delen)
+        bestand = self.pad(i)
+        if not bestand.exists() and self.delen and not self.delen[-1].kopie:
+            self.borg_prefix(invoer, self.pad(i - 1), i - 1)
+        while bestand.exists():
+            _bestand(bestand)
+            if not bestand.stat().st_size:
+                break  # geopende segmentuitgang vóór het eerste pakket
+            self.borg_prefix(invoer, bestand, i)
+            i = len(self.delen)
+            bestand = self.pad(i)
+        for pad in self.map.glob("beeld-*.mkv"):
+            nummer = pad.stem.removeprefix("beeld-")
+            if not nummer.isdecimal() or int(nummer) > i:
+                raise Hervatfout("Er ontbreekt een eerder fragment in de jobcache")
 
     @property
     def percent(self) -> float:
@@ -282,6 +423,10 @@ def _video(args: list[str], state: Hervatpunt, frames: int) -> list[str]:
         "-1",
         "-fps_mode",
         "passthrough",
+        # Behoud ook beeldtijden buiten het nominale fps-raster, bijvoorbeeld
+        # wanneer een volgend hoofdstuk na een langere beeldpauze begint.
+        "-enc_time_base:v",
+        "-1",
         "-f",
         "segment",
         "-segment_time",
@@ -302,7 +447,9 @@ def _mux(args: list[str], state: Hervatpunt) -> list[str]:
     concat = state.map / "beeld.ffconcat"
     lines = ["ffconcat version 1.0"]
     for i, chunk in enumerate(state.delen):
-        end = state.delen[i + 1].begin if i + 1 < len(state.delen) else chunk.einde
+        end = chunk.einde
+        if i + 1 < len(state.delen) and not chunk.kopie:
+            end = state.delen[i + 1].begin
         lines += [f"file {state.pad(i).name}", f"duration {end - chunk.begin:.6f}"]
     concat.write_text("\n".join(lines) + "\n")
     tracks = []
@@ -360,12 +507,6 @@ async def encode(
     stat = source.stat()
     # Het live CPU-budget mag na een herstart een ander aantal threads toekennen.
     # De media-instellingen (codec, kwaliteit, filters, sporen) blijven gebonden.
-    plan = list(args)
-    if "-threads" in plan:
-        plan[plan.index("-threads") + 1] = "automatisch"
-    if "-svtav1-params" in plan:
-        i = plan.index("-svtav1-params") + 1
-        plan[i] = re.sub(r"(^|:)lp=\d+(?=:|$)", r"\1lp=automatisch", plan[i])
     identity = [
         job_id,
         str(source),
@@ -374,7 +515,7 @@ async def encode(
         stat.st_size,
         stat.st_mtime_ns,
         stat.st_ctime_ns,
-        plan,
+        _mediaplan(args),
     ]
     binding = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
     state = await asyncio.to_thread(Hervatpunt.lees, cache)
@@ -384,18 +525,27 @@ async def encode(
         state.bewaar()
         _sync_map(cache)
     elif state.binding != binding:
-        if state.delen:
+        if state.delen or state.pad(0).exists() or Path(args[-1]).exists():
             raise Hervatfout("Bron of encode-instellingen wijken af van het geverifieerde werk")
         state.binding = binding
         state.duur = duration
         state.gpu = gpu
         state.bewaar()
+    invoer = Path(args[args.index("-i") + 1])
+    deel = Path(args[-1])
+    if not state.compleet:
+        if not state.delen and heeft_oud_deel(cache, None):
+            if state.pad(0).exists():
+                raise Hervatfout("Zowel een oud deelbestand als een nieuw fragment aangetroffen")
+            await asyncio.to_thread(state.borg_prefix, invoer, oud_bestand(cache), 0)
+        await asyncio.to_thread(state.borg_lopend_fragment, invoer)
     frames = sum(chunk.beelden for chunk in state.delen)
+    if frames:
+        vastgelegd(state.percent)
     expected: int | None = None
     if frames and not state.compleet:
         # Ook een stop tussen het laatste beeld en het schrijven van 'compleet'
         # hervat de mux. De encoder ontvangt geen eerder vastgelegde beelden.
-        invoer = Path(args[args.index("-i") + 1])
         original = await asyncio.to_thread(_probe, invoer, max(300.0, 2 * duration))
         try:
             expected = int(original["streams"][0]["nb_read_frames"])
@@ -403,13 +553,6 @@ async def encode(
             raise Hervatfout("Het aantal beelden van de bron kon niet worden bevestigd") from exc
         if frames > expected:
             raise Hervatfout("Meer hervatbare beelden dan bronbeelden")
-        if frames < expected and not state.pad(len(state.delen)).exists():
-            try:
-                bronbegin = float(original["streams"][0]["start_time"])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise Hervatfout("De eerste beeldtijd van de bron ontbreekt") from exc
-            await asyncio.to_thread(state.controleer_oude_staart, invoer, bronbegin)
-            frames = sum(chunk.beelden for chunk in state.delen)
     if not state.compleet and frames != expected:
         (state.map / "gesloten.csv").unlink(missing_ok=True)
         process = asyncio.create_task(run(_video(args, state, frames)))
@@ -427,6 +570,10 @@ async def encode(
                 ok = await process
             finally:
                 await asyncio.to_thread(state.verzamel, afgerond=ok)
+                if not ok:
+                    await asyncio.to_thread(state.borg_lopend_fragment, invoer)
+                    if state.delen:
+                        vastgelegd(state.percent)
         if not ok:
             return False
     if not state.delen or (
@@ -436,4 +583,21 @@ async def encode(
     vastgelegd(state.percent)
     state.compleet = True
     state.bewaar()
-    return await run(_mux(args, state))
+    mux = _mux(args, state)
+    if not frames and not any(f.kopie for f in state.delen):
+        return await run(mux)
+    # Houd bij een afgebroken mux ook het oude deelbestand intact tot de
+    # aansluiting tussen de overgenomen beelden en de nieuwe beelden klopt.
+    samengevoegd = state.map / "samengevoegd.mkv"
+    if not await run([*mux[:-1], str(samengevoegd)]):
+        return False
+    timeout = max(300, 2 * duration)
+    bron = await asyncio.to_thread(_beeldtijden, invoer, [], timeout=timeout)
+    resultaat = await asyncio.to_thread(_beeldtijden, samengevoegd, [], timeout=timeout)
+    if not bron or len(resultaat) != len(bron) or any(
+        abs((b - bron[0]) - (r - resultaat[0])) > 0.002
+        for b, r in zip(bron, resultaat, strict=True)
+    ):
+        raise Hervatfout("De beeldtijden van het samengevoegde resultaat wijken af van de bron")
+    samengevoegd.replace(deel)
+    return True

@@ -576,6 +576,26 @@ def test_opnieuw_proberen_ruimt_eerst_oude_tijdelijke_output_op(
     assert job["cache_reservering"] == 0
 
 
+def test_opnieuw_proberen_bewaart_onderbroken_beeldwerk(
+    api_case: tuple[TestClient, Database, Settings, Path],
+) -> None:
+    from app.planner import recover_orphaned_jobs
+
+    client, database, configured, media = api_case
+    job = _planned_job(database, _add_library(client, database, media))
+    database.execute("UPDATE job SET status='mislukt',foutsoort='Hervatfout',percent=42 "
+                     "WHERE id=?", (job,))
+    deel = configured.cache_root / str(job) / "resultaat.mkv.deel"
+    deel.parent.mkdir()
+    deel.write_bytes(b"te beoordelen beeldwerk")
+    reactie = client.post(f"/api/jobs/{job}/opnieuw")
+    assert reactie.status_code == 200, reactie.text
+    recover_orphaned_jobs(database, configured)
+    assert deel.read_bytes() == b"te beoordelen beeldwerk"
+    assert tuple(database.fetch_one("SELECT status,percent FROM job WHERE id=?", (job,))) == (
+        "wacht", 42)
+
+
 def test_tweede_besluit_voor_zelfde_bestand_gebruikt_bestaande_job(
     api_case: tuple[TestClient, Database, Settings, Path],
 ) -> None:

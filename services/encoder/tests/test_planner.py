@@ -236,6 +236,28 @@ def test_backendherstart_herstelt_weesjob_en_deelbestand(tmp_path: Path) -> None
     assert not cache_dir.exists()
 
 
+def test_herstel_wacht_op_de_nog_schrijvende_vorige_encoder(tmp_path, monkeypatch):
+    from app import planner
+
+    db, settings, jobs = _planner_case(tmp_path)
+    job = jobs[0]
+    db.execute("UPDATE job SET status='bezig',percent=42,proces_pid=123 WHERE id=?", (job,))
+    deel = settings.cache_root / str(job) / "resultaat.mkv.deel"
+    deel.parent.mkdir()
+    deel.write_bytes(b"lopende poging")
+    monkeypatch.setattr(planner, "_orphan_process", lambda *args: True)
+    monkeypatch.setattr(planner, "_stop_orphan", lambda pid: None)
+    assert recover_orphaned_jobs(db, settings) == 0
+    rij = db.fetch_one("SELECT status,percent,proces_pid,fout FROM job WHERE id=?", (job,))
+    assert tuple(rij[:3]) == ("bezig", 42, 123) and "vorige encoder" in rij["fout"]
+    assert deel.read_bytes() == b"lopende poging"
+    monkeypatch.setattr(planner, "_orphan_process", lambda *args: False)
+    assert recover_orphaned_jobs(db, settings) == 1
+    rij = db.fetch_one("SELECT status,percent,proces_pid FROM job WHERE id=?", (job,))
+    assert tuple(rij) == ("wacht", 42, None)
+    assert deel.read_bytes() == b"lopende poging"
+
+
 def test_backendherstart_ruimt_retrycache_van_wachtende_job_op(tmp_path: Path) -> None:
     database, configured, job_ids = _planner_case(tmp_path)
     job_id = job_ids[0]
@@ -337,6 +359,25 @@ async def test_onverwachte_startfout_blijft_niet_als_bezig_staan(tmp_path: Path)
     assert row["foutsoort"] == "ExecutionError"
     assert row["cache_reservering"] == 0
     assert elders.is_dir()  # nooit buiten de eigen jobmap verwijderen
+
+
+@pytest.mark.asyncio
+async def test_startfout_van_worker_bewaart_het_oude_deelbestand(tmp_path: Path) -> None:
+    db, settings, jobs = _planner_case(tmp_path)
+    job = jobs[0]
+    db.execute("UPDATE job SET status='bezig',percent=42 WHERE id=?", (job,))
+    deel = settings.cache_root / str(job) / "resultaat.mkv.deel"
+    deel.parent.mkdir()
+    deel.write_bytes(b"oude poging")
+
+    def opslagfout() -> None:
+        raise OSError("Proefopslag tijdelijk onbereikbaar")
+
+    planner = Planner(db, settings, storage_validator=opslagfout)
+    assert not await planner._worker(job, "proef")
+    assert deel.read_bytes() == b"oude poging"
+    assert tuple(db.fetch_one("SELECT status,foutsoort,percent FROM job WHERE id=?", (job,))) == (
+        "mislukt", "Hervatfout", 42)
 
 
 def test_twee_claims_reserveren_samen_en_een_derde_wacht_eerlijk(tmp_path: Path) -> None:

@@ -125,6 +125,8 @@ def queue_recovery_report(
 ) -> dict[str, Any]:
     """Geef een controleerbaar rapport zonder bronbestanden te openen."""
 
+    from app.hervatpunten import heeft_tussenresultaat
+
     task_ids = active_task_ids or set()
     memory = psutil.virtual_memory()
     active: list[int] = []
@@ -132,7 +134,7 @@ def queue_recovery_report(
     temporary: list[int] = []
     unsafe: list[str] = []
     rows = database.fetch_all(
-        "SELECT id,status,proces_pid FROM job WHERE status IN "
+        "SELECT id,status,proces_pid,percent,foutsoort FROM job WHERE status IN "
         "('wacht','bezig','verifieren','mislukt','afgebroken','overgeslagen') ORDER BY id"
     )
     for row in rows:
@@ -153,7 +155,10 @@ def queue_recovery_report(
             if problem is not None:
                 unsafe.append(problem)
         if has_temporary and not running and status in TIJDELIJKE_STATUSSEN:
-            temporary.append(job_id)
+            cache = settings.cache_root / str(job_id)
+            if (row["foutsoort"] != "Hervatfout"
+                    and not heeft_tussenresultaat(cache, row["percent"])):
+                temporary.append(job_id)
 
     limit_row = database.fetch_one(
         "SELECT max_gelijktijdige_encodes FROM instelling WHERE id=1"
@@ -219,12 +224,13 @@ def recover_queue(
         database.execute(
             """
             UPDATE job SET status='wacht',worker_id=NULL,proces_pid=NULL,
-                           cache_reservering=0,percent=0,afbreken_gevraagd=0,
+                           cache_reservering=0,percent=CASE WHEN ? THEN 0 ELSE percent END,
+                           afbreken_gevraagd=0,
                            fout='veilig hersteld via wachtrijherstel',foutsoort=NULL,
                            klaar_op=NULL
             WHERE id=? AND status IN ('bezig','verifieren')
             """,
-            (job_id,),
+            (job_id in temporary_ids, job_id),
         )
         append_job_log(
             database,

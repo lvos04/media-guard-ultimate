@@ -224,8 +224,21 @@ jobs:
           tests/test_smb_helper.py tests/test_ai_controller.py tests/test_integraties.py
           tests/test_verificatie.py tests/test_systeem.py tests/test_playback_hold.py
           tests/test_encodehervatting.py
+          tests/test_api.py::test_opnieuw_proberen_bewaart_onderbroken_beeldwerk
           tests/test_uitvoerder.py::test_hdr_wordt_pas_na_verificatie_atomisch_vervangen
           tests/test_planner.py::test_platformpauze_laat_voortgang_staan_en_hervat_wachtrij
+          tests/test_planner.py::test_startfout_van_worker_bewaart_het_oude_deelbestand
+          tests/test_planner.py::test_herstel_wacht_op_de_nog_schrijvende_vorige_encoder
+      - name: hervat de twee onderbroken encodes uit release 1.2.2
+        working-directory: services/encoder
+        run: |
+          export OUDE_ENCODER="$RUNNER_TEMP/encoder-1.2.2"
+          mkdir -p "$OUDE_ENCODER"
+          image=ghcr.io/lvos04/mediaguard-core:1.2.2-aio@sha256:14e540ba9cad0bb7fbda8295bca89496f58462a201361544916f3b16b3a52dc6
+          id=$(docker create --network none --read-only "$image")
+          trap 'docker rm -v "$id" >/dev/null' EXIT
+          docker cp "$id:/opt/mediaguard-encode/app" "$OUDE_ENCODER/app"
+          PYTHONPATH="$PWD:$PWD/tests" python -m pytest -q -s -p no:cacheprovider tests/grenzen_1_2_2.py
 
   encoder-image:
     name: encoder-image en FFmpeg-bewijs
