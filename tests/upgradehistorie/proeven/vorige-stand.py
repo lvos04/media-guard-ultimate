@@ -53,13 +53,12 @@ def voorbereiden(nieuw, voor_resultaat, halverwege=False):
         return verwijderen(pad, *args, **kwargs)
 
     if voor_resultaat:
+        schrijf_resultaat = preupdate._write_result
 
-        def stop_voor_melding(kern, info, *args):
-            assert (
-                kern == core
-                and info["ok"]
-                and not (core / preupdate.RESULT_FILE).exists()
-            )
+        def stop_voor_melding(kern, info, eigenaar):
+            if kern != core:
+                return schrijf_resultaat(kern, info, eigenaar)
+            assert info["ok"] and not (core / preupdate.RESULT_FILE).exists()
             os._exit(83)
 
         with patch.object(preupdate, "_write_result", stop_voor_melding):
