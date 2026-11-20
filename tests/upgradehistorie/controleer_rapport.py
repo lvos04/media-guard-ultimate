@@ -22,6 +22,8 @@ def vulling(pad: Path) -> dict:
                 assert naam not in gevuld
                 gevuld[naam] = (voor, na)
         assert len(gevuld) == 162
+        for instantie in ("radarr-films", "radarr-animefilms"):
+            assert gevuld[f"{instantie}/radarr.db", "NamingConfig"] == (1, 1)
         assert (
             "Open overdrachten (mediaserver_pending zonder done_at): vóór 1, na 1."
             in deel

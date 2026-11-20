@@ -689,6 +689,28 @@ class Poort:
         return _docker("run", "--rm", "--user", "0", "--network", "none", "--entrypoint", "sh",
                        "-v", f"{self.werk}:/mnt", self.a.vorige, "-c", script, timeout=600)
 
+    def lees_radarr_naamgeving(self) -> None:
+        """Radarr maakt de standaardrij bij de eerste lezing. Doe dat vóór de snapshot."""
+        _docker("exec", "--user", str(APP_UID), self.naam, "/opt/venv/bin/python", "-c", """
+import json
+from pathlib import Path
+from urllib.request import ProxyHandler, Request, build_opener
+from mediaguard.aio import FORKS
+
+opener = build_opener(ProxyHandler({}))
+instanties = {naam: poort for naam, soort, poort in FORKS if soort == "radarr"}
+if set(instanties) != {"radarr-films", "radarr-animefilms"}:
+    raise RuntimeError("De twee lokale Radarr-instanties ontbreken in de testimage")
+for naam, poort in instanties.items():
+    sleutel = (Path("/config/secrets") / naam / "apikey").read_text().strip()
+    verzoek = Request(f"http://localhost:{poort}/api/v3/config/naming",
+                      headers={"X-Api-Key": sleutel})
+    with opener.open(verzoek, timeout=15) as antwoord:
+        if not json.load(antwoord).get("id"):
+            raise RuntimeError(f"{naam}: naamgevingsinstellingen zonder opgeslagen rij")
+""", timeout=45)
+        self.stap("Naamgeving van beide lokale Radarr-instanties vóór de nulmeting gelezen")
+
     def configureer_proefkoppeling(self) -> None:
         """De achtergrondtaak sluit open overdrachten als er geen koppeling is."""
         # De fixture verwijst uitsluitend naar een onbereikbaar lokaal proefadres.
@@ -941,6 +963,7 @@ finally:
                                "gevulde database is er niets te bewijzen")
         # 2. vorige release opnieuw: accepteert de gevulde databases en vindt alles terug
         self.start(self.a.vorige)
+        self.lees_radarr_naamgeving()
         fouten += [f"vorige release: {p}" for p in self.readback(fixture, None)]
         self.stop()
         voor = self.meet("config", "meting-voor.json")

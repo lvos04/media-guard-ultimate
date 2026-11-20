@@ -736,6 +736,9 @@ class _NepPoort(ub.Poort):
     def readback(self, fixture: dict[str, Any], versie: str | None) -> list[str]:
         return []
 
+    def lees_radarr_naamgeving(self) -> None:
+        self.stap("(nep) naamgeving van de twee lokale instanties gelezen")
+
     def hulp(self, *cmd: str, als: str = "0") -> str:
         if cmd[0] == "-c":
             assert "mediaserver.url" in cmd[1] and "http://localhost:1" in cmd[1]
@@ -783,6 +786,32 @@ def _nep_poort(tmp_path: Path, wijzig: dict[str, Any] | None = None) -> tuple[li
         bewaar=False)
     # geen opruimen(): dat roept docker aan; de werkmap staat in tmp_path
     return _NepPoort(args, wijzig).run()
+
+
+def test_radarr_naamgeving_alleen_voor_de_nulmeting(tmp_path: Path, monkeypatch) -> None:
+    stappen = []
+    start = _NepPoort.start
+    meet = _NepPoort.meet
+
+    def opstart(poort, image, config="config"):
+        stappen.append(("start", image))
+        return start(poort, image, config)
+
+    def meting(poort, config, uit):
+        stappen.append(("meet", uit))
+        return meet(poort, config, uit)
+
+    monkeypatch.setattr(_NepPoort, "start", opstart)
+    monkeypatch.setattr(_NepPoort, "meet", meting)
+    monkeypatch.setattr(_NepPoort, "lees_radarr_naamgeving",
+                        lambda self: stappen.append(("lees", "naamgeving")))
+    fouten, _ = _nep_poort(tmp_path)
+    assert not fouten
+    assert stappen.count(("lees", "naamgeving")) == 1
+    plaats = stappen.index(("lees", "naamgeving"))
+    assert stappen[plaats - 1] == stappen[0]
+    assert stappen[0][0] == "start" and stappen[0][1] != "kandidaat"
+    assert stappen[plaats + 1] == ("meet", "meting-voor.json")
 
 
 def test_poort_weigert_lege_scanpositie_en_oude_encoder(tmp_path: Path) -> None:
