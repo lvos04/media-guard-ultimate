@@ -192,6 +192,29 @@ def _root_of(path: Path, roots: list[tuple[Path, Root]]) -> Path | None:
     return max(hits, key=lambda x: len(x.parts)) if hits else None
 
 
+def _client_reservations(ctx: AppContext) -> list[Row]:
+    return ctx.db.fetch_all(
+        "SELECT t.id,t.root,t.original_path,t.trash_path,t.client,t.download_id,s.source_file "
+        "FROM download_janitor_purge_state s JOIN download_janitor_trash t ON t.id=s.trash_id "
+        "WHERE s.manual_only=1 AND t.client IS NOT NULL "
+        "AND t.purged_at IS NULL AND t.restored_at IS NULL")
+
+
+def _client_blocks(rows: list[Row], path: Path, root: Path | None = None,
+                   item: ClientItem | None = None, *, own_id: int | None = None) -> bool:
+    for row in rows:
+        reserved = Path(row["original_path"])
+        if row["id"] == own_id or not overlaps(reserved, path):
+            continue
+        # Alleen de eigenaar mag zijn eigen nog niet verplaatste boeking hervatten.
+        if (item is not None and path == reserved and str(root) == row["root"]
+                and (item.client, item.id) == (row["client"], row["download_id"])
+                and row["source_file"] is not None and not _path_present(Path(row["trash_path"]))):
+            continue
+        return True
+    return False
+
+
 def plan(ctx: AppContext, snap: Snapshot, now: datetime | None = None) -> Plan:  # noqa: C901
     from mediaguard.downloads import recovery
 
@@ -200,6 +223,8 @@ def plan(ctx: AppContext, snap: Snapshot, now: datetime | None = None) -> Plan: 
     roots, out.refused_roots = safe_roots(snap)
     out.refused_roots += snap.unrecognized
     known = [real(i.path) for i in snap.items if i.path]
+    reservations = _client_reservations(ctx)
+    known.extend(Path(row["original_path"]) for row in reservations)
     unimported_after = timedelta(days=int(_v(ctx, "unimported_days")))
     taken: set[Path] = set()
     for it in snap.items:
@@ -232,6 +257,9 @@ def plan(ctx: AppContext, snap: Snapshot, now: datetime | None = None) -> Plan: 
             continue
         path = real(it.path) if it.path else None
         root = _root_of(path, roots) if path else None
+        if path is not None and _client_blocks(reservations, path, root, it):
+            out.keep("overlapt een download die op afmelding wacht")
+            continue
         if path is not None and path.exists() and root is None and it.kind != "torrent":
             out.keep("buiten de toegestane downloadmappen")
             continue
@@ -332,6 +360,8 @@ def _reserve_trash(ctx: AppContext, path: Path, root: Path, reason: str, item: C
     with schema.startup_lock(root), ctx.db.startup_lock():
         if _pool_paused(ctx, paused):
             raise _PoolPaused
+        if _client_blocks(_client_reservations(ctx), real(path), root, item):
+            raise ValueError("Op een overlappend pad wacht nog een download op afmelding")
         identity = _restore_identity(path)
         client, download_id = (item.client, item.id) if item else (None, None)
         reservations = ctx.db.fetch_all(
@@ -385,6 +415,8 @@ def _move_reserved(ctx: AppContext, row: Row, actor: str, now: datetime,
                 or _restore_identity(path) != row["source_file"] or _path_present(dest)):
             raise ValueError("De download of het gereserveerde prullenbakpad is veranderd")
         dest.parent.mkdir(parents=True, exist_ok=True)
+        if _client_blocks(_client_reservations(ctx), path, own_id=tid):
+            raise ValueError("Op een overlappend pad wacht nog een download op afmelding")
         if _pool_paused(ctx, paused):
             raise _PoolPaused
         os.rename(path, dest)
@@ -522,6 +554,11 @@ def _purge_entry(ctx: AppContext, trash_id: int, when: str, actor: str, early: b
             return False
         if row["shared_path"]:
             LOGGER.warning("Prullenbakitem %s behouden: meerdere registraties op dit pad", trash_id)
+            return False
+        # Een eerdere versie kan een overlappende map al hebben verplaatst.
+        reservations = _client_reservations(ctx)
+        if any(_client_blocks(reservations, Path(row[key]))
+               for key in ("original_path", "trash_path")):
             return False
         if _pool_paused(ctx, paused):
             raise _PoolPaused
@@ -674,6 +711,10 @@ def own_leftovers(ctx: AppContext, now: datetime | None = None, *,
             with ctx.db.startup_lock():
                 if _pool_paused(ctx, paused):
                     break
+                reservations = _client_reservations(ctx)
+                if (_client_blocks(reservations, real(temp)) or
+                        _client_blocks(reservations, real(temp.parent) / temp.name)):
+                    continue
                 temp.unlink()
         except FileNotFoundError:
             continue

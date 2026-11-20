@@ -136,7 +136,8 @@ De opruimer controleert dit voor elke verplaatsing en elke bestandsverwijdering.
 tijdens het legen van een map weg, dan blijven de resterende bestanden in de prullenbak staan.
 De prullenbak vermeldt een onderbroken verwijdering. Bij terugzetten van een gedeeltelijk
 geleegde map krijgt de beheerder een melding dat alleen de resterende inhoud is teruggezet.
-Zonder TrueNAS-sleutel gelden de gewone opruimregels hierboven. Mislukt een verwijdering,
+Zonder TrueNAS-sleutel gelden de gewone opruimregels zodra de meetwerkers een fout kunnen melden.
+Mislukt een verwijdering,
 dan blijft het item beschikbaar om terug te zetten. De audit registreert de fout en volgende
 automatische rondes laten het item staan. Een handmatige verwijdering van een quarantaineorigineel
 die op de poolstatus stuit, vraagt na een gezonde meting opnieuw bevestiging.
@@ -152,7 +153,7 @@ terugzetten. Dat geldt ook als de verplaatsing lukt en de afsluitende boeking ui
 
 | Gebeurtenis | Gevolg voor de bestanden en de downloadclient | Regressieproef |
 |---|---|---|
-| Geen sleutel, of een verse gezonde meting van de ingestelde bron | De gewone bewaartermijn en ruimtegrens gelden. | `test_run_once_cleans_with_healthy_pool_or_without_key` |
+| Alle meetwerkers kunnen fouten melden en het werkerslot is beschikbaar. Er is geen sleutel of de ingestelde bron is vers en gezond gemeten | De gewone bewaartermijn en ruimtegrens gelden. | `test_run_once_cleans_with_healthy_pool_or_without_key` |
 | Een pool is ziek, het antwoord is onvolledig of de bron is onbereikbaar | De opruimer pauzeert. Ook een vrijgegeven quarantaineorigineel blijft staan. | `test_run_once_pauses_on_unhealthy_or_unknown_pool`, `test_gemengde_poolmeting_beschermt_quarantaine` |
 | De sleutel, het adres of de TLS-instelling verandert | Alle werkers wachten op een meting van de nieuwe bron, ook na een wissel terug. | `test_pool_bronwisseling` |
 | Een oude meting komt later binnen of stamt van vóór de upgrade | Alleen de actuele opdracht kan publiceren. | `test_pool_volgorde_bewaking_en_prognose`, `test_pool_meting_van_voor_upgrade` |
@@ -162,10 +163,12 @@ terugzetten. Dat geldt ook als de verplaatsing lukt en de afsluitende boeking ui
 | Een werker kan de ingestelde sleutel niet lezen, of alle werkers zijn herstart | De opruimer wacht op een nieuwe gezonde meting. | `test_leesfout_trekt_toestemming_in`, `test_meetstart_in_ander_proces` |
 | Een startende werker kan het meetkanaal niet openen terwijl SQLite bereikbaar is | SQLite trekt de gedeelde toestemming in en de kern blijft beschikbaar. Een nieuwe gezonde meting kan opruimen weer toestaan zodra alle actieve meetwerkers een fout kunnen doorgeven. | `test_kanaal_onleesbaar_bij_start_behoudt_kern` |
 | Na een kanaalfout bij de start verliest dezelfde meetwerker ook toegang tot het datamapslot | Zolang een actieve werker een volgende fout niet kan melden, geeft ook een gezonde meting van een andere werker geen toestemming. Na herstel van het kanaal of vertrek van de werker is een nieuwe gezonde meting nodig. Download, prullenbakbestand en clientregistratie blijven behouden. | `test_slotfout_na_kanaalfout_bij_start`, `test_werkerslot_onleesbaar_trekt_toestemming_in` |
+| Het meetkanaal en het werkerslot zijn tegelijk onleesbaar bij de start | Met en zonder ingestelde pool blijft de kern bereikbaar. De bestaande taakvoortgang en de opslagprognose zijn opvraagbaar en `/readyz` geeft HTTP 200. Opruimen wacht tot de werker weer kan melden of is afgesloten. Bij een ingestelde pool is daarna een nieuwe gezonde meting nodig. | `test_kern_bereikbaar_bij_onleesbaar_kanaal_en_werkerslot`, `test_slotfout_na_kanaalfout_bij_start` |
 | De poolmeting vervalt tijdens het verzamelen of het legen van een map | De volgende actie stopt. De resterende inhoud kan worden teruggezet. | `test_run_once_rechecks_pool_after_gathering`, `test_pool_pauze_binnen_prullenbakmap`, `test_gedeeltelijke_map_terugzetten` |
 | De meting vervalt tijdens de duurzame boeking voor het eerste bestand van een map | Ook dat eerste bestand blijft staan en de map blijft volledig terugzetbaar. | `test_meetuitval_tijdens_deelboeking_behoudt_eerste_bestand` |
 | SQLite weigert de reservering van een prullenbakpad | De download blijft bij SABnzbd of qBittorrent geregistreerd en op zijn oorspronkelijke plek. | `test_geweigerde_reservering_behoudt_download_en_client` |
 | De downloadclient weigert de afmelding of vermeldt de download nog bij teruglezen | De download blijft op het oorspronkelijke pad. De ronde stopt en behoudt ook bij ruimtegebrek de prullenbakinhoud. Een latere ronde die de client mist, houdt de download op zijn pad. Dezelfde client kan de afmelding opnieuw bevestigen. Een eerder verplaatst bestand zonder bevestigde vrijgave blijft handmatig terugzetbaar. | `test_qbit_weigert_afmelden`, `test_sab_afmelding_na_herstart`, `test_onbevestigde_afmelding_blijft_bij_de_client`, `test_historische_clientboeking_blijft_terugzetbaar`, `test_onderbroken_vrijgave_behoudt_prullenbak` |
+| Er staat een clientreservering open op het pad, een oudermap of een subpad | Het plan en de controle onder het slot vóór verplaatsing beschermen de download, ook na herstart, bij een uitgeschakelde koppeling en als een andere client de map meldt. Een al naar de prullenbak verplaatste oudermap blijft terugzetbaar. | `test_reservering_beschermt_download_bij_ontbrekende_client`, `test_overlap_opnieuw_gecontroleerd_onder_het_slot`, `test_eerder_verplaatste_oudermap_blijft_terugzetbaar`, `test_own_temp_leftovers` |
 | De voorboeking van een verwijdering mislukt bij het vastleggen | Het bestand blijft in de prullenbak. De reservering en verwijderopdracht gebruiken een duurzame SQLite-commit. | `test_geweigerde_commit_voor_unlink_behoudt_bestand`, `test_boekingen_gebruiken_duurzame_commit` |
 | De eindboeking van een verwijdering valt uit en een volgende download heeft dezelfde naam | Elke registratie reserveert haar pad, ook na herstart. De tweede download houdt zijn eigen bewaartermijn en blijft terugzetbaar. | `test_bewaartermijn_na_onderbroken_boeking` |
 | Twee bestaande registraties verwijzen naar hetzelfde prullenbakpad | Zowel opruimen als terugzetten laat het bestand op zijn plaats, ook als een van de registraties al is afgesloten. | `test_dubbele_prullenbakverwijzing_behoudt_bestand` |

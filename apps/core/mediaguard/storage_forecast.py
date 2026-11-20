@@ -17,7 +17,10 @@ import fcntl
 import io
 import logging
 import os
+import sqlite3
 import stat
+import struct
+from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -178,6 +181,8 @@ POOL_REQUEST = "truenas_pool_request_v1"
 _CLEANUP_REQUEST = "truenas_pool_cleanup_request"
 _POOL_PIPE = "truenas_pool_pipe"
 _DISCONNECTED = "truenas_pool_disconnected"
+# Linux struct flock: type, whence, start, lengte en pid (64-bits off_t).
+_FLOCK = struct.Struct("@hhqqi0q")
 _REVOKED = b"!"  # komt nooit voor in een hexadecimale opdracht-ID
 POOL_MAX_AGE = timedelta(seconds=900)
 
@@ -243,19 +248,38 @@ def _worker_lock(ctx: AppContext, mode: int) -> io.FileIO:
     return lock
 
 
+def _directory_worker_lock(ctx: AppContext, held: ExitStack, *, probe: bool) -> int:
+    # Een OFD-recordslot op de datamap blijft bestaan zolang deze werker de descriptor
+    # houdt. Het staat los van het flock-datamapslot voor SQLite en de kern.
+    fd = os.open(ctx.db.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    held.callback(os.close, fd)
+    command = getattr(fcntl, "F_OFD_GETLK" if probe else "F_OFD_SETLK", None)
+    if command is None:
+        raise OSError("Deze kernel ondersteunt het vereiste werkerslot niet")
+    request = _FLOCK.pack(fcntl.F_WRLCK if probe else fcntl.F_RDLCK, os.SEEK_SET, 0, 0, 0)
+    return _FLOCK.unpack(fcntl.fcntl(fd, command, request))[0]
+
+
 def _workers_connected(ctx: AppContext) -> bool:
-    # Iedere werker zonder intrekkanaal houdt een gedeeld slot. De kernel laat het
-    # los bij procesuitval. Alleen een nieuwe meting kan daarna toestemming geven.
     try:
-        with _worker_lock(ctx, fcntl.LOCK_EX | fcntl.LOCK_NB):
-            return True
+        with _worker_lock(ctx, fcntl.LOCK_EX | fcntl.LOCK_NB), ExitStack() as held:
+            conflict = _directory_worker_lock(ctx, held, probe=True)
+            return conflict == fcntl.F_UNLCK
     except OSError:
         return False
 
 
 def _block_disconnected_worker(ctx: AppContext) -> None:
     if _DISCONNECTED not in ctx.services:
-        ctx.services[_DISCONNECTED] = _worker_lock(ctx, fcntl.LOCK_SH)
+        with ExitStack() as held:
+            try:
+                held.enter_context(_worker_lock(ctx, fcntl.LOCK_SH | fcntl.LOCK_NB))
+            except OSError:
+                # Ook bij een onleesbaar werkerslot zien andere processen de blokkade.
+                _directory_worker_lock(ctx, held, probe=False)
+            block = held.pop_all()
+            if ctx.services.setdefault(_DISCONNECTED, block) is not block:
+                block.close()
 
 
 def _hold_request_pipe(ctx: AppContext) -> io.FileIO:
@@ -308,6 +332,9 @@ def _start_pool_request(ctx: AppContext, *, skip_unconfigured: bool = False) -> 
     try:
         if skip_unconfigured and not ctx.secrets.exists("truenas:apikey") and not ctx.state_get(
                 POOL_STATE):
+            if _DISCONNECTED in ctx.services:
+                with ctx.db.startup_lock():
+                    _hold_request_pipe(ctx)
             return None
         with ctx.db.startup_lock():
             stream = _hold_request_pipe(ctx)
@@ -364,11 +391,14 @@ async def startup(ctx: AppContext) -> None:
     try:
         with ctx.db.startup_lock():
             _hold_request_pipe(ctx)
-    except OSError:
+    except (OSError, sqlite3.Error):
         try:
-            _block_disconnected_worker(ctx)
-        finally:
-            _revoke_pool_request(ctx)
+            try:
+                _block_disconnected_worker(ctx)
+            finally:
+                _revoke_pool_request(ctx)
+        except (OSError, sqlite3.Error):
+            LOGGER.exception("Opruimtoestemming bij de start niet vastgelegd")
         LOGGER.exception("Kanaal voor de poolmeting niet beschikbaar bij de start")
 
 
@@ -398,6 +428,9 @@ def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> s
     unknown = "De TrueNAS-poolstatus is onbekend doordat een recente, geldige meting ontbreekt."
     try:
         if not ctx.secrets.exists("truenas:apikey"):
+            with ctx.db.startup_lock():
+                if not _workers_connected(ctx):
+                    return unknown
             # De quarantaine respecteerde een laatst bekende zieke pool ook na ontkoppeling.
             if quarantine and (degraded := pool_degraded(ctx)):
                 return f"TrueNAS-pool {pool_names_nl(degraded)} is niet gezond."
@@ -454,7 +487,13 @@ def pool_names_nl(pools: list[dict[str, Any]]) -> str:
 @router.get("/forecast")
 async def storage_forecast(_: Principal = Depends(require_viewer),
                            ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
-    health, _ = await _measure_pool(ctx)
+    try:
+        health, _ = await _measure_pool(ctx)
+    except (OSError, sqlite3.Error):
+        LOGGER.exception("Poolmeting voor de opslagprognose niet beschikbaar")
+        health = None
+        if ctx.secrets.exists("truenas:apikey"):
+            health = {"ok": False, "pools": [], "error_nl": "Geen geldige poolmeting beschikbaar"}
     data = forecast(ctx)
     data["truenas"] = health
     return data
