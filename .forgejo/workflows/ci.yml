@@ -12,6 +12,10 @@ on:
         description: "Ook zware jobs (encoder-image, fork-images, upstream-sync, contracttest mediaservers) draaien"
         type: boolean
         default: true
+      alleen_nachtproeven:
+        description: "Bij een zware run alleen de jobs van het nachtrooster uitvoeren"
+        type: boolean
+        default: false
       encoderbewijs:
         description: "Vergelijk het encoder-image met een build op de ongewijzigde basis-tag"
         type: boolean
@@ -51,7 +55,9 @@ jobs:
   # toolchain.encode.python). test_release_pipeline.py bewaakt dat die twee overeenkomen.
   core:
     name: core (python ${{ matrix.python }}, ruff, pytest)
-    if: github.event_name != 'schedule'
+    if: &dagproeven >-
+      github.event_name != 'schedule' &&
+      !(github.event_name == 'workflow_dispatch' && format('{0}', inputs.heavy) == 'true' && format('{0}', inputs.alleen_nachtproeven) == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -78,14 +84,16 @@ jobs:
         run: ruff check .
       - name: pytest
         working-directory: ${{ steps.bron.outputs.pad }}/apps/core
-        run: bash "$GITHUB_WORKSPACE/.forgejo/scripts/als-testgebruiker" python -m pytest -q -rfEs -p no:cacheprovider
+        run: >-
+          bash "$GITHUB_WORKSPACE/.forgejo/scripts/als-testgebruiker" python -m pytest -v -rfEs
+          -o faulthandler_timeout=180 --durations=5 -p no:cacheprovider
       - name: MSO-contracttest
         working-directory: ${{ steps.bron.outputs.pad }}/apps/core
         run: bash "$GITHUB_WORKSPACE/.forgejo/scripts/als-testgebruiker" python -m pytest -q -rfEs -p no:cacheprovider ../../tests/contract/mso
 
   upgradehistorie:
     name: herstart en gegevensbehoud met historische releases
-    if: github.event_name != 'schedule'
+    if: *dagproeven
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -105,14 +113,15 @@ jobs:
         working-directory: ${{ steps.bron.outputs.pad }}
         run: >-
           bash "$GITHUB_WORKSPACE/.forgejo/scripts/als-testgebruiker"
-          "$RUNNER_TEMP/historie-python/bin/python" -m pytest -q -p no:cacheprovider tests/upgradehistorie
+          "$RUNNER_TEMP/historie-python/bin/python" -m pytest -v -o faulthandler_timeout=180
+          --durations=5 -p no:cacheprovider tests/upgradehistorie
 
   # Contract 1.3 (kop, §10; C1.3-MGU-01) en Peil 1.1.1 (ONTWERPTAAL §14, E08): byte-gelijke kopieën met gepinde
   # bron-commit. Fout bij een afwijking van de bron op de gepinde commit (en bij Peil: zelfde versie, andere inhoud);
   # een nieuwere bron is een waarschuwing (bewust bijwerken). De offline controle draait ook in de core-tests.
   kopieen:
     name: kopieën contract en Peil (gepinde bron-commit)
-    if: github.event_name != 'schedule'
+    if: *dagproeven
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -166,7 +175,9 @@ jobs:
   # in release.yml vóór publish.
   upgradebewijs:
     name: upgradebewijs (vorige release → kern en encoder van deze commit)
-    if: github.event_name != 'schedule' && format('{0}', inputs.upgradebewijs) != 'false'
+    if: >-
+      github.event_name != 'schedule' && format('{0}', inputs.upgradebewijs) != 'false' &&
+      !(github.event_name == 'workflow_dispatch' && format('{0}', inputs.heavy) == 'true' && format('{0}', inputs.alleen_nachtproeven) == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -212,7 +223,7 @@ jobs:
 
   encoder-unit:
     name: encoder unit (zonder toolchain)
-    if: github.event_name != 'schedule'
+    if: *dagproeven
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -347,7 +358,7 @@ jobs:
       - name: pytest + ruff + mypy in het image
         if: steps.proef.outputs.suite == 'true'
         run: |
-          docker run --rm "$ENCODE_IMAGE:test" python3 -m pytest -q -rfEs -p no:cacheprovider
+          docker run --rm "$ENCODE_IMAGE:test" python3 -m pytest -v -rfEs -o faulthandler_timeout=180 --durations=5 -p no:cacheprovider
           docker run --rm "$ENCODE_IMAGE:test" sh -c "ruff check app tests && mypy app"
 
       - name: Eigen encoderimages opruimen
@@ -359,7 +370,7 @@ jobs:
 
   web:
     name: web (node 22, lint, typecheck, build, e2e)
-    if: github.event_name != 'schedule'
+    if: *dagproeven
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
