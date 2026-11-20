@@ -12,7 +12,7 @@ PLATFORM = "linux/amd64"
 
 
 def tag_bestaat(ref):
-    result = subprocess.run([ROOT / "scripts/image-tag-exists.sh", ref], check=False)
+    result = subprocess.run(["bash", ROOT / "scripts/image-tag-exists.sh", ref], check=False)
     if result.returncode not in (0, 1):
         result.check_returncode()
     return result.returncode == 0

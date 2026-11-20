@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# De gewone Linux-tests gebruiken dezelfde gebruikersrechten als de oorspronkelijke CI.
+set -euo pipefail
+export TMPDIR=${MG_CI_PROEFDATA:?}
+if (( EUID == 0 )); then
+  exec runuser -u mg-proef -- env "PATH=$PATH" "$@"
+fi
+exec "$@"

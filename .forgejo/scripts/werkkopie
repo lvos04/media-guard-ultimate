@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Laat pakketbeheerders en tests hun bestanden in de tijdelijke jobcontainer uitvoeren.
+# De proefdata, de bron en de thuismap zijn zusterpaden voor de rechtenproeven.
+set -euo pipefail
+map=$(mktemp -d "$RUNNER_TEMP/mediaguard.XXXXXXXX")
+chmod 755 "$map"
+git clone --quiet --no-hardlinks --no-checkout "$GITHUB_WORKSPACE" "$map/bron"
+git -C "$map/bron" -c advice.detachedHead=false checkout --quiet --detach "$(git rev-parse HEAD)"
+mkdir "$map/proefdata"
+if [[ "${1:-}" == --testgebruiker && $EUID == 0 ]]; then
+  useradd --create-home --home-dir "$map/thuis" mg-proef
+  chown -R mg-proef "$map/bron" "$map/proefdata"
+fi
+echo "pad=$map/bron" >> "$GITHUB_OUTPUT"
+echo "MG_CI_BRON=$map/bron" >> "$GITHUB_ENV"
+echo "MG_CI_PROEFDATA=$map/proefdata" >> "$GITHUB_ENV"

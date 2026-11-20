@@ -65,7 +65,7 @@ jobs:
           R="${REGISTRY}/${OWNER}"
           for ref in "$R/mediaguard-core:$VERSION" "$R/mediaguard-web:$VERSION" \
                      "$R/mediaguard-encode:$VERSION" "$R/mediaguard-core:$VERSION-aio"; do
-            rc=0; scripts/image-tag-exists.sh "$ref" || rc=$?
+            rc=0; bash scripts/image-tag-exists.sh "$ref" || rc=$?
             case "$rc" in
               0) echo "::error::$ref bestaat al. Een versietag wordt nooit overschreven: verhoog de versie."; exit 1 ;;
               1) echo "$ref: nog vrij" ;;
@@ -185,7 +185,7 @@ jobs:
           FINAL="${REGISTRY}/${OWNER}/mediaguard-${{ matrix.app }}-fork:${VER}-${REV}"
           PATCHES="$(cat "$D"/patches/*.patch | sha256sum | cut -c1-16)"
           DOCKERFILE="$(sha256sum "$D/Dockerfile" | cut -c1-16)"
-          rc=0; scripts/image-tag-exists.sh "$FINAL" || rc=$?
+          rc=0; bash scripts/image-tag-exists.sh "$FINAL" || rc=$?
           case "$rc" in
             0)
               docker pull -q "$FINAL" >/dev/null
@@ -209,7 +209,7 @@ jobs:
           SHA="$(sed -n 's/^ARG UPSTREAM_SHA=//p' "$D/Dockerfile")"
           VER="$(sed -n 's/^ARG UPSTREAM_VERSION=//p' "$D/Dockerfile")"
           REV="$(sed -n 's/^ARG MG_PATCH_REV=//p' "$D/Dockerfile")"; REV="${REV:-mg1}"
-          IMAGE_REPO="${REGISTRY}/${OWNER}/mediaguard-${{ matrix.app }}-fork" "$D/build.sh" \
+          IMAGE_REPO="${REGISTRY}/${OWNER}/mediaguard-${{ matrix.app }}-fork" bash "$D/build.sh" \
             --platform linux/amd64 \
             --label "org.opencontainers.image.title=MediaGuard ${{ matrix.app }} fork" \
             --label "org.opencontainers.image.version=${VER}-${REV}" \
@@ -259,7 +259,7 @@ jobs:
             ver="$(sed -n 's/^ARG UPSTREAM_VERSION=//p' "forks/$app/Dockerfile")"
             rev="$(sed -n 's/^ARG MG_PATCH_REV=//p' "forks/$app/Dockerfile")"; rev="${rev:-mg1}"
             final="${R}/mediaguard-${app}-fork:${ver}-${rev}"
-            scripts/image-tag-exists.sh "$final" || rc=$?
+            bash scripts/image-tag-exists.sh "$final" || rc=$?
             case "$rc" in
               0) echo "$final" ;;
               1) echo "${final}-${CANDIDATE}" ;;
@@ -306,7 +306,7 @@ jobs:
         run: |
           IMG="${REGISTRY}/${OWNER}/mediaguard-core:${VERSION}-aio-${CANDIDATE}"
           docker pull -q "$IMG"
-          .forgejo/scripts/dockerproef aio-smoke \
+          bash .forgejo/scripts/dockerproef aio-smoke \
             --image "$IMG" --version "$VERSION"
 
   # HARDE EIS van de gebruiker (contract 1.3 §2.3 regel 7b en §12, C1.3-MGU-03): kijkgeschiedenis
@@ -339,7 +339,7 @@ jobs:
           python3 scripts/upgradebewijs.py volgorde --vorige-release "$B" --versie "$VERSION"
           docker pull -q "$VORIGE"
           docker pull -q "$IMG"
-          .forgejo/scripts/dockerproef upgradebewijs --vorige "$VORIGE" --vorige-versie "$VV" \
+          bash .forgejo/scripts/dockerproef upgradebewijs --vorige "$VORIGE" --vorige-versie "$VV" \
             --nieuw "$IMG" --versie "$VERSION"
       - name: controleer gegevensbehoud in het upgraderapport
         run: python3 tests/upgradehistorie/controleer_rapport.py "$RUNNER_TEMP/upgradebewijs.md"
@@ -425,26 +425,26 @@ jobs:
             IMAGE="${R}/mediaguard-${app}-fork"
             # alleen een fork die deze run gebouwd heeft, heeft een kandidaat-tag
             BRON="$(bewezen "$app-fork")"
-            rc=0; scripts/image-tag-exists.sh "${IMAGE}:${VER}-${REV}-${CANDIDATE}" || rc=$?
+            rc=0; bash scripts/image-tag-exists.sh "${IMAGE}:${VER}-${REV}-${CANDIDATE}" || rc=$?
             case "$rc" in
-              0) scripts/promote-image.sh "$BRON" \
+              0) bash scripts/promote-image.sh "$BRON" \
                    "${IMAGE}:${VER}-${REV}" "${IMAGE}:${SHA:0:7}-${REV}" ;;
-              1) rc=0; scripts/image-tag-exists.sh "${IMAGE}:${VER}-${REV}" || rc=$?
+              1) rc=0; bash scripts/image-tag-exists.sh "${IMAGE}:${VER}-${REV}" || rc=$?
                  if [ "$rc" -ne 0 ]; then
                    echo "::error::${IMAGE}:${VER}-${REV} ontbreekt en is niet gebouwd"; exit 1
                  fi
-                 scripts/promote-image.sh "$BRON" "${IMAGE}:${VER}-${REV}"
+                 bash scripts/promote-image.sh "$BRON" "${IMAGE}:${VER}-${REV}"
                  echo "${IMAGE}:${VER}-${REV} hergebruikt" ;;
               *) exit 1 ;;
             esac
           done
           for n in core web encode; do
             BRON="$(bewezen "$n")"
-            scripts/promote-image.sh "$BRON" "${R}/mediaguard-$n:${VERSION}"
+            bash scripts/promote-image.sh "$BRON" "${R}/mediaguard-$n:${VERSION}"
           done
           # als laatste: het image dat TrueNAS (Custom App) gebruikt
           BRON="$(bewezen aio)"
-          scripts/promote-image.sh "$BRON" "${R}/mediaguard-core:${VERSION}-aio"
+          bash scripts/promote-image.sh "$BRON" "${R}/mediaguard-core:${VERSION}-aio"
 
   summary:
     needs: [meta, publish]

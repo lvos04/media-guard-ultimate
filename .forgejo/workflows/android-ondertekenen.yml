@@ -43,4 +43,4 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ github.token }}
           VERSIE: ${{ steps.bouw.outputs.versie }}
-        run: .forgejo/scripts/android-release "$VERSIE"
+        run: bash .forgejo/scripts/android-release "$VERSIE"

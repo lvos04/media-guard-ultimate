@@ -41,13 +41,13 @@ case "$endpoint" in
   *) echo "Onbekend verbindingstype voor de buildengine." >&2; exit 1 ;;
 esac
 client=$(docker create --user 0:0 --network host "${verbinding[@]}" \
-  --mount "type=volume,source=$volume,target=$map" --workdir "$map/bron" \
+  --mount "type=volume,source=$volume,target=$map" --workdir "$map" \
   --env "TMPDIR=$map/tijdelijk" --env "GITHUB_STEP_SUMMARY=$map/uitvoer/proef-samenvatting.md" \
   --entrypoint sleep "$image" infinity)
 docker start "$client" >/dev/null
-uitvoeren() { docker exec "$client" "$@"; }
+docker exec "$client" mkdir -p "$map/bron" "$map/tijdelijk" "$map/uitvoer"
+uitvoeren() { docker exec --workdir "$map/bron" "$client" "$@"; }
 [[ -n "$engine" && "$(uitvoeren docker info --format '{{.ID}}')" == "$engine" ]]
-uitvoeren mkdir -p "$map/bron" "$map/tijdelijk" "$map/uitvoer"
 bewijs=1
 git archive HEAD -- apps/core services/encoder/app deploy scripts tests/fixtures/aio tests/contract/mediaserver |
   docker exec -i "$client" tar -x -C "$map/bron"

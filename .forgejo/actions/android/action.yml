@@ -7,6 +7,10 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Werkkopie voor Gradle en Paparazzi
+      id: bron
+      shell: bash
+      run: bash .forgejo/scripts/werkkopie
     - uses: https://github.com/actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
       with:
         distribution: temurin
@@ -19,14 +23,15 @@ runs:
       shell: bash
       run: |
         versie=$(python3 -c 'import json; print(json.load(open("deploy/release-manifest.json"))["version"])')
+        bouwnummer=$(bash scripts/android-build-number.sh)
         echo "versie=$versie" >> "$GITHUB_OUTPUT"
-        echo "MG_ANDROID_BUILD=$(scripts/android-build-number.sh)" >> "$GITHUB_ENV"
+        echo "MG_ANDROID_BUILD=$bouwnummer" >> "$GITHUB_ENV"
     - name: Peil-tokens controleren
-      working-directory: apps/android
+      working-directory: ${{ steps.bron.outputs.pad }}/apps/android
       shell: bash
       run: python3 tools/peil_tokens.py --check
     - name: Unit-tests, schermafdrukken en beide APK's
-      working-directory: apps/android
+      working-directory: ${{ steps.bron.outputs.pad }}/apps/android
       shell: bash
       run: |
         if [[ -n "${MG_ANDROID_KEYSTORE:-}" ]]; then
@@ -34,25 +39,26 @@ runs:
           : "${MG_ANDROID_KEY_ALIAS:?ANDROID_KEY_ALIAS ontbreekt}"
           : "${MG_ANDROID_KEY_PASSWORD:?ANDROID_KEY_PASSWORD ontbreekt}"
         fi
-        ./gradlew --no-daemon --max-workers=2 :app:verifyPaparazziDebug :app:assembleDebug :app:assembleRelease
+        sh ./gradlew --no-daemon --max-workers=2 :app:verifyPaparazziDebug :app:assembleDebug :app:assembleRelease
     - name: Testrapport en afwijkende schermafdrukken bewaren
       if: failure()
       uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
       with:
         name: android-testrapport
         path: |
-          apps/android/app/build/reports/tests/
-          apps/android/app/build/paparazzi/failures/
+          ${{ steps.bron.outputs.pad }}/apps/android/app/build/reports/tests/
+          ${{ steps.bron.outputs.pad }}/apps/android/app/build/paparazzi/failures/
         if-no-files-found: ignore
     - name: APK's voor het artefact verzamelen
-      working-directory: apps/android
+      working-directory: ${{ steps.bron.outputs.pad }}/apps/android
       shell: bash
       env:
         VERSIE: ${{ steps.versie.outputs.versie }}
       run: |
-        mkdir -p out
-        cp app/build/outputs/apk/debug/app-debug.apk "out/mediaguard-android-${VERSIE}-debug.apk"
-        cp app/build/outputs/apk/release/app-release.apk "out/mediaguard-android-${VERSIE}.apk"
+        uit="$GITHUB_WORKSPACE/apps/android/out"
+        mkdir -p "$uit"
+        cp app/build/outputs/apk/debug/app-debug.apk "$uit/mediaguard-android-${VERSIE}-debug.apk"
+        cp app/build/outputs/apk/release/app-release.apk "$uit/mediaguard-android-${VERSIE}.apk"
     - uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
       with:
         name: mediaguard-android-${{ steps.versie.outputs.versie }}

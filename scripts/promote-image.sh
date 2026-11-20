@@ -31,7 +31,7 @@ fi
 new=()
 for t in "$@"; do
   rc=0
-  "$here/image-tag-exists.sh" "$t" || rc=$?
+  bash "$here/image-tag-exists.sh" "$t" || rc=$?
   case "$rc" in
     1) new+=(-t "$t") ;;
     0)
