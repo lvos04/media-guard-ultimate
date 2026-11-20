@@ -30,6 +30,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -45,7 +46,8 @@ from mediaguard.downloads.clients import ClientItem, ClientView, QbitClient, Roo
 from mediaguard.settings_registry import REGISTRY, SettingDef
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
+    from sqlite3 import Row
 
     from mediaguard.provisioning.store import ProvisioningConfig
 
@@ -319,10 +321,8 @@ def _reserved(ctx: AppContext, path: Path) -> bool:
                             (str(path),)) is not None
 
 
-def _trash(ctx: AppContext, path: Path, root: Path, reason: str, *, actor: str,
-           item: ClientItem | None = None, now: datetime | None = None,
-           paused: Callable[[], bool] | None = None) -> dict[str, Any]:
-    now = now or datetime.now(UTC)
+def _reserve_trash(ctx: AppContext, path: Path, root: Path, reason: str, item: ClientItem | None,
+                   now: datetime, paused: Callable[[], bool] | None) -> Row:
     if not inside(real(path), root) or real(path).name.startswith("."):
         raise PermissionError(f"{path} ligt niet binnen {root}")
     size, freed, _ = _stat_tree(path)
@@ -332,7 +332,30 @@ def _trash(ctx: AppContext, path: Path, root: Path, reason: str, *, actor: str,
     with schema.startup_lock(root), ctx.db.startup_lock():
         if _pool_paused(ctx, paused):
             raise _PoolPaused
-        path.lstat()  # een gelijktijdige opruimronde kan de download al hebben verplaatst
+        identity = _restore_identity(path)
+        client, download_id = (item.client, item.id) if item else (None, None)
+        reservations = ctx.db.fetch_all(
+            "SELECT t.*, s.source_file FROM download_janitor_trash t "
+            "JOIN download_janitor_purge_state s ON t.id=s.trash_id "
+            "WHERE t.root=? AND t.original_path=? AND s.source_file IS NOT NULL "
+            "AND t.restored_at IS NULL AND t.purged_at IS NULL", (str(root), str(path)))
+        for pending in reservations:
+            if _path_present(Path(pending["trash_path"])):
+                continue  # een eerdere verplaatsing wacht op handmatig herstel
+            same_owner = (pending["client"], pending["download_id"]) == (client, download_id)
+            if pending["client"] is not None and not same_owner:
+                raise ValueError("Op dit pad wacht nog een andere download op afmelding")
+            if same_owner and pending["source_file"] == identity:
+                return pending
+            # De client meldt gewijzigde inhoud of neemt een onbekende download over.
+            # Een late bevestiging voor de vorige reservering kan het bestand niet verplaatsen.
+            with ctx.db.durable_transaction():
+                ctx.db.execute("UPDATE download_janitor_purge_state SET source_file=? "
+                               "WHERE trash_id=?", (identity, pending["id"]))
+                ctx.db.execute("UPDATE download_janitor_trash SET size=?,freed=?,reason=?,"
+                               "client=?,download_id=? WHERE id=?",
+                               (size, freed, reason, client, download_id, pending["id"]))
+            return _trash_entry(ctx, pending["id"])
         dest_dir.mkdir(parents=True, exist_ok=True)
         with ctx.db.durable_transaction():
             dest = dest_dir / path.name
@@ -341,21 +364,48 @@ def _trash(ctx: AppContext, path: Path, root: Path, reason: str, *, actor: str,
             tid = ctx.db.execute_insert(
                 "INSERT INTO download_janitor_trash(root,original_path,trash_path,size,freed,"
                 "reason,client,download_id,moved_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (str(root), str(path), str(dest), size, freed, reason,
-                 item.client if item else None, item.id if item else None,
+                (str(root), str(path), str(dest), size, freed, reason, client, download_id,
                  now.isoformat(timespec="seconds")))
-        try:
-            if _pool_paused(ctx, paused):
-                raise _PoolPaused
-            os.rename(path, dest)
-        except (OSError, _PoolPaused):
-            # Bij onzekerheid blijft de reservering ook na een herstart bestaan.
-            if _path_present(path) and not _path_present(dest):
-                ctx.db.execute("DELETE FROM download_janitor_trash WHERE id=?", (tid,))
-            raise
-    audit(ctx.db, actor=actor, action="downloads.trashed", target_type="download_path",
-          target_id=tid, new_value={"path": str(path), "size": size, "reason": reason})
-    return {"id": tid, "path": str(path), "size": size, "freed": freed, "reason": reason}
+            ctx.db.execute("INSERT INTO download_janitor_purge_state(trash_id,manual_only,"
+                           "source_file) VALUES(?,1,?)", (tid, identity))
+        return _trash_entry(ctx, tid)
+
+
+def _move_reserved(ctx: AppContext, row: Row, actor: str, now: datetime,
+                   paused: Callable[[], bool] | None) -> dict[str, Any]:
+    path, dest = Path(row["original_path"]), Path(row["trash_path"])
+    tid = row["id"]
+    with schema.startup_lock(Path(row["root"])), ctx.db.startup_lock():
+        current = _trash_entry(ctx, tid)
+        fields = ("source_file", "client", "download_id")
+        if (current is None or current["shared_path"] or current["restored_at"]
+                or current["purged_at"] or any(current[key] != row[key] for key in fields)):
+            raise ValueError("De prullenbakreservering is niet meer beschikbaar")
+        if (real(path) != path or real(dest.parent) != dest.parent
+                or _restore_identity(path) != row["source_file"] or _path_present(dest)):
+            raise ValueError("De download of het gereserveerde prullenbakpad is veranderd")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if _pool_paused(ctx, paused):
+            raise _PoolPaused
+        os.rename(path, dest)
+        # Bij uitval na rename blijft de reservering handmatig terugzetbaar. Pas deze
+        # commit geeft purge toestemming en laat de bewaartermijn ingaan.
+        with ctx.db.durable_transaction():
+            ctx.db.execute("UPDATE download_janitor_trash SET moved_at=? WHERE id=?",
+                           (now.isoformat(timespec="seconds"), tid))
+            ctx.db.execute("DELETE FROM download_janitor_purge_state WHERE trash_id=?", (tid,))
+            audit(ctx.db, actor=actor, action="downloads.trashed", target_type="download_path",
+                  target_id=tid, new_value={"path": str(path), "size": row["size"],
+                                             "reason": row["reason"]})
+    return {"id": tid, "path": str(path), "size": row["size"], "freed": row["freed"],
+            "reason": row["reason"]}
+
+
+def _trash(ctx: AppContext, path: Path, root: Path, reason: str, *, actor: str,
+           now: datetime | None = None, paused: Callable[[], bool] | None = None) -> dict[str, Any]:
+    now = now or datetime.now(UTC)
+    row = _reserve_trash(ctx, path, root, reason, None, now, paused)
+    return _move_reserved(ctx, row, actor, now, paused)
 
 
 async def execute(ctx: AppContext, p: Plan, clients: dict[str, Any], *, actor: str,
@@ -367,16 +417,24 @@ async def execute(ctx: AppContext, p: Plan, clients: dict[str, Any], *, actor: s
         if _pool_paused(ctx, paused):
             break
         try:
+            reservation = None
+            if a.trash_data and a.path is not None and a.root is not None:
+                reservation = await asyncio.to_thread(_reserve_trash, ctx, a.path, a.root,
+                                                      a.reason, a.item, datetime.now(UTC), paused)
+            if _pool_paused(ctx, paused):
+                break
+            if a.item is not None:
+                client = clients.get(a.item.client)
+                if client is None or not a.item.id:
+                    raise ValueError("Afmelding bij de downloadclient kan niet worden bevestigd")
+                if a.kind == "torrent":
+                    await client.remove(a.item.id)
+                else:
+                    await client.delete_history(a.item.client_id or a.item.id)
+            if reservation is not None:
+                done.append(await asyncio.to_thread(_move_reserved, ctx, reservation, actor,
+                                                    datetime.now(UTC), paused))
             if a.kind == "torrent" and a.item is not None:
-                q = clients.get(a.item.client)
-                if q is None:
-                    continue
-                if a.trash_data and a.path is not None and a.root is not None:
-                    done.append(await asyncio.to_thread(_trash, ctx, a.path, a.root, a.reason,
-                                                        actor=actor, item=a.item, paused=paused))
-                if _pool_paused(ctx, paused):
-                    break
-                await q.remove(a.item.id)  # zonder bestanden
                 audit(ctx.db, actor=actor, action="downloads.torrent_removed",
                       target_type="torrent", target_id=a.item.id,
                       new_value={"name": a.item.name, "reason": a.reason,
@@ -385,21 +443,12 @@ async def execute(ctx: AppContext, p: Plan, clients: dict[str, Any], *, actor: s
                     done.append({"path": a.item.name, "size": 0, "freed": 0,
                                  "reason": a.reason + " (alleen torrent; bestanden zijn "
                                  "gekoppeld aan de bibliotheek)"})
-            elif a.kind == "trash" and a.path is not None and a.root is not None:
-                done.append(await asyncio.to_thread(_trash, ctx, a.path, a.root, a.reason,
-                                                    actor=actor, item=a.item, paused=paused))
-                if a.item is not None and a.item.kind == "nzb":
-                    sab = clients.get(a.item.client)
-                    if sab is not None:
-                        if _pool_paused(ctx, paused):
-                            break
-                        with contextlib.suppress(Exception):  # alleen lijst opschonen
-                            await sab.delete_history(a.item.id)
         except _PoolPaused:
             break
-        except Exception as exc:  # noqa: BLE001 - per item; de rest gaat door
+        except Exception as exc:  # noqa: BLE001 - onzeker over eigendom of boeking
             errors.append(f"{a.path or (a.item.name if a.item else '?')}: {exc}")
             LOGGER.info("opruimen %s overgeslagen: %s", a.path, exc)
+            break
     return {"done": done, "errors": errors}
 
 
@@ -457,7 +506,7 @@ def _rm(ctx: AppContext, path: Path, paused: Callable[[], bool] | None, *,
 
 def _trash_entry(ctx: AppContext, trash_id: int):
     return ctx.db.fetch_one(
-        "SELECT t.*, s.manual_only, s.partial, s.restore_file, "
+        "SELECT t.*, s.manual_only, s.partial, s.restore_file, s.source_file, "
         "EXISTS(SELECT 1 FROM download_janitor_trash other "
         "WHERE other.trash_path=t.trash_path AND other.id<>t.id) AS shared_path "
         "FROM download_janitor_trash t "
@@ -578,6 +627,8 @@ def restore(ctx: AppContext, trash_id: int, *, actor: str) -> dict[str, Any]:
             if _path_present(orig):
                 raise ValueError("Op de oorspronkelijke plek staat al iets")
             identity = _restore_identity(trash)
+            if r["source_file"] is not None and identity != r["source_file"]:
+                raise ValueError("Het bestand komt niet overeen met de reservering")
             partial = partial or _stat_tree(trash)[0] < r["size"]
             with ctx.db.durable_transaction():
                 ctx.db.execute("UPDATE download_janitor_trash SET restored_at=? WHERE id=?",
@@ -585,7 +636,8 @@ def restore(ctx: AppContext, trash_id: int, *, actor: str) -> dict[str, Any]:
                 ctx.db.execute(
                     "INSERT INTO download_janitor_purge_state(trash_id,manual_only,partial,"
                     "restore_file) VALUES(?,1,?,?) ON CONFLICT(trash_id) DO UPDATE SET "
-                    "manual_only=1,partial=excluded.partial,restore_file=excluded.restore_file",
+                    "manual_only=1,partial=excluded.partial,restore_file=excluded.restore_file,"
+                    "source_file=NULL",
                     (trash_id, partial, identity))
         if _path_present(trash):
             if _path_present(orig) or _restore_identity(trash) != identity:
@@ -830,7 +882,9 @@ async def run_once(ctx: AppContext, *, actor: str = "svc:downloads",
                                        refused_roots=p.refused_roots, errors=res["errors"],
                                        items=res["done"][:50])
                         summary["freed_bytes"] += sum(int(d.get("freed") or 0) for d in res["done"])
-        if not paused():
+        if summary["errors"]:
+            status = "skipped"
+        if not summary["errors"] and not paused():
             pg = await asyncio.to_thread(purge, ctx, paused=paused)
             summary["purged"] = pg["purged"]
     finally:
@@ -873,17 +927,33 @@ def freed_on(ctx: AppContext, day: str, next_day: str) -> dict[str, int]:
     return {"items": int(row["n"]) if row else 0, "bytes": int(row["b"]) if row else 0}
 
 
+def stored_trash(ctx: AppContext, original_path: str | None = None) -> Iterator[dict[str, Any]]:
+    """Toon ook een onderbroken verplaatsing zodra de inhoud in de prullenbak ligt."""
+    sql = (
+        "SELECT t.id,t.original_path,t.trash_path,t.size,t.freed,t.reason,t.moved_at,t.client,"
+        "s.manual_only,s.partial,s.source_file FROM download_janitor_trash t LEFT JOIN "
+        "download_janitor_purge_state s ON s.trash_id=t.id "
+        "WHERE purged_at IS NULL AND (restored_at IS NULL OR s.restore_file IS NOT NULL)")
+    if original_path is not None:
+        sql += " AND t.original_path=? ORDER BY t.id DESC"
+    else:
+        sql += " ORDER BY t.moved_at DESC,t.id DESC"
+    for row in ctx.db.iter_dicts(sql, (original_path,) if original_path is not None else ()):
+        if row.pop("source_file") is not None:
+            try:
+                if not _path_present(Path(row["trash_path"])):
+                    continue
+            except OSError:
+                pass  # bij een leesfout blijft de handmatige registratie zichtbaar
+        yield row
+
+
 # -- API ---------------------------------------------------------------------------------------
 @router.get("/cleanup")
 def cleanup_status(_: Principal = Depends(require_viewer),
                    ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
     last = ctx.db.fetch_one("SELECT * FROM download_janitor_runs ORDER BY id DESC LIMIT 1")
-    trash = ctx.db.fetch_dicts(
-        "SELECT t.id,t.original_path,t.trash_path,t.size,t.freed,t.reason,t.moved_at,t.client,"
-        "s.manual_only,s.partial FROM download_janitor_trash t LEFT JOIN "
-        "download_janitor_purge_state s ON s.trash_id=t.id "
-        "WHERE purged_at IS NULL AND (restored_at IS NULL OR s.restore_file IS NOT NULL) "
-        "ORDER BY moved_at DESC LIMIT 200")
+    trash = list(islice(stored_trash(ctx), 200))
     total = ctx.db.fetch_one(
         "SELECT COALESCE(SUM(freed),0) AS b, COUNT(*) AS n FROM download_janitor_trash "
         "WHERE purged_at IS NOT NULL")

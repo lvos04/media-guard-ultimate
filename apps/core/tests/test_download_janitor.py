@@ -4,6 +4,7 @@ prullenbak, en nooit buiten de downloadmappen of in de bibliotheek."""
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
 import os
 import select
 import sqlite3
@@ -13,6 +14,7 @@ import sys
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -20,8 +22,10 @@ import pytest
 from mediaguard import monitor
 from mediaguard import storage_forecast as storage
 from mediaguard.app import create_app
+from mediaguard.config import load_settings
 from mediaguard.downloads import janitor as J
-from mediaguard.downloads.clients import ClientItem, Root, SabClient, seeding_status
+from mediaguard.downloads.clients import ClientItem, QbitClient, Root, SabClient, seeding_status
+from mediaguard.provisioning.store import DownloadClientCfg
 
 NOW = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
 OLD = NOW - timedelta(days=30)
@@ -103,7 +107,7 @@ async def test_imported_goes_to_trash_then_purged(ctx, layout):
 async def test_restore_puts_it_back(ctx, layout):
     it = _nzb(layout, "show.s01e02")
     p = J.plan(ctx, _snap(layout, [it], imported_ids={it.id}), NOW)
-    res = await J.execute(ctx, p, {}, actor="t")
+    res = await J.execute(ctx, p, {"sab": FakeSab()}, actor="t")
     J.restore(ctx, res["done"][0]["id"], actor="t")
     assert (layout["tv"] / "show.s01e02" / "video.mkv").exists()
 
@@ -708,6 +712,253 @@ async def test_kanaal_onleesbaar_bij_start_behoudt_kern(ctx, cleanup_round, pool
         await storage.shutdown(worker)
 
 
+def _meter_met_kanaalfout(folder, signal, abrupt):
+    worker = create_app(load_settings(data_dir=folder, start_background=False)).state.ctx
+    requests = []
+    worker.services["truenas_transport"] = httpx.MockTransport(requests.append)
+    fifo = worker.db.path.with_suffix(".pool-fifo")
+    with closing(worker.db), signal:
+        mode = stat.S_IMODE(fifo.stat().st_mode)
+        try:
+            fifo.chmod(0)
+            asyncio.run(storage.startup(worker))
+        finally:
+            fifo.chmod(mode)
+        signal.send("gestart")
+        assert signal.recv() == "meet"
+        mode = stat.S_IMODE(folder.stat().st_mode)
+        try:
+            folder.chmod(0)
+            with pytest.raises(PermissionError):
+                asyncio.run(storage.refresh_pool(worker))
+        finally:
+            folder.chmod(mode)
+        assert not requests
+        if abrupt:
+            os._exit(0)
+        asyncio.run(storage.shutdown(worker))
+
+
+@pytest.mark.parametrize("abrupt", [False, True], ids=["afsluiten", "procesuitval"])
+async def test_slotfout_na_kanaalfout_bij_start(ctx, cleanup_round, pool_configured, abrupt):
+    _pool_response(ctx, True)
+    assert (await storage.refresh_pool(ctx))["reachable"]
+    folder = ctx.settings.data_dir
+    mode = stat.S_IMODE(folder.stat().st_mode)
+    fifo = ctx.db.path.with_suffix(".pool-fifo")
+    fifo_mode = stat.S_IMODE(fifo.stat().st_mode)
+    processes = multiprocessing.get_context("spawn")
+    parent, child = processes.Pipe()
+    worker = processes.Process(target=_meter_met_kanaalfout, args=(folder, child, abrupt))
+    worker.start()
+    child.close()
+    try:
+        with parent:
+            assert parent.poll(20) and parent.recv() == "gestart"
+            assert storage.pool_cleanup_pause_reason(ctx)
+            assert (await storage.refresh_pool(ctx))["reachable"]
+            while_active = storage.pool_cleanup_pause_reason(ctx)
+            parent.send("meet")
+            worker.join(20)
+            assert worker.exitcode == 0
+        await _expect_pause(ctx, cleanup_round)
+        assert while_active
+        _, source, trash, _ = cleanup_round
+        for folder_with_video in (source, trash):
+            assert (folder_with_video / "video.mkv").read_bytes() == b"x" * 10
+        await _resume_with_healthy_pool(ctx, cleanup_round)
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join()
+        folder.chmod(mode)
+        fifo.chmod(fifo_mode)
+        await storage.shutdown(ctx)
+
+
+async def test_werkerslot_onleesbaar_trekt_toestemming_in(ctx, cleanup_round, pool_configured):
+    _healthy_pool(ctx)
+    lock = ctx.db.path.with_suffix(".pool-workers")
+    mode = stat.S_IMODE(lock.stat().st_mode)
+    try:
+        lock.chmod(0)
+        assert storage.pool_cleanup_pause_reason(ctx)
+    finally:
+        lock.chmod(mode)
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+@pytest.mark.parametrize("reply", [503, 200], ids=["HTTP-503", "nog-geregistreerd"])
+async def test_qbit_weigert_afmelden(ctx, layout, cleanup_round, pool_configured,
+                                     monkeypatch, reply):
+    source = layout["torrents"] / "aflevering.mkv"
+    content = b"enige lokale kopie van de proefdownload"
+    source.write_bytes(content)
+    torrent = {"hash": "aflevering", "name": source.name, "category": "movies",
+               "content_path": str(source), "state": "stoppedUP", "progress": 1,
+               "completion_on": int((datetime.now(UTC) - timedelta(days=30)).timestamp())}
+    registered = [torrent]
+    refusals = []
+
+    def answer(request):
+        if request.method == "POST":
+            assert request.url.path == "/api/v2/torrents/delete"
+            assert parse_qs(request.content.decode()) == {
+                "hashes": ["aflevering"], "deleteFiles": ["false"]}
+            refusals.append(reply)
+            return httpx.Response(reply)
+        responses = {"/api/v2/app/preferences": {},
+                     "/api/v2/torrents/categories": {"movies": {"savePath": str(source.parent)}},
+                     "/api/v2/torrents/info": registered}
+        return httpx.Response(200, json=responses[request.url.path])
+
+    ctx.services["download_client_transports"] = {"qbit": httpx.MockTransport(answer)}
+    cfg = DownloadClientCfg(name="qbit", implementation="QBittorrent", host="qbit.invalid", port=80)
+    _pool_response(ctx, True)
+    assert (await storage.refresh_pool(ctx))["reachable"]
+    usage = type(J.shutil.disk_usage(source.parent))
+    monkeypatch.setattr(J.shutil, "disk_usage", lambda _: usage(100, 99, 1))
+    async with QbitClient(ctx, cfg, None) as client:
+        async def gather(_):
+            view = await client.view({"movies"}, 24)
+            return _snap(layout, view.items, imported_ids={"AFLEVERING"}), {"qbit": client}
+
+        result = await J.run_once(ctx, gatherer=gather)
+        assert [item.id for item in (await client.view({"movies"}, 24)).items] == ["AFLEVERING"]
+    assert refusals == [reply] and result["errors"]
+    if reply == 503:
+        assert "503" in result["errors"][0]
+    assert (result["trashed"], result["purged"]) == (0, 0)
+    assert source.read_bytes() == content
+    assert (cleanup_round[2] / "video.mkv").read_bytes() == b"x" * 10
+
+
+@pytest.mark.parametrize("refusal", ["geweigerd", "ingeschreven"])
+async def test_sab_afmelding_na_herstart(ctx, layout, refusal):
+    source = layout["tv"] / "aflevering.mkv"
+    content = b"volledige download"
+    source.write_bytes(content)
+    raw_id = "SABnzbd_nzo_Aflevering"
+    history = [{"nzo_id": raw_id, "name": source.name, "category": "tv", "storage": str(source),
+                "status": "Completed"}]
+    accept = False
+
+    def answer(request):
+        params = request.url.params
+        if params.get("name") == "delete":
+            assert params["value"] == raw_id and params["del_files"] == "0"
+            assert source.read_bytes() == content
+            if accept:
+                history.clear()
+            return httpx.Response(200, json={"status": accept or refusal == "ingeschreven"})
+        if "nzo_ids" in params:
+            assert params["nzo_ids"] == raw_id
+        return httpx.Response(200, json={params["mode"]: {"slots": history}
+                                         if params["mode"] == "history" else {}})
+
+    cfg = DownloadClientCfg(name="sab", implementation="Sabnzbd", host="sab.invalid", port=80)
+
+    async def gather(worker):
+        worker.services["download_client_transports"] = {"sab": httpx.MockTransport(answer)}
+        client = SabClient(worker, cfg, None)
+        view = await client.view({"tv"})
+        return _snap(layout, view.items, imported_ids={raw_id.upper()}), {"sab": client}
+
+    result = await J.run_once(ctx, gatherer=gather)
+    assert result["errors"] and (result["trashed"], result["purged"]) == (0, 0)
+    assert history and source.read_bytes() == content
+    assert not J.cleanup_status(None, ctx)["trash"]
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        assert J.purge(worker, datetime.now(UTC) + timedelta(days=30))["purged"] == 0
+        accept = True
+        result = await J.run_once(worker, gatherer=gather)
+        assert not history and result["trashed"] == 1 and not result["errors"]
+        row, = worker.db.fetch_all("SELECT * FROM download_janitor_trash")
+        assert Path(row["trash_path"]).read_bytes() == content
+        assert J.restore(worker, row["id"], actor="test")["restored"]
+        assert source.read_bytes() == content
+
+
+async def test_onderbroken_vrijgave_behoudt_prullenbak(ctx, layout):
+    item = _nzb(layout, "vrijgave")
+    source = Path(item.path)
+    plan = J.plan(ctx, _snap(layout, [item], imported_ids={item.id}), NOW)
+    # De vrijgave gebeurt vanuit een andere thread, op een eigen SQLite-verbinding.
+    ctx.db.execute("CREATE TRIGGER onderbreek BEFORE UPDATE OF moved_at ON download_janitor_trash "
+                   "BEGIN SELECT RAISE(ABORT, 'vrijgave'); END")
+    sab = FakeSab()
+    result = await J.execute(ctx, plan, {"sab": sab}, actor="test")
+    assert not result["done"] and "vrijgave" in result["errors"][0] and sab.deleted == [item.id]
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        assert J.purge(worker, datetime.now(UTC) + timedelta(days=30))["purged"] == 0
+        entry, = J.cleanup_status(None, worker)["trash"]
+        assert entry["manual_only"]
+        worker.db.execute("CREATE TEMP TRIGGER weiger_audit BEFORE INSERT ON audit_events "
+                          "WHEN NEW.action='downloads.restored' "
+                          "BEGIN SELECT RAISE(ABORT, 'herstelboeking'); END")
+        with pytest.raises(sqlite3.IntegrityError, match="herstelboeking"):
+            J.restore(worker, entry["id"], actor="test")
+    restarted = create_app(ctx.settings).state.ctx
+    with closing(restarted.db):
+        retry, = J.cleanup_status(None, restarted)["trash"]
+        assert retry["id"] == entry["id"]
+        assert J.restore(restarted, retry["id"], actor="test")["restored"]
+    assert (source / "video.mkv").read_bytes() == b"x" * 10
+
+
+async def test_onbevestigde_afmelding_blijft_bij_de_client(ctx, layout):
+    item = _nzb(layout, "in-gebruik")
+    source = Path(item.path)
+    _age(source, 30)
+    plan = J.plan(ctx, _snap(layout, [item], imported_ids={item.id}), NOW)
+    assert (await J.execute(ctx, plan, {}, actor="test"))["errors"]
+    # Een volgende momentopname mist deze client. Ook ná de termijn voor een
+    # onbekende download blijft de eerdere reservering aan zijn afmelding gebonden.
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        snapshot = _snap(layout, [])
+        J.plan(worker, snapshot, NOW)
+        later = NOW + timedelta(days=30)
+        orphan = J.plan(worker, snapshot, later)
+        assert orphan.actions and orphan.actions[0].item is None
+        result = await J.execute(worker, orphan, {}, actor="test")
+        assert not result["done"] and J.purge(worker, later)["purged"] == 0
+        assert (source / "video.mkv").read_bytes() == b"x" * 10
+        sab = FakeSab()
+        retry = await J.execute(worker, plan, {"sab": sab}, actor="test")
+        assert sab.deleted == [item.id] and len(retry["done"]) == 1
+
+
+def test_historische_clientboeking_blijft_terugzetbaar(settings, layout, tmp_path, monkeypatch):
+    from mediaguard import db
+
+    migrations = tmp_path / "oude_migraties"
+    migrations.mkdir()
+    for file in db.MIGRATIONS_DIR.glob("*.sql"):
+        if file.name != "078_prullenbakreservering.sql":
+            (migrations / file.name).symlink_to(file)
+    root = layout["tv"]
+    source = root / "historisch"
+    trash = _mk(root / J.TRASH_DIR / "oud" / source.name)
+    with monkeypatch.context() as old:
+        old.setattr(db, "MIGRATIONS_DIR", migrations)
+        previous = create_app(settings).state.ctx
+        with closing(previous.db):
+            tid = previous.db.execute_insert(
+                "INSERT INTO download_janitor_trash(root,original_path,trash_path,reason,client,"
+                "download_id,moved_at) VALUES(?,?,?,?,?,?,?)",
+                (str(root), str(source), str(trash), "oud", "sab", "HISTORISCH", OLD.isoformat()))
+    worker = create_app(settings).state.ctx
+    with closing(worker.db):
+        assert J.purge(worker, NOW)["purged"] == 0
+        assert (trash / "video.mkv").read_bytes() == b"x" * 10
+        assert J.restore(worker, tid, actor="test")["restored"]
+        assert (source / "video.mkv").read_bytes() == b"x" * 10
+
+
 def test_bewaartermijn_na_onderbroken_boeking(ctx, layout, pool_configured, monkeypatch):
     root = layout["tv"]
     source = root / "aflevering.mkv"
@@ -980,8 +1231,6 @@ def test_seeding_rules():
 
 @pytest.mark.asyncio
 async def test_sab_view_parsing(ctx):
-    from mediaguard.provisioning.store import DownloadClientCfg
-
     def handler(request: httpx.Request) -> httpx.Response:
         mode = request.url.params["mode"]
         if mode == "get_config":

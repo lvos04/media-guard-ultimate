@@ -173,11 +173,7 @@ def _from_trash(ctx: AppContext, path: str) -> tuple[bool, str]:
     """Download die de opruimer al in de prullenbak zette: terugzetten."""
     from mediaguard.downloads import janitor
 
-    row = ctx.db.fetch_one(
-        "SELECT t.id FROM download_janitor_trash t LEFT JOIN download_janitor_purge_state s "
-        "ON s.trash_id=t.id WHERE original_path=? AND purged_at IS NULL "
-        "AND (restored_at IS NULL OR s.restore_file IS NOT NULL) ORDER BY t.id DESC LIMIT 1",
-        (path,))
+    row = next(janitor.stored_trash(ctx, original_path=path), None)
     if row is None:
         return False, "bestanden bestaan niet meer"
     try:

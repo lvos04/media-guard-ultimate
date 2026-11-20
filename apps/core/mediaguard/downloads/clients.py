@@ -49,6 +49,7 @@ class ClientItem:
     seeding_done: bool = True
     seeding_reason: str = ""
     private: bool = False
+    client_id: str | None = None  # oorspronkelijke spelling voor de SABnzbd-API
 
 
 @dataclass
@@ -133,12 +134,27 @@ class SabClient:
                 self.name, "nzb", str(s.get("nzo_id", "")).upper(), str(s.get("name") or ""),
                 str(s.get("category") or ""), str(s.get("storage") or s.get("path") or "")
                 or None, active=status in SAB_HISTORY_BUSY, failed=status == "Failed",
-                completed_at=_ts(s.get("completed"))))
+                completed_at=_ts(s.get("completed")), client_id=str(s.get("nzo_id") or "")))
         return out
 
     async def delete_history(self, nzo_id: str) -> None:
-        # del_files=0: bestanden blijven; die heeft de opruimer al naar de prullenbak verhuisd
-        await self._api(mode="history", name="delete", value=nzo_id, del_files=0)
+        try:
+            reply = await self._api(mode="history", name="delete", value=nzo_id, del_files=0)
+            if not isinstance(reply, dict) or reply.get("status") is not True:
+                raise ValueError("SABnzbd bevestigt de afmelding niet")
+            history = await self._api(mode="history", nzo_ids=nzo_id)
+        except httpx.HTTPStatusError as exc:
+            # De SABnzbd-URL bevat de sleutel en hoort niet in het opruimrapport.
+            status = exc.response.status_code
+            raise ValueError(f"SABnzbd weigert de afmelding (HTTP {status})") from None
+        except httpx.RequestError:
+            raise ValueError("SABnzbd is onbereikbaar bij de afmelding") from None
+        result = history.get("history") if isinstance(history, dict) else None
+        slots = result.get("slots") if isinstance(result, dict) else None
+        if not isinstance(slots, list) or any(
+                not isinstance(s, dict) or not s.get("nzo_id")
+                or str(s["nzo_id"]).upper() == nzo_id.upper() for s in slots):
+            raise ValueError("Afmelding uit de SABnzbd-historie is niet bevestigd")
 
 
 # -- qBittorrent ---------------------------------------------------------------------------
@@ -235,3 +251,5 @@ class QbitClient:
         r = await self._client.post(f"{self.base}/api/v2/torrents/delete",
                                     data={"hashes": torrent_hash.lower(), "deleteFiles": "false"})
         r.raise_for_status()
+        if await self._get("torrents/info", hashes=torrent_hash.lower()) != []:
+            raise ValueError("qBittorrent bevestigt de afmelding van de torrent niet")

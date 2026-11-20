@@ -141,6 +141,13 @@ dan blijft het item beschikbaar om terug te zetten. De audit registreert de fout
 automatische rondes laten het item staan. Een handmatige verwijdering van een quarantaineorigineel
 die op de poolstatus stuit, vraagt na een gezonde meting opnieuw bevestiging.
 
+Bij een geregistreerde download reserveert MediaGuard eerst een uniek prullenbakpad.
+Tijdens de afmelding blijft de download op de oorspronkelijke plek. MediaGuard vraagt de
+client zijn registratie te verwijderen met behoud van de bestanden en leest de registratie
+terug. Pas na bevestiging verplaatst MediaGuard de download en begint de bewaartermijn.
+Een oude clientboeking zonder bewijs van afmelding blijft beschikbaar voor handmatig
+terugzetten. Dat geldt ook als de verplaatsing lukt en de afsluitende boeking uitvalt.
+
 **Meetgeldigheidsmodel voor opruimen**
 
 | Gebeurtenis | Gevolg voor de bestanden en de downloadclient | Regressieproef |
@@ -153,10 +160,12 @@ die op de poolstatus stuit, vraagt na een gezonde meting opnieuw bevestiging.
 | SQLite weigert de meetstart of het bewaren van de uitslag | De vorige toestemming blijft ingetrokken. | `test_meetstart_alleen_lezen`, `test_pool_publicatiefout` |
 | De meetwerker mist lees- of zoekrecht op de datamap en kan het slot niet nemen | Ook na zijn vertrek behouden alle actieve werkers de download, het prullenbakbestand en de clientregistratie tot een volgende gezonde meting. | `test_slotfout_aparte_meetwerker`, `test_slotfout_tijdens_toestemmingscontrole`, `test_lezende_werker_zonder_zoekrecht_trekt_meting_in` |
 | Een werker kan de ingestelde sleutel niet lezen, of alle werkers zijn herstart | De opruimer wacht op een nieuwe gezonde meting. | `test_leesfout_trekt_toestemming_in`, `test_meetstart_in_ander_proces` |
-| Een startende werker kan het meetkanaal niet openen terwijl SQLite bereikbaar is | SQLite trekt de gedeelde toestemming in. De kern blijft beschikbaar en de opruimer wacht op een nieuwe gezonde meting. | `test_kanaal_onleesbaar_bij_start_behoudt_kern` |
+| Een startende werker kan het meetkanaal niet openen terwijl SQLite bereikbaar is | SQLite trekt de gedeelde toestemming in en de kern blijft beschikbaar. Een nieuwe gezonde meting kan opruimen weer toestaan zodra alle actieve meetwerkers een fout kunnen doorgeven. | `test_kanaal_onleesbaar_bij_start_behoudt_kern` |
+| Na een kanaalfout bij de start verliest dezelfde meetwerker ook toegang tot het datamapslot | Zolang een actieve werker een volgende fout niet kan melden, geeft ook een gezonde meting van een andere werker geen toestemming. Na herstel van het kanaal of vertrek van de werker is een nieuwe gezonde meting nodig. Download, prullenbakbestand en clientregistratie blijven behouden. | `test_slotfout_na_kanaalfout_bij_start`, `test_werkerslot_onleesbaar_trekt_toestemming_in` |
 | De poolmeting vervalt tijdens het verzamelen of het legen van een map | De volgende actie stopt. De resterende inhoud kan worden teruggezet. | `test_run_once_rechecks_pool_after_gathering`, `test_pool_pauze_binnen_prullenbakmap`, `test_gedeeltelijke_map_terugzetten` |
 | De meting vervalt tijdens de duurzame boeking voor het eerste bestand van een map | Ook dat eerste bestand blijft staan en de map blijft volledig terugzetbaar. | `test_meetuitval_tijdens_deelboeking_behoudt_eerste_bestand` |
 | SQLite weigert de reservering van een prullenbakpad | De download blijft bij SABnzbd of qBittorrent geregistreerd en op zijn oorspronkelijke plek. | `test_geweigerde_reservering_behoudt_download_en_client` |
+| De downloadclient weigert de afmelding of vermeldt de download nog bij teruglezen | De download blijft op het oorspronkelijke pad. De ronde stopt en behoudt ook bij ruimtegebrek de prullenbakinhoud. Een latere ronde die de client mist, houdt de download op zijn pad. Dezelfde client kan de afmelding opnieuw bevestigen. Een eerder verplaatst bestand zonder bevestigde vrijgave blijft handmatig terugzetbaar. | `test_qbit_weigert_afmelden`, `test_sab_afmelding_na_herstart`, `test_onbevestigde_afmelding_blijft_bij_de_client`, `test_historische_clientboeking_blijft_terugzetbaar`, `test_onderbroken_vrijgave_behoudt_prullenbak` |
 | De voorboeking van een verwijdering mislukt bij het vastleggen | Het bestand blijft in de prullenbak. De reservering en verwijderopdracht gebruiken een duurzame SQLite-commit. | `test_geweigerde_commit_voor_unlink_behoudt_bestand`, `test_boekingen_gebruiken_duurzame_commit` |
 | De eindboeking van een verwijdering valt uit en een volgende download heeft dezelfde naam | Elke registratie reserveert haar pad, ook na herstart. De tweede download houdt zijn eigen bewaartermijn en blijft terugzetbaar. | `test_bewaartermijn_na_onderbroken_boeking` |
 | Twee bestaande registraties verwijzen naar hetzelfde prullenbakpad | Zowel opruimen als terugzetten laat het bestand op zijn plaats, ook als een van de registraties al is afgesloten. | `test_dubbele_prullenbakverwijzing_behoudt_bestand` |

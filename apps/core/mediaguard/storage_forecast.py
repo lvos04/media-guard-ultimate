@@ -13,6 +13,7 @@ van originelen in de quarantaine tot de pool weer gezond is (verbeterlijst 37).
 
 from __future__ import annotations
 
+import fcntl
 import io
 import logging
 import os
@@ -174,7 +175,9 @@ async def truenas_health(ctx: AppContext) -> dict[str, Any] | None:
 POOL_STATE = "truenas_pool"
 # Migratie 071 trekt deze opdracht in zodra de ingestelde bron verandert.
 POOL_REQUEST = "truenas_pool_request_v1"
+_CLEANUP_REQUEST = "truenas_pool_cleanup_request"
 _POOL_PIPE = "truenas_pool_pipe"
+_DISCONNECTED = "truenas_pool_disconnected"
 _REVOKED = b"!"  # komt nooit voor in een hexadecimale opdracht-ID
 POOL_MAX_AGE = timedelta(seconds=900)
 
@@ -226,10 +229,44 @@ def _request_pipe(ctx: AppContext, *, create: bool = False) -> io.FileIO:
     return stream
 
 
+def _worker_lock(ctx: AppContext, mode: int) -> io.FileIO:
+    path = ctx.db.path.with_suffix(".pool-workers")
+    fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    lock = io.FileIO(fd, "r")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("Ongeldig slotbestand voor de meetwerkers")
+        fcntl.flock(fd, mode)
+    except BaseException:
+        lock.close()
+        raise
+    return lock
+
+
+def _workers_connected(ctx: AppContext) -> bool:
+    # Iedere werker zonder intrekkanaal houdt een gedeeld slot. De kernel laat het
+    # los bij procesuitval. Alleen een nieuwe meting kan daarna toestemming geven.
+    try:
+        with _worker_lock(ctx, fcntl.LOCK_EX | fcntl.LOCK_NB):
+            return True
+    except OSError:
+        return False
+
+
+def _block_disconnected_worker(ctx: AppContext) -> None:
+    if _DISCONNECTED not in ctx.services:
+        ctx.services[_DISCONNECTED] = _worker_lock(ctx, fcntl.LOCK_SH)
+
+
 def _hold_request_pipe(ctx: AppContext) -> io.FileIO:
     # Onder het datamapslot, ook bij de start van een werker vóór de eerste meting.
-    if _POOL_PIPE not in ctx.services:
+    stream = ctx.services.get(_POOL_PIPE)
+    if stream is None or stream.closed or _DISCONNECTED in ctx.services:
         ctx.services[_POOL_PIPE] = _request_pipe(ctx, create=True)
+        if stream is not None:
+            stream.close()
+    if lock := ctx.services.pop(_DISCONNECTED, None):
+        lock.close()
     return ctx.services[_POOL_PIPE]
 
 
@@ -247,8 +284,10 @@ def _revoke_pool_request(ctx: AppContext) -> None:
     except FileNotFoundError:
         pass  # zonder kanaal kan geen enkele werker een opdracht valideren
     except (OSError, ValueError):
-        # Bij een nog niet aangesloten werker kan het kanaal onleesbaar zijn.
-        ctx.db.execute("DELETE FROM system_state WHERE key=?", (POOL_REQUEST,))
+        try:
+            _block_disconnected_worker(ctx)
+        finally:
+            ctx.db.execute("DELETE FROM system_state WHERE key=?", (POOL_REQUEST,))
 
 
 def _current_request(ctx: AppContext, request_id: str) -> bool:
@@ -274,7 +313,10 @@ def _start_pool_request(ctx: AppContext, *, skip_unconfigured: bool = False) -> 
             stream = _hold_request_pipe(ctx)
             stream.read()
             request_id = uuid4().hex
-            ctx.state_set(POOL_REQUEST, request_id)
+            with ctx.db.transaction():
+                ctx.state_set(POOL_REQUEST, request_id)
+                if _workers_connected(ctx):
+                    ctx.state_set(_CLEANUP_REQUEST, request_id)
             if stream.write(request_id.encode("ascii")) != len(request_id):
                 raise OSError("Nieuwe poolopdracht niet gedeeld")
             return request_id
@@ -323,13 +365,17 @@ async def startup(ctx: AppContext) -> None:
         with ctx.db.startup_lock():
             _hold_request_pipe(ctx)
     except OSError:
-        _revoke_pool_request(ctx)
+        try:
+            _block_disconnected_worker(ctx)
+        finally:
+            _revoke_pool_request(ctx)
         LOGGER.exception("Kanaal voor de poolmeting niet beschikbaar bij de start")
 
 
 async def shutdown(ctx: AppContext) -> None:
-    if stream := ctx.services.pop(_POOL_PIPE, None):
-        stream.close()
+    for key in (_POOL_PIPE, _DISCONNECTED):
+        if stream := ctx.services.pop(key, None):
+            stream.close()
 
 
 async def refresh_pool(ctx: AppContext) -> dict[str, Any]:
@@ -362,8 +408,13 @@ def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> s
             return unknown
         state = ctx.state_get(POOL_STATE, {})
         request_id = ctx.state_get(POOL_REQUEST)
-        if not isinstance(request_id, str) or not _current_request(ctx, request_id):
-            return unknown
+        with ctx.db.startup_lock():
+            if (not isinstance(request_id, str) or ctx.state_get(_CLEANUP_REQUEST) != request_id
+                    or not _current_request(ctx, request_id)):
+                return unknown
+            if not _workers_connected(ctx):
+                _revoke_pool_request(ctx)
+                return unknown
     except Exception:  # noqa: BLE001 - een onleesbare meting geeft geen toestemming
         try:
             _revoke_pool_request(ctx)

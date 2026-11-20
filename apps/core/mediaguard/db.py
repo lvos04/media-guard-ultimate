@@ -494,6 +494,11 @@ class Database:
     def fetch_dicts(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
         return [dict(r) for r in self.fetch_all(sql, params)]
 
+    def iter_dicts(self, sql: str, params: Sequence[Any] = ()) -> Iterator[dict[str, Any]]:
+        with contextlib.closing(self._connect().execute(sql, params)) as rows:
+            for row in rows:
+                yield dict(row)
+
     def backup_to(self, target: Path) -> None:
         """Consistente online back-up via de SQLite backup-API (WAL-veilig).
 
