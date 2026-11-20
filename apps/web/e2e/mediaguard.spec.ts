@@ -7,7 +7,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
  */
 test.describe.configure({ mode: "default" });
 
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
+import { ADMIN } from "./fixtures/admin";
 
 async function login(page: Page) {
   await page.goto("/login");
@@ -205,6 +205,11 @@ for (const theme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: theme });
     await page.clock.install();
     let mode: "fresh" | "stale" | "offline" = "fresh";
+    // De echte kern deelt de vooruitgezette browserklok niet.
+    await page.route("**/api/v1/status", async route => {
+      const res = await route.fetch();
+      return route.fulfill({ json: { ...await res.json(), time: await page.evaluate(() => new Date().toISOString()) } });
+    });
     await page.route("**/api/v1/instances", (route) => route.fulfill({ json: [{
       id: "testfilms", name: "Testfilms", app: "radarr", status: "healthy", last_check_at: "2025-01-01T00:00:00Z",
     }] }));
@@ -265,19 +270,24 @@ for (const theme of ["light", "dark"] as const) {
 test("768 px: Overzicht ververst de eigen bronnen en toont geen onbevestigde voortgang", async ({ page }) => {
   await page.setViewportSize({ width: 768, height: 900 });
   await page.clock.install();
+  const measuredAt = () => page.evaluate(() => new Date().toISOString());
+  await page.route("**/api/v1/status", async route => {
+    const reply = await route.fetch();
+    return route.fulfill({ json: { ...await reply.json(), time: await measuredAt() } });
+  });
   let available = 7;
   let wanted: number | null = null;
   let progress: number | null = null;
   let jobsOffline = false;
-  await page.route("**/api/v1/library/kpis", (route) => route.fulfill({ json: { totals: {
+  await page.route("**/api/v1/library/kpis", async (route) => route.fulfill({ json: { generated_at: await measuredAt(), totals: {
     available, total: 42, missing: 24, unmonitored: 0, upcoming: 0,
   } } }));
   await page.route("**/api/v1/wanted/kpis", (route) => route.fulfill(wanted === null
     ? { status: 503, json: { detail: "Testbron reageert niet" } }
     : { json: { missing: wanted, missing_aired_7d: 0, resolved_7d: 0 } }));
-  await page.route("**/api/v1/encoding/jobs", (route) => route.fulfill(jobsOffline
+  await page.route("**/api/v1/encoding/jobs", async (route) => route.fulfill(jobsOffline
     ? { status: 503, json: { detail: "Testbron reageert niet" } }
-    : { json: [{ id: 680, status: "running", source_path: "Testfilm.mkv", progress }] }));
+    : { json: [{ id: 680, status: "running", updated_at: await measuredAt(), source_path: "Testfilm.mkv", progress }] }));
   await login(page);
   const main = page.getByRole("main");
   const library = main.locator(".kpi").filter({ hasText: "Beschikbaar" });

@@ -15,14 +15,17 @@ import { ToastProvider, useToast } from "@/components/mg/toast";
 import { ALL_NAV_ITEMS, EXTRA_SHORTCUTS, isActive, NAV } from "@/components/shell/nav";
 import { navigateOrAsk, UnsavedGuard } from "@/components/shell/unsaved-guard";
 import { api } from "@/lib/api/client";
-import type { EffectiveSetting, LibraryItem, LibraryPage, NotificationRow, SettingDef, SystemStatus } from "@/lib/api/contracts";
-import { useResource } from "@/lib/api/hooks";
+import type { EffectiveSetting, LibraryPage, NotificationRow, SettingDef, SystemStatus } from "@/lib/api/contracts";
+import { useResource, verifyResource } from "@/lib/api/hooks";
 import { EventsProvider, useCoreEvents, useLiveStatus } from "@/lib/events";
 import { setShowTech, useShowTech, useTechDetailsSync } from "@/lib/tech-pref";
 import { useScrollableRegions } from "@/lib/a11y";
 import { HUB_URL_SETTING, hubUrl } from "@/lib/hub";
 import { arrMessage } from "@/lib/arr-messages";
-import { totalStatus, useTodoRows } from "@/lib/todo";
+import { TodoContext, totalStatus, useTodoRows, useTodoList, useTodoLabel } from "@/lib/todo";
+import { ReadingMark } from "@/components/mg/reading-mark";
+import { combinedReading, OVERVIEW_REFRESH_MS, sourceReading, unknownReading, type Reading } from "@/lib/reading";
+import { ReadingClock, useReadingTime } from "@/lib/reading-clock";
 import { useHealth, type Health } from "@/lib/health";
 import { LOCALES, useI18n, type Locale, parseServerDate } from "@/lib/i18n";
 import { instanceLabel, plainText } from "@/lib/labels";
@@ -30,8 +33,8 @@ import { SessionProvider, useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------- shell data (status)
-interface ShellData { status: SystemStatus | null; reloadStatus: () => Promise<void>; statusError: boolean }
-const ShellContext = createContext<ShellData>({ status: null, reloadStatus: async () => undefined, statusError: false });
+interface ShellData { status: SystemStatus | null; reloadStatus: () => Promise<void>; statusError: boolean; reading: Reading }
+const ShellContext = createContext<ShellData>({ status: null, reloadStatus: async () => undefined, statusError: false, reading: unknownReading });
 export const useShell = () => useContext(ShellContext);
 
 type ThemeChoice = "dark" | "light" | "system";
@@ -100,14 +103,17 @@ function ShellGate({ children }: { children: ReactNode }) {
   return (
     <EventsProvider enabled>
       <ToastProvider>
-        <ShellFrame>{children}</ShellFrame>
+        <ReadingClock><ShellFrame>{children}</ShellFrame></ReadingClock>
       </ToastProvider>
     </EventsProvider>
   );
 }
 
 function ShellFrame({ children }: { children: ReactNode }) {
-  const statusRes = useResource<SystemStatus>("/status", undefined, 20_000, { liveSlowdown: true });
+  const statusRes = useResource<SystemStatus>("/status", undefined, OVERVIEW_REFRESH_MS);
+  const reading = sourceReading(statusRes, useReadingTime(), statusRes.data?.time ?? null);
+  const health = useHealth(OVERVIEW_REFRESH_MS);
+  const todo = useTodoRows(health);
   const { reload } = statusRes;
   // events kunnen in stoten komen: één verversing per halve seconde is genoeg
   const debounced = useDebounced(reload, 500);
@@ -146,10 +152,10 @@ function ShellFrame({ children }: { children: ReactNode }) {
       .catch(() => { if (!userChoseTheme) applyTheme("system"); });
   }, [serverTheme, defaultTheme, meLoaded]);
 
-  const shell = useMemo<ShellData>(() => ({ status: statusRes.data, reloadStatus: reload, statusError: Boolean(statusRes.error) }), [reload, statusRes.data, statusRes.error]);
+  const shell: ShellData = { status: statusRes.data, reloadStatus: reload, statusError: Boolean(statusRes.error), reading };
   const { t } = useI18n();
   return (
-    <ShellContext.Provider value={shell}>
+    <ShellContext.Provider value={shell}><TodoContext.Provider value={todo}>
       {/* AppSchil (Peil C-01): zijbalk ≥ 1024 px (lg), daaronder kopbalk + ondernavigatie; skiplink is de eerste tabstop */}
       <a className="skip-link focus-ring fixed top-[-4rem] left-3 z-toast rounded-lg bg-primary px-3 py-2.5 font-semibold text-primary-foreground no-underline focus:top-3" href="#main">{t("app.skipToContent")}</a>
       <div className="app min-h-screen lg:grid lg:grid-cols-[16rem_minmax(0,1fr)]">
@@ -165,7 +171,7 @@ function ShellFrame({ children }: { children: ReactNode }) {
       <TechSync />
       <EmergencyStopDialog />
       <UnsavedGuard />
-    </ShellContext.Provider>
+    </TodoContext.Provider></ShellContext.Provider>
   );
 }
 
@@ -198,9 +204,10 @@ function Brand() {
  */
 function HubLink({ className }: { className?: string }) {
   const { t } = useI18n();
-  const setting = useResource<EffectiveSetting[]>("/settings/effective", { keys: HUB_URL_SETTING });
+  const setting = useResource<EffectiveSetting[]>("/settings/effective", { keys: HUB_URL_SETTING }, 60_000);
+  const reading = sourceReading(setting, useReadingTime(), undefined, 120_000);
   const href = hubUrl(setting.data?.find((r) => r.key === HUB_URL_SETTING)?.value);
-  if (!href) return null;
+  if (!href || reading.state !== "fresh") return null;
   return (
     <a href={href} className={cn(buttonVariants({ variant: "secundair" }), "w-full justify-start", className)} data-testid="hub-link">
       <ArrowLeft className="ico" aria-hidden="true" />{t("hub.back")}
@@ -211,15 +218,11 @@ function HubLink({ className }: { className?: string }) {
 function NavList({ onNavigate, only }: { onNavigate?: () => void; only?: (key: string) => boolean }) {
   const pathname = useNavPath();
   const { t, num } = useI18n();
-  const health = useHealth();
-  const todo = useTodoRows().length;
-  // Migratie alleen tonen zolang er een migratie loopt (of als je er nu bent)
-  const runs = useResource<Array<{ status: string }>>("/migration/runs");
-  const migrating = (runs.data ?? []).some((r) => r.status === "active") || isActive("/migratie", pathname);
-  const counts: Record<string, { value: number; tone?: "danger" | "warning" } | undefined> = {
-    // zelfde telling als banner, zijbalk en kopbalk: de lijst 'Wacht op jou' (N13)
-    activity: todo > 0 ? { value: todo, tone: health.errors > 0 ? "danger" : "warning" } : undefined,
-  };
+  const todo = useTodoList();
+  const count = useTodoLabel(todo, num(todo.rows.length));
+  const runs = useResource<Array<{ status: string }>>("/migration/runs", undefined, OVERVIEW_REFRESH_MS);
+  const migrating = sourceReading(runs, useReadingTime()).state === "fresh" && runs.data?.some(r => r.status === "active")
+    || isActive("/migratie", pathname);
   return (
     <nav className="nav flex flex-col gap-0.5" aria-label={t("nav.main")}>
       {NAV.map((group) => (
@@ -227,7 +230,7 @@ function NavList({ onNavigate, only }: { onNavigate?: () => void; only?: (key: s
           {group.label ? <div className="nav-group mt-3 mb-1 px-3 text-sm font-semibold text-muted-foreground">{t(group.label)}</div> : null}
           {group.items.filter((item) => (!item.conditional || (item.key === "migration" && migrating)) && (only ? only(item.key) : !item.footer)).map((item) => {
             const active = isActive(item.href, pathname);
-            const count = counts[item.key];
+            const showCount = item.key === "activity" && Boolean(todo.rows.length || todo.missing.length);
             return (
               // actief = bg-accent + 4 px balk + aria-current (Peil C-01); teller in inkt, nooit rood
               <Link key={item.key} href={item.href} aria-current={active ? "page" : undefined} onClick={onNavigate} prefetch={false}
@@ -236,7 +239,7 @@ function NavList({ onNavigate, only }: { onNavigate?: () => void; only?: (key: s
                   "aria-[current=page]:before:absolute aria-[current=page]:before:inset-y-2 aria-[current=page]:before:-left-3 aria-[current=page]:before:w-1 aria-[current=page]:before:rounded-r-full aria-[current=page]:before:bg-primary")}>
                 <item.icon className="ico size-5 shrink-0" aria-hidden="true" />
                 <span className="nav-label min-w-0 flex-1 break-words">{t(item.label)}</span>
-                {count ? <span className="nav-count cijfers min-w-6 rounded-full bg-foreground px-1.5 text-center text-sm font-semibold text-background">{num(count.value)}</span> : null}
+                {showCount ? <span className={todo.missing.length ? "min-w-0 max-w-[60%] break-words text-sm" : "nav-count cijfers min-w-6 rounded-full bg-foreground px-1.5 text-center text-sm font-semibold text-background"}>{count}</span> : null}
               </Link>
             );
           })}
@@ -248,7 +251,7 @@ function NavList({ onNavigate, only }: { onNavigate?: () => void; only?: (key: s
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { t } = useI18n();
-  const { status } = useShell();
+  const { status, reading } = useShell();
   const live = useLiveStatus();
   const { locale } = useSession();
   const health = useHealth();
@@ -265,7 +268,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         {live === "offline"
           ? <div className="health-line flex items-center gap-2"><StatusChip tone="unknown">{t("live.offline")}</StatusChip></div>
           : <div className="health-line flex items-center gap-2 text-foreground" title={t("live.title")}>{live === "live" ? <Radio className="ico size-[1.125rem]" aria-hidden="true" /> : <LoaderCircle className="ico size-[1.125rem]" aria-hidden="true" />}<span>{t(`live.${live}`)}</span></div>}
-        <div className="version-line flex justify-between text-muted-foreground"><span>{status ? t("health.version", { version: status.version }) : "—"}</span><span>{locale}</span></div>
+        <div className="version-line flex justify-between text-muted-foreground"><span>{status ? t("health.version", { version: status.version }) : "—"} <ReadingMark reading={reading} /></span><span>{locale}</span></div>
       </div>
     </>
   );
@@ -278,19 +281,20 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 function SidebarHealth({ health }: { health: Health }) {
   const { t } = useI18n();
   // zelfde telling als 'Wat actie nodig heeft' op Overzicht
-  const rows = useTodoRows();
-  const todo = rows.length;
-  if (health.level === "offline") return <div className="health-line flex items-center gap-2" data-testid="sidebar-health"><StatusChip tone="unknown">{t("health.offline")}</StatusChip></div>;
-  const total = totalStatus(health, rows);
+  const list = useTodoList();
+  const todo = list.rows.length;
+  const count = useTodoLabel(list, t("health.attention", { count: todo }));
   const reading = health.measurement;
-  const badge = reading.stale ? <StatusChip tone="stale">{t("state.staleShort")}</StatusChip>
-    : reading.errors === null ? <StatusChip tone="unknown">{t("status.unknown")}</StatusChip>
-      : total === "warning" ? <StatusChip tone="warning">{t("status.degraded")}</StatusChip>
+  const total = totalStatus({ errors: reading.errors ?? 0, level: reading.state },
+    list.rows.filter(r => r.reading.state === "fresh"));
+  const badge = reading.state !== "fresh" ? <ReadingMark reading={reading} />
+    : total === "warning" ? <StatusChip tone="warning">{t("status.degraded")}</StatusChip>
+      : reading.errors === null || !reading.complete ? <StatusChip tone="unknown">{t("status.unknown")}</StatusChip>
         : <StatusChip tone="neutral">{t("overview.kpi.errorsNone")}</StatusChip>;
-  if (!todo) return <div className="health-line flex items-center gap-2" data-testid="sidebar-health">{badge}</div>;
+  if (!todo && !list.missing.length) return <div className="health-line flex items-center gap-2" data-testid="sidebar-health">{badge}</div>;
   return (
     <div className="health-line flex flex-col items-start gap-1.5" data-testid="sidebar-health">
-      <Link className="focus-ring inline-flex min-h-touch items-center gap-2 rounded-lg font-semibold text-foreground no-underline hover:underline" href="/#todo"><ListChecks className="ico size-[1.125rem]" aria-hidden="true" />{t("health.attention", { count: todo })}</Link>
+      <Link className="focus-ring inline-flex min-h-touch items-center gap-2 rounded-lg font-semibold text-foreground no-underline hover:underline" href="/#todo"><ListChecks className="ico size-[1.125rem]" aria-hidden="true" />{count}</Link>
       {badge}
     </div>
   );
@@ -360,26 +364,27 @@ function useNavPath(): string {
 function StatusPill() {
   const { t, num } = useI18n();
   const h = useHealth();
-  const rows = useTodoRows();
-  const todo = rows.length;
-  // Peil: core onbereikbaar = Onbekend (stippel), nooit rood; rood alleen voor gemeten fouten
+  const list = useTodoList();
+  const todo = list.rows.length;
+  const count = useTodoLabel(list, t("health.attentionPlain", { count: todo }));
   const reading = h.measurement;
-  const tone = reading.stale || reading.failed ? null : h.level === "action" ? "danger" : h.level === "warning" ? "warning" : null;
-  const offline = h.level === "offline";
-  const active = reading.complete && !reading.stale ? reading.active : null;
+  const tone = reading.state !== "fresh" ? null : reading.errors ? "danger" : list.known ? "warning" : null;
+  const offline = reading.state !== "fresh";
+  const active = reading.complete && reading.state === "fresh" ? reading.active : null;
   const parts = [
     active && h.activeParts.downloads ? t("health.part.downloads", { count: h.activeParts.downloads }) : null,
     active && h.activeParts.searches ? t("health.part.searches", { count: h.activeParts.searches }) : null,
     active && h.activeParts.encodes ? t("health.part.encodes", { count: h.activeParts.encodes }) : null,
     active && h.activeParts.tasks ? t("health.part.tasks", { count: h.activeParts.tasks }) : null,
   ].filter(Boolean).join(" · ");
-  const title = [parts || null, todo ? t("health.attentionPlain", { count: todo }) : null].filter(Boolean).join(" — ") || t("topbar.activeTitle");
+  const title = [parts || null, todo || list.missing.length ? count : null].filter(Boolean).join(" — ") || t("topbar.activeTitle");
   return (
-    <Link className={cn("top-pill focus-ring hidden min-h-touch items-center gap-1.5 rounded-full border-2 border-border-strong px-3 text-sm font-semibold whitespace-nowrap text-foreground no-underline hover:bg-accent md:inline-flex", tone && `top-pill--${tone}`, offline && "border-dashed border-unknown bg-unknown-bg text-unknown-ink")} href={todo ? "/activiteit?tab=problemen" : "/activiteit"} title={title} data-testid="status-pill">
+    <Link className={cn("top-pill focus-ring hidden min-h-touch min-w-0 max-w-64 flex-wrap items-center gap-1.5 rounded-full border-2 border-border-strong px-3 text-sm font-semibold text-foreground no-underline hover:bg-accent md:inline-flex", tone && `top-pill--${tone}`, offline && "border-dashed border-unknown bg-unknown-bg text-unknown-ink")} href={todo ? "/activiteit?tab=problemen" : "/activiteit"} title={title} data-testid="status-pill">
       {/* Peil: inktteller met tekst; nooit een rode of groene stip */}
       {todo ? <ListChecks className="ico" aria-hidden="true" /> : active ? <Activity className="ico" aria-hidden="true" /> : offline ? <CircleHelp className="ico" aria-hidden="true" /> : null}
-      {todo ? `${t("health.attentionPlain", { count: todo })}${rows.some((row) => row.stale) ? ` · ${t("state.staleShort")}` : ""}`
-        : active ? t("topbar.busy", { count: num(active) }) : active === 0 ? t("topbar.allQuiet") : t("status.unknown")}
+      {todo || list.missing.length ? count
+        : active ? t("topbar.busy", { count: num(active) }) : active === 0 ? t(reading.errors ? "status.degraded" : "topbar.allQuiet") : reading.state === "fresh" ? t("status.unknown") : <ReadingMark reading={reading} />}
+      {todo && !list.missing.length && reading.state !== "fresh" ? <ReadingMark reading={reading} /> : null}
     </Link>
   );
 }
@@ -410,37 +415,29 @@ function GlobalSearch({ autoFocus, onDone }: { autoFocus?: boolean; onDone?: () 
   const router = useRouter();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  const [settings, setSettings] = useState<SettingDef[]>([]);
-  const [media, setMedia] = useState<LibraryItem[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [term, setTerm] = useState("");
   const [cursor, setCursor] = useState(0);
   const { locale } = useSession();
+  const query = q.trim();
   useEffect(() => {
-    const term = q.trim();
-    if (term.length < 2) { setSettings([]); setMedia([]); return; }
-    let live = true;
-    setBusy(true);
-    const id = window.setTimeout(() => {
-      Promise.allSettled([
-        api.get<LibraryPage>("/library", { q: term, page_size: 8 }),
-        api.get<SettingDef[]>("/settings/search", { q: term }),
-      ]).then(([lib, set]) => {
-        if (!live) return;
-        setMedia(lib.status === "fulfilled" ? lib.value.items ?? [] : []);
-        setSettings(set.status === "fulfilled" ? set.value.slice(0, 4) : []);
-        setCursor(0);
-        setBusy(false);
-      });
-    }, 180);
-    return () => { live = false; window.clearTimeout(id); };
-  }, [q]);
+    const timer = window.setTimeout(() => { setTerm(query); setCursor(0); }, 180);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+  const enabled = open && query.length >= 2 && query === term;
+  const lib = useResource<LibraryPage>(enabled ? "/library" : null, { q: term, page_size: 8 }, OVERVIEW_REFRESH_MS);
+  const defs = useResource<SettingDef[]>(enabled ? "/settings/search" : null, { q: term }, OVERVIEW_REFRESH_MS);
+  const now = useReadingTime();
+  const libraryReading = sourceReading(lib, now);
+  const settingsReading = sourceReading(defs, now);
+  const media = libraryReading.state === "fresh" ? lib.data?.items ?? [] : [];
+  const settings = settingsReading.state === "fresh" ? defs.data?.slice(0, 4) ?? [] : [];
+  const busy = query.length >= 2 && (!enabled || lib.loading || defs.loading);
   const hits: SearchHit[] = [
     ...media.filter((m) => m.kind === "series").map((m) => ({ href: `/bibliotheek/${m.instance_id}/${m.id}`, title: m.title + (m.year ? ` (${m.year})` : ""), sub: instanceLabel(m.instance_id, m.instance_name, lang), group: t("search.group.series"), icon: Tv, poster: m.poster_url })),
     ...media.filter((m) => m.kind === "movie").map((m) => ({ href: `/bibliotheek/${m.instance_id}/${m.id}`, title: m.title + (m.year ? ` (${m.year})` : ""), sub: instanceLabel(m.instance_id, m.instance_name, lang), group: t("search.group.movies"), icon: Film, poster: m.poster_url })),
     ...settings.map((h) => ({ href: `/instellingen?q=${encodeURIComponent(h.key)}`, title: locale === "en-US" ? h.label_en : h.label_nl, group: t("search.group.settings"), icon: Settings2 })),
   ];
-  const term = q.trim();
-  const all: SearchHit[] = term ? [...hits, { href: `/bibliotheek?q=${encodeURIComponent(term)}`, title: t("topbar.searchLibrary", { q: term }), group: t("search.group.more"), icon: Search }] : [];
+  const all: SearchHit[] = query ? [...hits, { href: `/bibliotheek?q=${encodeURIComponent(query)}`, title: t("topbar.searchLibrary", { q: query }), group: t("search.group.more"), icon: Search }] : [];
   const go = (href: string) => { setOpen(false); setQ(""); onDone?.(); navigateOrAsk(href, () => router.push(href)); };
   let lastGroup = "";
   return (
@@ -463,17 +460,19 @@ function GlobalSearch({ autoFocus, onDone }: { autoFocus?: boolean; onDone?: () 
             if (e.key === "Escape") { (e.target as HTMLInputElement).blur(); onDone?.(); }
           }}
           role="combobox"
-          aria-expanded={open && Boolean(term)}
+          aria-expanded={open && Boolean(query)}
           aria-controls="global-search-results"
           aria-autocomplete="list"
         />
         <span className="hidden lg:inline-grid"><Kbd>/</Kbd></span>
       </label>
-      {open && term ? (
+      {open && query ? (
         <div className="popover search-results absolute inset-x-0 top-full z-overlay mt-1" id="global-search-results" role="listbox" data-testid="search-results">
           <div className="list">
+            {enabled && !lib.loading && libraryReading.state !== "fresh" ? <div data-testid="search-library-reading">{t("nav.library")} <ReadingMark reading={libraryReading} /></div> : null}
+            {enabled && !defs.loading && settingsReading.state !== "fresh" ? <div data-testid="search-settings-reading">{t("settings.title")} <ReadingMark reading={settingsReading} /></div> : null}
             {busy && !hits.length ? <div className="list-row"><span className="t-3">{t("state.loading")}</span></div> : null}
-            {!busy && term.length >= 2 && !hits.length ? <div className="list-row"><span className="t-3">{t("search.none", { q: term })}</span></div> : null}
+            {enabled && libraryReading.state === "fresh" && settingsReading.state === "fresh" && !hits.length ? <div className="list-row"><span className="t-3">{t("search.none", { q: query })}</span></div> : null}
             {all.map((h, i) => {
               const header = h.group !== lastGroup ? <div className="px-4 pt-2 pb-1 text-sm font-semibold text-muted-foreground">{h.group}</div> : null;
               lastGroup = h.group;
@@ -535,37 +534,56 @@ function SeverityIcon({ severity }: { severity: string }) {
   );
 }
 
-function Notifications() {
+function NotificationItem({ n, count, onNavigate }: { n: NotificationRow; count: number; onNavigate: () => void }) {
   const { t, relative, locale } = useI18n();
-  const { status, reloadStatus } = useShell();
+  const [expanded, setExpanded] = useState(false);
+  const detail = useResource<NotificationRow>(expanded ? `/notifications/${n.id}` : null, undefined, OVERVIEW_REFRESH_MS);
+  const reading = sourceReading(detail, useReadingTime());
+  const summary = (n as { summary?: string }).summary;
+  const preview = plainText(arrMessage(n.body, locale), locale);
+  const long = preview.length > 120 || (summary !== undefined && (summary !== n.body || preview.endsWith("…")));
+  const body = expanded && detail.data ? plainText(arrMessage(detail.data.body, locale), locale) : preview;
+  const row = (
+    <>
+      <SeverityIcon severity={n.severity} />
+      <div className="list-main"><div className="list-title" style={{ whiteSpace: "normal" }}>{n.title}{count > 1 ? <span className="chip ml-1.5">{count}×</span> : null}</div>
+        <div className="list-sub" style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>{long && !expanded ? `${body.slice(0, 117).trimEnd()}…` : body}
+          {expanded && !detail.loading ? <ReadingMark reading={reading} /> : null}
+          {long ? <button type="button" aria-expanded={expanded} className="link-more ml-1 border-0 bg-transparent p-0" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setExpanded(!expanded); }}>{expanded ? t("notif.less") : t("notif.more")}</button> : null}</div></div>
+      <span className="cijfers text-sm text-muted-foreground">{relative(n.ts)}</span>
+    </>
+  );
+  const href = notificationHref(n.link);
+  return href
+    ? <Link href={href} className="list-row list-row--hover" onClick={onNavigate}>{row}</Link>
+    : <div className="list-row">{row}</div>;
+}
+
+function Notifications() {
+  const { t, time } = useI18n();
+  const { status, reloadStatus, reading: coreReading } = useShell();
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [limit, setLimit] = useState(30);
-  const list = useResource<NotificationRow[]>(open ? "/notifications" : null, { limit });
-  // het getal blijft staan terwijl de status opnieuw laadt (N15)
-  const [unread, setUnread] = useState(0);
-  const fresh = status?.unread_notifications;
-  useEffect(() => { if (typeof fresh === "number") setUnread(fresh); }, [fresh]);
-  // T12: de bel toont core's teller (ongelezen + wat op jou wacht); zonder die route de eigen lijst
-  const counts = useResource<{ unread?: number; attention?: number; badge?: number }>("/notifications/count", undefined, 60_000);
+  const list = useResource<NotificationRow[]>(open ? "/notifications" : null, { limit }, OVERVIEW_REFRESH_MS);
+  const counts = useResource<{ unread?: number; attention?: number; badge?: number }>("/notifications/count", undefined, OVERVIEW_REFRESH_MS);
+  const now = useReadingTime();
+  const countReading = sourceReading(counts, now);
+  const listReading = sourceReading(list, now);
+  const todo = useTodoList();
+  const olderCore = counts.error?.kind === "unavailable";
+  const unread = olderCore ? status?.unread_notifications : counts.data?.unread;
+  const waiting = unread ? 0 : olderCore ? todo.known : counts.data?.attention;
+  const badge = olderCore ? (unread || waiting) : counts.data?.badge;
+  const badgeReading = olderCore ? (unread ? coreReading : combinedReading([coreReading, todo.reading])) : countReading;
   useCoreEvents("notification", () => void counts.reload());
-  const todoCount = useTodoRows().length;
-  const waiting = unread ? 0 : (counts.data?.attention ?? todoCount);
-  const badge = counts.data?.badge ?? (unread || waiting);
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  // core stuurt standaard een samenvatting (≤ 120 tekens); de volledige tekst pas bij uitklappen
-  const [full, setFull] = useState<Record<number, string>>({});
-  const toggle = (n: NotificationRow) => {
-    setExpanded((old) => { const nx = new Set(old); if (nx.has(n.id)) nx.delete(n.id); else nx.add(n.id); return nx; });
-    if (full[n.id] === undefined) void api.get<NotificationRow>(`/notifications/${n.id}`).then((r) => setFull((f) => ({ ...f, [n.id]: r.body ?? "" }))).catch(() => undefined);
-  };
   useCoreEvents("notification", () => { void reloadStatus(); if (open) void list.reload(); });
   // een mislukte klik meldt zich (punt 39); niet stil laten falen
   const markRead = async () => {
     try {
       await api.post("/notifications/read-all");
       await reloadStatus();
-      await list.reload();
+      await Promise.all([list.reload(), counts.reload()]);
     } catch (e) {
       toast.push("danger", t("toast.failed", { message: e instanceof Error ? e.message : String(e) }));
     }
@@ -573,34 +591,19 @@ function Notifications() {
   const ref = useDismiss(open, () => setOpen(false));
   return (
     <div className="notif-wrap static lg:relative" ref={ref}>
-      <button type="button" className={cn(buttonVariants({ variant: "stil", size: "icoon" }), "icon-btn relative")} aria-label={unread ? t("topbar.notificationsUnread", { count: unread }) : waiting ? t("help.bellWaiting", { count: waiting }) : t("topbar.notifications")} aria-expanded={open} onClick={() => setOpen((v) => !v)} data-testid="bell">
-        <Bell className="ico" aria-hidden="true" />{badge ? <span className="dot-badge cijfers absolute -top-0.5 -right-0.5 min-w-5 rounded-full bg-foreground px-1 text-center text-sm leading-5 font-bold text-background" data-testid="bell-badge">{badge > 99 ? "99+" : badge}</span> : null}
+      <button type="button" className={cn(buttonVariants({ variant: "stil", size: "icoon" }), "icon-btn relative")} aria-label={badgeReading.state !== "fresh" ? `${t("topbar.notifications")} · ${badgeReading.at === null ? t("status.unknown") : t("overview.readingStale", { when: time(badgeReading.at) })}` : unread ? t("topbar.notificationsUnread", { count: unread }) : waiting ? t("help.bellWaiting", { count: waiting }) : t("topbar.notifications")} aria-expanded={open} onClick={() => setOpen((v) => !v)} data-testid="bell">
+        <Bell className="ico" aria-hidden="true" />{badgeReading.state === "fresh" && badge ? <span className="dot-badge cijfers absolute -top-0.5 -right-0.5 min-w-5 rounded-full bg-foreground px-1 text-center text-sm leading-5 font-bold text-background" data-testid="bell-badge">{badge > 99 ? "99+" : badge}</span> : null}
       </button>
+      {badgeReading.state !== "fresh" && !counts.loading ? <span className="text-sm" data-testid="bell-reading"><ReadingMark reading={badgeReading} /></span> : null}
       {open ? (
         // op de telefoon over de hele breedte onder de kopbalk, nooit links buiten beeld (punt 24)
         <div className="popover notif-popover absolute top-full right-3 left-3 z-overlay mt-1 w-auto lg:left-auto lg:right-0 lg:w-[min(24rem,calc(100vw-1.5rem))]" role="dialog" aria-label={t("topbar.notifications")} data-testid="notif-panel">
-          <div className="card-header flex flex-wrap items-center justify-between gap-2 px-4 pt-3 pb-2"><strong>{t("topbar.notifications")}</strong><Button size="sm" variant="ghost" onClick={() => void markRead()} disabled={!unread}>{t("topbar.markAllRead")}</Button></div>
-          {waiting ? <Link href="/#todo" className="list-row list-row--hover" onClick={() => setOpen(false)} data-testid="bell-waiting"><ListChecks className="ico" aria-hidden="true" /><div className="list-main"><div className="list-title">{t("help.bellWaiting", { count: waiting })}</div></div></Link> : null}
+          <div className="card-header flex flex-wrap items-center justify-between gap-2 px-4 pt-3 pb-2"><strong>{t("topbar.notifications")}</strong><Button size="sm" variant="ghost" onClick={() => void markRead()} disabled={!unread || badgeReading.state !== "fresh"}>{t("topbar.markAllRead")}</Button></div>
+          {waiting && badgeReading.state === "fresh" ? <Link href="/#todo" className="list-row list-row--hover" onClick={() => setOpen(false)} data-testid="bell-waiting"><ListChecks className="ico" aria-hidden="true" /><div className="list-main"><div className="list-title">{t("help.bellWaiting", { count: waiting })}</div></div></Link> : null}
           <div className="list notif-list">
-            {list.loading && !list.data ? <StateView kind="loading" compact /> : list.data?.length ? groupNotifications(list.data).slice(0, limit).map(({ n, count }) => {
-              const isOpen = expanded.has(n.id);
-              const summary = (n as { summary?: string }).summary;
-              const body = plainText(arrMessage(isOpen && full[n.id] ? full[n.id] : n.body, locale), locale);
-              const long = body.length > 120 || (summary !== undefined && summary !== n.body) || (summary !== undefined && body.endsWith("…"));
-              const row = (
-                <>
-                  <SeverityIcon severity={n.severity} />
-                  <div className="list-main"><div className="list-title" style={{ whiteSpace: "normal" }}>{n.title}{count > 1 ? <span className="chip ml-1.5">{count}×</span> : null}</div>
-                    <div className="list-sub" style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>{long && !isOpen ? `${body.slice(0, 117).trimEnd()}…` : body}
-                      {long ? <button type="button" className="link-more ml-1 border-0 bg-transparent p-0" onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggle(n); }}>{isOpen ? t("notif.less") : t("notif.more")}</button> : null}</div></div>
-                  <span className="cijfers text-sm text-muted-foreground">{relative(n.ts)}</span>
-                </>
-              );
-              const href = notificationHref(n.link);
-              return href
-                ? <Link key={n.id} href={href} className="list-row list-row--hover" onClick={() => setOpen(false)}>{row}</Link>
-                : <div key={n.id} className="list-row">{row}</div>;
-            }) : <StateView kind="empty" compact title={t("topbar.noNotifications")} />}
+            {!list.loading ? <ReadingMark reading={listReading} /> : null}
+            {list.loading && !list.data ? <StateView kind="loading" compact /> : list.data?.length ? groupNotifications(list.data).slice(0, limit).map(({ n, count }) =>
+              <NotificationItem key={n.id} n={n} count={count} onNavigate={() => setOpen(false)} />) : listReading.state === "fresh" ? <StateView kind="empty" compact title={t("topbar.noNotifications")} /> : null}
             {list.data && list.data.length >= limit ? <div className="list-row"><Button size="sm" variant="ghost" pending={list.loading} onClick={() => setLimit((l) => l + 30)}>{t("notif.loadMore")}</Button></div> : null}
           </div>
         </div>
@@ -612,35 +615,39 @@ function Notifications() {
 /** Knop (profielmenu, telefoonmenu): opent de noodstop-dialoog, die los van het menu leeft. */
 function EmergencyStopButton({ onOpen }: { onOpen?: () => void }) {
   const { t } = useI18n();
-  const { status } = useShell();
+  const { status, reading } = useShell();
   const { can } = useSession();
-  const active = Boolean(status?.emergency_stop?.active);
+  const active = reading.state === "fresh" && status?.emergency_stop?.active === true;
   return (
     // de knop blijft destructive (ADR-0016 punt 9); het woord staat altijd zichtbaar (anders geen naam op de telefoon)
-    <button type="button" className={cn(buttonVariants({ variant: active ? "gevaar-vol" : "gevaar" }), "estop w-full justify-start")} aria-pressed={active} onClick={() => { onOpen?.(); window.dispatchEvent(new CustomEvent("mg:estop")); }} disabled={!can("operator")} title={!can("operator") ? t("state.readOnly") : undefined} data-testid="estop-button">
-      <OctagonAlert className="ico" aria-hidden="true" /><span className="estop-label">{active ? t("estop.active") : t("estop.button")}</span>
+    <button type="button" className={cn(buttonVariants({ variant: active ? "gevaar-vol" : "gevaar" }), "estop w-full justify-start")} aria-pressed={active} onClick={() => { onOpen?.(); window.dispatchEvent(new CustomEvent("mg:estop", { detail: { release: active } })); }} disabled={!can("operator")} title={!can("operator") ? t("state.readOnly") : undefined} data-testid="estop-button">
+      <OctagonAlert className="ico" aria-hidden="true" /><span className="estop-label">{active ? t("estop.active") : t("estop.button")}</span><ReadingMark reading={reading} />
     </button>
   );
 }
 
 function EmergencyStopDialog() {
   const { t } = useI18n();
-  const { status, reloadStatus } = useShell();
+  const { status, reloadStatus, reading } = useShell();
   const toast = useToast();
-  const active = Boolean(status?.emergency_stop?.active);
+  const [active, setRelease] = useState(false);
+  const { can } = useSession();
+  const permitted = can("operator") && (!active || (reading.state === "fresh" && status?.emergency_stop?.active === true));
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    const on = () => setOpen(true);
+    const on = (event: Event) => { setRelease((event as CustomEvent).detail?.release === true); setError(null); setOpen(true); };
     window.addEventListener("mg:estop", on);
     return () => window.removeEventListener("mg:estop", on);
   }, []);
   const submit = async () => {
+    if (!permitted || pending) return;
     setPending(true);
     setError(null);
     try {
+      if (active && !await verifiedStop()) { setError(t("overview.safetyUnverified")); return; }
       const res = await api.post<EstopResult>("/system/emergency-stop", { active: !active, reason });
       await reloadStatus();
       toast.push(active ? "success" : "danger", active ? resumedText(t, res) : t("estop.done"));
@@ -661,8 +668,9 @@ function EmergencyStopDialog() {
       icon={OctagonAlert}
       title={active ? t("estop.releaseTitle") : t("estop.confirmTitle")}
       description={active ? t("estop.releaseBody") : t("estop.confirmBody")}
-      footer={<><Button onClick={() => setOpen(false)} data-autofocus>{t("action.cancel")}</Button><Button variant={active ? "primary" : "danger-solid"} pending={pending} onClick={() => void submit()} data-testid="estop-confirm">{active ? t("estop.releaseConfirm") : t("estop.confirm")}</Button></>}
+      footer={<><Button onClick={() => setOpen(false)} data-autofocus>{t("action.cancel")}</Button><Button variant={active ? "primary" : "danger-solid"} pending={pending} disabled={!permitted} onClick={() => void submit()} data-testid="estop-confirm">{active ? t("estop.releaseConfirm") : t("estop.confirm")}</Button></>}
     >
+      <ReadingMark reading={reading} />
       <Field label={t("estop.reasonLabel")} htmlFor="estop-reason" error={error}>
         <input id="estop-reason" className="input" value={reason} maxLength={500} placeholder={t("estop.reasonPlaceholder")} onChange={(e) => setReason(e.target.value)} />
       </Field>
@@ -679,17 +687,29 @@ function resumedText(t: ReturnType<typeof useI18n>["t"], res: EstopResult): stri
     : t("estop.resumedGeneric");
 }
 
+async function verifiedStop() {
+  const res = await verifyResource<SystemStatus>("/status");
+  return sourceReading(res, Date.now(), res.data?.time ?? null).state === "fresh" && res.data?.emergency_stop?.active === true;
+}
+
 function EmergencyBanner() {
   const { t, dateTime } = useI18n();
   const toast = useToast();
-  const { status, reloadStatus } = useShell();
+  const { status, reloadStatus, reading } = useShell();
   const { can } = useSession();
   const stop = status?.emergency_stop;
   const [pending, setPending] = useState(false);
-  if (!stop?.active) return null;
+  if (reading.state !== "fresh" || typeof stop?.active !== "boolean") return (
+    <div className="banner flex flex-wrap items-center gap-2 px-4 py-2" role="status" data-testid="estop-banner">
+      {t("overview.stopState")} <ReadingMark reading={typeof stop?.active === "boolean" ? reading : unknownReading} />
+      {can("operator") && stop?.active ? <Button size="sm" disabled>{t("estop.release")}</Button> : null}
+    </div>
+  );
+  if (!stop.active) return null;
   const release = async () => {
     setPending(true);
     try {
+      if (!await verifiedStop()) { toast.push("info", t("overview.safetyUnverified")); return; }
       const res = await api.post<EstopResult>("/system/emergency-stop", { active: false, reason: "" });
       await reloadStatus();
       toast.push("success", resumedText(t, res));

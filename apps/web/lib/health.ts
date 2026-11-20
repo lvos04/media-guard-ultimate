@@ -5,7 +5,8 @@ import { useAttention } from "@/components/mg/attention";
 import type { SystemStatus } from "@/lib/api/contracts";
 import { useResource } from "@/lib/api/hooks";
 import { useCoreEvents } from "@/lib/events";
-import { parseServerDate } from "@/lib/i18n";
+import { sourceReading, type Reading } from "@/lib/reading";
+import { useReadingTime } from "@/lib/reading-clock";
 
 export type HealthLevel = "ok" | "warning" | "action" | "offline" | "unknown";
 
@@ -27,7 +28,8 @@ export interface Health {
   /** echte storingen van de AV1-engine (kijken, eigen pauze en stille uren tellen niet mee) */
   encoderReasons: string[];
   loaded: boolean;
-  measurement: {
+  unreachableIds: string[];
+  measurement: Reading & {
     at: number | null; stale: boolean; failed: boolean; complete: boolean;
     active: number | null; errors: number | null; reload: () => Promise<void>;
   };
@@ -35,6 +37,7 @@ export interface Health {
 
 interface SummaryWire {
   level?: string; status?: string;
+  instances?: { unreachable?: Array<{ instance_id?: string | null }> };
   generated_at?: string; complete?: boolean;
   active?: number | { total?: number; downloads?: number; searches?: number; encodes?: number; tasks?: number };
   paused?: { encodes?: number; emergency_stop?: boolean };
@@ -86,7 +89,7 @@ export function useHealth(overviewRefresh?: number): Health {
       }));
     }
   }
-  if (active === null && status.data) active = (status.data.jobs.running ?? 0) + (status.data.jobs.queued ?? 0);
+  if (active === null && status.data) active = (status.data.jobs?.running ?? 0) + (status.data.jobs?.queued ?? 0);
 
   const wireLevel = s?.level ?? s?.status;
   let level: HealthLevel = status.error && !status.data ? "offline"
@@ -102,12 +105,14 @@ export function useHealth(overviewRefresh?: number): Health {
   // /status is de verse bron voor de noodstop (de samenvatting kan tot 12 s gecachet zijn)
   const estop = Boolean(status.data ? status.data.emergency_stop?.active : s?.paused?.emergency_stop);
   const paused = { encodes: num(s?.paused?.encodes) ?? 0, estop };
+  const reading = sourceReading(summary, useReadingTime(), s?.generated_at ?? null);
   const measurement = {
-    at: parseServerDate(s?.generated_at ?? "")?.valueOf() ?? summary.fetchedAt,
-    stale: summary.stale, failed: Boolean(summary.error), complete: s?.complete === true,
+    ...reading,
+    stale: reading.state === "stale", failed: Boolean(summary.error), complete: s?.complete === true,
     active: num(typeof s?.active === "object" ? s.active?.total : s?.active) ?? null,
     errors: num(typeof s?.errors === "object" ? s.errors?.total : s?.errors) ?? null,
     reload: summary.reload,
   };
-  return { level, active, activeParts, paused, errors, breakdown, attention: attentionCount, reasons, href, encoderReasons, loaded: Boolean(att || s || status.data), measurement };
+  const unreachableIds = (s?.instances?.unreachable ?? []).flatMap(row => row.instance_id ? [row.instance_id] : []);
+  return { level, unreachableIds, active, activeParts, paused, errors, breakdown, attention: attentionCount, reasons, href, encoderReasons, loaded: Boolean(att || s || status.data), measurement };
 }

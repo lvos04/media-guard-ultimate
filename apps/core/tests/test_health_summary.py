@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mediaguard import attention, health_summary
+
 
 def test_summary_counts_av1_failures_and_active(client, ctx):
     old = "2020-01-01T00:00:00+00:00"
@@ -28,3 +30,16 @@ def test_summary_counts_av1_failures_and_active(client, ctx):
     assert h["attention"]["errors"] <= att["errors"] + 1  # zelfde bronnen
     act = client.get("/api/v1/activity").json()
     assert act["health"]["errors"]["av1_failed"] == 2
+
+
+def test_gezondheidsbron_bij_downloadclientfout(ctx, monkeypatch):
+    # De lege installatie heeft een eigen inrichtingsmelding. Isoleer één bronstoring.
+    monkeypatch.setattr(attention, "collect_local", lambda ctx: [])
+    activiteit = {"summary": {"downloads": 0, "searches": 0}, "downloads": [], "errors": []}
+    engine = {"state": "ok", "reasons": [], "lanes_paused": 0}
+    gezond = health_summary.compose(ctx, activiteit, engine)
+    activiteit["errors"] = [{"instance_id": None, "name": "Testdownloadclient",
+                             "error": "Activiteit onbereikbaar", "code": "bron_onbereikbaar"}]
+    stuk = health_summary.compose(ctx, activiteit, engine)
+    assert gezond["errors"]["total"] == 0 and stuk["errors"]["total"] == 1
+    assert stuk["complete"] and stuk["errors"]["instances_unreachable"] == 1

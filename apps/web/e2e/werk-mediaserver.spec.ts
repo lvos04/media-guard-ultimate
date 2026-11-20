@@ -226,7 +226,7 @@ for (const width of [1440, 390] as const) {
     // verwijderen haalt alleen deze server uit MediaGuard; server 1 blijft staan
     await tweede.getByRole("button", { name: "Verwijderen…: Jelly Leon" }).click();
     await expect(dialoog).toContainText("Jelly Leon verwijderen?");
-    await expect(dialoog).toContainText("Andere mediaservers blijven gekoppeld");
+    await expect(dialoog).toContainText("Je verwijdert alleen de koppeling met Jelly Leon uit MediaGuard, inclusief adres, sleutel en maptoewijzingen.");
     await expect(dialoog).toHaveClass(/dialog--danger/);
     await dialoog.getByRole("button", { name: "Server verwijderen" }).click();
     await expect(tweede).toHaveCount(0);

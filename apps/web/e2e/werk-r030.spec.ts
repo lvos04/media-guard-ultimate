@@ -93,6 +93,7 @@ test("profielmenu sluit op Escape, buiten-klik en bij navigeren (M14)", async ({
 
 test("gezondheid: kopbalk, zijbalk en Overzicht lezen hetzelfde model (B2/H8)", async ({ page }) => {
   await page.route("**/api/v1/health/summary", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+    generated_at: new Date().toISOString(), complete: true,
     active: { total: 3, downloads: 1, searches: 0, encodes: 1, tasks: 1 }, errors: { total: 8, av1_not_activated: 8 }, attention: { count: 0, errors: 0, warnings: 0 } }) }));
   await page.route("**/api/v1/attention", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [], count: 0, errors: 0 }) }));
   await page.route("**/api/v1/health/errors", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ total: 8, groups: [

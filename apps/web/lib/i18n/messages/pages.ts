@@ -2,6 +2,13 @@ export const nl = {
   "section.noSettings": "De backend heeft nog geen instellingen geregistreerd voor {prefix}. Zodra dat gebeurt verschijnen ze hier automatisch.",
 
   // Overzicht
+  "overview.todoPartial": "Minstens {count} bekend · {sources}",
+  "overview.sourceJobs": "Taken",
+  "overview.sourceReasons": "Oorzaken",
+  "overview.safetyUnverified": "De actuele stand kon niet worden bevestigd.",
+  "overview.stopState": "Noodstop",
+  "overview.lockState": "Bibliotheekslot",
+  "overview.pauseUnconfirmed": "Pauze bij de encoder onbevestigd",
   "overview.title": "Overzicht",
   "overview.status.title": "Systeemstatus",
   "overview.status.encoder": "AV1-engine",

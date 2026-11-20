@@ -560,3 +560,36 @@ async def test_write_probe_blocks_autopilot_and_requeues(client, ctx, fx, monkey
                            (jid,))
     assert "retry_after" not in row["decision_json"] and row["updated_at"] < "2999"
     assert client.get("/api/v1/storage/probe").json()["failing"] == []
+
+
+async def test_werkelijke_rij_bij_encoderuitval(client, ctx, fx, monkeypatch):
+    encoder, bestand = fx
+    encoder.polls_until_done = 100
+    start = client.post("/api/v1/encoding/jobs", json=job_body(bestand))
+    assert start.status_code == 200
+    taak = start.json()["id"]
+    tijd = "2025-01-01T08:00:00Z"
+    with monkeypatch.context() as klok:
+        klok.setattr(enc, "utcnow", lambda: tijd)
+        vers = await enc.sync_job(ctx, taak)
+    assert vers["status"] == "running" and vers["progress"] == 0.5
+    encoder.unavailable = True
+    na = await enc.sync_job(ctx, taak)
+    lijst = client.get("/api/v1/encoding/jobs")
+    assert lijst.status_code == 200
+    rij = next(r for r in lijst.json() if r["id"] == taak)
+    assert rij["updated_at"] == na["updated_at"] == tijd
+    assert rij["progress"] == na["progress"] == vers["progress"]
+    stop = client.post("/api/v1/system/emergency-stop",
+                       json={"active": True, "reason": "lokale proef"})
+    assert stop.status_code == 200 and ctx.emergency_stopped()
+    bevestiging = await enc.push_emergency_stop(ctx, force=True)
+    assert bevestiging["pushed"] is False and bevestiging["error"]
+    assert enc.get_job(ctx, taak)["status"] == "running"
+    # Hervat de bestaande taak via hetzelfde id en controleer dat hij verder komt.
+    encoder.unavailable = False
+    client.post("/api/v1/system/emergency-stop", json={"active": False}).raise_for_status()
+    encoder.polls_until_done = 1
+    hervat = await enc.sync_job(ctx, taak)
+    assert hervat["id"] == taak and hervat["status"] == "awaiting_activation"
+    assert hervat["progress"] == 1

@@ -17,7 +17,7 @@ export interface EncoderResource<T> {
 
 // Laatst bekende antwoorden per pad (hele app): een nieuwe pagina of een trage engine toont dan
 // niet "Nog niet beschikbaar", maar de vorige waarde met "bijgewerkt X geleden" (R14).
-const lastKnown = new Map<string, { value: unknown; at: number; stale: boolean }>();
+const lastKnown = new Map<string, { value: unknown; at: number | null; stale: boolean }>();
 
 /** GET on the AV1 engine (via core: /api/v1/encoder/*) with error state and optional polling. */
 export function useEncoder<T>(path: string | null, intervalMs?: number): EncoderResource<T> {
@@ -36,10 +36,8 @@ export function useEncoder<T>(path: string | null, intervalMs?: number): Encoder
     if (!path) return;
     if (inflight.current) return inflight.current;
     const run = (async () => { try {
-      const { value, staleSeconds } = await encoderReading<T>(path);
+      const { value, at, stale } = await encoderReading<T>(path);
       if (current.current !== path) return;
-      const stale = staleSeconds !== null;
-      const at = Math.max(0, Date.now() - (staleSeconds ?? 0) * 1000);
       lastKnown.set(path, { value, at, stale });
       setData(value);
       setFetchedAt(at);
@@ -48,7 +46,12 @@ export function useEncoder<T>(path: string | null, intervalMs?: number): Encoder
     } catch (e) {
       if (current.current !== path) return;
       const known = lastKnown.get(path);
-      if (known) known.stale = true;
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+        lastKnown.delete(path);
+        setData(null);
+        setFetchedAt(null);
+        setSourceStale(false);
+      } else if (known) known.stale = true;
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
       if (current.current === path) setLoading(false);

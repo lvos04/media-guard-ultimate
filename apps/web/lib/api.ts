@@ -1,4 +1,5 @@
 import { getCsrfToken } from "@/lib/api/client";
+import { responseTime } from "@/lib/reading";
 import { limited } from "@/lib/api/limiter";
 
 /** AV1-engine (lvos04/av1) via core: /api/v1/encoder/* → engine /api/* (core controleert de
@@ -19,11 +20,11 @@ export function api<T>(path: string, init?: RequestInit): Promise<T> {
   return !init?.method || init.method === "GET" ? limited(read) : read();
 }
 
-export function encoderReading<T>(path: string): Promise<{ value: T; staleSeconds: number | null }> {
+export function encoderReading<T>(path: string): Promise<{ value: T; at: number | null; stale: boolean }> {
   return limited(() => apiNow<T>(path));
 }
 
-async function apiNow<T>(path: string, init?: RequestInit): Promise<{ value: T; staleSeconds: number | null }> {
+async function apiNow<T>(path: string, init?: RequestInit): Promise<{ value: T; at: number | null; stale: boolean }> {
   const response = await fetch(`${ENCODER_BASE}${path}`, {
     ...init,
     headers: {
@@ -43,10 +44,7 @@ async function apiNow<T>(path: string, init?: RequestInit): Promise<{ value: T; 
     const detail = typeof rawDetail === "string" ? rawDetail : JSON.stringify(rawDetail);
     throw new ApiError(response.status, detail);
   }
-  const stale = response.headers.get("X-MediaGuard-Stale");
-  const age = Number(stale);
-  const staleSeconds = stale === null ? null : Number.isFinite(age) ? Math.max(0, age) : 0;
-  return { value: (await response.json()) as T, staleSeconds };
+  return { value: (await response.json()) as T, ...responseTime(response.headers) };
 }
 
 export function mutation<T>(path: string, method: string, body?: unknown): Promise<T> {

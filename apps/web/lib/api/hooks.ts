@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { responseTime } from "@/lib/reading";
 import { useLiveStatus } from "@/lib/events";
 
 import { ApiError, coreRequest, onMutation, type RequestOptions } from "./client";
@@ -19,6 +20,8 @@ export interface Resource<T> {
   /** True when we have data but the last refresh failed (stale view). */
   stale: boolean;
   fetchedAt: number | null;
+  /** Datering van het antwoord, ook bij een succesvolle cachelezing. */
+  observedAt?: number | null;
   reload: () => Promise<void>;
   setData: (updater: (old: T | null) => T | null) => void;
 }
@@ -36,6 +39,8 @@ interface Entry {
   data: unknown;
   error: ApiError | null;
   fetchedAt: number | null;
+  observedAt: number | null;
+  sourceStale: boolean;
   invalidated: boolean;
   inflight: Promise<void> | null;
   again: boolean;
@@ -48,7 +53,7 @@ const store = new Map<string, Entry>();
 function entryFor(key: string): Entry {
   let e = store.get(key);
   if (!e) {
-    e = { data: null, error: null, fetchedAt: null, invalidated: false, inflight: null, again: false, subs: new Set() };
+    e = { data: null, error: null, fetchedAt: null, observedAt: null, sourceStale: false, invalidated: false, inflight: null, again: false, subs: new Set() };
     store.set(key, e);
   }
   return e;
@@ -66,12 +71,21 @@ function fetchEntry(key: string, path: string, query: RequestOptions["query"], f
     const invalidated = e.invalidated;
     e.invalidated = false;
     try {
-      e.data = await coreRequest<unknown>(path, { query });
+      let observed = { at: Date.now() as number | null, stale: false };
+      e.data = await coreRequest<unknown>(path, { query, onResponse: (headers) => { observed = responseTime(headers); } });
+      e.observedAt = observed.at;
+      e.sourceStale = observed.stale;
       e.error = null;
       e.fetchedAt = Date.now();
     } catch (error) {
       e.invalidated ||= invalidated;
       e.error = asApiError(error, path);
+      if (e.error.kind === "forbidden" || e.error.kind === "unauthorized") {
+        e.data = null;
+        e.fetchedAt = null;
+        e.observedAt = null;
+        e.sourceStale = false;
+      }
     }
     e.subs.forEach((fn) => fn());
     if (e.again) {
@@ -81,6 +95,15 @@ function fetchEntry(key: string, path: string, query: RequestOptions["query"], f
   };
   e.inflight = run().finally(() => { e.inflight = null; });
   return e.inflight;
+}
+
+// Een veiligheidsactie wacht op een nieuwe GET. Ook bij een gelijktijdige poll zien
+// alle abonnees precies de uitkomst van die verificatie, inclusief een weigering.
+export async function verifyResource<T>(path: string) {
+  const key = `${path}?{}`;
+  const e = entryFor(key);
+  await fetchEntry(key, path, undefined, true);
+  return { data: e.data as T | null, error: e.error, stale: e.sourceStale, fetchedAt: e.fetchedAt, observedAt: e.observedAt };
 }
 
 /** Na een mutatie: alle gecachte antwoorden onder dit pad als verouderd markeren. */
@@ -167,7 +190,8 @@ export function useResource<T>(path: string | null, query?: RequestOptions["quer
     data,
     error,
     loading: state.status === "loading",
-    stale: state.status === "error" && data !== null,
+    stale: data !== null && (Boolean(error) || Boolean(e?.sourceStale)),
+    observedAt: e?.observedAt ?? null,
     fetchedAt: e?.fetchedAt ?? null,
     reload,
     setData,

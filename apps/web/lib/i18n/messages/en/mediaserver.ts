@@ -84,7 +84,7 @@ export const en: Record<keyof typeof nl, string> = {
   "ms.detach.body": "MediaGuard stops refreshing, testing playback and using watch pause for {label}. The address and key are kept for reconnecting.",
   "ms.remove.title": "Remove {label}?",
   "ms.remove.confirm": "Remove server",
-  "ms.remove.body": "This removes the connection to {label} from MediaGuard, including the address, key and folder mappings. Other media servers stay connected.",
+  "ms.remove.body": "This removes only the connection to {label} from MediaGuard, including the address, key and folder mappings.",
   "ms.detached": "{label} is unlinked. Address and key are kept.",
   "ms.attached": "{label} is linked again.",
   "ms.removed": "{label} is removed from MediaGuard.",

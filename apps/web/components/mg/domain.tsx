@@ -366,10 +366,10 @@ export function Timeline({ items }: { items: Array<{ title: ReactNode; meta?: Re
 }
 
 // ------------------------------------------------------------------ Danger confirm
-export function DangerDialog({ open, onClose, onConfirm, title, description, impact, facts, confirmLabel, confirmWord, pending, error, icon, children }: {
+export function DangerDialog({ open, onClose, onConfirm, title, description, impact, facts, confirmLabel, confirmWord, pending, disabled, error, icon, children }: {
   open: boolean; onClose: () => void; onConfirm: () => void; title: string; description: ReactNode;
   impact?: Array<{ label: string; value: ReactNode }>; facts?: Array<{ label: string; value: ReactNode }>;
-  confirmLabel: string; confirmWord?: string; pending?: boolean; error?: string | null; icon?: LucideIcon; children?: ReactNode;
+  confirmLabel: string; confirmWord?: string; pending?: boolean; disabled?: boolean; error?: string | null; icon?: LucideIcon; children?: ReactNode;
 }) {
   const { t } = useI18n();
   const [typed, setTyped] = useState("");
@@ -384,7 +384,7 @@ export function DangerDialog({ open, onClose, onConfirm, title, description, imp
       icon={icon}
       title={title}
       description={description}
-      footer={<><Button onClick={close} data-autofocus>{t("action.cancel")}</Button><Button variant="danger-solid" onClick={onConfirm} disabled={!ok} pending={pending}>{confirmLabel}</Button></>}
+      footer={<><Button onClick={close} data-autofocus>{t("action.cancel")}</Button><Button variant="danger-solid" onClick={onConfirm} disabled={disabled || !ok} pending={pending}>{confirmLabel}</Button></>}
     >
       {impact?.length ? <div className="impact">{impact.map((i) => <div key={i.label}><span>{i.label}</span><strong>{i.value}</strong></div>)}</div> : null}
       {facts?.length ? <dl className="kv">{facts.map((f) => <div key={f.label} style={{ display: "contents" }}><dt>{f.label}</dt><dd>{f.value}</dd></div>)}</dl> : null}

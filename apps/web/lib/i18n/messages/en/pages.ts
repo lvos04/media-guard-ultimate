@@ -2,6 +2,13 @@ import type { nl } from "../pages";
 
 export const en: Record<keyof typeof nl, string> = {
   "section.noSettings": "The backend has not registered settings for {prefix} yet. They will appear here automatically once it does.",
+  "overview.todoPartial": "At least {count} known · {sources}",
+  "overview.sourceJobs": "Tasks",
+  "overview.sourceReasons": "Reasons",
+  "overview.safetyUnverified": "The current state could not be verified.",
+  "overview.stopState": "Emergency stop",
+  "overview.lockState": "Library lock",
+  "overview.pauseUnconfirmed": "Encoder pause unconfirmed",
   "overview.title": "Overview",
   "overview.status.title": "System status",
   "overview.status.encoder": "AV1 engine",

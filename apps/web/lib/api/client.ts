@@ -177,6 +177,7 @@ export interface RequestOptions {
   query?: Record<string, string | number | boolean | null | undefined>;
   signal?: AbortSignal;
   idempotencyKey?: string;
+  onResponse?: (headers: Headers) => void;
 }
 
 export function buildPath(path: string, query?: RequestOptions["query"]): string {
@@ -233,6 +234,7 @@ async function coreRequestNow<T>(path: string, options: RequestOptions = {}): Pr
     if (kind === "unauthorized") unauthorizedListeners.forEach((l) => l(error));
     throw error;
   }
+  options.onResponse?.(response.headers);
   if (method !== "GET") mutationListeners.forEach((l) => l());
   if (response.status === 204) return undefined as T;
   const type = response.headers.get("content-type") ?? "";

@@ -103,7 +103,7 @@ export function ResourceView<T>({ resource, children, endpoint, compact, empty, 
   if (resource.data === null) return <StateView kind="loading" compact={compact} />;
   // Peil: verouderd is altijd zichtbaar — ook als de laatst bekende lijst leeg was ("niets te tonen" kan oud zijn).
   const staleMark = resource.stale ? (
-    <div className="px-4 pb-2"><StaleMark>{t("state.stale", { age: relative(resource.fetchedAt) })}</StaleMark></div>
+    <div className="px-4 pb-2"><StaleMark>{t("state.stale", { age: relative(resource.observedAt === undefined ? resource.fetchedAt : resource.observedAt) })}</StaleMark></div>
   ) : null;
   if (isEmpty?.(resource.data)) return <>{staleMark}{empty ?? <StateView kind="empty" compact={compact} />}</>;
   return (

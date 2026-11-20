@@ -6,6 +6,9 @@ import { useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 
 import { Button, Card, InlineState, Segmented, StatusChip } from "@/components/mg/primitives";
+import { ReadingMark } from "@/components/mg/reading-mark";
+import { sourceReading } from "@/lib/reading";
+import { useReadingTime } from "@/lib/reading-clock";
 import { ErrorState, StaleMark, StateView } from "@/components/mg/states";
 import { useResource } from "@/lib/api/hooks";
 import { useI18n, type MessageKey } from "@/lib/i18n";
@@ -25,7 +28,7 @@ interface Bucket { key: string; label_nl: string; bytes: number; bytes_nl: strin
 interface Total { key: string; label_nl: string; count: number; bytes: number; bytes_nl: string }
 interface DirRow { path: string; group: string; label_nl: string; bytes: number; own_bytes: number }
 export interface Ledger {
-  period: Period; period_nl: string; summary_nl: string;
+  end?: string; period: Period; period_nl: string; summary_nl: string;
   totals: Record<string, number>;
   buckets: Bucket[];
   reconciliation: { used_delta: number | null; explained: number; unexplained: number | null; text_nl: string };
@@ -65,14 +68,15 @@ function ledgerSummary(d: Ledger, { t, tp, bytes }: ReturnType<typeof useI18n>) 
 /** Eén regel voor het Overzicht: wat kwam er de laatste 24 uur bij (met doorklik). */
 export function StorageLedgerLine() {
   const i18n = useI18n();
-  const { t, time } = i18n;
+  const { t } = i18n;
   const res = useResource<Ledger>("/storage/ledger", { period: "24h" }, 300_000);
+  const reading = sourceReading(res, useReadingTime(), res.data?.end ?? null, 600_000);
   if (!res.data && !res.error) return null;
   return (
     <p className="hint" style={{ margin: 0, display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" }} data-testid="storage-ledger-line">
       <HardDrive className="ico ico-sm" aria-hidden="true" style={{ alignSelf: "center" }} />
       <span className="[overflow-wrap:anywhere]">{res.data ? ledgerSummary(res.data, i18n) : t("ledger.error")}</span>
-      {res.stale ? <StaleMark>{t("overview.readingStale", { when: time(res.fetchedAt) })}</StaleMark> : null}
+      <ReadingMark reading={reading} />
       <Link className="link-more" href="/av1#opslag">{t("ledger.look")}</Link>
     </p>
   );
