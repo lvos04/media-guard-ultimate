@@ -14,6 +14,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -443,6 +444,13 @@ def test_gpu_driver_and_runtime_are_pinned():
 
 
 # -- hulpscripts ------------------------------------------------------------------------------
+@pytest.fixture
+def programmamap(tmp_path):
+    # Op een noexec-datavolume kan de shell de Docker-simulator niet via PATH starten.
+    with tempfile.TemporaryDirectory(dir=os.environ.get("MG_CI_PROGRAMMAMAP", tmp_path)) as mapnaam:
+        yield Path(mapnaam)
+
+
 def _fake_docker(tmp_path: Path, stderr: str, code: int) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -460,10 +468,10 @@ def _fake_docker(tmp_path: Path, stderr: str, code: int) -> dict[str, str]:
     ("denied: permission_denied", 1, 2),
     ("Get https://ghcr.io/v2/: net/http: TLS handshake timeout", 1, 2),
 ])
-def test_image_tag_exists_fails_closed(tmp_path, stderr, code, expected):
+def test_image_tag_exists_fails_closed(programmamap, stderr, code, expected):
     if shutil.which("bash") is None:
         pytest.skip("bash ontbreekt")
-    env = _fake_docker(tmp_path, stderr, code)
+    env = _fake_docker(programmamap, stderr, code)
     r = subprocess.run(["bash", str(ROOT / "scripts" / "image-tag-exists.sh"),
                         "ghcr.io/lvos04/mediaguard-core:9.9.9"], env=env, capture_output=True,
                        text=True, check=False)
@@ -535,42 +543,42 @@ def _promote(tmp_path: Path, tags: dict[str, str], *refs: str, down: bool = Fals
     return r, json.loads(state.read_text()), created
 
 
-def test_promote_publishes_candidate_and_never_overwrites(tmp_path):
+def test_promote_publishes_candidate_and_never_overwrites(programmamap):
     if shutil.which("bash") is None or shutil.which("python3") is None:
         pytest.skip("bash/python3 ontbreekt")
     cand = "ghcr.io/lvos04/mediaguard-core:1.2.2-kandidaat-7-1"
     final = "ghcr.io/lvos04/mediaguard-core:1.2.2"
     # 1. nieuw: de kandidaat komt onder de echte tag, met dezelfde digest
-    r, tags, created = _promote(tmp_path, {cand: "sha256:aaa"}, cand, final)
+    r, tags, created = _promote(programmamap, {cand: "sha256:aaa"}, cand, final)
     assert r.returncode == 0, r.stdout + r.stderr
     assert tags[final] == "sha256:aaa" and created == [final]
     # 2. 'Re-run failed jobs': de tag staat al op precies dit image → niets te doen
-    r, tags, created = _promote(tmp_path, tags, cand, final)
+    r, tags, created = _promote(programmamap, tags, cand, final)
     assert r.returncode == 0 and created == [final]  # geen tweede create
     # 3. de tag bestaat met een ander image → weigeren, niets overschreven
     other = {cand: "sha256:aaa", final: "sha256:bbb"}
-    (tmp_path / "registry.json.log").unlink()
-    r, tags, created = _promote(tmp_path, other, cand, final)
+    (programmamap / "registry.json.log").unlink()
+    r, tags, created = _promote(programmamap, other, cand, final)
     assert r.returncode == 1 and "niets overschreven" in r.stdout
     assert tags[final] == "sha256:bbb" and created == []
     # 4. van twee tags bestaat er één al met een ander image → geen van beide wordt gezet
     alias = "ghcr.io/lvos04/mediaguard-sonarr-fork:bc54afb-mg3"
-    r, tags, created = _promote(tmp_path, other, cand, alias, final)
+    r, tags, created = _promote(programmamap, other, cand, alias, final)
     assert r.returncode == 1 and alias not in tags and created == []
     # 5. registry niet te bereiken → weigeren
-    r, tags, created = _promote(tmp_path, {cand: "sha256:aaa"}, cand, final, down=True)
+    r, tags, created = _promote(programmamap, {cand: "sha256:aaa"}, cand, final, down=True)
     assert r.returncode == 1 and final not in tags and created == []
     # 6. kandidaat ontbreekt → weigeren
-    r, tags, created = _promote(tmp_path, {}, cand, final)
+    r, tags, created = _promote(programmamap, {}, cand, final)
     assert r.returncode == 1 and "niet gevonden" in r.stdout and created == []
 
 
-def test_promote_uses_the_release_evidence_digest(tmp_path):
+def test_promote_uses_the_release_evidence_digest(programmamap):
     final = "ghcr.io/lvos04/mediaguard-core:2.0.0"
     cand = f"{final}-kandidaat-7-1"
     proved = f"{final}@sha256:aaa"
     # De doeltag bestaat nog niet. Het aangetoonde manifest staat wel onder de kandidaat-tag.
-    r, tags, created = _promote(tmp_path, {cand: "sha256:aaa"}, proved, final)
+    r, tags, created = _promote(programmamap, {cand: "sha256:aaa"}, proved, final)
     assert r.returncode == 0, r.stdout + r.stderr
     assert tags[final] == "sha256:aaa" and created == [final]
 

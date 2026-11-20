@@ -29,9 +29,9 @@ docker exec "$client" bash -eu -o pipefail -c '
   python -m venv /opt/ci-python
   /opt/ci-python/bin/pip install -e "/werk/bron/apps/core[test]"
 '
-# De runner mount het datavolume met noexec. De herstelmetingen schrijven daar
-# hun SQLite-kopieën. Pytest maakt zijn uitvoerbare testprogramma's in /werk.
+# Het noexec-volume bevat zowel de testdatabases van pytest als de herstelkopieën.
+# De uitvoerbare Docker-simulators voor de releaseproeven krijgen een eigen map in /werk.
 docker exec -i --user mg-proef --env HOME=/werk/thuis --env TMPDIR=/proef/tijdelijk \
-  --env PYTEST_ADDOPTS=--basetemp=/werk/proeven/pytest \
+  --env PYTEST_ADDOPTS=--basetemp=/proef/tijdelijk/pytest --env MG_CI_PROGRAMMAMAP=/werk/proeven \
   --env PATH=/opt/ci-python/bin:/usr/local/bin:/usr/bin:/bin \
   --workdir /werk/bron/apps/core "$client" "$@"

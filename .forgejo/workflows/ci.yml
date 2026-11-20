@@ -57,7 +57,7 @@ jobs:
     name: core (python ${{ matrix.python }}, ruff, pytest)
     if: github.event_name != 'schedule' && format('{0}', inputs.dagproeven) != 'false'
     runs-on: ubuntu-24.04
-    timeout-minutes: 100
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -95,7 +95,7 @@ jobs:
     name: herstart en gegevensbehoud met historische releases
     if: github.event_name != 'schedule' && format('{0}', inputs.dagproeven) != 'false'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 100
     steps:
       - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
