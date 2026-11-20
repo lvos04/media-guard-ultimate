@@ -906,3 +906,30 @@ def test_workflows_controleren_de_vorige_release() -> None:
     stap = next(s["run"] for s in rel if "poort" in s.get("run", ""))
     assert stap.index("upgradebewijs.py volgorde") < stap.index("upgradebewijs.py poort")
     assert '--versie "$VERSION"' in stap.split("upgradebewijs.py volgorde", 1)[1].split("\n")[0]
+
+
+def test_eindbijlage_na_afgebroken_rechtenproef(tmp_path: Path,
+                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    _, eindmeting = _nep_poort(tmp_path / "herhaling")
+    lokaal = tmp_path / "eind.md"
+    ci = tmp_path / "samenvatting.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(ci))
+    args = ["poort", "--vorige", VORIGE["image"] + "@" + VORIGE["digest"],
+            "--vorige-versie", VORIGE["versie"], "--nieuw", "proef", "--versie", "proef",
+            "--werkmap", str(tmp_path / "proef"), "--rapport", str(lokaal)]
+    monkeypatch.setattr(ub.Poort, "opruimen", lambda self: None)
+
+    def geweigerd(self: Any) -> None:
+        raise PermissionError("Rechtenproef afgebroken")
+
+    monkeypatch.setattr(ub.Poort, "run", geweigerd)
+    assert ub.main(args) == 1
+    assert "Rechtenproef afgebroken" in lokaal.read_text()
+    monkeypatch.setattr(ub.Poort, "run", lambda self: ([], eindmeting))
+    assert ub.main(args) == 0
+    eind = lokaal.read_text()
+    assert "Rechtenproef afgebroken" not in eind
+    assert eind.count("## Upgradebewijs ") == eind.count("## Terugzetten (vorige image") == 1
+    assert eind.strip() == eindmeting.strip()
+    assert "Rechtenproef afgebroken" in ci.read_text()
+    assert eind in ci.read_text()

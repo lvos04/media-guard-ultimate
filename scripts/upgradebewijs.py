@@ -1210,10 +1210,17 @@ def main(argv: list[str] | None = None) -> int:
             poort.opruimen()
         tekst += "\n" + "\n".join(f"- ❌ {f}" for f in fouten) if fouten else ""
     print(tekst, flush=True)
-    for doel in (a.rapport, os.environ.get("GITHUB_STEP_SUMMARY")):
-        if doel:
-            with open(doel, "a", encoding="utf-8") as fh:
-                fh.write(tekst + "\n")
+    # Een lokale bijlage beschrijft één uitvoering. Publiceer de nieuwe tekst in
+    # één keer, zodat lezers ook tijdens een herhaling een volledige meting zien.
+    if a.rapport:
+        with tempfile.TemporaryDirectory(dir=a.rapport.parent) as tijdelijk:
+            nieuw = Path(tijdelijk) / "rapport.md"
+            nieuw.write_text(tekst + "\n", encoding="utf-8")
+            nieuw.replace(a.rapport)
+    samenvatting = os.environ.get("GITHUB_STEP_SUMMARY")
+    if samenvatting and (not a.rapport or Path(samenvatting).resolve() != a.rapport.resolve()):
+        with open(samenvatting, "a", encoding="utf-8") as fh:
+            fh.write(tekst + "\n")
     return 1 if fouten else 0
 
 
