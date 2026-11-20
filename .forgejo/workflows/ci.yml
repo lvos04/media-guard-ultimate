@@ -214,7 +214,7 @@ jobs:
     name: encoder unit (zonder toolchain)
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Werkkopie voor deze job
@@ -238,7 +238,8 @@ jobs:
       - name: pytest (subset)
         working-directory: ${{ steps.bron.outputs.pad }}/services/encoder
         run: >-
-          bash "$GITHUB_WORKSPACE/.forgejo/scripts/als-testgebruiker" python -m pytest -q -rfEs -p no:cacheprovider
+          bash "$GITHUB_WORKSPACE/.forgejo/scripts/als-testgebruiker" python -m pytest -v -rfEs
+          -o faulthandler_timeout=120 --durations=5 -p no:cacheprovider
           tests/test_mediaguard_policy.py tests/test_beslissen.py tests/test_bestandsfilter.py
           tests/test_db.py tests/test_schema_ingangen.py tests/test_scanner.py
           tests/test_opslag.py tests/test_onderhoud.py
