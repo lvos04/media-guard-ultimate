@@ -28,7 +28,7 @@ test("connector en minimale healthroutes zijn bereikbaar via de ene webpoort", a
   expect(discover.status()).toBe(200);
   expect(await discover.json()).toMatchObject({
     capabilities: ["read"], actions: [],
-    item_types: ["wanted", "status", "downloads", "av1_lanes", "incidents"],
+    item_types: ["wanted", "status", "downloads", "av1_lanes", "incidents", "backups"],
   });
   const items = await request.get("/connector/v1/items?type=status", { headers: machine });
   expect(items.status()).toBe(200);
