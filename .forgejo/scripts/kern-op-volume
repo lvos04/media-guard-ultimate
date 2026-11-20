@@ -7,8 +7,7 @@ if [[ "$basis" != *@sha256:* ]]; then
   echo "De runtimebasis van het kernimage heeft geen vaste digest." >&2
   exit 1
 fi
-client=$(docker create --mount type=volume,target=/proef --workdir /proef \
-  --env TMPDIR=/proef/tijdelijk --entrypoint sleep "$basis" infinity)
+client=$(docker create --mount type=volume,target=/proef --entrypoint sleep "$basis" infinity)
 afsluiten() {
   local code=$?
   trap - EXIT
@@ -19,17 +18,20 @@ trap afsluiten EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 docker start "$client" >/dev/null
-docker exec "$client" mkdir -p /proef/bron /proef/tijdelijk
-docker cp "$bron/." "$client:/proef/bron/"
+docker exec "$client" mkdir -p /werk/bron /werk/proeven /proef/tijdelijk
+docker cp "$bron/." "$client:/werk/bron/"
 docker exec "$client" bash -eu -o pipefail -c '
   python -c "import sqlite3, sys; assert sys.version_info[:2] == (3, 12); print(sys.version, sqlite3.sqlite_version)"
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg mediainfo git jq
-  useradd --create-home --home-dir /proef/thuis mg-proef
-  chown -R mg-proef /proef/bron /proef/tijdelijk
-  python -m venv /proef/python
-  /proef/python/bin/pip install -e "/proef/bron/apps/core[test]"
+  useradd --create-home --home-dir /werk/thuis mg-proef
+  chown -R mg-proef /werk/bron /werk/proeven /proef/tijdelijk
+  python -m venv /opt/ci-python
+  /opt/ci-python/bin/pip install -e "/werk/bron/apps/core[test]"
 '
-docker exec -i --user mg-proef --env HOME=/proef/thuis \
-  --env PATH=/proef/python/bin:/usr/local/bin:/usr/bin:/bin \
-  --workdir /proef/bron/apps/core "$client" "$@"
+# De runner mount het datavolume met noexec. De herstelmetingen schrijven daar
+# hun SQLite-kopieën. Pytest maakt zijn uitvoerbare testprogramma's in /werk.
+docker exec -i --user mg-proef --env HOME=/werk/thuis --env TMPDIR=/proef/tijdelijk \
+  --env PYTEST_ADDOPTS=--basetemp=/werk/proeven/pytest \
+  --env PATH=/opt/ci-python/bin:/usr/local/bin:/usr/bin:/bin \
+  --workdir /werk/bron/apps/core "$client" "$@"
