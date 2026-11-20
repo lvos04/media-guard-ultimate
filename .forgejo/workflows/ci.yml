@@ -177,14 +177,22 @@ jobs:
       - name: ruim het kandidaatimage van deze run op
         if: always()
         run: docker image rm "mediaguard/upgrade-kandidaat:ci-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true
-      - name: controleer gegevensbehoud in het upgraderapport
-        run: python3 tests/upgradehistorie/controleer_rapport.py "$RUNNER_TEMP/upgradebewijs.md"
       - uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
         if: always()
         with:
           name: upgradebewijs-rapport
           path: ${{ runner.temp }}/upgradebewijs.md
           retention-days: 30
+          if-no-files-found: error
+      - name: Upgraderapport uit het Forgejo-artefact teruglezen
+        uses: https://code.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e
+        with:
+          name: upgradebewijs-rapport
+          path: ${{ runner.temp }}/teruggelezen
+      - name: Gegevensbehoud in beide exemplaren controleren
+        run: >-
+          python3 tests/upgradehistorie/controleer_rapport.py
+          "$RUNNER_TEMP/upgradebewijs.md" "$RUNNER_TEMP/teruggelezen/upgradebewijs.md"
 
   encoder-unit:
     name: encoder unit (zonder toolchain)
@@ -239,6 +247,8 @@ jobs:
       (github.event_name == 'workflow_dispatch' && (format('{0}', inputs.heavy) == 'true' || format('{0}', inputs.encoderbewijs) == 'true'))
     runs-on: ubuntu-24.04
     timeout-minutes: 150
+    env:
+      ENCODE_IMAGE: mediaguard/encode-ci-${{ github.run_id }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -279,8 +289,8 @@ jobs:
         run: |
           bouw=(docker buildx build --load --platform linux/amd64 --target runtime
                 --build-context "ffmpeg-src=$RUNNER_TEMP/ffmpeg-src")
-          "${bouw[@]}" --build-arg BASE_IMAGE=ubuntu:26.04 -t mediaguard/encode:referentie services/encoder
-          if ! "${bouw[@]}" -t mediaguard/encode:gepind services/encoder; then
+          "${bouw[@]}" --build-arg BASE_IMAGE=ubuntu:26.04 -t "$ENCODE_IMAGE:referentie" services/encoder
+          if ! "${bouw[@]}" -t "$ENCODE_IMAGE:gepind" services/encoder; then
             echo "::error::Het encoder-image bouwt niet met de vaste basisdigest."
             exit 1
           fi
@@ -290,7 +300,7 @@ jobs:
           for optie in version buildconf encoders; do
             for image in referentie gepind; do
               docker run --rm --network none --entrypoint /opt/ffmpeg/bin/ffmpeg \
-                "mediaguard/encode:$image" "-$optie" > "$bewijs/$image-$optie.txt" 2>&1
+                "$ENCODE_IMAGE:$image" "-$optie" > "$bewijs/$image-$optie.txt" 2>&1
             done
             diff -u "$bewijs/referentie-$optie.txt" "$bewijs/gepind-$optie.txt" || verschil=1
           done
@@ -309,12 +319,19 @@ jobs:
         run: |
           docker buildx build --load --target test \
             --build-context "ffmpeg-src=$RUNNER_TEMP/ffmpeg-src" \
-            -t mediaguard/encode:test services/encoder
+            -t "$ENCODE_IMAGE:test" services/encoder
       - name: pytest + ruff + mypy in het image
         if: steps.proef.outputs.suite == 'true'
         run: |
-          docker run --rm mediaguard/encode:test python3 -m pytest -q -rfEs -p no:cacheprovider
-          docker run --rm mediaguard/encode:test sh -c "ruff check app tests && mypy app"
+          docker run --rm "$ENCODE_IMAGE:test" python3 -m pytest -q -rfEs -p no:cacheprovider
+          docker run --rm "$ENCODE_IMAGE:test" sh -c "ruff check app tests && mypy app"
+
+      - name: Eigen encoderimages opruimen
+        if: always() && (steps.proef.outputs.bewijs == 'true' || steps.proef.outputs.suite == 'true')
+        run: |
+          for tag in referentie gepind test; do
+            if docker image inspect "$ENCODE_IMAGE:$tag" >/dev/null 2>&1; then docker image rm "$ENCODE_IMAGE:$tag"; fi
+          done
 
   web:
     name: web (node 22, lint, typecheck, build, e2e)
@@ -366,6 +383,8 @@ jobs:
 
   forks:
     name: fork-images bouwen (${{ matrix.app }})
+    env:
+      IMAGE_REPO: mediaguard/${{ matrix.app }}-ci-${{ github.run_id }}
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && format('{0}', inputs.heavy) == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -379,6 +398,11 @@ jobs:
         run: forks/${{ matrix.app }}/build.sh
       - name: unit tests (MediaGuard + decision/import engines)
         run: forks/${{ matrix.app }}/build.sh --target unittest
+      - name: Eigen fork-images opruimen
+        if: always()
+        run: |
+          docker image ls --format '{{.Repository}}:{{.Tag}}' --filter "reference=$IMAGE_REPO:*" |
+            xargs -r docker image rm
 
   # Δ-MG-AUTH + Δ-MG-DUAL (ADR-0022; contract 1.3 §2.3 regel 2, C1.3-MGU-04): een echte Emby en een echte
   # Jellyfin 12.x (images op digest, tests/contract/mediaserver/docker-compose.yml). Deel A: de clients van core en de

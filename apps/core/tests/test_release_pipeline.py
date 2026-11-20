@@ -24,8 +24,8 @@ ROOT = Path(__file__).resolve().parents[3]
 WF = ROOT / ".github" / "workflows"
 
 
-def _wf(name: str) -> dict:
-    data = yaml.safe_load((WF / name).read_text(encoding="utf-8"))
+def _wf(name: str, workflows: Path = WF) -> dict:
+    data = yaml.safe_load((workflows / name).read_text(encoding="utf-8"))
     data["on"] = data.pop(True, data.get("on"))  # YAML 1.1: 'on' wordt True
     return data
 
@@ -181,6 +181,26 @@ def test_all_workflows_are_valid_yaml():
     for f in WF.glob("*.yml"):
         data = _wf(f.name)
         assert data["on"] and data["jobs"], f.name
+
+
+def test_forgejo_behoudt_de_linuxjobs_en_publicatiepoorten():
+    workflows = ROOT / ".forgejo" / "workflows"
+    for naam in ("android.yml", "ci.yml", "release.yml"):
+        origineel = _wf(naam)["jobs"]
+        jobs = _wf(naam, workflows)["jobs"]
+        assert origineel.keys() <= jobs.keys()
+        for jobnaam, job in origineel.items():
+            assert jobs[jobnaam].get("needs", []) == job.get("needs", [])
+
+    release = _wf("release.yml", workflows)
+    aanroep = release["jobs"]["tests"]
+    assert aanroep["uses"] == "./.forgejo/workflows/ci.yml"
+    assert aanroep["secrets"] == {"BRON_LEESTOKEN": "${{ secrets.BRON_LEESTOKEN }}"}
+    assert release["env"]["REGISTRY"] + "/" + release["env"]["OWNER"] == "git.medialeon.nl/leon"
+    assert '--registry-prefix "$REGISTRY/$OWNER"' in _scripts(release["jobs"]["release-bewijs"])
+    ci = _wf("ci.yml", workflows)
+    # De server verwerkt secrets op de aanroepende job bij het inplannen van een push.
+    assert "secrets" not in ci["on"]["workflow_call"]
 
 
 def test_release_publishes_nothing_without_tests_and_smoke():
