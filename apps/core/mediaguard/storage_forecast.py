@@ -19,7 +19,6 @@ import logging
 import os
 import sqlite3
 import stat
-import struct
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -28,6 +27,7 @@ from uuid import uuid4
 import httpx
 from fastapi import APIRouter, Depends
 
+from mediaguard import pool_workers
 from mediaguard.auth import Principal, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import utcnow
@@ -178,11 +178,8 @@ async def truenas_health(ctx: AppContext) -> dict[str, Any] | None:
 POOL_STATE = "truenas_pool"
 # Migratie 071 trekt deze opdracht in zodra de ingestelde bron verandert.
 POOL_REQUEST = "truenas_pool_request_v1"
-_CLEANUP_REQUEST = "truenas_pool_cleanup_request"
 _POOL_PIPE = "truenas_pool_pipe"
 _DISCONNECTED = "truenas_pool_disconnected"
-# Linux struct flock: type, whence, start, lengte en pid (64-bits off_t).
-_FLOCK = struct.Struct("@hhqqi0q")
 _REVOKED = b"!"  # komt nooit voor in een hexadecimale opdracht-ID
 POOL_MAX_AGE = timedelta(seconds=900)
 
@@ -228,15 +225,19 @@ def _request_pipe(ctx: AppContext, *, create: bool = False) -> io.FileIO:
         os.mkfifo(path, 0o600)
         fd = os.open(path, flags)
     stream = io.FileIO(fd, "r+")
-    if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+    try:
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            raise OSError("Ongeldig kanaal voor de poolmeting")
+    except BaseException:
         stream.close()
-        raise OSError("Ongeldig kanaal voor de poolmeting")
+        raise
     return stream
 
 
-def _worker_lock(ctx: AppContext, mode: int) -> io.FileIO:
+def _worker_lock(ctx: AppContext, mode: int, *, create: bool = True) -> io.FileIO:
     path = ctx.db.path.with_suffix(".pool-workers")
-    fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    fd = os.open(path, flags | os.O_CREAT if create else flags, 0o600)
     lock = io.FileIO(fd, "r")
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -248,28 +249,28 @@ def _worker_lock(ctx: AppContext, mode: int) -> io.FileIO:
     return lock
 
 
-def _directory_worker_lock(ctx: AppContext, held: ExitStack, *, probe: bool) -> int:
+def _directory_worker_lock(ctx: AppContext, held: ExitStack, *, probe: bool) -> tuple[int, int]:
     # Een OFD-recordslot op de datamap blijft bestaan zolang deze werker de descriptor
     # houdt. Het staat los van het flock-datamapslot voor SQLite en de kern.
     fd = os.open(ctx.db.path.parent, os.O_RDONLY | os.O_DIRECTORY)
     held.callback(os.close, fd)
-    command = getattr(fcntl, "F_OFD_GETLK" if probe else "F_OFD_SETLK", None)
-    if command is None:
-        raise OSError("Deze kernel ondersteunt het vereiste werkerslot niet")
-    request = _FLOCK.pack(fcntl.F_WRLCK if probe else fcntl.F_RDLCK, os.SEEK_SET, 0, 0, 0)
-    return _FLOCK.unpack(fcntl.fcntl(fd, command, request))[0]
+    return fd, pool_workers.record_lock(fd, 0, probe=probe)
 
 
-def _workers_connected(ctx: AppContext) -> bool:
+def _workers_connected(ctx: AppContext, *, new_measurement: bool = False) -> bool:
     try:
-        with _worker_lock(ctx, fcntl.LOCK_EX | fcntl.LOCK_NB), ExitStack() as held:
-            conflict = _directory_worker_lock(ctx, held, probe=True)
-            return conflict == fcntl.F_UNLCK
+        with (_worker_lock(ctx, fcntl.LOCK_EX | fcntl.LOCK_NB, create=new_measurement),
+              ExitStack() as held):
+            fd, conflict = _directory_worker_lock(ctx, held, probe=True)
+            return conflict == fcntl.F_UNLCK and pool_workers.all_reported(
+                ctx, fd, new_measurement=new_measurement)
     except OSError:
         return False
 
 
 def _block_disconnected_worker(ctx: AppContext) -> None:
+    if vote := ctx.services.get(pool_workers.SERVICE):
+        vote.withdraw()
     if _DISCONNECTED not in ctx.services:
         with ExitStack() as held:
             try:
@@ -285,10 +286,15 @@ def _block_disconnected_worker(ctx: AppContext) -> None:
 def _hold_request_pipe(ctx: AppContext) -> io.FileIO:
     # Onder het datamapslot, ook bij de start van een werker vóór de eerste meting.
     stream = ctx.services.get(_POOL_PIPE)
-    if stream is None or stream.closed or _DISCONNECTED in ctx.services:
+    path = ctx.db.path.with_suffix(".pool-fifo")
+    if stream is None or stream.closed or _DISCONNECTED in ctx.services or (
+            os.fstat(stream.fileno()).st_nlink == 0
+            or not os.path.samestat(os.fstat(stream.fileno()), path.lstat())):
         ctx.services[_POOL_PIPE] = _request_pipe(ctx, create=True)
         if stream is not None:
             stream.close()
+    vote = ctx.services.get(pool_workers.SERVICE) or pool_workers.register(ctx)
+    vote.report(ctx, ctx.services[_POOL_PIPE])
     if lock := ctx.services.pop(_DISCONNECTED, None):
         lock.close()
     return ctx.services[_POOL_PIPE]
@@ -301,12 +307,14 @@ def _revoke_pool_request(ctx: AppContext) -> None:
     try:
         stream = ctx.services.get(_POOL_PIPE)
         if stream is not None and not stream.closed:
-            stream.write(_REVOKED)
+            written = stream.write(_REVOKED)
+            linked = os.fstat(stream.fileno()).st_nlink != 0
         else:
             with _request_pipe(ctx) as stream:
-                stream.write(_REVOKED)
-    except FileNotFoundError:
-        pass  # zonder kanaal kan geen enkele werker een opdracht valideren
+                written = stream.write(_REVOKED)
+                linked = True
+        if written != len(_REVOKED) or not linked:
+            raise OSError("Intrekking niet gedeeld via het meetkanaal")
     except (OSError, ValueError):
         try:
             _block_disconnected_worker(ctx)
@@ -332,7 +340,8 @@ def _start_pool_request(ctx: AppContext, *, skip_unconfigured: bool = False) -> 
     try:
         if skip_unconfigured and not ctx.secrets.exists("truenas:apikey") and not ctx.state_get(
                 POOL_STATE):
-            if _DISCONNECTED in ctx.services:
+            vote = ctx.services.get(pool_workers.SERVICE)
+            if _DISCONNECTED in ctx.services or (vote is not None and vote.ready is None):
                 with ctx.db.startup_lock():
                     _hold_request_pipe(ctx)
             return None
@@ -342,8 +351,8 @@ def _start_pool_request(ctx: AppContext, *, skip_unconfigured: bool = False) -> 
             request_id = uuid4().hex
             with ctx.db.transaction():
                 ctx.state_set(POOL_REQUEST, request_id)
-                if _workers_connected(ctx):
-                    ctx.state_set(_CLEANUP_REQUEST, request_id)
+                if _workers_connected(ctx, new_measurement=True):
+                    ctx.state_set(pool_workers.CLEANUP_REQUEST, request_id)
             if stream.write(request_id.encode("ascii")) != len(request_id):
                 raise OSError("Nieuwe poolopdracht niet gedeeld")
             return request_id
@@ -403,6 +412,11 @@ async def startup(ctx: AppContext) -> None:
 
 
 async def shutdown(ctx: AppContext) -> None:
+    if vote := ctx.services.pop(pool_workers.SERVICE, None):
+        try:
+            vote.close(ctx)
+        except OSError:
+            LOGGER.exception("Afsluiting van de meetwerker niet bevestigd")
     for key in (_POOL_PIPE, _DISCONNECTED):
         if stream := ctx.services.pop(key, None):
             stream.close()
@@ -427,9 +441,12 @@ def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> s
     """Bij een ingestelde sleutel is alleen een verse, gezonde poolmeting voldoende."""
     unknown = "De TrueNAS-poolstatus is onbekend doordat een recente, geldige meting ontbreekt."
     try:
+        vote = ctx.services.get(pool_workers.SERVICE)
+        if vote is not None and vote.unregistered:
+            return unknown
         if not ctx.secrets.exists("truenas:apikey"):
             with ctx.db.startup_lock():
-                if not _workers_connected(ctx):
+                if not _workers_connected(ctx, new_measurement=True):
                     return unknown
             # De quarantaine respecteerde een laatst bekende zieke pool ook na ontkoppeling.
             if quarantine and (degraded := pool_degraded(ctx)):
@@ -442,8 +459,8 @@ def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> s
         state = ctx.state_get(POOL_STATE, {})
         request_id = ctx.state_get(POOL_REQUEST)
         with ctx.db.startup_lock():
-            if (not isinstance(request_id, str) or ctx.state_get(_CLEANUP_REQUEST) != request_id
-                    or not _current_request(ctx, request_id)):
+            if (not isinstance(request_id, str) or not _current_request(ctx, request_id)
+                    or ctx.state_get(pool_workers.CLEANUP_REQUEST) != request_id):
                 return unknown
             if not _workers_connected(ctx):
                 _revoke_pool_request(ctx)

@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from mediaguard import __version__, schema
+from mediaguard import __version__, pool_workers, schema
 from mediaguard.config import Settings, load_settings
 from mediaguard.context import AppContext
 from mediaguard.correlation import CorrelationId
@@ -136,6 +136,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.add_middleware(SchemaRecovery, database=ctx.db)
         return app
 
+    pool_workers.register(ctx)
     modules = _load_modules()
     runner = JobRunner(ctx)
     ctx.services["jobs"] = runner

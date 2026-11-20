@@ -4,6 +4,8 @@ prullenbak, en nooit buiten de downloadmappen of in de bibliotheek."""
 from __future__ import annotations
 
 import asyncio
+import errno
+import fcntl
 import multiprocessing
 import os
 import select
@@ -14,6 +16,7 @@ import sys
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs
 
 import httpx
@@ -853,6 +856,249 @@ async def test_kern_bereikbaar_bij_onleesbaar_kanaal_en_werkerslot(
     assert (result["status"], result["trashed"], result["purged"]) == ("ok", 1, 1)
     with closing(worker.db), TestClient(app) as recovered:
         assert recovered.get("/readyz").status_code == 200
+
+
+def _meter_zonder_terugvalslot(settings, signal, foutnummer, vanaf_inschrijving):
+    paths = {settings.db_path.with_suffix(ext) for ext in (".pool-fifo", ".pool-workers")}
+    open_file, lock = os.open, fcntl.fcntl
+    errors = []
+    requests = []
+
+    def open_without_channel(path, *args, **kwargs):
+        if Path(path) in paths:
+            raise PermissionError(errno.EACCES, "Meetbestand onleesbaar", path)
+        return open_file(path, *args, **kwargs)
+
+    def refuse_lock(fd, command, *args):
+        if command == fcntl.F_OFD_SETLK:
+            errors.append(foutnummer)
+            raise OSError(foutnummer, "Terugvalslot geweigerd")
+        return lock(fd, command, *args)
+
+    app = None if vanaf_inschrijving else create_app(settings)
+    with (signal, patch.object(os, "open", open_without_channel),
+          patch.object(fcntl, "fcntl", refuse_lock)):
+        app = app or create_app(settings)
+        worker = app.state.ctx
+        worker.services["truenas_transport"] = httpx.MockTransport(requests.append)
+        with closing(worker.db), TestClient(app) as client:
+            _werk_zonder_terugvalslot(worker, client, signal, errors, requests)
+
+
+def _werk_zonder_terugvalslot(worker, client, signal, errors, requests):
+    with pytest.raises(OSError):
+        asyncio.run(storage.refresh_pool(worker))
+    worker.state_set("slotproef", "schrijfbaar")
+    signal.send((client.get("/readyz").status_code, errors[0]))
+    assert signal.poll(30) and signal.recv() == "meet"
+    with (patch.object(worker.db, "startup_lock", side_effect=PermissionError("datamapslot")),
+          pytest.raises(OSError)):
+        asyncio.run(storage.refresh_pool(worker))
+    signal.send((client.get("/readyz").status_code, len(requests)))
+    assert signal.poll(30)
+    if signal.recv() == "procesuitval":
+        os._exit(0)
+
+
+def _weiger_eerste_inschrijving(ctx):
+    ctx.db.execute("CREATE TRIGGER weiger_werker BEFORE INSERT ON system_state "
+                   "WHEN NEW.key GLOB 'pool_worker_v1:*' "
+                   "BEGIN SELECT RAISE(FAIL, 'Inschrijving geweigerd'); END")
+
+
+@pytest.mark.parametrize(("foutnummer", "inschrijving"), [
+    (errno.ENOLCK, "vooraf"), (errno.EACCES, "vooraf"), (errno.EIO, "vooraf"),
+    (errno.ETIMEDOUT, "vooraf"), (errno.ENOENT, "vooraf"),
+    (errno.ENOLCK, "bij-start"), (errno.ENOLCK, "sqlite-geweigerd"),
+], ids=["ENOLCK", "EACCES", "EIO", "ETIMEDOUT", "ENOENT", "ENOLCK-bij-inschrijving",
+        "ENOLCK-en-SQLite-geweigerd"])
+async def test_onbekende_werker_zonder_terugvalslot(ctx, settings, cleanup_round, pool_configured,
+                                                    foutnummer, inschrijving):
+    gather, source, trash, sab = cleanup_round
+    inhoud = b"enige archiefkopie"
+    (trash / "video.mkv").write_bytes(inhoud)
+    _pool_response(ctx, True)
+    assert (await storage.refresh_pool(ctx))["reachable"]
+    if inschrijving == "sqlite-geweigerd":
+        _weiger_eerste_inschrijving(ctx)
+    processes = multiprocessing.get_context("spawn")
+    parent, child = processes.Pipe()
+    worker = processes.Process(target=_meter_zonder_terugvalslot,
+                               args=(settings, child, foutnummer, inschrijving != "vooraf"))
+    worker.start()
+    child.close()
+    try:
+        with parent:
+            assert parent.poll(25) and parent.recv() == (200, foutnummer)
+            assert ctx.state_get("slotproef") == "schrijfbaar"
+            assert (await storage.refresh_pool(ctx))["reachable"]
+            parent.send("meet")
+            assert parent.poll(25) and parent.recv() == (200, 0)
+            result = await J.run_once(ctx, gatherer=gather)
+            assert worker.is_alive()
+            assert (result["status"], result["trashed"], result["purged"], sab.deleted) == (
+                "skipped", 0, 0, [])
+            assert (source / "video.mkv").read_bytes() == b"x" * 10
+            assert [p for p in source.parent.rglob("*.mkv") if p.read_bytes() == inhoud] == [
+                trash / "video.mkv"]
+            parent.send("procesuitval" if foutnummer == errno.ENOLCK else "afsluiten")
+            worker.join(20)
+            assert worker.exitcode == 0
+        if inschrijving == "sqlite-geweigerd":
+            ctx.db.execute("DROP TRIGGER weiger_werker")
+        await _expect_pause(ctx, cleanup_round)
+        await _resume_with_healthy_pool(ctx, cleanup_round)
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join()
+        worker.close()
+        await storage.shutdown(ctx)
+
+
+@pytest.mark.parametrize("fout", ["EIO", "ETIMEDOUT", "volle-fifo", "nul-bytes"])
+async def test_meldfout_zonder_sloten_of_sqlite(ctx, cleanup_round, pool_configured,
+                                                monkeypatch, fout):
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        await storage.startup(worker)
+        try:
+            _healthy_pool(ctx)
+
+            def write(_data):
+                if fout == "volle-fifo":
+                    return None
+                if fout == "nul-bytes":
+                    return 0
+                raise OSError(getattr(errno, fout), "Schrijven geweigerd")
+
+            def denied(*args, **kwargs):
+                raise PermissionError("Slot geweigerd")
+
+            with monkeypatch.context() as fault:
+                fault.setattr(worker.services[storage._POOL_PIPE], "write", write)
+                fault.setattr(storage, "_worker_lock", denied)
+                fault.setattr(storage, "_directory_worker_lock", denied)
+                fault.setattr(worker.db, "startup_lock", denied)
+                with pytest.raises(OSError):
+                    await storage.refresh_pool(worker)
+            _healthy_pool(ctx)
+            await _expect_pause(ctx, cleanup_round)
+            # Het eerste succesvolle contact is nog geen meting.
+            await storage.startup(worker)
+            await _expect_pause(ctx, cleanup_round)
+            await _resume_with_healthy_pool(ctx, cleanup_round)
+        finally:
+            await storage.shutdown(worker)
+
+
+@pytest.mark.parametrize("hermaakt", [False, True], ids=["verdwenen", "vervangen"])
+async def test_meetkanaal_verandert_met_twee_werkers(ctx, cleanup_round, pool_configured, hermaakt):
+    worker = create_app(ctx.settings).state.ctx
+    with closing(worker.db):
+        await storage.startup(worker)
+        try:
+            _healthy_pool(ctx)
+            fifo = ctx.db.path.with_suffix(".pool-fifo")
+            fifo.unlink()
+            if hermaakt:
+                os.mkfifo(fifo, 0o600)
+            await _expect_pause(ctx, cleanup_round)
+            assert _healthy_pool(ctx)["reachable"]
+            await _expect_pause(ctx, cleanup_round)
+            await storage.startup(worker)
+            await _expect_pause(ctx, cleanup_round)
+            await _resume_with_healthy_pool(ctx, cleanup_round)
+        finally:
+            await storage.shutdown(worker)
+
+
+async def test_verdwenen_werkerslot_trekt_meting_in(ctx, cleanup_round, pool_configured):
+    _healthy_pool(ctx)
+    lock = ctx.db.path.with_suffix(".pool-workers")
+    lock.unlink()
+    await _expect_pause(ctx, cleanup_round)
+    lock.touch(mode=0o600, exist_ok=True)
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+@pytest.mark.parametrize("herstel", ["herverbinden", "afsluiten"])
+async def test_eerste_sqlite_inschrijving_geweigerd(ctx, cleanup_round, pool_configured, herstel):
+    _healthy_pool(ctx)
+    _weiger_eerste_inschrijving(ctx)
+    app = create_app(ctx.settings)
+    worker = app.state.ctx
+    with closing(worker.db):
+        with TestClient(app) as client:
+            assert client.get("/readyz").status_code == 200
+            worker.state_set("schrijfproef", "bereikbaar")
+            assert ctx.state_get("schrijfproef") == "bereikbaar"
+            assert _healthy_pool(ctx)["reachable"]
+            await _expect_pause(ctx, cleanup_round)
+            for folder in cleanup_round[1:3]:
+                assert (folder / "video.mkv").read_bytes() == b"x" * 10
+            ctx.db.execute("DROP TRIGGER weiger_werker")
+            if herstel == "herverbinden":
+                await storage.startup(worker)
+                await _expect_pause(ctx, cleanup_round)
+                await _resume_with_healthy_pool(ctx, cleanup_round)
+        if herstel == "afsluiten":
+            await _expect_pause(ctx, cleanup_round)
+            await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+async def test_aanmelding_zonder_schrijfbare_datamap(ctx, cleanup_round, pool_configured):
+    _healthy_pool(ctx)
+    _weiger_eerste_inschrijving(ctx)
+    folder = ctx.db.path.parent
+    mode = stat.S_IMODE(folder.stat().st_mode)
+    try:
+        folder.chmod(mode & ~0o222)
+        app = create_app(ctx.settings)
+        with closing(app.state.ctx.db), TestClient(app) as client:
+            assert client.get("/readyz").status_code == 200
+            assert _healthy_pool(ctx)["reachable"]
+            await _expect_pause(ctx, cleanup_round)
+    finally:
+        folder.chmod(mode)
+        ctx.db.execute("DROP TRIGGER weiger_werker")
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
+
+
+@pytest.mark.parametrize("writable", [True, False], ids=["schrijfbaar", "alleen-lezen"])
+async def test_vervangen_aanmeldbestand_vergeet_geen_werker(
+        ctx, cleanup_round, pool_configured, writable):
+    _healthy_pool(ctx)
+    _weiger_eerste_inschrijving(ctx)
+    folder = ctx.db.path.parent
+    ledger = ctx.db.path.with_suffix(".pool-aanmeldingen")
+    original = ledger.with_suffix(".bewaar")
+    mode = stat.S_IMODE(folder.stat().st_mode)
+    file_mode = stat.S_IMODE(ledger.stat().st_mode)
+    try:
+        folder.chmod(mode & ~0o222)
+        if not writable:
+            ledger.chmod(file_mode & ~0o222)
+        app = create_app(ctx.settings)
+        with closing(app.state.ctx.db):
+            folder.chmod(mode)
+            ledger.rename(original)
+            ledger.touch()
+            assert _healthy_pool(ctx)["reachable"]
+            await _expect_pause(ctx, cleanup_round)
+            original.replace(ledger)
+            ledger.chmod(file_mode)
+            assert _healthy_pool(ctx)["reachable"]
+            await _expect_pause(ctx, cleanup_round)
+            with TestClient(app) as client:
+                assert client.get("/readyz").status_code == 200
+    finally:
+        folder.chmod(mode)
+        ctx.db.execute("DROP TRIGGER weiger_werker")
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
 
 
 def _qbit_refusal(source, root, reply):
