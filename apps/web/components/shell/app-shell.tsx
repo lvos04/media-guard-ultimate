@@ -336,7 +336,7 @@ function Topbar() {
     <header className="topbar sticky top-0 z-nav flex min-h-header items-center gap-1 border-b border-border bg-background px-3 lg:gap-3 lg:px-6">
       <span className="hidden min-w-0 flex-[0_1_28rem] lg:flex"><GlobalSearch /></span>
       <div className="topbar-spacer flex-1" />
-      <div className="topbar-cluster flex min-w-0 items-center gap-1 lg:gap-2">
+      <div className="topbar-cluster flex min-w-0 items-center gap-1 lg:shrink-0 lg:gap-2">
         <button type="button" className={cn(buttonVariants({ variant: "stil", size: "icoon" }), "icon-btn lg:hidden")} aria-label={t("topbar.searchLabel")} onClick={() => setSearchOpen(true)} data-testid="mobile-search"><Search className="ico" aria-hidden="true" /></button>
         <StatusPill />
         <Link href="/hoe-werkt-het" className={cn(buttonVariants({ variant: "stil", size: "icoon" }), "icon-btn help-link hidden min-[30rem]:inline-flex")} aria-label={t("help.title")} title={t("help.title")} data-testid="help-link"><CircleHelp className="ico" aria-hidden="true" /></Link>

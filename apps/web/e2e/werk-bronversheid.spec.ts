@@ -13,11 +13,18 @@ test.beforeEach(async ({ page, baseURL }) => {
   expect((await page.request.post("/api/v1/auth/login", { data })).ok()).toBeTruthy();
   await page.setViewportSize({ width: 768, height: 900 });
   await page.clock.install();
-  // De browserklok springt vooruit; een vers antwoord van de lokale kern hoort bij die klok.
-  await page.route("**/api/v1/status", async r => {
-    const reply = await r.fetch();
-    return r.fulfill({ json: { ...await reply.json(), time: await page.evaluate(() => new Date().toISOString()) } });
+  const status = await page.request.get("/api/v1/status");
+  expect(status.ok()).toBeTruthy();
+  const kern = await status.json();
+  // De kern uit deze proef blijft dezelfde. De meettijd volgt de klok van het afzonderlijke leesverzoek.
+  await page.route("**/api/v1/status", async route => {
+    const time = await page.evaluate(() => new Date().toISOString());
+    return route.fulfill({ json: { ...kern, time } });
   });
+});
+
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
 });
 
 async function jsonBron(page: Page, route: string, waarde: unknown) {
@@ -232,13 +239,16 @@ test("R-HARDE-EIS melding en herstelactie blijven bereikbaar op iedere Peil-bree
     return route.fulfill({ json: { status: "ok" } });
   });
   await jsonBron(page, "instances", []);
-  await page.goto("/");
   const paneel = page.getByTestId("status-hero");
   const rij = paneel.getByRole("link", { name: /AV1-engine/ });
-  await expect(rij.locator('[data-status="unknown"]')).toBeVisible();
-  await expect(paneel.getByRole("link", { name: /Niet gekoppeld/i })).toBeVisible();
-  mode = "fout";
-  antwoord();
+  try {
+    await page.goto("/");
+    await expect(rij.locator('[data-status="unknown"]')).toBeVisible();
+    await expect(paneel.getByRole("link", { name: /Niet gekoppeld/i })).toBeVisible();
+  } finally {
+    mode = "fout";
+    antwoord();
+  }
   const opnieuw = paneel.getByRole("button", { name: "Opnieuw proberen" });
   await expect(opnieuw).toBeVisible();
   for (const toestand of ["fout", "offline"] as const) {
@@ -658,6 +668,12 @@ test("R-HARDE-EIS kopbalk bij gelijktijdige veroudering en weigering", async ({ 
       await expect(page.getByTestId("notif-panel")).toBeVisible();
       await page.keyboard.press("Escape");
     }
+    // Op de eerste desktopbreedte delen het zoekveld en de standen de ruimte, ook met ruimere letterspatiëring.
+    await page.setViewportSize({ width: 1024, height: 900 });
+    await balk.evaluate(el => { el.style.letterSpacing = "0.12em"; });
+    expect(await balk.evaluate(el => el.getBoundingClientRect().height), `kophoogte met letterspatiëring tijdens ${toestand} op 1024 px`).toBeLessThanOrEqual(88);
+    expect(await balk.getByRole("combobox").evaluate(el => el.getBoundingClientRect().width)).toBeGreaterThanOrEqual(44);
+    await balk.evaluate(el => { el.style.removeProperty("letter-spacing"); });
     await page.setViewportSize({ width: 768, height: 900 });
   }
 });
