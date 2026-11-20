@@ -1,0 +1,46 @@
+name: Android-release ondertekenen
+
+on:
+  workflow_dispatch:
+    inputs:
+      publiceren:
+        description: APK toevoegen aan de Forgejo-release van de uitgecheckte versietag
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tijdelijke ondertekensleutel inrichten
+        env:
+          SLEUTEL: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          : "${SLEUTEL:?ANDROID_KEYSTORE_BASE64 ontbreekt}"
+          umask 077
+          printf '%s' "$SLEUTEL" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          echo "MG_ANDROID_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+      - uses: ./.forgejo/actions/android
+        id: bouw
+        env:
+          MG_ANDROID_RELEASE: "1"
+          MG_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MG_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MG_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      - name: Ondertekensleutel opruimen
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+      - name: APK bij de versietag publiceren
+        if: ${{ format('{0}', inputs.publiceren) == 'true' }}
+        env:
+          FORGEJO_TOKEN: ${{ github.token }}
+          VERSIE: ${{ steps.bouw.outputs.versie }}
+        run: .forgejo/scripts/android-release "$VERSIE"

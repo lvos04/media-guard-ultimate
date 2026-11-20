@@ -1,0 +1,29 @@
+name: android
+
+on:
+  push:
+    branches: ["**"]
+    paths: &android
+      - apps/android/**
+      - design/ontwerptaal/tokens.json
+      - deploy/release-manifest.json
+      - .forgejo/workflows/android*.yml
+      - .forgejo/actions/android/**
+  pull_request:
+    paths: *android
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Peil, unit-tests, schermafdrukken en APK's
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.forgejo/actions/android

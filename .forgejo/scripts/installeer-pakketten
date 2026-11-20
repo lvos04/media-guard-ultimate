@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Installeer alleen in de tijdelijke Ubuntu-jobcontainer.
+set -euo pipefail
+beheer=()
+if (( EUID != 0 )); then beheer=(sudo); fi
+"${beheer[@]}" apt-get update
+"${beheer[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"

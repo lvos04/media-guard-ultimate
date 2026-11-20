@@ -1,0 +1,449 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      heavy:
+        description: "Ook zware jobs (encoder-image, fork-images, upstream-sync, contracttest mediaservers) draaien"
+        type: boolean
+        default: true
+      encoderbewijs:
+        description: "Vergelijk het encoder-image met een build op de ongewijzigde basis-tag"
+        type: boolean
+        default: false
+  workflow_call:
+    secrets:
+      BRON_LEESTOKEN:
+        required: true
+    inputs:
+      heavy:
+        type: boolean
+        default: false
+      # release.yml draait het upgradebewijs zelf op het echte kandidaat-image (job upgradebewijs)
+      upgradebewijs:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FFMPEG_HDR10PLUS_VERSION: "8.1.3"
+  FFMPEG_HDR10PLUS_SHA256: "7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3"
+
+jobs:
+  basisimages:
+    name: basisimages op digest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: python3 scripts/check-dockerfile-digests.py
+
+  # 3.12 = het losse core-image (apps/core/Dockerfile); 3.14 = het alles-in-één-image, waar
+  # core op de Python van het encode-image draait (deploy/release-manifest.json,
+  # toolchain.encode.python). test_release_pipeline.py bewaakt dat die twee overeenkomen.
+  core:
+    name: core (python ${{ matrix.python }}, ruff, pytest)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: https://code.forgejo.org/actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ matrix.python }}
+      - name: ffprobe/mediainfo (lichte analyse in core-tests)
+        run: .forgejo/scripts/installeer-pakketten ffmpeg mediainfo
+      - run: pip install -e "apps/core[test]"
+      - name: ruff
+        working-directory: apps/core
+        run: ruff check .
+      - name: pytest
+        working-directory: apps/core
+        run: python -m pytest -q -rfEs -p no:cacheprovider
+      - name: MSO-contracttest
+        working-directory: apps/core
+        run: python -m pytest -q -rfEs -p no:cacheprovider ../../tests/contract/mso
+
+  upgradehistorie:
+    name: herstart en gegevensbehoud met historische releases
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: https://code.forgejo.org/actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - run: pip install -e "apps/core[test]"
+      - run: python -m pytest -q -p no:cacheprovider tests/upgradehistorie
+
+  # Contract 1.3 (kop, §10; C1.3-MGU-01) en Peil 1.1.1 (ONTWERPTAAL §14, E08): byte-gelijke kopieën met gepinde
+  # bron-commit. Fout bij een afwijking van de bron op de gepinde commit (en bij Peil: zelfde versie, andere inhoud);
+  # een nieuwere bron is een waarschuwing (bewust bijwerken). De offline controle draait ook in de core-tests.
+  kopieen:
+    name: kopieën contract en Peil (gepinde bron-commit)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: offline (koppen, sha256, HERKOMST.json)
+        run: python3 scripts/kopie-herkomst.py controleer
+      - name: bron voor contract en Peil ophalen
+        uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: leon/ai-server-manager
+          ref: ccr-c133d7a0-kuz1cv
+          fetch-depth: 0
+          path: .herkomst
+          token: ${{ secrets.BRON_LEESTOKEN }}
+          persist-credentials: false
+      - name: Vergelijk gepinde bestanden en de huidige bronbranch
+        run: python3 scripts/kopie-herkomst.py vergelijk --bron .herkomst
+
+  manifest:
+    name: Custom App-manifest (gepinde validator)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ASF_COMMIT: a994c2a51f45b81b2c48c6533b0ccf51ba857f5a
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: leon/appstore-en-fork
+          token: ${{ secrets.BRON_LEESTOKEN }}
+          ref: ${{ env.ASF_COMMIT }}
+          path: .appstore-validator
+          persist-credentials: false
+      - uses: https://code.forgejo.org/actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Installeer de gepinde manifestvalidator
+        run: |
+          test "$(git -C .appstore-validator rev-parse HEAD)" = "$ASF_COMMIT"
+          python -m venv "$RUNNER_TEMP/validator"
+          "$RUNNER_TEMP/validator/bin/pip" install --require-hashes -r .appstore-validator/apps/api/requirements.lock
+          "$RUNNER_TEMP/validator/bin/pip" install --no-deps .appstore-validator/apps/api
+      - name: Valideer het Custom App-manifest strikt
+        run: >-
+          "$RUNNER_TEMP/validator/bin/jl-manifest" validate --strict deploy/manifest/mediaguard.manifest.yaml
+
+  # HARDE EIS (contract 1.3 §2.3 regel 7b, §12; C1.3-MGU-03): kijkgeschiedenis en MediaGuard-voortgang blijven altijd
+  # beschikbaar. Op elke push: de echte vorige release (op digest) start op de gevulde fixture, daarna de runtime van die
+  # release met de kern en encoder van deze commit (deploy/upgradebewijs/Dockerfile.kandidaat); per tabel vóór/na vergelijken,
+  # readback via de API en terugzetten (vorige image + snapshot). Het releasebewijs met het echte kandidaat-image draait
+  # in release.yml vóór publish.
+  upgradebewijs:
+    name: upgradebewijs (vorige release → kern en encoder van deze commit)
+    if: github.event_name != 'schedule' && format('{0}', inputs.upgradebewijs) != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: docker buildx inspect --bootstrap
+      # vorige-release.json = de laatst gepubliceerde release (tag en digest in GHCR); na een release
+      # is dit rood tot vorige-release.json en de fixture van die release zijn bijgewerkt
+      - name: vorige release is de laatst gepubliceerde (GHCR-tag en digest)
+        run: python3 scripts/upgradebewijs.py volgorde
+      - name: vorige release (op digest) ophalen en kandidaat met kern en encoder bouwen
+        run: |
+          VORIGE="$(python3 -c 'import json;d=json.load(open("deploy/upgradebewijs/vorige-release.json"));print(d["image"]+"@"+d["digest"])')"
+          VORIGE_VERSIE="$(python3 -c 'import json;print(json.load(open("deploy/upgradebewijs/vorige-release.json"))["versie"])')"
+          VERSIE="$(python3 -c 'import json;print(json.load(open("deploy/release-manifest.json"))["version"])')"
+          { echo "VORIGE=$VORIGE"; echo "VORIGE_VERSIE=$VORIGE_VERSIE"; echo "VERSIE=$VERSIE"; } >> "$GITHUB_ENV"
+          for i in 1 2 3 4 5; do docker pull -q "$VORIGE" && break; sleep $((2 ** i)); done
+          docker buildx build --load -f deploy/upgradebewijs/Dockerfile.kandidaat \
+            --build-context core=apps/core --build-context release=deploy --build-context encoder=services/encoder/app \
+            --build-arg "VORIGE=$VORIGE" -t "mediaguard/upgrade-kandidaat:ci-${GITHUB_RUN_ID}" deploy/upgradebewijs
+      - name: upgradebewijs (start, meten, upgraden, vergelijken, terugzetten)
+        run: >-
+          python3 scripts/upgradebewijs.py poort --vorige "$VORIGE" --vorige-versie "$VORIGE_VERSIE"
+          --nieuw "mediaguard/upgrade-kandidaat:ci-${GITHUB_RUN_ID}" --versie "$VERSIE"
+          --werkmap "$RUNNER_TEMP/upgradebewijs" --rapport "$RUNNER_TEMP/upgradebewijs.md"
+      - name: ruim het kandidaatimage van deze run op
+        if: always()
+        run: docker image rm "mediaguard/upgrade-kandidaat:ci-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true
+      - name: controleer gegevensbehoud in het upgraderapport
+        run: python3 tests/upgradehistorie/controleer_rapport.py "$RUNNER_TEMP/upgradebewijs.md"
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+        if: always()
+        with:
+          name: upgradebewijs-rapport
+          path: ${{ runner.temp }}/upgradebewijs.md
+          retention-days: 30
+
+  encoder-unit:
+    name: encoder unit (zonder toolchain)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: https://code.forgejo.org/actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          # zelfde Python als het encode- en alles-in-één-image (Ubuntu 26.04)
+          python-version: "3.14"
+      # Ubuntu 24.04: FFmpeg 6.1 met libsvtav1 en mkvmerge voor HDR-metadata.
+      # De hervatproef gebruikt een korte CPU-encode met de beschikbare AV1-encoder.
+      - run: .forgejo/scripts/installeer-pakketten ffmpeg acl mkvtoolnix
+      - run: pip install -e "services/encoder[test]"
+      - name: ruff + mypy
+        working-directory: services/encoder
+        run: ruff check app tests && mypy app
+      - name: pytest (subset)
+        working-directory: services/encoder
+        run: >-
+          python -m pytest -q -rfEs -p no:cacheprovider
+          tests/test_mediaguard_policy.py tests/test_beslissen.py tests/test_bestandsfilter.py
+          tests/test_db.py tests/test_schema_ingangen.py tests/test_scanner.py
+          tests/test_opslag.py tests/test_onderhoud.py
+          tests/test_mediaguard_storage_guard.py tests/test_scanscheduler.py
+          tests/test_smb_helper.py tests/test_ai_controller.py tests/test_integraties.py
+          tests/test_verificatie.py tests/test_systeem.py tests/test_playback_hold.py
+          tests/test_encodehervatting.py
+          tests/test_api.py::test_opnieuw_proberen_bewaart_onderbroken_beeldwerk
+          tests/test_uitvoerder.py::test_hdr_wordt_pas_na_verificatie_atomisch_vervangen
+          tests/test_planner.py::test_platformpauze_laat_voortgang_staan_en_hervat_wachtrij
+          tests/test_planner.py::test_startfout_van_worker_bewaart_het_oude_deelbestand
+          tests/test_planner.py::test_herstel_wacht_op_de_nog_schrijvende_vorige_encoder
+      - name: hervat de twee onderbroken encodes uit release 1.2.2
+        working-directory: services/encoder
+        run: |
+          export OUDE_ENCODER="$RUNNER_TEMP/encoder-1.2.2"
+          mkdir -p "$OUDE_ENCODER"
+          image=ghcr.io/lvos04/mediaguard-core:1.2.2-aio@sha256:14e540ba9cad0bb7fbda8295bca89496f58462a201361544916f3b16b3a52dc6
+          id=$(docker create --network none --read-only "$image")
+          trap 'docker rm -v "$id" >/dev/null' EXIT
+          docker cp "$id:/opt/mediaguard-encode/app" "$OUDE_ENCODER/app"
+          PYTHONPATH="$PWD:$PWD/tests" python -m pytest -q -s -p no:cacheprovider tests/grenzen_1_2_2.py
+
+  encoder-image:
+    name: encoder-image en FFmpeg-bewijs
+    if: >
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/') && !startsWith(github.ref_name, 'release/v')) ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && (format('{0}', inputs.heavy) == 'true' || format('{0}', inputs.encoderbewijs) == 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: bepalen welke encoderproef nodig is
+        id: proef
+        env:
+          VOOR: ${{ github.event.before }}
+          BEWIJS: ${{ inputs.encoderbewijs }}
+          HEAVY: ${{ inputs.heavy }}
+        run: |
+          bewijs=false
+          suite=false
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            if ! git cat-file -e "${VOOR}^{commit}" 2>/dev/null; then
+              bewijs=true
+            else
+              gewijzigd="$(git diff --name-only "$VOOR" HEAD -- services/encoder/Dockerfile)"
+              [[ -z "$gewijzigd" ]] || bewijs=true
+            fi
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == schedule || "$HEAVY" == true ]]; then suite=true; fi
+          if [[ "$BEWIJS" == true ]]; then bewijs=true; fi
+          { echo "bewijs=$bewijs"; echo "suite=$suite"; } >> "$GITHUB_OUTPUT"
+      - run: docker buildx inspect --bootstrap
+        if: steps.proef.outputs.bewijs == 'true' || steps.proef.outputs.suite == 'true'
+      - name: FFmpeg-bron (gepinde sha256)
+        if: steps.proef.outputs.bewijs == 'true' || steps.proef.outputs.suite == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/ffmpeg-src"
+          BRON="$RUNNER_TEMP/ffmpeg-src/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --max-time 90 -o "$BRON" \
+            "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz"
+          echo "${FFMPEG_HDR10PLUS_SHA256}  $BRON" | sha256sum -c -
+      - name: bouw en vergelijk FFmpeg met en zonder basisdigest
+        if: steps.proef.outputs.bewijs == 'true'
+        timeout-minutes: 120
+        run: |
+          bouw=(docker buildx build --load --platform linux/amd64 --target runtime
+                --build-context "ffmpeg-src=$RUNNER_TEMP/ffmpeg-src")
+          "${bouw[@]}" --build-arg BASE_IMAGE=ubuntu:26.04 -t mediaguard/encode:referentie services/encoder
+          if ! "${bouw[@]}" -t mediaguard/encode:gepind services/encoder; then
+            echo "::error::Het encoder-image bouwt niet met de vaste basisdigest."
+            exit 1
+          fi
+          bewijs="$RUNNER_TEMP/encoderbewijs"
+          mkdir -p "$bewijs"
+          verschil=0
+          for optie in version buildconf encoders; do
+            for image in referentie gepind; do
+              docker run --rm --network none --entrypoint /opt/ffmpeg/bin/ffmpeg \
+                "mediaguard/encode:$image" "-$optie" > "$bewijs/$image-$optie.txt" 2>&1
+            done
+            diff -u "$bewijs/referentie-$optie.txt" "$bewijs/gepind-$optie.txt" || verschil=1
+          done
+          if [[ "$verschil" == 1 ]]; then
+            echo "::error::encoder-build anders: FFmpeg-versie, bouwconfiguratie of encoders wijken af."
+            exit 1
+          fi
+          echo "FFmpeg-versie, bouwconfiguratie en encoders zijn gelijk."
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+        if: always() && steps.proef.outputs.bewijs == 'true'
+        with:
+          name: ffmpeg-basisdigest
+          path: ${{ runner.temp }}/encoderbewijs
+      - name: build --target test
+        if: steps.proef.outputs.suite == 'true'
+        run: |
+          docker buildx build --load --target test \
+            --build-context "ffmpeg-src=$RUNNER_TEMP/ffmpeg-src" \
+            -t mediaguard/encode:test services/encoder
+      - name: pytest + ruff + mypy in het image
+        if: steps.proef.outputs.suite == 'true'
+        run: |
+          docker run --rm mediaguard/encode:test python3 -m pytest -q -rfEs -p no:cacheprovider
+          docker run --rm mediaguard/encode:test sh -c "ruff check app tests && mypy app"
+
+  web:
+    name: web (node 22, lint, typecheck, build, e2e)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: https://code.forgejo.org/actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+      - uses: https://code.forgejo.org/actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: core voor e2e (echte core, geen mocks)
+        run: |
+          python -m venv "$RUNNER_TEMP/corevenv"
+          "$RUNNER_TEMP/corevenv/bin/pip" install -e apps/core
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/web
+      - name: Peil-kopieën ongewijzigd (versie + sha256, O-14)
+        run: npm run check:peil
+        working-directory: apps/web
+      - run: npm run lint
+        working-directory: apps/web
+      - run: npm run typecheck
+        working-directory: apps/web
+      - name: unit-tests web (vitest)
+        run: npm run test:unit
+        working-directory: apps/web
+      - run: npm run build
+        working-directory: apps/web
+      - name: playwright browsers
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: e2e (playwright start core + web zelf, zie playwright.config.ts)
+        working-directory: apps/web
+        env:
+          MG_E2E_PYTHON: ${{ runner.temp }}/corevenv/bin/python
+        run: npm run e2e
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+        if: failure()
+        with:
+          name: playwright-results
+          path: apps/web/e2e/.results
+          retention-days: 7
+          # de map begint met een punt: zonder dit wordt hij overgeslagen
+          include-hidden-files: true
+
+  forks:
+    name: fork-images bouwen (${{ matrix.app }})
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && format('{0}', inputs.heavy) == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [sonarr, radarr]
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: build runtime-image uit gepinde upstream-SHA + patches
+        run: forks/${{ matrix.app }}/build.sh
+      - name: unit tests (MediaGuard + decision/import engines)
+        run: forks/${{ matrix.app }}/build.sh --target unittest
+
+  # Δ-MG-AUTH + Δ-MG-DUAL (ADR-0022; contract 1.3 §2.3 regel 2, C1.3-MGU-04): een echte Emby en een echte
+  # Jellyfin 12.x (images op digest, tests/contract/mediaserver/docker-compose.yml). Deel A: de clients van core en de
+  # encoder tegen beide servers (aanmeldkop per server). Deel B: de echte vorige release met een Emby-koppeling, daarna
+  # de core van deze commit op dezelfde datamap: Emby blijft gevolgd zonder één handeling, Jellyfin komt erbij.
+  # Compose is hier alleen testgereedschap, geen installatiemethode. Sessies zijn nagebootst met de sessie-API.
+  mediaservers:
+    name: contracttest mediaservers (echte Emby + Jellyfin 12.x)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && format('{0}', inputs.heavy) == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: https://code.forgejo.org/actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - run: docker buildx inspect --bootstrap
+      - name: ffmpeg (twee kleine testfilms)
+        run: .forgejo/scripts/installeer-pakketten ffmpeg
+      # de encoder-client (app.integraties) vraagt niets buiten wat core al meebrengt (httpx, cryptography)
+      - run: pip install -e "apps/core[test]"
+      - name: contracttest (servers starten, vorige release → kandidaat, alles weer weg)
+        env:
+          COMPOSE_PROJECT_NAME: mgms-${{ github.run_id }}
+          MGMS_BEWIJS: ${{ runner.temp }}/mediaservers-bewijs
+        run: MG_CORE_PYTHON="$(command -v python)" tests/contract/mediaserver/run.sh
+      - name: uitkomst in job-samenvatting
+        if: always()
+        run: |
+          {
+            echo '### Contracttest mediaservers'
+            echo '```'
+            tail -n 30 "$RUNNER_TEMP/mediaservers-bewijs/pytest.log" 2>/dev/null || echo 'geen pytest.log'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+        if: always()
+        with:
+          name: mediaservers-bewijs
+          path: ${{ runner.temp }}/mediaservers-bewijs
+          retention-days: 30
+
+  upstream-sync:
+    name: upstream-sync rapport (${{ matrix.app }})
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && format('{0}', inputs.heavy) == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [sonarr, radarr]
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: sync-upstream.sh (rapportmodus, wijzigt niets)
+        run: forks/${{ matrix.app }}/sync-upstream.sh --out "$RUNNER_TEMP/sync-${{ matrix.app }}"
+      - name: rapport in job-samenvatting
+        if: always()
+        run: cat "$RUNNER_TEMP/sync-${{ matrix.app }}/REPORT.md" >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+        if: always()
+        with:
+          name: upstream-sync-${{ matrix.app }}
+          path: ${{ runner.temp }}/sync-${{ matrix.app }}
+          retention-days: 14

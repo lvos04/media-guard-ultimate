@@ -276,7 +276,9 @@ def test_core_dockerfile_python_matches_manifest():
     assert re.fullmatch(base, bases[0])
 
 
-def test_release_bewijs_dekt_alle_images_en_gebruikt_hun_digest(tmp_path, monkeypatch):
+@pytest.mark.parametrize("registry_prefix", [None, "git.medialeon.nl/leon"])
+def test_release_bewijs_dekt_alle_images_en_gebruikt_hun_digest(tmp_path, monkeypatch,
+                                                               registry_prefix):
     spec = importlib.util.spec_from_file_location(
         "release_bewijs", ROOT / "scripts" / "release-bewijs.py",
     )
@@ -302,12 +304,15 @@ def test_release_bewijs_dekt_alle_images_en_gebruikt_hun_digest(tmp_path, monkey
     monkeypatch.setattr(bewijs, "maak_sbom", scan)
     monkeypatch.setattr(bewijs, "tag_bestaat", lambda ref: "-radarr-fork:" in ref)
     uitvoer = tmp_path / "release"
-    bewijs.verzamel(manifest, candidate, uitvoer, "syft")
+    bewijs.verzamel(manifest, candidate, uitvoer, "syft", registry_prefix)
     resultaat = json.loads((uitvoer / "digests.json").read_text(encoding="utf-8"))
     assert resultaat["version"] == manifest["version"]
     assert resultaat["platform"] == "linux/amd64"
     assert resultaat["images"].keys() == manifest["images"].keys()
     for naam, entry in resultaat["images"].items():
+        image = manifest["images"][naam]
+        prefix = registry_prefix or manifest["registry"]
+        assert entry["image"] == f"{prefix}/{image['image'].split('/')[-1]}:{image['tag']}"
         bron = entry["image"] if naam == "sonarr-fork" else f"{entry['image']}-{candidate}"
         assert entry["digest"] == pins[bron]
         assert f"{entry['image']}@{entry['digest']}" in scans

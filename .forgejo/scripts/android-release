@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Koppel de ondertekende APK aan exact de geteste commit van een bestaande versietag.
+set -euo pipefail
+versie=${1:?versie ontbreekt}
+tag="v$versie"
+[[ "$GITHUB_REF" == "refs/tags/$tag" ]]
+[[ "$(git rev-parse "$tag^{commit}")" == "$(git rev-parse HEAD)" ]]
+bestand="mediaguard-android-$versie.apk"
+apk="apps/android/out/$bestand"
+test -s "$apk"
+api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/releases"
+aanroep() {
+  printf 'Authorization: token %s\n' "$FORGEJO_TOKEN" | curl -sS --header @- "$@"
+}
+antwoord="$RUNNER_TEMP/android-release.json"
+status=$(aanroep -o "$antwoord" -w '%{http_code}' "$api/tags/$tag")
+case "$status" in
+  200) ;;
+  404)
+    gegevens=$(jq -n --arg tag "$tag" --arg naam "MediaGuard Ultimate $versie" \
+      '{tag_name: $tag, name: $naam, body: "Zie CHANGELOG.md."}')
+    aanroep --fail -H 'Content-Type: application/json' --data "$gegevens" \
+      "$api" -o "$antwoord"
+    ;;
+  *) echo "Forgejo weigerde de releasecontrole (HTTP $status)." >&2; exit 1 ;;
+esac
+id=$(jq -er '.id' "$antwoord")
+bestaand=$(jq -r --arg naam "$bestand" '.assets[]? | select(.name == $naam) | .id' "$antwoord")
+if [[ -n "$bestaand" ]]; then
+  # Een herhaling mag dezelfde APK aantreffen. Een andere bijlage blijft behouden.
+  url=$(jq -er --arg naam "$bestand" '.assets[] | select(.name == $naam) | .browser_download_url' "$antwoord")
+  [[ "$url" == "$GITHUB_SERVER_URL/"* ]]
+  aanroep --fail "$url" -o "$RUNNER_TEMP/bestaande.apk"
+  cmp "$apk" "$RUNNER_TEMP/bestaande.apk"
+else
+  aanroep --fail -F "attachment=@$apk" "$api/$id/assets?name=$bestand" -o /dev/null
+fi
+echo "De ondertekende APK hoort bij release $tag."
