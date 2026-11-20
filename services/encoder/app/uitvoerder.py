@@ -918,10 +918,13 @@ async def _run_process(
                 last_database_warning = now
             return None
 
+    # Samenvoegen van gesloten fragmenten heeft een eigen proces, maar de job
+    # bewaart het encodercommando waarmee de beeldstroom werkelijk is gemaakt.
+    samenvoegen = ("-f", "concat") in zip(arguments, arguments[1:], strict=False)
     await schema_checked_call(
         database.execute,
-        "UPDATE job SET proces_pid=?,commando=? WHERE id=?",
-        (process.pid, json.dumps(arguments), job_id),
+        "UPDATE job SET proces_pid=?,commando=COALESCE(?,commando) WHERE id=?",
+        (process.pid, None if samenvoegen else json.dumps(arguments), job_id),
     )
     await schema_checked_call(_apply_lane_nice, database, job_id, process.pid)
     with log_path.open("a", encoding="utf-8") as log_handle:
@@ -1587,6 +1590,8 @@ async def run_job(
     cache_dir = settings.cache_root / str(job_id)
     work_dir = settings.work_root / str(job_id)
     log_dir = settings.config_root / "logs"
+    if cache_dir.is_symlink():
+        raise ExecutionError("De jobcache is een symbolische koppeling")
     try:
         checkpoint = await asyncio.to_thread(hervatpunten.Hervatpunt.lees, cache_dir)
         prior_result = checkpoint is None and hervatpunten.eerder_geverifieerd(

@@ -110,6 +110,26 @@ def _meet(path: Path) -> Fragment:
     return Fragment(frames, start, end, digest)
 
 
+def _beeldtijden(path: Path, interval: list[str]) -> list[float]:
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-threads", "1", "-select_streams", "v:0", *interval,
+             "-show_frames", "-show_entries", "frame=best_effort_timestamp_time",
+             "-of", "compact=p=1:nk=0", str(path)],
+            capture_output=True, text=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise Hervatfout("De controle van de laatste beeldtijden duurde te lang") from exc
+    if result.returncode or result.stderr.strip():
+        raise Hervatfout("De laatste beeldtijden konden niet worden gecontroleerd")
+    prefix = "frame|best_effort_timestamp_time="
+    try:
+        return [float(line[len(prefix):].partition("|")[0]) for line in result.stdout.splitlines()
+                if line.startswith(prefix)]
+    except ValueError as exc:
+        raise Hervatfout("De laatste beeldstroom bevat geen meetbare beeldtijd") from exc
+
+
 @dataclass
 class Hervatpunt:
     map: Path
@@ -161,6 +181,24 @@ class Hervatpunt:
     def pad(self, i: int) -> Path:
         return self.map / f"beeld-{i:06d}.mkv"
 
+    def controleer_oude_staart(self, invoer: Path, bronbegin: float) -> None:
+        # Oudere registers konden de bij SIGTERM gesloten staart al meetellen.
+        # Behoud ook die beelden als ze aaneengesloten in de bron terug te vinden zijn.
+        deel = self.delen[-1]
+        offset = bronbegin - self.delen[0].begin
+        begin = deel.begin + offset
+        interval = f"{begin:.6f}%{deel.einde + offset + 1:.6f}"
+        bron = _beeldtijden(invoer, ["-read_intervals", interval])
+        tijden = _beeldtijden(self.pad(len(self.delen) - 1), [])
+        start = next((i for i, tijd in enumerate(bron) if abs(tijd - begin) <= 0.002), len(bron))
+        vergelijk = bron[start:start + deel.beelden]
+        if len(vergelijk) == len(tijden) == deel.beelden and all(
+            abs(b - (t + offset)) <= 0.002 for b, t in zip(vergelijk, tijden, strict=True)
+        ):
+            return
+        self.delen.pop()
+        self.bewaar()
+
     @property
     def percent(self) -> float:
         return min(99.9, round(self.delen[-1].einde * 100 / self.duur, 1)) if self.delen else 0.0
@@ -181,18 +219,18 @@ class Hervatpunt:
         pending.replace(self.map / "stand.json")
         _sync_map(self.map)
 
-    def verzamel(self) -> None:
+    def verzamel(self, *, afgerond: bool = False) -> None:
         # De segmentmuxer publiceert een CSV-regel na het sluiten van het bestand.
         # De laatste, nog geopende mapinvoer kan na een harde stop onvolledig zijn.
         index = self.map / "gesloten.csv"
         if not index.is_file():
             return
         try:
-            self._lees_index(index)
+            self._lees_index(index, afgerond)
         except (OSError, ValueError, csv.Error, IndexError, KeyError) as exc:
             raise Hervatfout("Het gesloten fragment kon niet worden bevestigd") from exc
 
-    def _lees_index(self, index: Path) -> None:
+    def _lees_index(self, index: Path, afgerond: bool) -> None:
         for line in index.read_text().splitlines(keepends=True):
             if not line.endswith("\n"):
                 break
@@ -203,6 +241,12 @@ class Hervatpunt:
                 if match and int(match[1]) < len(self.delen):
                     continue  # dit gesloten fragment staat al in het duurzame register
                 raise Hervatfout("De volgorde van de gesloten fragmenten wijkt af")
+            # Bij SIGTERM sluit FFmpeg ook de laatste Matroska af. Een encoder met
+            # beeldherordening kan daar nog referentiebeelden zonder de tussenliggende
+            # beelden in schrijven. Alleen een volgend fragment of een geslaagde
+            # procesexit bevestigt dat ook dit beeldinterval is afgewerkt.
+            if not afgerond and not self.pad(len(self.delen) + 1).is_file():
+                break
             chunk = _meet(expected)
             if self.delen and chunk.begin <= self.delen[-1].begin:
                 raise Hervatfout("De beeldtijd loopt niet op")
@@ -351,17 +395,25 @@ async def encode(
     if frames and not state.compleet:
         # Ook een stop tussen het laatste beeld en het schrijven van 'compleet'
         # hervat de mux. De encoder ontvangt geen eerder vastgelegde beelden.
-        original = await asyncio.to_thread(_probe, Path(args[args.index("-i") + 1]),
-                                           max(300.0, 2 * duration))
+        invoer = Path(args[args.index("-i") + 1])
+        original = await asyncio.to_thread(_probe, invoer, max(300.0, 2 * duration))
         try:
             expected = int(original["streams"][0]["nb_read_frames"])
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise Hervatfout("Het aantal beelden van de bron kon niet worden bevestigd") from exc
         if frames > expected:
             raise Hervatfout("Meer hervatbare beelden dan bronbeelden")
+        if frames < expected and not state.pad(len(state.delen)).exists():
+            try:
+                bronbegin = float(original["streams"][0]["start_time"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise Hervatfout("De eerste beeldtijd van de bron ontbreekt") from exc
+            await asyncio.to_thread(state.controleer_oude_staart, invoer, bronbegin)
+            frames = sum(chunk.beelden for chunk in state.delen)
     if not state.compleet and frames != expected:
         (state.map / "gesloten.csv").unlink(missing_ok=True)
         process = asyncio.create_task(run(_video(args, state, frames)))
+        ok = False
         try:
             while not process.done():
                 await asyncio.wait({process}, timeout=5.0)
@@ -374,7 +426,7 @@ async def encode(
             try:
                 ok = await process
             finally:
-                await asyncio.to_thread(state.verzamel)
+                await asyncio.to_thread(state.verzamel, afgerond=ok)
         if not ok:
             return False
     if not state.delen or (

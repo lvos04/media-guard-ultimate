@@ -261,9 +261,11 @@ def test_handmatig_hervatten_laat_opslagrem_onafhankelijk(mg_client: Any) -> Non
     from mg_helpers import HEADERS
 
     from app.mediaguard import holds
+    from app.onderhoud import storage_guard
 
-    client, db, _ = mg_client
-    holds.set_hold(db, "opslag", "automatisch: opslag onbereikbaar", ("cpu",))
+    client, db, settings = mg_client
+    db.execute("UPDATE instelling SET cache_pauze_gb=999999 WHERE id=1")
+    assert str(storage_guard(db, settings)["status"]).startswith("automatisch gepauzeerd")
     route = "/api/workers/cpu"
     assert client.post(route + "/pauzeren", headers=HEADERS).json()["gepauzeerd"]
     assert client.post(route + "/hervatten", headers=HEADERS).json()["gepauzeerd"]

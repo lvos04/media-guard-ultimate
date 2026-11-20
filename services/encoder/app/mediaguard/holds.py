@@ -58,11 +58,13 @@ def lane_reasons(row: sqlite3.Row, now: float | None = None) -> dict[str, str]:
 
 
 def _visible(reasons: dict[str, str]) -> str | None:
-    # Een opslag- of hardwareprobleem blijft zichtbaar voor diagnose.
+    # De eerst zichtbare handmatige pauze blijft herkenbaar bij een opslagstoring.
+    first = next(iter(reasons), None)
+    if first == "handmatig":
+        return reasons[first]
     for source in ("opslag", "capaciteit"):
         if source in reasons:
             return reasons[source]
-    first = next(iter(reasons), None)
     if first == "platform":
         return reasons.get("kijken") or reasons.get("jellyfin") or reasons[first]
     return reasons[first] if first else None

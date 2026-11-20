@@ -511,6 +511,7 @@ def test_workerinstellingen_worden_gevalideerd(client: TestClient) -> None:
     assert ok.status_code == 200 and ok.json()["stilte_start"] == "23:00"
 
 
+@pytest.mark.usefixtures("ruime_cache")
 def test_pauzeren_en_hervatten_zijn_gescheiden(client: TestClient) -> None:
     assert client.post("/api/workers/cpu/pauzeren").json()["gepauzeerd"] is True
     assert client.post("/api/workers/cpu/pauzeren").json()["gepauzeerd"] is True

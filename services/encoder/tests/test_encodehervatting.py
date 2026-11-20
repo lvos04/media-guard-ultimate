@@ -144,6 +144,46 @@ def test_beschadigd_fragment_blokkeert_hervatting_en_vervanging(tmp_path: Path) 
     assert db.fetch_one("SELECT 1 FROM vervang_transactie WHERE job_id=?", (job,)) is None
 
 
+def test_laatste_csv_regel_wacht_op_een_volgende_grens_of_succes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import hervatpunten
+
+    stand = hervatpunten.Hervatpunt(tmp_path, "proef", 2, [])
+    for index in range(2):
+        stand.pad(index).touch()
+    (tmp_path / "gesloten.csv").write_text("beeld-000000.mkv,0,1\nbeeld-000001.mkv,1,2\n")
+
+    def meting(path: Path) -> hervatpunten.Fragment:
+        begin = float(path.stem.split("-")[1])
+        return hervatpunten.Fragment(24, begin, begin + 1, "0" * 64)
+
+    monkeypatch.setattr(hervatpunten, "_meet", meting)
+    stand.verzamel()
+    assert len(stand.delen) == 1
+    stand.verzamel(afgerond=True)
+    assert len(stand.delen) == 2
+
+
+@pytest.mark.parametrize("laatste,behouden", [(1.083, 2), (1.125, 1)])
+def test_oude_staart_moet_alle_opeenvolgende_bronbeelden_bevatten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, laatste: float, behouden: int,
+) -> None:
+    from app import hervatpunten
+
+    bron = tmp_path / "bron.mkv"
+    eerste = hervatpunten.Fragment(24, 0, 1, "0" * 64)
+    staart = hervatpunten.Fragment(3, 1, 1.167, "0" * 64)
+    stand = hervatpunten.Hervatpunt(tmp_path, "proef", 3, [eerste, staart])
+
+    def tijden(path: Path, interval: list[str]) -> list[float]:
+        return [6.000, 6.042, 6.083, 6.125] if path == bron else [1.000, 1.042, laatste]
+
+    monkeypatch.setattr(hervatpunten, "_beeldtijden", tijden)
+    stand.controleer_oude_staart(bron, bronbegin=5)
+    assert len(stand.delen) == behouden and stand.delen[0] == eerste
+
+
 def test_eerder_geverifieerd_eindbestand_doorloopt_opnieuw_de_eindcontrole(tmp_path: Path) -> None:
     from dataclasses import replace
 
