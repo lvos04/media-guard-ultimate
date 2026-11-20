@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# De buildengine draait apart van de job. Voer de proef naast haar containers uit,
+# zodat de bind mounts en de gepubliceerde loopbackpoorten dezelfde bestanden en diensten zien.
+set -euo pipefail
+proef=${1:?kies upgradebewijs, aio-smoke of mediaservers}
+shift
+case "$proef" in upgradebewijs|aio-smoke|mediaservers) ;; *) exit 2 ;; esac
+image=ghcr.io/catthehacker/ubuntu:act-24.04@sha256:7bf3a8afc2bbfe7fdaf4b9d2716cb2f3634fd21e4f38e26aa17a12cfda80d721
+engine=$(docker info --format '{{.ID}}')
+volume=$(docker volume create)
+client=
+bewijs=
+afsluiten() {
+  local code=$?
+  trap - EXIT
+  if [[ -n "$bewijs" ]]; then
+    docker cp "$client:$map/uitvoer/." "$RUNNER_TEMP/" || code=1
+    if [[ -s "$RUNNER_TEMP/proef-samenvatting.md" ]]; then
+      cat "$RUNNER_TEMP/proef-samenvatting.md" >> "$GITHUB_STEP_SUMMARY" || code=1
+    fi
+  fi
+  if [[ -n "$client" ]]; then docker rm -fv "$client" >/dev/null || code=1; fi
+  if [[ "$proef" == mediaservers ]] && docker image inspect "$kandidaat" >/dev/null 2>&1; then
+    docker image rm "$kandidaat" >/dev/null || code=1
+  fi
+  docker volume rm "$volume" >/dev/null || code=1
+  exit "$code"
+}
+trap afsluiten EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+kandidaat="mediaguard/upgrade-kandidaat:contract-${volume:0:16}"
+
+# De proefscripts geven absolute submappen door aan Docker. Onder dit exacte
+# pad zien de proefclient en de buildengine uitsluitend dit nieuwe testvolume.
+map=$(docker volume inspect --format '{{.Mountpoint}}' "$volume")
+endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
+case "$endpoint" in
+  unix://*) verbinding=(--mount "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock") ;;
+  tcp://*) verbinding=(--env "DOCKER_HOST=$endpoint") ;;
+  *) echo "Onbekend verbindingstype voor de buildengine." >&2; exit 1 ;;
+esac
+client=$(docker create --user 0:0 --network host "${verbinding[@]}" \
+  --mount "type=volume,source=$volume,target=$map" --workdir "$map/bron" \
+  --env "TMPDIR=$map/tijdelijk" --env "GITHUB_STEP_SUMMARY=$map/uitvoer/proef-samenvatting.md" \
+  --entrypoint sleep "$image" infinity)
+docker start "$client" >/dev/null
+uitvoeren() { docker exec "$client" "$@"; }
+[[ -n "$engine" && "$(uitvoeren docker info --format '{{.ID}}')" == "$engine" ]]
+uitvoeren mkdir -p "$map/bron" "$map/tijdelijk" "$map/uitvoer"
+bewijs=1
+git archive HEAD -- apps/core services/encoder/app deploy scripts tests/fixtures/aio tests/contract/mediaserver |
+  docker exec -i "$client" tar -x -C "$map/bron"
+
+# Kies drie onderscheiden vrije loopbackpoorten op de buildengine zelf.
+poorten=$(uitvoeren python3 -c 'import socket
+sockets = [socket.socket() for _ in range(3)]
+for s in sockets: s.bind(("localhost", 0))
+print(*(s.getsockname()[1] for s in sockets))')
+read -r poort emby jellyfin <<< "$poorten"
+case "$proef" in
+  upgradebewijs)
+    uitvoeren python3 scripts/upgradebewijs.py poort "$@" --poort "$poort" \
+      --werkmap "$map/tijdelijk/upgradebewijs" --rapport "$map/uitvoer/upgradebewijs.md"
+    ;;
+  aio-smoke)
+    uitvoeren python3 scripts/aio-smoke.py "$@" --port "$poort"
+    ;;
+  mediaservers)
+    uitvoeren env DEBIAN_FRONTEND=noninteractive apt-get update
+    uitvoeren env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg python3-venv
+    uitvoeren python3 -m venv "$map/venv"
+    uitvoeren "$map/venv/bin/pip" install -e 'apps/core[test]'
+    uitvoeren env "COMPOSE_PROJECT_NAME=mgms-${volume:0:16}" "MGMS_BOUWTAG=$kandidaat" \
+      "MGMS_MG_PORT=$poort" "MGMS_EMBY_PORT=$emby" "MGMS_JELLYFIN_PORT=$jellyfin" \
+      "MGMS_BEWIJS=$map/uitvoer/mediaservers-bewijs" "MG_CORE_PYTHON=$map/venv/bin/python" \
+      tests/contract/mediaserver/run.sh
+    ;;
+esac

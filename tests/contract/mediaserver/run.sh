@@ -58,7 +58,7 @@ rm -rf "$RUN"
 mkdir -p "$RUN/media/Films/Testfilm (2024)" "$RUN/media/Films/Zonder Ondertitel (2023)" "$RUN/proxylog" "$RUN/mg"
 
 if [[ -z "${MGMS_KANDIDAAT:-}" ]]; then
-  MGMS_KANDIDAAT="mediaguard/upgrade-kandidaat:contract"
+  MGMS_KANDIDAAT="${MGMS_BOUWTAG:-mediaguard/upgrade-kandidaat:contract}"
   echo ">> kandidaat bouwen: runtime van $MGMS_VORIGE_VERSIE met kern en encoder uit deze werkmap"
   docker buildx build --load -q -f "$ROOT/deploy/upgradebewijs/Dockerfile.kandidaat" \
     --build-context "encoder=$ROOT/services/encoder/app" --build-context "core=$ROOT/apps/core" --build-context "release=$ROOT/deploy" \
