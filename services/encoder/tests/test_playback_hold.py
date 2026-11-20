@@ -68,20 +68,31 @@ def test_deliberate_block_classification() -> None:
         assert not deliberate_block(reason), reason
 
 
+@pytest.mark.usefixtures("ruime_cache")
 def test_playback_hold_is_not_degraded_in_health(mg_client: Any) -> None:
     """Iemand kijkt in Emby: de engine meldt een notitie, geen reden en geen 'degraded'."""
     from mg_helpers import HEADERS
 
-    client, database, _settings = mg_client
+    from app.onderhoud import storage_guard
+
+    client, database, settings = mg_client
     apply_playback_hold(database, True, ["cpu"], "iemand kijkt (Wadi)")
     health = client.get("/api/mediaguard/v1/health", headers=HEADERS).json()
     assert any(p["lane"] == "cpu" for p in health["lanes_paused"])  # pauze blijft zichtbaar
     assert not any("Kijken:" in r for r in health["reasons"])
     assert any("Kijken:" in n for n in health["notes"])
-    database.execute("UPDATE worker_config SET gepauzeerd=1,pauze_reden='automatisch: opslag "
-                     "niet bereikbaar: test' WHERE baan='cpu'")
+    apart = settings.cache_root.with_name("tijdelijk-ontkoppeld")
+    settings.cache_root.rename(apart)
+    try:
+        storage_guard(database, settings)
+        health = client.get("/api/mediaguard/v1/health", headers=HEADERS).json()
+        assert any("automatisch: opslag" in r for r in health["reasons"])
+    finally:
+        apart.rename(settings.cache_root)
+    storage_guard(database, settings)
     health = client.get("/api/mediaguard/v1/health", headers=HEADERS).json()
-    assert any("automatisch: opslag" in r for r in health["reasons"])
+    assert not any("automatisch: opslag" in r for r in health["reasons"])
+    assert any("Kijken:" in n for n in health["notes"])
 
 
 def test_platformpauze_behoudt_kijkpauze_en_vervalt_zelfstandig(
