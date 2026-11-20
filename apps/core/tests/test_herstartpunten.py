@@ -116,12 +116,14 @@ def test_oude_voltooide_omwisseling(tmp_path, installatie, verlopen):
         info["requested_at"] = "2024-01-01T00:00:00+00:00"
         (core / preupdate.STAGE_MARKER).write_text(json.dumps(info))
     aside = oude_omwisseling(tmp_path, info)
+    bestanden = bestandsinhoud(tmp_path)
     for _ in range(2):
-        herstart(tmp_path)
-        assert stand(core / "mediaguard.db", tmp_path / "encode/app.db") == voor
-        assert stand(aside / "core__mediaguard.db", aside / "encode__app.db") == later
-    assert not preupdate.pending(core)
-    assert Path(preupdate.take_result(core)["previous"]) == aside
+        with pytest.raises(RuntimeError, match="wacht op handmatige keuze"):
+            herstart(tmp_path)
+        assert bestandsinhoud(tmp_path) == bestanden
+        assert preupdate.pending(core) == info and preupdate.take_result(core) is None
+    assert stand(core / "mediaguard.db", tmp_path / "encode/app.db") == voor
+    assert stand(aside / "core__mediaguard.db", aside / "encode__app.db") == later
 
 
 def kind(config, actie, punt):
@@ -144,7 +146,7 @@ def kind(config, actie, punt):
         return bestand
 
     def schrijf(pad, inhoud, *args):
-        if pad.name == preupdate.COMMIT_STEP:
+        if pad.name == preupdate.COMMIT_ORIGIN and json.loads(inhoud).get("fase") == "migratie":
             grens("voor-" + json.loads(inhoud)["stap"])
         return publiceer(pad, inhoud, *args)
 
@@ -154,14 +156,22 @@ def kind(config, actie, punt):
         if doel == core / preupdate.COMMIT_MARKER:
             assert preupdate.is_set_name(doel.read_text())
             grens("setnaam")
-        elif doel == core / preupdate.COMMIT_STEP:
-            grens("na-" + json.loads(doel.read_text())["stap"])
+        elif doel == core / preupdate.COMMIT_ORIGIN:
+            fase = json.loads(doel.read_text())
+            if fase["fase"] == "archiveren":
+                grens("voor-archief")
+            elif fase["fase"] == "migratie":
+                grens("na-" + fase["stap"])
+            elif fase["fase"] == "omwisseling":
+                grens(f"stap-{fase['stap']}")
         elif doel == core / preupdate.STAGE_MARKER:
             journal = json.loads(doel.read_text()).get("omwisseling")
-            grens("aanvraag" if journal is None else f"stap-{journal['stap']}")
+            grens("aanvraag" if journal is None else "aanvraag-gebonden")
         elif doel == core / preupdate.RESULT_FILE:
             assert json.loads(doel.read_text())["ok"]
             grens("resultaat")
+        elif doel.parent.name == preupdate.FOLDER and preupdate.is_set_name(doel.name):
+            grens("archief-gepubliceerd")
         elif doel.parent.parent.name == preupdate.ASIDE_FOLDER:
             grens("opzij-" + doel.name)
         elif Path(src).name.endswith(preupdate.STAGED_SUFFIX):
@@ -171,7 +181,7 @@ def kind(config, actie, punt):
 
     def weg(pad, *args, **kwargs):
         verwijder(pad, *args, **kwargs)
-        if pad.name in (preupdate.COMMIT_STEP, preupdate.COMMIT_MARKER, preupdate.STAGE_MARKER):
+        if pad.name in (preupdate.COMMIT_ORIGIN, preupdate.COMMIT_MARKER, preupdate.STAGE_MARKER):
             grens("verwijderd-" + pad.name)
 
     with patch.object(preupdate, "_publish", schrijf), patch.object(os, "replace", wissel), \
@@ -208,7 +218,7 @@ def twee_starts(config, verwacht):
     "lege-tijdelijke-naam", "setnaam", "voor-voorbereid", "na-voorbereid",
     "voor-kern vastgelegd", "na-kern vastgelegd", "voor-encode/tweede.db", "na-encode/tweede.db",
     "voor-encode/app.db", "na-encode/app.db",
-    "verwijderd-" + preupdate.COMMIT_STEP, "verwijderd-" + preupdate.COMMIT_MARKER,
+    "verwijderd-" + preupdate.COMMIT_ORIGIN, "verwijderd-" + preupdate.COMMIT_MARKER,
 ])
 def test_uitval_bij_elke_updatecommit(tmp_path, installatie, punt):
     core = tmp_path / "core"
@@ -563,7 +573,7 @@ def test_checkpoint_voor_binding_levert_een_verse_set(tmp_path, installatie, mon
         kopieer = shutil.copyfile
 
         def laatste_verbinding(src, dst, *args, **kwargs):
-            if moment == "tijdens-kopie" and src == enc.with_name("app.db-wal"):
+            if archieven and moment == "tijdens-kopie" and src == enc.with_name("app.db-wal"):
                 schrijver.close()
             return kopieer(src, dst, *args, **kwargs)
 

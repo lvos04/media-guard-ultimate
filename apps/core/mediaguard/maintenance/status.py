@@ -133,7 +133,13 @@ def attention_items(ctx: AppContext) -> list[dict[str, Any]]:
     from mediaguard.maintenance import preupdate
 
     pending = preupdate.pending(ctx.settings.data_dir)
-    if pending:
+    if pending and preupdate.manual_choice_pending(ctx.settings.data_dir):
+        out.append(_item(
+            "backup.rollback_pending", "warning", "Herstel wacht op handmatige keuze",
+            "De vorige databasewissel mist een vooraf bewezen stand. De aanvraag en beide "
+            "standen blijven bewaard. Vergelijk de standen met de offline herstelroute.",
+            "/systeem#back-ups"))
+    elif pending:
         out.append(_item(
             "backup.rollback_pending", "warning", "Terugzetten staat klaar",
             f"De back-up van vóór de update ({pending.get('set')}) wordt teruggezet zodra de app "

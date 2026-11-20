@@ -37,9 +37,10 @@ import sqlite3
 import stat
 import tempfile
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -57,6 +58,7 @@ UPGRADE_SET = "update-herstelset"
 COMMIT_MARKER = "update-in-uitvoering"
 COMMIT_STEP = "update-commitstap.json"
 COMMIT_ORIGIN = "update-oorsprong.json"
+MANUAL_CHOICE = "wacht op handmatige keuze"
 LEGACY_KEY_META = "meta-met-sleutelverwijzing.json"
 STAGED_SUFFIX = ".terugzetten"
 KEEP_SETS = 5
@@ -128,6 +130,10 @@ def _forget(path: Path) -> None:
     _sync(path.parent)
 
 
+def _write_phase(core: Path, state: dict, owner: tuple[int, int] | None = None) -> None:
+    _publish(core / COMMIT_ORIGIN, json.dumps({**state, "controle": _checksum(state)}), owner)
+
+
 def _clean_marker_parts(core: Path) -> None:
     # Alleen ongepubliceerde markeringen van deze schrijver, onder beide opstartsloten.
     for name in (COMMIT_MARKER, COMMIT_STEP, COMMIT_ORIGIN, UPGRADE_SET, STAGE_MARKER, RESULT_FILE):
@@ -178,13 +184,17 @@ def _copy_legacy(source: sqlite3.Connection, core_dir: Path, dest: Path, value: 
     return ref
 
 
-def _copy_sqlite(src: Path, dest: Path) -> dict[str, Any]:
+def _copy_sqlite(src: Path, dest: Path, *, work: Path | None = None) -> dict[str, Any]:
     """Kopie via de backup-API (WAL-veilig) + hersteltest; nooit een half bestand."""
     part = dest.with_name(dest.name + ".part")
     try:
         extra = {}
-        with contextlib.closing(sqlite3.connect(src.resolve().as_uri() + "?mode=ro", uri=True,
-                                               timeout=30)) as s:
+        with contextlib.ExitStack() as readers:
+            if work is None:
+                s = readers.enter_context(contextlib.closing(sqlite3.connect(
+                    src.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)))
+            else:
+                s, _ = readers.enter_context(checked_database(work, database_files(src)))
             s.execute("BEGIN")
             core = dest.name == "mediaguard.db" and dest.parent.name != "encode"
             value = _cursor_value(s) if core else None
@@ -284,41 +294,47 @@ def make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
              from_schema: str | None = None, to_schema: str | None = None,
              from_version: str | None = None, to_version: str | None = None,
              reason: str = "migratie", owner: tuple[int, int] | None = None,
-             preserve: Path | None = None) -> Path:
+             preserve: Path | None = None, supervised: bool = False) -> Path:
     """Maak een complete set (eerst als ``.part``-map, pas daarna de echte naam)."""
     peer = encode_dir or schema.encoder_dir(core_db.parent)
     with schema.startup_locks(core_db.parent, peer):
-        Database(core_db).require_writable()
+        Database(core_db, offline_guard=supervised).require_writable()
         if peer != schema.encoder_dir(core_db.parent):
             check_encoder_schema(peer)
         return _make_set(folder, core_db, encode_dir=encode_dir, from_schema=from_schema,
                          to_schema=to_schema, from_version=from_version, to_version=to_version,
-                         reason=reason, owner=owner, preserve=preserve)
+                         reason=reason, owner=owner, preserve=preserve, supervised=supervised)
 
 
 def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
               from_schema: str | None, to_schema: str | None, from_version: str | None,
               to_version: str | None, reason: str, owner: tuple[int, int] | None,
-              preserve: Path | None = None) -> Path:
-    folder.mkdir(parents=True, exist_ok=True)
-    _chown([folder.parent, folder], owner)
+              preserve: Path | None = None, supervised: bool = False,
+              prepare: Callable[[], None] | None = None) -> Path:
     stamp = datetime.now(UTC)
     # Oudere supervisors accepteren na de seconde alleen één decimaal achtervoegsel.
     name = f"{SET_PREFIX}{stamp:%Y%m%dT%H%M%SZ-%f}{uuid4().int:039d}"
+    if supervised:
+        _archive_intent(core_db, encode_dir, name, owner)
+    if prepare is not None:
+        prepare()
+    folder.mkdir(parents=True, exist_ok=True)
+    _chown([folder.parent, folder], owner)
     work = folder / (name + ".part")
     work.mkdir(mode=0o700)
     files: list[dict[str, Any]] = []
+    copy_db = partial(_copy_sqlite, work=core_db.parent) if supervised else _copy_sqlite
     try:
         generation = _source_generation(core_db, encode_dir) if reason == "update" else None
         files.append({"name": "mediaguard.db", "live": f"{core_db.parent.name}/{core_db.name}",
-                      **_copy_sqlite(core_db, work / "mediaguard.db")})
+                      **copy_db(core_db, work / "mediaguard.db")})
         encoder_problem = None
         if encode_dir is not None and encode_dir.is_dir():
             (work / "encode").mkdir(mode=0o700)
             for db in sorted(encode_dir.glob("*.db")):
                 try:
                     files.append({"name": f"encode/{db.name}", "live": f"encode/{db.name}",
-                                  **_copy_sqlite(db, work / "encode" / db.name)})
+                                  **copy_db(db, work / "encode" / db.name)})
                 except SetError as exc:
                     encoder_problem = str(exc)
                     if exc.disk:
@@ -373,8 +389,11 @@ def _make_set(folder: Path, core_db: Path, *, encode_dir: Path | None,
 def prune_sets(folder: Path, keep: int = KEEP_SETS, now: float | None = None,
                *, protected: set[Path] | None = None) -> int:
     """Alleen complete sets tellen mee; halve ``.part``-mappen verdwijnen na een uur."""
-    if folder.name == FOLDER and (folder.parent.parent / COMMIT_MARKER).exists():
-        return 0  # Bewaar ook strijdige sets totdat de onderbroken update is afgehandeld.
+    if folder.name == FOLDER:
+        core = folder.parent.parent
+        phase = _read_proof(core / COMMIT_ORIGIN)
+        if (core / COMMIT_MARKER).exists() or (phase and phase.get("fase") != "aanbod"):
+            return 0  # Bewaar ook strijdige sets totdat de onderbreking is afgehandeld.
     now = time.time() if now is None else now
     removed = 0
     complete = sorted(p for p in folder.glob(SET_PREFIX + "*")
@@ -462,16 +481,12 @@ def find(folder: Path, name: str) -> Path | None:
 
 def verify(path: Path, *, core_dir: Path | None = None) -> list[str]:
     """Problemen (leeg = in orde): checksums en grootte van elk bestand in de set."""
-    if path.is_file():  # oude losse kopie: alleen een snelle controle mogelijk
+    if path.is_file():
         try:
-            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-            try:
-                ok = conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-            finally:
-                conn.close()
-        except sqlite3.Error as exc:
+            with checked_database(core_dir or path.parent, database_files(path)):
+                return []
+        except (OSError, sqlite3.Error) as exc:
             return [f"{path.name}: {exc}"]
-        return [] if ok else [f"{path.name} is beschadigd"]
     meta = _read_meta(path)
     if meta is None:
         return ["meta.json ontbreekt of is onleesbaar"]
@@ -573,20 +588,16 @@ def stage(core_dir: Path, path: Path, *, actor: str) -> dict[str, Any]:
     with db.startup_lock():
         if swapping(core_dir):
             raise SetError("de begonnen omwisseling moet eerst worden hervat")
-        if (core_dir / COMMIT_MARKER).exists():
-            if os.environ.get(schema.AIO_RECOVERY_ENV):
-                raise schema.SchemaTooNew()
-            _core_pending(db.path, MIGRATIONS_DIR, core_dir)
-            _encoder_pending(schema.encoder_dir(core_dir), encoder_migrations(os.environ),
-                             work=core_dir)
-        else:
-            db.require_writable()
+        if os.environ.get(schema.AIO_RECOVERY_ENV):
+            raise schema.SchemaTooNew()
+        _core_pending(db.path, MIGRATIONS_DIR, core_dir)
+        _encoder_pending(schema.encoder_dir(core_dir), encoder_migrations(os.environ),
+                         work=core_dir)
         return _stage(core_dir, path, actor)
 
 
 def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
     config_root = core_dir.parent
-    _protect_old_manifests(core_dir / "backups" / FOLDER)
     pairs = _set_files(core_dir, path)
     migrations = encoder_migrations(os.environ)
     for rel, (src, size, digest) in pairs.items():
@@ -606,8 +617,17 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
     if free < need * 1.1 + 256 * 1024**2:
         raise SetError(f"niet genoeg vrije ruimte in /config (nodig ±{need // 1024**2} MB)",
                        disk=True)
-    cancel(core_dir)
+    previous = _read_proof(core_dir / COMMIT_ORIGIN)
+    if previous and previous.get("fase") == "klaarzetten":
+        previous = previous["update"]
+    preparation = {"fase": "klaarzetten", "poging": uuid4().hex, "set": path.name,
+                   "databases": [_source_state(core_dir, rel) for rel in pairs
+                                 if (config_root / rel).is_file()], "update": previous}
+    _write_phase(core_dir, preparation)
+    _protect_old_manifests(core_dir / "backups" / FOLDER)
+    _cancel(core_dir)
     staged: list[dict[str, Any]] = []
+    chosen = []
     try:
         for live, (src, size, digest) in pairs.items():
             dest = _within(config_root, live + STAGED_SUFFIX)
@@ -629,19 +649,25 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
                     size, digest = part.stat().st_size, _sha256(part)
                     _check_restore_copy(part, live, size, digest, migrations, core_dir)
                 _sync(part)
+                _check_preparation(core_dir, preparation["poging"])
                 os.replace(part, dest)
                 _sync(dest.parent)
             finally:
                 part.unlink(missing_ok=True)
             staged.append({"live": live, "staged": live + STAGED_SUFFIX,
                            "size": size, "sha256": digest})
+            chosen.append({**_source_state(core_dir, live + STAGED_SUFFIX), "bestand": live})
+    except _PreviousDataError:
+        raise
     except (OSError, sqlite3.Error, SetError) as exc:
         for s in staged:
             with contextlib.suppress(OSError):
                 _within(config_root, s["staged"]).unlink()
         raise SetError(f"klaarzetten mislukt: {exc}", disk=isinstance(exc, OSError)) from exc
     info = {"set": path.name, "requested_at": _now(), "by": actor, "files": staged,
-            "manifest": _manifest(path.name, staged)}
+            "manifest": _manifest(path.name, staged), "voorbereiding": preparation["poging"]}
+    _check_preparation(core_dir, preparation["poging"])
+    _write_phase(core_dir, {**preparation, "aanvraag": info, "gekozen": chosen})
     _publish(core_dir / STAGE_MARKER, json.dumps(info))
     return info
 
@@ -667,6 +693,9 @@ def swapping(core_dir: Path) -> bool:
         return False
     if "omwisseling" in info:
         return True
+    phase = _read_proof(core_dir / COMMIT_ORIGIN)
+    if phase and phase.get("fase") == "omwisseling":
+        return True
     root = core_dir / "backups" / ASIDE_FOLDER
     if not root.is_dir():
         return False
@@ -676,6 +705,30 @@ def swapping(core_dir: Path) -> bool:
         return bool(_legacy_asides(root, pairs, requested))
     except (KeyError, TypeError, ValueError, SetError):
         return False
+
+
+def manual_choice_pending(core: Path) -> bool:
+    """De Hub en de offline beheerroute lezen dezelfde bestaande aanvraag."""
+    if not (core / STAGE_MARKER).is_file() or not swapping(core):
+        return False
+    phase = _read_proof(core / COMMIT_ORIGIN)
+    return not phase or phase.get("fase") != "omwisseling"
+
+
+def _display_copy(core: Path, path: Path) -> dict:
+    with checked_database(core, {"": path}) as (db, _):
+        return _restore_state(db)
+
+
+def _restore_state(db: sqlite3.Connection) -> dict:
+    state = {"integriteit": "ok", **_logical_state(db)}
+    for table, column in (("jobs", "progress"), ("job", "percent")):
+        columns = {row[0] for row in db.execute("SELECT name FROM pragma_table_info(?)", (table,))}
+        if column in columns:
+            sql = (f"SELECT min({column}), max({column}) FROM {table} "  # noqa: S608
+                   f"WHERE typeof({column}) IN ('integer', 'real')")
+            state["voortgang"] = list(db.execute(sql).fetchone())
+    return state
 
 
 def cancel(core_dir: Path) -> bool:
@@ -699,6 +752,13 @@ def _cancel(core_dir: Path) -> bool:
                 staged = core_dir.parent / staged_name
                 if _within(core_dir.parent, staged_name) == staged.absolute():
                     staged.unlink()
+    phase = _read_proof(core_dir / COMMIT_ORIGIN)
+    if (phase and phase.get("fase") == "klaarzetten"
+            and phase["poging"] == info.get("voorbereiding")):
+        if phase["update"] is None:
+            _forget(core_dir / COMMIT_ORIGIN)
+        else:
+            _write_phase(core_dir, phase["update"])
     return True
 
 
@@ -779,8 +839,7 @@ def _regular_digest(path: Path) -> str:
 
 
 def _publish_step(marker: Path, info: dict, state: dict, owner: tuple[int, int] | None) -> None:
-    checksum = _checksum([info, state])
-    _publish(marker, json.dumps({**info, "omwisseling": {**state, "controle": checksum}}), owner)
+    _write_phase(marker.parent, {**state, "fase": "omwisseling", "aanvraag": info}, owner)
 
 
 def _legacy_asides(root: Path, pairs: list[_RestorePair], requested: datetime) -> list[Path]:
@@ -795,14 +854,14 @@ def _legacy_asides(root: Path, pairs: list[_RestorePair], requested: datetime) -
 
 
 def _begin_swap(root: Path, pairs: list[_RestorePair], requested: datetime,
-                max_age_s: float) -> dict:
-    # Oudere schrijvers lieten alleen de aanvraag en de hernoemde bestanden achter.
-    # Neem uitsluitend één opzijgezette map over met een aaneengesloten reeks stappen.
+                max_age_s: float, *, manual: bool = False) -> dict:
     begun = any(not p.staged.exists() for p in pairs)
     candidates = _legacy_asides(root, pairs, requested)
     if len(candidates) > 1 or (begun and not candidates):
         raise SetError("klaargezette kopie ontbreekt of de vorige databases zijn niet eenduidig")
     if candidates:
+        if not manual:
+            raise _PreviousDataError(MANUAL_CHOICE)
         aside, = candidates
     else:
         age = (datetime.now(UTC) - requested).total_seconds()
@@ -832,11 +891,13 @@ def _begin_swap(root: Path, pairs: list[_RestorePair], requested: datetime,
 
 
 def _check_position(work: Path, pairs: list[_RestorePair], aside: Path, originals: dict,
-                    moves: list[tuple[Path, Path]], step: int, migrations: Path) -> None:
+                    moves: list[tuple[Path, Path]], step: int, migrations: Path,
+                    proof: dict | None = None) -> dict:
     """Bewijs elke volledige database, ook tussen de rename van de kern en haar WAL."""
     moved = dict(moves[:step])
     expected = set()
     allowed = set()
+    measured = {}
     for pair in pairs:
         restored = moved.get(pair.staged, pair.staged)
         _check_restore_copy(restored, pair.rel, pair.size, pair.digest, migrations, work)
@@ -856,7 +917,9 @@ def _check_position(work: Path, pairs: list[_RestorePair], aside: Path, original
             key = pair.rel + tail
             if key in originals:
                 source = moved.get(live, live)
-                if not source.is_file() or _regular_digest(source) != originals[key]:
+                if tail == "-wal" and proof is not None and not os.path.lexists(source):
+                    continue  # De backup-API bewijst of alle gecommitteerde rijen er nog zijn.
+                if not source.is_file() or not stat.S_ISREG(source.lstat().st_mode):
                     raise _PreviousDataError(f"het oorspronkelijke bestand {source.name} "
                                              "ontbreekt of is gewijzigd")
                 expected.add(source)
@@ -871,8 +934,8 @@ def _check_position(work: Path, pairs: list[_RestorePair], aside: Path, original
                         expected.add(side)
         if family:
             try:
-                with checked_database(work, family):
-                    pass
+                with checked_database(work, family) as (conn, _):
+                    measured[pair.rel] = _restore_state(conn)
             except (sqlite3.Error, OSError) as exc:
                 raise _PreviousDataError(
                     f"de vorige database {pair.rel} is onleesbaar: {exc}") from exc
@@ -880,11 +943,14 @@ def _check_position(work: Path, pairs: list[_RestorePair], aside: Path, original
         raise SetError("onbekend bestand tussen de vorige databases")
     if any(os.path.lexists(path) for path in allowed - expected):
         raise SetError("onverwachte database of SQLite-hulpbestand bij de omwisseling")
+    if proof is not None and measured != proof:
+        raise _PreviousDataError("de vorige database wijkt af van de bewezen commit")
+    return measured
 
 
 def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | None,
-               migrations: Path, max_age_s: float, work: Path) -> tuple[
-                   Path, dict, list[tuple[Path, Path]], int]:
+               migrations: Path, max_age_s: float, work: Path, *, manual: bool = False) -> tuple[
+                   Path, dict, list[tuple[Path, Path]], int, bool]:
     root = core / "backups" / ASIDE_FOLDER
     try:
         requested = datetime.fromisoformat(info["requested_at"])
@@ -892,13 +958,21 @@ def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict 
             raise ValueError()
     except (KeyError, TypeError, ValueError) as exc:
         raise SetError("ongeldige datum in markering voor terugzetten") from exc
-    if journal is None:
-        state = _begin_swap(root, pairs, requested, max_age_s)
+    phase = _read_proof(core / COMMIT_ORIGIN)
+    continuing = phase is not None and phase.get("fase") == "omwisseling"
+    if continuing:
+        state = phase.copy()
+        if state.pop("aanvraag") != info or journal not in (None, {"fasebestand": state["poging"]}):
+            raise SetError("de terugzetaanvraag en het fasebestand horen niet bij elkaar")
+        state.pop("fase")
     else:
-        state = journal.copy()
-        checksum = state.pop("controle", None)
-        if checksum != _checksum([info, state]):
-            raise SetError("de voortgangsmarkering van het terugzetten is beschadigd")
+        if journal is not None and not manual:
+            raise _PreviousDataError(MANUAL_CHOICE)
+        state = _begin_swap(root, pairs, requested, max_age_s, manual=manual)
+        if not manual and (info.get("voorbereiding") or
+                               (phase and phase.get("fase") == "klaarzetten")):
+            _check_preparation(core, info.get("voorbereiding"), work=work)
+        state["poging"] = uuid4().hex
     name, originals, step = state.get("vorige"), state.get("originelen"), state.get("stap")
     if not isinstance(name, str) or not _ASIDE_NAME.fullmatch(name):
         raise SetError("ongeldige map voor de vorige databases")
@@ -926,29 +1000,34 @@ def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict 
         src, dst = moves[step]
         if not os.path.lexists(src) and os.path.lexists(dst):
             step += 1
-    _check_position(work, pairs, aside, originals, moves, step, migrations)
-    return aside, state, moves, step
+    if continuing and "databases" not in state:
+        raise SetError("het vorige databasebewijs ontbreekt in het fasebestand")
+    measured = _check_position(work, pairs, aside, originals, moves, step, migrations,
+                               state.get("databases"))
+    if not continuing:
+        state["databases"] = measured
+    return aside, state, moves, step, continuing
 
 
-def staged_status(core: Path) -> bool | None:
-    """Pas de leescontroles van de omwisseling toe op een tijdelijke kopie."""
+def staged_status(core: Path, *, manual: bool = False) -> bool | None:
+    """Controleer de geplande wissel of beheerkeuze op afzonderlijke tijdelijke kopieën."""
     marker = core / STAGE_MARKER
     try:
-        before = marker.lstat()
+        before = schema._generation(marker)
     except FileNotFoundError:
         return False
     except OSError:
         return None
     try:
+        phase = _read_proof(core / COMMIT_ORIGIN)
         info = _request(core)
         if info is None:
             return None
         pairs, journal = _restore_request(core, info)
         with tempfile.TemporaryDirectory(prefix="mg-terugzetcontrole-") as work:
             _swap_plan(core, info, pairs, journal, encoder_migrations(os.environ),
-                       STAGE_MAX_AGE_S, Path(work))
-        after = marker.lstat()
-        if before != after or before.st_mtime_ns != after.st_mtime_ns:
+                       STAGE_MAX_AGE_S, Path(work), manual=manual)
+        if before != schema._generation(marker) or _read_proof(core / COMMIT_ORIGIN) != phase:
             return None
     except (OSError, ValueError, RuntimeError, SetError):
         return None
@@ -956,12 +1035,40 @@ def staged_status(core: Path) -> bool | None:
 
 
 def _swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | None,
-          owner: tuple[int, int] | None, migrations: Path, max_age_s: float) -> dict:
+          owner: tuple[int, int] | None, migrations: Path, max_age_s: float,
+          *, manual: str | None = None) -> dict:
     marker = core / STAGE_MARKER
-    aside, state, moves, step = _swap_plan(core, info, pairs, journal, migrations, max_age_s, core)
+    aside, state, moves, step, continuing = _swap_plan(
+        core, info, pairs, journal, migrations, max_age_s, core, manual=manual is not None,
+    )
     root, originals = aside.parent, state["originelen"]
-    if journal is None:
+    if not continuing:
+        if manual is not None:
+            measured = state["databases"]
+            choice = _checksum([info, aside.name, measured])
+            if manual != choice:
+                return {"status": MANUAL_CHOICE, "set": info["set"], "bevestig": choice,
+                        "vorige": measured, "gekozen": {
+                            p.rel: _display_copy(core, p.staged if p.staged.exists() else p.live)
+                            for p in pairs}}
         _publish_step(marker, info, state, owner)
+    reference = {"fasebestand": state["poging"]}
+    if journal != reference and marker.exists():
+        _publish(marker, json.dumps({**info, "omwisseling": reference}), owner)
+
+    def verify_step(position: int) -> None:
+        if _read_proof(core / COMMIT_ORIGIN) != {**state, "fase": "omwisseling", "aanvraag": info}:
+            raise SetError("het fasebestand is tijdens de omwisseling gewijzigd")
+        if marker.exists():
+            current = _request(core)
+            if current != {**info, "omwisseling": reference}:
+                raise SetError("de aanvraag is tijdens de omwisseling gewijzigd")
+        elif position != len(moves):
+            raise SetError("de aanvraag voor de onvoltooide omwisseling ontbreekt")
+        _check_position(core, pairs, aside, originals, moves, position, migrations,
+                        state["databases"])
+
+    verify_step(step)
     aside.mkdir(mode=0o700, parents=True, exist_ok=True)
     for directory in (root, root.parent, core):
         _sync(directory)
@@ -972,23 +1079,22 @@ def _swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | Non
         state["stap"] = step
         _publish_step(marker, info, state, owner)
     for index, (src, dst) in enumerate(moves[step:], start=step + 1):
-        _check_position(core, pairs, aside, originals, moves, index - 1, migrations)
+        verify_step(index - 1)
         # Een herbouwbaar lezersregister kan sinds de vorige publicatie verdwenen zijn.
-        if not src.name.endswith("-shm") or os.path.lexists(src):
+        if not src.name.endswith(("-shm", "-wal")) or os.path.lexists(src):
             os.replace(src, dst)
         _sync(dst.parent)
         _sync(src.parent)
         state["stap"] = index
         _publish_step(marker, info, state, owner)
-    _check_position(core, pairs, aside, originals, moves, len(moves), migrations)
+    verify_step(len(moves))
     _chown([root, aside, *aside.iterdir(), *(p.live for p in pairs)], owner)
     result = {"ok": True, "set": info["set"], "at": _now(), "files": [p.rel for p in pairs],
               "previous": str(aside)}
-    _write_result(core, result, owner)
-    # De volledig uitgevoerde expliciete aanvraag bepaalt nu de actieve stand.
-    if (core / COMMIT_MARKER).exists():
-        finish_commit(core)
-    _forget(marker)
+    if marker.exists():
+        _write_result(core, result, owner)
+        _forget(marker)
+    finish_commit(core)
     return result
 
 
@@ -996,7 +1102,12 @@ def _apply_staged(core_dir: Path, owner: tuple[int, int] | None, max_age_s: floa
                   av1_migrations: Path, keep_on_error: bool) -> dict[str, Any] | None:
     info = _request(core_dir)
     if info is None:
-        return None
+        phase = _read_proof(core_dir / COMMIT_ORIGIN)
+        if not phase or phase.get("fase") != "omwisseling":
+            return None
+        if (core_dir / STAGE_MARKER).exists():
+            raise SetError("de terugzetaanvraag is onleesbaar")
+        info = phase["aanvraag"]
     begun = "omwisseling" in info
     try:
         pairs, journal = _restore_request(core_dir, info)
@@ -1036,8 +1147,10 @@ def take_result(core_dir: Path) -> dict[str, Any] | None:
         result = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if isinstance(result, dict) and result.get("ok") and (core_dir / STAGE_MARKER).exists():
-        return None
+    if isinstance(result, dict) and result.get("ok"):
+        phase = _read_proof(core_dir / COMMIT_ORIGIN)
+        if (core_dir / STAGE_MARKER).exists() or (phase and phase.get("fase") == "omwisseling"):
+            return None
     with contextlib.suppress(OSError):
         path.rename(path.with_name(path.name + ".gemeld"))
     return result if isinstance(result, dict) else None
@@ -1116,21 +1229,35 @@ class UpdateCommits:
     marker: Path | None = None
     origin: str | None = None
     targets: dict | None = None
+    archive: Path | None = None
 
     def begin(self, core: Path, archive: Path, conn: sqlite3.Connection) -> None:
         # De verbindingen zien hun definitieve inhoud in dezelfde nog open schrijftransactie.
-        hashes = {f"{core.name}/mediaguard.db": _contents_hash(conn)}
-        hashes.update({f"encode/{path.name}": _contents_hash(encoder)
-                       for path, encoder in self.encoders.items()})
-        self.marker = core / COMMIT_STEP
-        self.targets = {"set": archive.name, "oorsprong": self.origin, "doelinhoud": hashes}
+        self.targets = {f"{core.name}/mediaguard.db": _logical_state(conn)}
+        self.targets.update({f"encode/{path.name}": _logical_state(encoder)
+                             for path, encoder in self.encoders.items()})
+        self.marker = core / COMMIT_ORIGIN
+        self.archive = archive
         self.record("voorbereid")
 
     def record(self, step: str) -> None:
-        if self.marker is None or self.targets is None:
+        if self.marker is None or self.targets is None or self.archive is None:
             raise SetError("de herstelset voor de databasecommit is niet vastgelegd")
-        state = {**self.targets, "stap": step}
-        _publish(self.marker, json.dumps({**state, "controle": _checksum(state)}))
+        state = _read_proof(self.marker)
+        if (not state or state.get("poging") != self.origin or state.get("set") != self.archive.name
+                or state.get("doelen", self.targets) != self.targets):
+            raise SetError("het fasebestand hoort niet bij deze update")
+        core = self.marker.parent
+        committed = list(state.get("vastgelegd", []))
+        if step != "voorbereid":
+            committed.append(f"{core.name}/mediaguard.db" if step == "kern vastgelegd" else step)
+        for old in state["databases"]:
+            rel = old["bestand"]
+            expected = self.targets[rel] if rel in committed else old["stand"]
+            if _source_state(core, rel, strict_wal=False)["stand"] != expected:
+                raise SetError("de laatste gecommitteerde stand wijkt af van het fasebestand")
+        _write_phase(core, {**state, "fase": "migratie", "stap": step, "doelen": self.targets,
+                            "vastgelegd": committed})
 
 
 @contextlib.contextmanager
@@ -1182,14 +1309,34 @@ def _archive_names(folder: Path) -> set[str]:
     return {p.name for p in folder.glob(SET_PREFIX + "*") if _SET_NAME.fullmatch(p.name)}
 
 
-def _source_state(core: Path, rel: str, *, strict_wal: bool = True) -> dict:
+def _source_state(core: Path, rel: str, *, strict_wal: bool = True,
+                  work: Path | None = None) -> dict:
     main = core.parent / rel
-    with checked_database(core, database_files(main), strict_wal=strict_wal) as (conn, wal):
-        return {"bestand": rel, "kern": _regular_digest(main), "wal_frames": wal.frames,
-                "wal_positie": wal.end, "wal_sha256": wal.sha256, "inhoud": _contents_hash(conn)}
+    observed = None
+    for _ in range(2):
+        generation = _file_generation(main)
+        try:
+            with checked_database(work or core, database_files(main),
+                                  strict_wal=strict_wal) as (conn, wal):
+                stand = _logical_state(conn)
+                digest = _regular_digest(main)
+        except (OSError, sqlite3.Error):
+            if _file_generation(main) == generation:
+                raise
+            continue
+        # Een checkpoint kan de WAL naar de hoofddatabase verplaatsen tijdens het
+        # kopiëren. Accepteer een volgende, stabiele kopie met dezelfde SQL-inhoud.
+        if observed is not None and stand != observed:
+            break
+        if _file_generation(main) == generation:
+            return {"bestand": rel, "kern": digest, "wal_frames": wal.frames,
+                    "wal_positie": wal.end, "wal_sha256": wal.sha256, "inhoud": stand["inhoud"],
+                    "integriteit": "ok", "stand": stand}
+        observed = stand
+    raise _SourceChanged("de database veranderde tijdens het meten van de commit")
 
 
-def _bind_archive(core: Path, archive: Path) -> str:
+def _bind_archive(core: Path, archive: Path, *, phase: str = "aanbod") -> str:
     entries = _update_entries(core, archive)
     meta = _read_meta(archive) or {}
     generation = meta.get("source_generation")
@@ -1202,36 +1349,45 @@ def _bind_archive(core: Path, archive: Path) -> str:
         if _source_generation(main, encode) != generation:
             raise _SourceChanged("de bronbestanden zijn tijdens het kopiëren gewijzigd") from exc
         raise
-    state = {"set": archive.name, "poging": uuid4().hex, "manifest": _checksum(meta),
+    intent = _read_proof(core / COMMIT_ORIGIN)
+    attempt = uuid4().hex
+    if intent and intent.get("fase") == "archiveren":
+        if (intent["set"] != archive.name or _stands(databases) != _stands(intent["databases"])):
+            raise SetError("de gekozen herstelset wijkt af van de vooraf vastgelegde stand")
+        attempt = intent["poging"]
+    _verify_archived_stands(core, entries, _stands(databases))
+    state = {"set": archive.name, "poging": attempt, "fase": phase, "manifest": _checksum(meta),
              "archieven": sorted(_archive_names(archive.parent)), "aantal": len(entries),
-             "databases": databases}
+             "databases": databases, "oude_markering": (intent or {}).get("oude_markering")}
     if _source_generation(main, encode) != generation:
         raise _SourceChanged("de bronbestanden zijn tijdens de bewijscontrole gewijzigd")
-    digest = _checksum(state)
-    _publish(core / COMMIT_ORIGIN, json.dumps({**state, "controle": digest}))
-    return digest
+    _write_phase(core, state)
+    return state["poging"]
 
 
 def record_commit(core: Path, archive: Path) -> str:
     """Bind onder alle schrijfsloten de originele stand vóór de eerste migratie."""
     marker = core / COMMIT_MARKER
     if os.path.lexists(marker):
-        raise SetError("er staat al een onderbroken update klaar")
-    origin = _bind_archive(core, archive)
+        phase = _read_proof(core / COMMIT_ORIGIN)
+        if not phase or phase.get("fase") != "archiveren" or phase["set"] != archive.name:
+            raise SetError("er staat al een onderbroken update klaar")
+    origin = _bind_archive(core, archive, phase="oorsprong")
     _publish(marker, archive.name)
     return origin
 
 
 def finish_commit(core: Path) -> None:
     # De bewijzen blijven beschikbaar totdat de startmarkering duurzaam verdwenen is.
-    _forget(core / COMMIT_MARKER)
-    for name in (COMMIT_STEP, COMMIT_ORIGIN):
+    for name in (COMMIT_MARKER, COMMIT_STEP, COMMIT_ORIGIN):
         if (core / name).exists():
             _forget(core / name)
 
 
 def _read_proof(path: Path) -> dict | None:
     try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise SetError("het fasebestand is geen regulier bestand")
         state = json.loads(path.read_bytes())
     except FileNotFoundError:
         return None
@@ -1240,6 +1396,120 @@ def _read_proof(path: Path) -> dict | None:
     if not isinstance(state, dict) or state.pop("controle", None) != _checksum(state):
         raise SetError("de onderbroken update heeft een beschadigd bewijs")
     return state
+
+
+def _stands(databases: list[dict]) -> dict:
+    return {item["bestand"]: item["stand"] for item in databases}
+
+
+def _verify_archived_stands(core: Path, entries: dict, expected: dict) -> None:
+    for rel, (path, _, _) in entries.items():
+        with checked_database(core, {"": path}) as (copy, _):
+            if _logical_state(copy) == expected[rel]:
+                continue
+            # Een historische sleutel kan in het archief door een verwijzing zijn vervangen.
+            ref = _cursor_value(copy) if rel == f"{core.name}/mediaguard.db" else None
+            if isinstance(ref, str) and ref.startswith(event_keys.LEGACY_PREFIX):
+                with contextlib.closing(sqlite3.connect(":memory:")) as original:
+                    copy.backup(original)
+                    original.execute("UPDATE outbox_retention SET cursor_key=? WHERE singleton=1",
+                                     (event_keys.load_legacy(core, ref),))
+                    if _logical_state(original) == expected[rel]:
+                        continue
+            raise SetError("de herstelset mist de bewezen gecommitteerde inhoud")
+
+
+def _verify_progress(core: Path, previous: list[dict], databases: list[dict]) -> None:
+    actual = {db["bestand"]: db for db in databases}
+    for old in previous:
+        new = actual.get(old["bestand"])
+        if not new:
+            raise SetError("een eerder bewezen database ontbreekt")
+        if old["stand"] == new["stand"]:
+            continue
+        if any(new["stand"].get("volgnummers", {}).get(name, -1) < value
+               for name, value in old["stand"].get("volgnummers", {}).items()):
+            raise SetError("een eerder bewezen SQLite-volgnummer ontbreekt")
+        for table, position in old["stand"]["tabellen"].items():
+            now = new["stand"]["tabellen"].get(table)
+            if (not now or now["rijen"] < position["rijen"] or
+                    (position["hoogste"] is not None and
+                     (now["hoogste"] is None or now["hoogste"] < position["hoogste"]))):
+                raise SetError("een eerder bewezen rij of event ontbreekt")
+        if old["kern"] == new["kern"] and old["wal_frames"]:
+            end = old["wal_positie"]
+            wal = core.parent / (old["bestand"] + "-wal")
+            if new["wal_positie"] < end or wal_prefix_hash(wal, end) != old["wal_sha256"]:
+                raise SetError("de eerder bewezen WAL-commit ontbreekt")
+
+
+def _check_preparation(core: Path, attempt: str | None, *, work: Path | None = None) -> None:
+    try:
+        phase = _read_proof(core / COMMIT_ORIGIN)
+        if not phase or phase.get("fase") != "klaarzetten" or phase["poging"] != attempt:
+            raise SetError("de aanvraag mist haar vooraf vastgelegde stand")
+        current = [_source_state(core, item["bestand"], work=work) for item in phase["databases"]]
+        _verify_progress(core, phase["databases"], current)
+    except (SetError, OSError, sqlite3.Error) as exc:
+        raise _PreviousDataError(f"de stand van vóór het klaarzetten is onbewezen: {exc}") from exc
+
+
+def _completed_legacy_restore(core: Path, phase: dict) -> bool:
+    """Controleer de standen na een door een oude supervisor afgehandelde aanvraag."""
+    request = phase.get("aanvraag")
+    if not request or os.path.lexists(core / STAGE_MARKER):
+        return False
+    for name in (RESULT_FILE, RESULT_FILE + ".gemeld"):
+        try:
+            result = json.loads((core / name).read_bytes())
+            if (result["ok"] is not True or result["set"] != phase["set"]
+                    or result["files"] != [f["live"] for f in request["files"]]
+                    or datetime.fromisoformat(result["at"]) < datetime.fromisoformat(
+                        request["requested_at"])):
+                continue
+            aside = Path(result["previous"])
+        except (OSError, KeyError, ValueError, TypeError):
+            continue
+        if (aside.parent != core / "backups" / ASIDE_FOLDER or not _ASIDE_NAME.fullmatch(aside.name)
+                or not aside.is_dir() or aside.resolve() != aside.absolute()):
+            continue
+        # De oude succesmelding wijst uitsluitend de map aan. Meet beide kanten opnieuw.
+        for old in phase["databases"]:
+            saved = aside / old["bestand"].replace("/", "__")
+            state = _source_state(core, saved.relative_to(core.parent).as_posix())
+            if state["stand"] != old["stand"]:
+                raise SetError("de vorige database mist de vóór het klaarzetten bewezen stand")
+        current = [_source_state(core, db["bestand"]) for db in phase["gekozen"]]
+        if _stands(current) != _stands(phase["gekozen"]):
+            raise SetError("de geïnstalleerde gegevens wijken af van de expliciet gekozen stand")
+        return True
+    return False
+
+
+def _archive_intent(main: Path, encode: Path | None, name: str,
+                    owner: tuple[int, int] | None) -> None:
+    core = main.parent
+    sources = [f"{core.name}/{main.name}"]
+    if encode is not None:
+        sources.extend(f"encode/{p.name}" for p in sorted(encode.glob("*.db")))
+    generation = _source_generation(main, encode)
+    try:
+        databases = [_source_state(core, rel) for rel in sources]
+    except (OSError, sqlite3.Error) as exc:
+        if _source_generation(main, encode) != generation:
+            raise _SourceChanged("de bron veranderde tijdens de fasemeting") from exc
+        raise
+    if _source_generation(main, encode) != generation:
+        raise _SourceChanged("de bronbestanden zijn tijdens de fasemeting gewijzigd")
+    marker = core / COMMIT_MARKER
+    previous = _read_proof(core / COMMIT_ORIGIN)
+    if previous and previous.get("fase") in ("archiveren", "oorsprong", "migratie"):
+        _verify_progress(core, previous["databases"], databases)
+    _write_phase(core, {"fase": "archiveren", "set": name, "poging": uuid4().hex,
+                        "databases": databases, "aantal": len(databases),
+                        "archieven": sorted(_archive_names(core / "backups" / FOLDER)),
+                        "oude_markering": marker.read_bytes().decode("ascii", "replace")
+                        if marker.exists() else None}, owner)
 
 
 def _update_entries(core: Path, archive: Path) -> dict[str, tuple[Path, int, str]]:
@@ -1258,9 +1528,10 @@ def _update_entries(core: Path, archive: Path) -> dict[str, tuple[Path, int, str
     return entries
 
 
-def _contents_hash(conn: sqlite3.Connection) -> str:
-    """Hash schema en alle getypeerde rijen van één SQLite-transactie, inclusief rowid."""
+def _logical_state(conn: sqlite3.Connection) -> dict:
+    """Tel de rijen en hun hoogste rij-/eventnummer in dezelfde stand als de inhoudshash."""
     digest = hashlib.sha256()
+    tables_state = {}
 
     def feed(row: tuple) -> None:
         encoded = json.dumps(tuple(row), default=lambda blob: {"blob": blob.hex()})
@@ -1278,16 +1549,28 @@ def _contents_hash(conn: sqlite3.Connection) -> str:
         quoted = '"' + name.replace('"', '""') + '"'
         columns = {r[0].lower() for r in conn.execute(
             "SELECT name FROM pragma_table_xinfo(?)", (name,))}
-        fields = "*"
+        fields, highest = "*", "NULL"
         if not without_rowid:
             rowid = next((r for r in ("rowid", "_rowid_", "oid") if r not in columns), None)
             if rowid is None:
                 raise SetError("de rij-identiteit van de oorspronkelijke database is onbewezen")
             fields = rowid + ",*"
+            highest = f"MAX({rowid})"
+        count, position = conn.execute(
+            f"SELECT COUNT(*), {highest} FROM {quoted}"  # noqa: S608
+        ).fetchone()
+        tables_state[name] = {"rijen": count, "hoogste": position}
         # Een tabelscan leest de B-boom op rowid of, bij WITHOUT ROWID, op primaire sleutel.
         for row in conn.execute(f"SELECT {fields} FROM {quoted} NOT INDEXED"):  # noqa: S608
             feed(row)
-    return digest.hexdigest()
+    state = {"tabellen": tables_state, "inhoud": digest.hexdigest()}
+    if "sqlite_sequence" in tables_state:
+        state["volgnummers"] = dict(conn.execute("SELECT name, seq FROM sqlite_sequence"))
+    return state
+
+
+def _contents_hash(conn: sqlite3.Connection) -> str:
+    return _logical_state(conn)["inhoud"]
 
 
 def _legacy_original(core: Path, archive: Path, entries: dict) -> bool:
@@ -1312,23 +1595,48 @@ def _legacy_original(core: Path, archive: Path, entries: dict) -> bool:
 
 def _interrupted_commit(core: Path, *, finish: bool = True) -> Path | None:
     marker = core / COMMIT_MARKER
+    origin = _read_proof(core / COMMIT_ORIGIN)
+    if origin and origin.get("fase") == "klaarzetten":
+        if _completed_legacy_restore(core, origin):
+            if finish:
+                finish_commit(core)
+            return None
+        _check_preparation(core, origin["poging"])
+        update = origin["update"]
+        if finish and not (core / STAGE_MARKER).exists():
+            if update is None:
+                _forget(core / COMMIT_ORIGIN)
+            else:
+                _write_phase(core, update)
+        origin = update
+    if origin is None and (core / COMMIT_STEP).exists():
+        raise SetError("de onderbroken update mist haar oorsprongsbewijs")
     try:
         name = marker.read_bytes().decode("ascii", errors="replace")
     except FileNotFoundError:
-        if finish and (core / COMMIT_STEP).exists():
-            _forget(core / COMMIT_STEP)
-            if (core / COMMIT_ORIGIN).exists():
-                _forget(core / COMMIT_ORIGIN)
-        return None
+        if origin is None or origin.get("fase") == "aanbod":
+            return None
+        name = ""
     folder = core / "backups" / FOLDER
-    origin = _read_proof(core / COMMIT_ORIGIN)
     bound = origin.get("set") if origin is not None else name
     if not isinstance(bound, str) or not _SET_NAME.fullmatch(bound):
         raise SetError("de herstelset voor deze onderbroken update is onbewezen")
-    if name.startswith(SET_PREFIX) and (not bound.startswith(name)
-                                        or (_SET_NAME.fullmatch(name) and name != bound)):
+    competing = not bound.startswith(name) or (_SET_NAME.fullmatch(name) and name != bound)
+    if (name != (origin or {}).get("oude_markering") and name.startswith(SET_PREFIX)
+            and competing):
         raise SetError("de setnaam voor deze onderbroken update spreekt het bewijs tegen")
     archive = folder / bound
+    if origin and origin.get("fase") == "archiveren":
+        if _archive_names(folder) - {bound, *origin["archieven"]}:
+            raise SetError("de onderbroken update heeft een strijdige of recentere set")
+        paths = [f"{core.name}/mediaguard.db",
+                 *(f"encode/{p.name}" for p in sorted(schema.encoder_dir(core).glob("*.db")))]
+        expected = _stands(origin["databases"])
+        if _stands([_source_state(core, rel) for rel in paths]) != expected:
+            raise SetError("de onderbroken update heeft een onbewezen oorspronkelijke stand")
+        if archive.exists():
+            _verify_archived_stands(core, _update_entries(core, archive), expected)
+        return None
     if not archive.is_dir():
         raise SetError("de herstelset voor deze onderbroken update ontbreekt")
     try:
@@ -1341,29 +1649,41 @@ def _interrupted_commit(core: Path, *, finish: bool = True) -> Path | None:
                     or _archive_names(folder) - set(origin["archieven"])):
                 raise SetError("de onderbroken update heeft een strijdige of recentere set")
             current = [_source_state(core, rel, strict_wal=False) for rel in entries]
-            targets = _read_proof(core / COMMIT_STEP)
             initial = origin["databases"]
-            for old, actual in zip(initial, current, strict=True):
-                if old["wal_frames"] and old["kern"] == actual["kern"]:
-                    wal = core.parent / (actual["bestand"] + "-wal")
-                    end = old["wal_positie"]
-                    if (actual["wal_positie"] < end
-                            or wal_prefix_hash(wal, end) != old["wal_sha256"]):
-                        raise SetError("de gecommitteerde WAL-stand ontbreekt of is gewijzigd")
-            matches = current == initial
-            if targets is not None:
-                if targets.get("set") != bound or targets.get("oorsprong") != _checksum(origin):
-                    raise SetError("de commitstap hoort bij een andere onderbroken update")
-                # Ook bij identieke schemaversies moet de laatste taak/eventrij er nog zijn.
-                reached = {item["bestand"]: item["inhoud"] for item in current}
-                matches |= targets.get("doelinhoud") == reached
+            if "fase" in origin:
+                if origin["fase"] not in ("aanbod", "oorsprong", "migratie"):
+                    raise SetError("onbekende of onafgehandelde herstelfase")
+                reached = _stands(current)
+                before = _stands(initial)
+                matches = reached == before and all(
+                    reached[rel] == origin["doelen"][rel] for rel in origin.get("vastgelegd", [])
+                )
+                matches |= reached == origin.get("doelen")
+            else:
+                # Een oudere schrijver bond de bestandsfamilie aan inhoud én WAL-prefix.
+                matches = all(all(actual.get(k) == v for k, v in old.items())
+                              for old, actual in zip(initial, current, strict=True))
+                targets = _read_proof(core / COMMIT_STEP)
+                if targets is not None:
+                    if targets.get("set") != bound or targets.get("oorsprong") != _checksum(origin):
+                        raise SetError("de commitstap hoort bij een andere onderbroken update")
+                    for old, actual in zip(initial, current, strict=True):
+                        if old["wal_frames"] and old["kern"] == actual["kern"]:
+                            wal = core.parent / (actual["bestand"] + "-wal")
+                            end = old["wal_positie"]
+                            if (actual["wal_positie"] < end
+                                    or wal_prefix_hash(wal, end) != old["wal_sha256"]):
+                                raise SetError("de gecommitteerde WAL-stand wijkt af")
+                    matches |= targets.get("doelinhoud") == {
+                        item["bestand"]: item["inhoud"] for item in current}
     except (SetError, OSError, sqlite3.Error) as exc:
         raise SetError(f"de onderbroken update heeft een onbewezen oorspronkelijke stand: "
                        f"{exc}") from exc
     if not matches:
         raise SetError(f"update deels vastgelegd of oorsprong onbewezen; "
                        f"zet de geverifieerde set {bound} terug")
-    if finish:
+    if finish and (not origin or "fase" not in origin or
+                   (origin.get("doelen") and _stands(current) == origin["doelen"])):
         finish_commit(core)
     return archive
 
@@ -1398,22 +1718,67 @@ def check_encoder_schema(encode_dir: Path, *, timeout: float = 30) -> None:
     _encoder_pending(encode_dir, encoder_migrations(os.environ), timeout=timeout)
 
 
-def has_database(config_root: Path) -> bool:
-    return (config_root / "core" / "mediaguard.db").exists() or any(
-        (config_root / "encode").glob("*.db")
-    )
+def check_offline_schema(path: Path) -> None:
+    _core_pending(path, MIGRATIONS_DIR, path.parent)
+    _encoder_pending(schema.encoder_dir(path.parent), encoder_migrations(os.environ),
+                     work=path.parent)
+
+
+def resume_standalone_start(core: Path, migrations: Path) -> Path | None:
+    """Een losse kern kan de vroege archivering van alleen haar eigen database hervatten."""
+    try:
+        if (core / STAGE_MARKER).exists() and (_request(core) is None or swapping(core)):
+            raise SetError(MANUAL_CHOICE if manual_choice_pending(core)
+                           else "hervat de onderbroken omwisseling met de supervisor")
+        phase = _read_proof(core / COMMIT_ORIGIN)
+        if phase and phase.get("fase") == "klaarzetten":
+            if _completed_legacy_restore(core, phase):
+                return
+            _check_preparation(core, phase["poging"])
+            phase = phase["update"]
+        if (core / COMMIT_MARKER).exists() or (phase and phase.get("fase") != "aanbod"):
+            _interrupted_commit(core, finish=False)
+            if (phase and phase.get("fase") == "archiveren" and core.name == "core"
+                    and phase["aantal"] == 1 and phase["oude_markering"] is None
+                    and not (core / COMMIT_MARKER).exists() and not (core / STAGE_MARKER).exists()):
+                from mediaguard import __version__
+
+                try:
+                    archive = snapshot_before_start(
+                        core.parent, core_migrations=migrations, encoder_migrations=None,
+                        app_version=__version__, migrate_core=True,
+                    )
+                except (SetError, OSError, sqlite3.Error) as exc:
+                    raise SetError(f"back-up vóór migratie mislukt: {exc}") from exc
+                if archive is not None:
+                    return archive
+            raise SetError("hervat de onderbroken update met de supervisor")
+        return None
+    except SetError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def requires_inspection(config_root: Path) -> bool:
+    core = config_root / "core"
+    return any(os.path.lexists(core / name) for name in (
+        "mediaguard.db", COMMIT_ORIGIN, COMMIT_MARKER, COMMIT_STEP, STAGE_MARKER,
+    )) or any((config_root / "encode").glob("*.db"))
 
 
 def inspect_schema(config_root: Path, *, core_migrations: Path = MIGRATIONS_DIR,
                    encoder_migrations: Path | None) -> tuple[tuple[str, str] | None, bool]:
     core = config_root / "core"
-    interrupted = (core / COMMIT_MARKER).exists()
-    if interrupted:
-        try:
-            _interrupted_commit(core, finish=False)
-        except SetError as exc:
-            raise RuntimeError(str(exc)) from exc
-    work = core if interrupted or (core / STAGE_MARKER).exists() else None
+    try:
+        _interrupted_commit(core, finish=False)
+    except SetError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return _pending_schema(config_root, core_migrations, encoder_migrations)
+
+
+def _pending_schema(config_root: Path, core_migrations: Path,
+                    encoder_migrations: Path | None) -> tuple[tuple[str, str] | None, bool]:
+    core = config_root / "core"
+    work = core if core.is_dir() else config_root
     return (_core_pending(core / "mediaguard.db", core_migrations, work),
             _encoder_pending(config_root / "encode", encoder_migrations, work=work))
 
@@ -1424,12 +1789,9 @@ def config_locks(config_root: Path) -> contextlib.AbstractContextManager[None]:
 
 def _previous_version(core_db: Path) -> str | None:
     try:
-        conn = sqlite3.connect(f"file:{core_db}?mode=ro", uri=True, timeout=10)
-        try:
+        with checked_database(core_db.parent, database_files(core_db)) as (conn, _):
             row = conn.execute("SELECT value_json FROM system_state WHERE key='app.version'"
                                ).fetchone()
-        finally:
-            conn.close()
         value = json.loads(row[0]) if row else None
     except (sqlite3.Error, ValueError, TypeError):
         return None
@@ -1446,18 +1808,23 @@ def snapshot_before_start(config_root: Path, *, core_migrations: Path,
     with config_locks(config_root):
         core_db = config_root / "core" / "mediaguard.db"
         previous = _interrupted_commit(core_db.parent)
-        core, enc = inspect_schema(config_root, core_migrations=core_migrations,
-                                   encoder_migrations=encoder_migrations)
-        if migrate_core:
-            event_keys.prepare_for_start(core_db, event_keys.key_path(core_db.parent), owner)
-        _protect_old_manifests(core_db.parent / "backups" / FOLDER)
-        _clean_marker_parts(core_db.parent)
+        core, enc = _pending_schema(config_root, core_migrations, encoder_migrations)
         marker = core_db.parent / UPGRADE_SET
-        if marker.exists():
-            _forget(marker)
-        if core is None and not enc:
+
+        def prepare_files() -> None:
             if migrate_core:
-                with contextlib.closing(Database(core_db)) as db:
+                event_keys.prepare_for_start(core_db, event_keys.key_path(core_db.parent), owner)
+            _protect_old_manifests(core_db.parent / "backups" / FOLDER)
+            _clean_marker_parts(core_db.parent)
+            if marker.exists():
+                _forget(marker)
+
+        if core is None and not enc:
+            prepare_files()
+            if previous is not None:
+                finish_commit(core_db.parent)
+            if migrate_core:
+                with contextlib.closing(Database(core_db, offline_guard=True)) as db:
                     initialized = db.initialize()
                     db.require_writable()
                     return initialized or previous
@@ -1469,7 +1836,8 @@ def snapshot_before_start(config_root: Path, *, core_migrations: Path,
                                     from_schema=core[0] if core else None,
                                     to_schema=core[1] if core else None,
                                     from_version=_previous_version(core_db), to_version=app_version,
-                                    reason="update", owner=owner)
+                                    reason="update", owner=owner, supervised=True,
+                                    prepare=prepare_files)
                 if not migrate_core:
                     _bind_archive(core_db.parent, archive)
                 break
@@ -1479,7 +1847,8 @@ def snapshot_before_start(config_root: Path, *, core_migrations: Path,
                 if attempt:
                     raise
         if migrate_core:
-            with contextlib.closing(Database(core_db, synchronous="FULL")) as db:
+            writer = Database(core_db, synchronous="FULL", offline_guard=True)
+            with contextlib.closing(writer) as db:
                 archive = db.initialize(pre_update_set=archive,
                                         encoder_migrations=encoder_migrations if enc else None)
                 db.require_writable()
@@ -1487,6 +1856,7 @@ def snapshot_before_start(config_root: Path, *, core_migrations: Path,
                     raise SetError("er is geen geverifieerde herstelset voor deze update")
         elif core:
             _publish(marker, archive.name)
+        prune_sets(archive.parent, protected={archive})
         return archive
 
 
@@ -1509,6 +1879,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - aangeroepe
     restore = sub.add_parser("zet-klaar", help="Maak de gecontroleerde terugzetkopieën")
     restore.add_argument("--kernmap", required=True, type=Path)
     restore.add_argument("--set", required=True)
+    restore.add_argument("--bevestig-stand", help="Bevestig de getoonde historische wissel")
     a = p.parse_args(argv)
     try:
         if a.cmd == "zet-klaar":
@@ -1520,6 +1891,30 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - aangeroepe
                 info = pending(core)
                 if info and info.get("set") != a.set:
                     raise SetError("er staat al een andere set klaar")
+                if manual_choice_pending(core):
+                    assert info is not None
+                    pairs = _restore_pairs(core, info)
+                    request = _request(core) or {}
+                    result = _swap(core, info, pairs, request.get("omwisseling"), None,
+                                   encoder_migrations(os.environ), STAGE_MAX_AGE_S,
+                                   manual=a.bevestig_stand or "")
+                    if result.get("ok"):
+                        print(f"De gekozen set {a.set} is teruggezet. "
+                              f"Vorige stand: {result['previous']}")
+                        return 0
+                    print(MANUAL_CHOICE)
+                    for group in ("vorige", "gekozen"):
+                        for rel, value in result[group].items():
+                            tables = value["tabellen"]
+                            events = tables.get("outbox_events", {})
+                            print(f"{group} {rel}: integriteit {value['integriteit']}, "
+                                  f"{sum(t['rijen'] for t in tables.values())} rijen, "
+                                  f"hoogste event {events.get('hoogste')}, "
+                                  f"voortgang {value.get('voortgang')}")
+                    print(f"Bevestig deze keuze met --bevestig-stand {result['bevestig']}")
+                    return 1
+                if a.bevestig_stand:
+                    raise SetError("de getoonde historische aanvraag is niet meer aanwezig")
                 info = stage(core, archive, actor="offline-herstel")
                 for entry in info["files"]:
                     print(f"{entry['staged']} → {entry['live']}")

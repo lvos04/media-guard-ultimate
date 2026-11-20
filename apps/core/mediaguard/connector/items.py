@@ -302,6 +302,7 @@ class Snapshot(BaseModel):
     rows: list[SnapshotItem]
     reason: str | None
     target_generation: str | None = None
+    rollback_request: tuple[bool, bool] | None = None
 
 
 async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
@@ -389,22 +390,29 @@ async def _snapshot(ctx: AppContext, principal: Principal, kind: ItemType) -> Sn
     slot = f"connector_items:{kind}:{role}"
     cache_seconds = backups.CACHE_SECONDS if kind == "backups" else CACHE_SECONDS
 
-    def fresh(previous: Snapshot | None, generation: str | None) -> bool:
-        return (previous is not None and previous.target_generation == generation
+    def cache_state() -> tuple[str | None, tuple[bool, bool] | None]:
+        if kind == "backups":
+            return offsite.generation(ctx), backups.rollback_request(ctx.settings.data_dir)
+        return None, None
+
+    def fresh(previous: Snapshot | None,
+              state: tuple[str | None, tuple[bool, bool] | None]) -> bool:
+        return (previous is not None
+                and (previous.target_generation, previous.rollback_request) == state
                 and time.monotonic() - previous.collected_at < cache_seconds)
 
-    current = offsite.generation(ctx) if kind == "backups" else None
+    current = cache_state()
     previous = ctx.services.get(slot)
     if fresh(previous, current):
         return previous
     lock = ctx.services.setdefault(f"{slot}:lock:{id(asyncio.get_running_loop())}", asyncio.Lock())
     async with lock:
-        current = offsite.generation(ctx) if kind == "backups" else None
+        current = cache_state()
         previous = ctx.services.get(slot)
         if fresh(previous, current):
             return previous
         result = await _observe(ctx, principal, kind, previous)
-        result.target_generation = current
+        result.target_generation, result.rollback_request = current
         ctx.services[slot] = result
         return result
 

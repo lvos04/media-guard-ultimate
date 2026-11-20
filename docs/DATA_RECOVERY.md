@@ -211,7 +211,7 @@ geldt deze volgorde. Bij een gedeeltelijke commit bewaart de supervisor de set e
 vermeldt de startweigering welke set de beheerder kan terugzetten.
 De laatste 5 sets blijven bewaard. Je ziet ze in de app onder *Instellingen → Systeem →
 Back-ups* ('Vóór update naar …'). **Terugzetten** zet de kopieën klaar; zodra de app stopt
-wisselt MediaGuard de databases om (alleen hernoemen, binnen een seconde). De databases van
+controleert en verwisselt MediaGuard de databases. De databases van
 daarvoor blijven bewaard in `backups/voor-terugzetten/<tijd>/`. Daarna kies je in TrueNAS de
 vorige versie en start je de app. Annuleren kan zolang de app nog draait. Klaarzetten kan
 alleen in de alles-in-één-container (alleen daar is een supervisor die omwisselt). Met losse
@@ -284,46 +284,72 @@ bestaande bundels niet te openen — dat is precies de bedoeling.
 
 **Volgorde vóór de dienststart**
 
-1. De supervisor neemt de mapsloten van kern en encoder. Onder de SQLite-schrijfsloten
-   verifieert hij de laatste volledige herstelset. De bestanden, het manifest en de
-   archiefmap zijn gesynchroniseerd voordat de set voor migratie mag worden gebruikt.
-2. Vóór de migraties bindt de supervisor de gekozen set aan deze update. In
-   `update-oorsprong.json` staan de setnaam, de manifestcontrole en de geordende
-   lijst van databases. Per database bewaart hij de SHA-256 van het hoofdbestand,
-   het aantal door SQLite herkende gecommitteerde WAL-frames, hun eindpositie, de
-   SHA-256 tot die positie en een hash van het schema en alle rijen. Daarna publiceert
-   hij de setnaam in `update-in-uitvoering`. Elke publicatie synchroniseert eerst het
-   tijdelijke bestand en na de atomaire hernoeming ook de bovenliggende map.
-   Verplaatst SQLite tijdens de bewijscontrole vóór de migratie WAL-pagina's naar het
-   hoofdbestand, dan maakt de supervisor één verse set. Verandert de bron opnieuw,
-   dan stopt deze poging vóór de migratie.
-3. Onder de nog open schrijftransacties legt hij in `update-commitstap.json` de
-   beoogde inhoud van alle databases vast. Eerst commit de kern, daarna iedere encoder.
-   Bij herstart vergelijkt de supervisor de aangetroffen stand met het oorsprongsbewijs
-   en de doelinhoud. Een strijdige of later verschenen set, verloren voortgang of een
-   gedeeltelijke commit houdt de start tegen. Een oude onleesbare setnaam vergt een
-   bijbehorend oorsprongsbewijs of een expliciet terugzetverzoek. Een expliciet
-   teruggezette en opnieuw gecontroleerde set heft de updatemarkering op.
-4. Bij een terugzetverzoek controleert de app elke gekozen kopie. Ze synchroniseert de
-   klaargezette bestanden en hun mappen en publiceert dan `terugzetten.json`.
-   Pas na deze publicatie mag de supervisor de omwisseling beginnen.
-5. Met gestopte diensten legt de supervisor de vorige bestandsnamen, hun SHA-256,
-   de bewaarmap en het stapnummer duurzaam vast in dezelfde aanvraag. Voor elke
-   database verplaatst hij eerst het vorige bestand en de aanwezige `-wal`, `-shm`
-   en `-journal` naar de bewaarmap. Dan plaatst hij de klaargezette kopie op de
-   actieve naam. Na elke hernoeming synchroniseert hij beide mappen en publiceert
-   hij het volgende stapnummer. Na uitval controleert hij de hele tussenstand,
-   ook als de laatste hernoeming al op schijf staat en het stapnummer nog achterloopt.
-6. Vóór elke hernoeming en vóór de succesmelding controleert de supervisor alle
-   klaargezette, geïnstalleerde en vorige databases. Hij verzamelt het hoofdbestand,
-   de WAL en een eventueel rollbackjournaal op hun huidige plaatsen en opent per
-   database een afzonderlijke tijdelijke kopie. SQLite voert daar `integrity_check`
-   en een leesproef op de tabellen uit en herbouwt zijn eigen lezersregister.
-   De oorspronkelijke SHM mag dus door een lezer zijn gewijzigd. Bij een
-   onleesbare vorige stand blijven de aanvraag, de wachtende kopieën en de resterende
-   bestanden beschikbaar. Ook een aanvraag van een oudere schrijver doorloopt deze
-   controles. Na de laatste wissel publiceert de supervisor het resultaat met de
-   bewaarmap en verwijdert hij de aanvraag.
+1. **A — Duurzame fase.** Onder de opstartsloten legt de supervisor vóór het
+   aanmaken van de updateset in `update-oorsprong.json` de poging, de gekozen set,
+   de fase en de gecommitteerde stand van de kern en elke encoder vast. Hij
+   synchroniseert het tijdelijke bestand, hernoemt het atomair en synchroniseert
+   de map. Dit bestand blijft bepalend vóór en na de publicatie van de setnaam
+   in `update-in-uitvoering`. Een aangeboden kopie voor een nog draaiende
+   installatie krijgt een eigen fase. De definitieve stand wordt onder de
+   SQLite-schrijfsloten gebonden. Ook vóór de eerste klaargezette terugzetkopie
+   schrijft de beheerroute de gekozen set en de laatst gemeten stand van de
+   beschikbare databases in het fasebestand. Een nog open update behoudt daarin
+   haar eigen bewijs. De aanvraag verwijst naar die voorbereiding. Bij het
+   omwisselen legt de supervisor onder de opstartsloten de definitieve stand vast.
+2. **B — Bewijs per database.** Het fasebestand bevat het resultaat van
+   `integrity_check`, per tabel het aantal rijen en de hoogste beschikbare
+   rijpositie (voor de outbox het event-ID), en een hash van schema en getypeerde
+   rij-inhoud. Die hash beschermt ook een hervatpunt dat op dezelfde rij is
+   gewijzigd. Bij elke start en vóór de volgende commit, hernoeming of succesmelding
+   vergelijkt de supervisor de bewezen inhoud opnieuw. Een ontbrekende database,
+   een lagere stand of een onvolledige combinatie van commits houdt beide diensten
+   tegen. De aanvraag, archieven en beide standen blijven voor herstel bewaard.
+   Bestaat de installatie alleen uit de kern en viel het archiveren vóór een
+   migratie uit, dan kan ook de losse kern de archivering hervatten. Ze vergelijkt
+   eerst de actieve database met de vastgelegde stand en doorloopt daarna dezelfde
+   geverifieerde back-up en migratie als de supervisor.
+3. **C — SQLite bepaalt de commit.** De kern en encoders bereiden hun nieuwe
+   inhoud onder schrijfsloten voor. Na elke commit vergelijkt de supervisor de
+   gemeten inhoud met het doel en publiceert hij de nieuwe fase. SQLite telt in
+   de back-up alleen gecommitteerde rijen mee. Volledige, geldige frames uit een
+   afgebroken schrijftransactie mogen achter de laatste commit staan. Ook een
+   checkpoint of een nieuw lezersregister kan dezelfde gecommitteerde stand geven.
+   Valt het checkpoint tijdens een meting, dan herhaalt de supervisor de meting
+   op een verse kopie. Een stabiele tweede kopie met dezelfde SQL-inhoud volstaat.
+4. **D — Lezen op kopieën.** De supervisor verzamelt het hoofdbestand, de WAL en
+   een eventueel rollbackjournaal op hun huidige plaatsen. SQLite opent deze
+   tijdelijke bestanden, bouwt daar zijn lezersregister op en maakt met de
+   backup-API een afzonderlijke momentopname. De inhouds- en schemacontroles
+   lezen die momentopname. Bij het controleren blijven ook de originele
+   SQLite-hulpbestanden ongemoeid.
+5. De beheerder kiest een geverifieerde set om klaar te zetten. De app controleert
+   en synchroniseert de kopieën en publiceert de aanvraag in `terugzetten.json`.
+   Met gestopte diensten bindt de supervisor die aanvraag, de bewaarmap, de
+   vorige stand van elke database en de stap aan hetzelfde fasebestand. Na elke
+   hernoeming synchroniseert hij beide mappen. Bij hervatten houdt hij rekening
+   met één hernoeming die al duurzaam kan zijn. Pas na controle van alle vorige
+   en gekozen databases publiceert hij succes en rondt hij de aanvraag af.
+6. **Onderbroken historische wissel.** Ontbreekt onafhankelijk bewijs van de
+   laatste commit van vóór de eerste wissel, dan meldt het herstelrapport
+   **wacht op handmatige keuze**. Ook als de vorige databases leesbaar zijn, kan
+   een gecommitteerde WAL ontbreken. De supervisor laat bij herstart de aanvraag,
+   de wachtende kopieën en de vorige databases staan. Stop de diensten. Gebruik
+   de offline beheerroute uit §8 met `zet-klaar --kernmap <kernmap> --set <setnaam>`.
+   Ze toont per database de aangetroffen en gekozen standen met aantallen,
+   hoogste event en beschikbare taakvoortgang. Bewaar beide standen en vergelijk
+   ze met uw onafhankelijke back-up. Wie daarna de getoonde set kiest, herhaalt
+   hetzelfde commando met `--bevestig-stand` en de getoonde bevestigingswaarde.
+   De beheerroute meet opnieuw en voltooit uitsluitend de bevestigde wissel.
+   Een gewijzigde stand vraagt een nieuwe keuze. De vorige databases blijven in
+   de getoonde bewaarmap. Bij onleesbare of dubbelzinnige bestanden blijft de
+   start geblokkeerd. De Hub meldt ook dan de handmatige keuze. Het veld
+   `staged` is `true` als de kopieën voor die keuze zijn geverifieerd en `null`
+   als de klaarstaande bestanden niet aan de controle voldoen.
+
+   Heeft een oude supervisor een nieuwe aanvraag al volledig afgehandeld, dan
+   wijst zijn resultaat naar de bewaarmap. Bij de volgende upgrade vergelijkt
+   de supervisor zowel de opzijgezette databases als de geïnstalleerde kopieën
+   met het vooraf vastgelegde bewijs. Een afwijking houdt de start tegen.
 
 | Geval | Wat de lokale proef moet aantonen | Controle in de repo |
 |---|---|---|
@@ -331,6 +357,7 @@ bestaande bundels niet te openen — dat is precies de bedoeling.
 | Volledigheid en rotatie | Volle opslag, een verdwenen of beschadigde set en te ruime rechten blokkeren de update. Bij een vaste en een lopende klok overleeft de actuele set de rotatie. | `test_event_herstel.py`, `test_updatevolgorde.py` |
 | Onderbroken omwisseling | Een onderbreking tussen de commits van kern en encoder geeft een startweigering met de oorspronkelijke set. Een onvolledige terugzetaanvraag blijft bij herstart geweigerd. Na expliciet herstel of annulering kan de bewaker opnieuw starten. | `test_updatevolgorde.py`, `test_schema_klaargezet.py` |
 | Uitval per stap | Twee herstarts controleren gebruikers, taken, voortgang en events. Bij terugzetten blijven ook de latere voortgang en het laatste WAL-event in de vorige databases leesbaar. | `test_herstartpunten.py` |
+| Fasebestand, handmatige keuze en WAL | De positieve historische proef zonder voorafgaand bewijs wacht bij beide starts. De beheerder ziet en bevestigt de stand. Een ontbrekende slotcommit wordt geweigerd. Een open transactie bewaart de voorgaande 92% en 120 rijen. | `test_herstelfasen.py`, `tests/upgradehistorie/test_reviewproeven.py` |
 | Oud beheer en oude supervisor | Na weigering of onderbreking blijft schema 155 zijn events lezen. De oude beheerroute biedt een set met sleutelverwijzing niet aan. De oude supervisors kunnen een expliciet klaargezette set toepassen. | `test_updatevolgorde.py`, `test_event_herstel.py`, herstelcode van schema 155 en release 1.2.2 |
 | Sleutelpublicatie | Twee herstarts behouden dezelfde sleutel na uitval bij publicatie. De herkende tijdelijke naam van de vorige schrijver is herstelbaar. Een onbekende koppeling of ontbrekende uitgegeven sleutel blokkeert de vrijgave. | `test_updatevolgorde.py` |
 | Wachtende terugval | Tijdens het klaarzetten blijft de eventroute bereikbaar. Zeven nevendiensten krijgen een leesweigering op de wachtende kernkopie. Na de omwisseling levert de oude leespositie de juiste vervolgpagina. | `test_updatevolgorde.py`, `test_aio.py`, beheer-API van schema 155 |

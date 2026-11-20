@@ -89,7 +89,7 @@ class RollbackPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     owner: Literal["mediaguard"] = "mediaguard"
-    pre_update_restore_mode: Literal["bij-stoppen", "handmatig"]
+    pre_update_restore_mode: Literal["bij-stoppen", "handmatig", "wacht op handmatige keuze"]
     staged: bool | None
 
 
@@ -347,7 +347,21 @@ def _inspect_fork(work: tempfile.TemporaryDirectory, archive: Path, limit: int, 
         work.cleanup()
 
 
-def _rollback(ctx: AppContext) -> RollbackPolicy:
+def rollback_request(core: Path) -> tuple[bool, bool]:
+    """Aanwezigheid en historische keuze bepalen wanneer de Hub een nieuwe meting nodig heeft."""
+    staged = (core / preupdate.STAGE_MARKER).is_file()
+    try:
+        return staged, staged and preupdate.manual_choice_pending(core)
+    except (OSError, preupdate.SetError):
+        return staged, preupdate.pending(core) is not None
+
+
+def rollback_policy(ctx: AppContext) -> RollbackPolicy:
+    core = ctx.settings.data_dir
+    _, manual = rollback_request(core)
+    if manual:
+        return RollbackPolicy(pre_update_restore_mode="wacht op handmatige keuze",
+                              staged=preupdate.staged_status(core, manual=True))
     return RollbackPolicy(
         pre_update_restore_mode="bij-stoppen" if maintenance_status.under_supervisor(ctx)
         else "handmatig",
@@ -359,7 +373,7 @@ async def observe(ctx: AppContext, now: datetime) -> BackupReport:
     core, encoder = await asyncio.to_thread(_local_databases, ctx, now)
     remote, row = await _offsite(ctx, now)
     local_bundle = await asyncio.to_thread(_bundle, ctx, now, remote, row)
-    rollback = await asyncio.to_thread(_rollback, ctx)
+    rollback = await asyncio.to_thread(rollback_policy, ctx)
     gate = asyncio.Semaphore(2)
 
     async def fork(instance: Instance) -> ForkCoverage:
@@ -368,6 +382,7 @@ async def observe(ctx: AppContext, now: datetime) -> BackupReport:
 
     forks = await asyncio.gather(*(fork(instance) for instance in list_instances(ctx)))
     parts = (core, encoder, local_bundle, remote, *forks)
-    healthy = all(part.status == "healthy" for part in parts) and rollback.staged is not None
+    healthy = all(part.status == "healthy" for part in parts) and (
+        rollback.staged is not None and rollback.pre_update_restore_mode != preupdate.MANUAL_CHOICE)
     return BackupReport(status="healthy" if healthy else "degraded", core=core, encoder=encoder,
                         bundle=local_bundle, offsite=remote, forks=forks, rollback=rollback)

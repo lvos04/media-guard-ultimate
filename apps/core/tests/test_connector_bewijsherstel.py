@@ -72,12 +72,12 @@ def test_152_zonder_geverifieerde_set_weigert_en_herstelt(before_evidence, monke
 
     original = os.replace
 
-    def deny(src, dst):
+    def deny(src, dst, **dir_fds):
         if Path(dst).name == "mediaguard.db" and folder in Path(dst).parents:
             if fault == "rechten":
                 raise PermissionError(13, "geen schrijfrecht op de proefopslag")
             raise OSError(28, "proefopslag vol")
-        return original(src, dst)
+        return original(src, dst, **dir_fds)
 
     with monkeypatch.context() as blocked:
         blocked.setattr(os, "replace", deny)
@@ -93,6 +93,38 @@ def test_152_zonder_geverifieerde_set_weigert_en_herstelt(before_evidence, monke
         assert database.fetch_one("SELECT MAX(version) FROM schema_migrations")[0] == VERSION
     copies = [p for p in folder.glob("*/mediaguard.db") if not preupdate.verify(p.parent)]
     assert any(database_contents(p) == before for p in copies)
+
+
+def test_losse_kern_hermeet_de_laatste_commit_na_een_archieffout(before_evidence, tmp_path):
+    from test_herstartpunten import bestandsinhoud
+    from test_herstelfasen import schrijf_en_stop
+
+    settings, taak, _ = before_evidence
+    live = settings.db_path
+    schrijf_en_stop(live, f"db.execute('UPDATE jobs SET progress=0.90 WHERE id=?', ({taak},))\n"
+                          "db.commit()")
+    with patch.object(preupdate, "_copy_sqlite", side_effect=OSError(28, "proefopslag vol")), \
+            pytest.raises(RuntimeError, match="back-up"):
+        aio.before_services({}, live.parent.parent, None)
+    fase = preupdate._read_proof(live.parent / preupdate.COMMIT_ORIGIN)
+    assert fase["fase"] == "archiveren" and fase["aantal"] == 1
+
+    wal = live.with_name(live.name + "-wal")
+    bewaard = wal.rename(tmp_path / "bewaarde-wal")
+    voor = bestandsinhoud(live.parent)
+    for _ in range(2):
+        with closing(db.Database(live)) as kern, pytest.raises(RuntimeError, match="onbewezen"):
+            kern.initialize()
+        assert bestandsinhoud(live.parent) == voor
+
+    bewaard.rename(wal)
+    with closing(db.Database(live)) as kern:
+        archief = kern.initialize()
+        assert kern.fetch_one("SELECT progress FROM jobs WHERE id=?", (taak,))[0] == 0.9
+    assert archief is not None and not preupdate.verify(archief)
+    with closing(sqlite3.connect(archief / "mediaguard.db")) as kopie:
+        assert kopie.execute("SELECT progress FROM jobs WHERE id=?", (taak,)).fetchone() == (0.9,)
+    assert not (live.parent / preupdate.COMMIT_ORIGIN).exists()
 
 
 def test_historisch_jobpakket_blijft_identiek_na_twee_pogingen(before_evidence, monkeypatch):

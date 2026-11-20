@@ -1274,7 +1274,7 @@ def _preupdate(command: str, config: Path, encoder_migrations: Path,
     from mediaguard.maintenance import preupdate
 
     if owner is not None and os.geteuid() == 0:  # pragma: no cover - vereist root
-        if command == "inspect" and not preupdate.has_database(config):
+        if command == "inspect" and not preupdate.requires_inspection(config):
             return None  # lege dataset: bootstrap mag de mappen eerst toegankelijk maken
         # SQLite kan bij lezen WAL-hulpbestanden openen. Die horen van de app-gebruiker te zijn.
         argv = [
@@ -1313,16 +1313,20 @@ def prepare_start(env: dict[str, str], config: Path,
         out: list[str] = []
         try:
             core = config / "core"
-            if (core / preupdate.STAGE_MARKER).exists():
+            if any((core / name).exists() for name in (preupdate.STAGE_MARKER,
+                                                       preupdate.COMMIT_ORIGIN)):
                 out = apply_staged_restore(config, owner, migrations)
                 # Open geen SQLite-lezer op een half verplaatste combinatie van database en WAL.
                 if preupdate.swapping(core):
+                    if preupdate.manual_choice_pending(core):
+                        raise RuntimeError(preupdate.MANUAL_CHOICE)
                     raise RuntimeError("de begonnen omwisseling kon niet worden hervat")
             _preupdate("inspect", config, migrations, owner)
         except schema.SchemaTooNew:
             env[schema.AIO_RECOVERY_ENV] = "1"
             return [*out, schema.MESSAGE]
-        except (OSError, RuntimeError, subprocess.TimeoutExpired, sqlite3.Error) as exc:
+        except (OSError, RuntimeError, subprocess.TimeoutExpired, sqlite3.Error,
+                preupdate.SetError) as exc:
             env["MG_AIO_SCHEMA_CHECK_FAILED"] = "1"
             return [*out, f"Schemavoorcontrole mislukt: {exc}"]
         env.pop("MG_AIO_SCHEMA_CHECK_FAILED", None)

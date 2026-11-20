@@ -111,7 +111,12 @@ def ensure_key(path: Path, owner: tuple[int, int] | None = None) -> None:
 def prepare_for_start(core_db: Path, path: Path, owner: tuple[int, int] | None = None) -> None:
     create = False
     if not path.exists():
-        versions = schema.applied_versions(core_db, "schema_migrations", "version")
+        from mediaguard.maintenance.sqlite_recovery import checked_database, database_files
+
+        versions = set()
+        if core_db.exists():
+            with checked_database(core_db.parent, database_files(core_db)) as (conn, _):
+                versions = schema.versions_in(conn, "schema_migrations", "version")
         create = "156_outbox_cursor_history" not in versions
     _store(path, owner or (os.geteuid(), os.getegid()), create=create)
 

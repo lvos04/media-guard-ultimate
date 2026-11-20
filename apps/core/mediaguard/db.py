@@ -124,11 +124,13 @@ def check_schema_versions(path: Path, *, connection: sqlite3.Connection | None =
 
 
 class Database:
-    def __init__(self, path: Path, *, synchronous: str = "NORMAL") -> None:
+    def __init__(self, path: Path, *, synchronous: str = "NORMAL",
+                 offline_guard: bool = False) -> None:
         """``synchronous``: NORMAL is in WAL-modus corruptievrij en ~40× sneller per schrijf-
         actie (alleen de laatste commits kunnen bij stroomuitval verloren gaan). De
         recovery-rol (bibliotheekjournaal) gebruikt FULL."""
         self.path = path
+        self.offline_guard = offline_guard
         self.synchronous = "FULL" if synchronous.upper() == "FULL" else "NORMAL"
         self._lock = threading.RLock()
         self._local = threading.local()
@@ -162,10 +164,13 @@ class Database:
             try:
                 if os.environ.get(schema.AIO_RECOVERY_ENV):
                     raise schema.SchemaTooNew()
-                check_schema_versions(self.path)
                 from mediaguard.maintenance import preupdate
 
-                preupdate.check_encoder_schema(schema.encoder_dir(self.path.parent))
+                if self.offline_guard:
+                    preupdate.check_offline_schema(self.path)
+                else:
+                    check_schema_versions(self.path)
+                    preupdate.check_encoder_schema(schema.encoder_dir(self.path.parent))
             except schema.SchemaTooNew:
                 self.read_only = True
         return self.read_only
@@ -192,6 +197,11 @@ class Database:
                     return
                 folder.mkdir(parents=True, exist_ok=True)
         with self.startup_lock():
+            if not self.offline_guard:
+                from mediaguard.maintenance.preupdate import resume_standalone_start
+
+                if resumed := resume_standalone_start(folder, MIGRATIONS_DIR):
+                    return resumed
             if not self.check_schema():
                 try:
                     return self._initialize(pre_update_set, encoder_migrations)
@@ -381,6 +391,7 @@ class Database:
                 from_schema=current, to_schema=target,
                 from_version=preupdate._previous_version(self.path), to_version=__version__,
                 reason="update" if required else "migratie", preserve=Path(made) if made else None,
+                supervised=archive is not None,
             )
         except preupdate.SetError as exc:
             if exc.disk and not required:

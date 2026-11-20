@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import zipfile
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -494,12 +495,18 @@ def test_pre_update_backup_listed_staged_and_swapped(tmp_path, monkeypatch):
     finally:
         ctx.db.close()
     # de supervisor wisselt om zodra alles gestopt is (alleen hernoemen)
+    with closing(sqlite3.connect(core_dir / "mediaguard.db")) as live:
+        assert live.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() == (0, 0, 0)
     (core_dir / "mediaguard.db-wal").write_bytes(b"")
     result = preupdate.apply_staged(core_dir)
     assert result["ok"] and set(result["files"]) == {"core/mediaguard.db", "encode/app.db"}
     assert not (core_dir / "mediaguard.db-wal").exists()  # wal van de oude db mee opzij
     kept = Path(result["previous"])
     assert (kept / "core__mediaguard.db").is_file() and (kept / "core__mediaguard.db-wal").exists()
+    with closing(sqlite3.connect(kept / "core__mediaguard.db")) as previous:
+        assert json.loads(previous.execute(
+            "SELECT value_json FROM settings_values WHERE key='ui.theme'"
+        ).fetchone()[0]) == "dark"
     conn = sqlite3.connect(core_dir / "mediaguard.db")
     theme = conn.execute("SELECT value_json FROM settings_values WHERE key='ui.theme'").fetchone()
     conn.close()

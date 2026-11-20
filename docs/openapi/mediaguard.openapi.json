@@ -4535,7 +4535,8 @@
           "pre_update_restore_mode": {
             "enum": [
               "bij-stoppen",
-              "handmatig"
+              "handmatig",
+              "wacht op handmatige keuze"
             ],
             "title": "Pre Update Restore Mode",
             "type": "string"
