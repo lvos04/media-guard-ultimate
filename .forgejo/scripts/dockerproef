@@ -34,20 +34,21 @@ kandidaat="mediaguard/upgrade-kandidaat:contract-${volume:0:16}"
 # De proefscripts geven absolute submappen door aan Docker. Onder dit exacte
 # pad zien de proefclient en de buildengine uitsluitend dit nieuwe testvolume.
 map=$(docker volume inspect --format '{{.Mountpoint}}' "$volume")
-endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
-case "$endpoint" in
-  unix://*) verbinding=(--mount "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock") ;;
-  tcp://*) verbinding=(--env "DOCKER_HOST=$endpoint") ;;
-  *) echo "Onbekend verbindingstype voor de buildengine." >&2; exit 1 ;;
-esac
-client=$(docker create --user 0:0 --network host "${verbinding[@]}" \
+# De buitenste CLI gebruikt haar bestaande TLS-verbinding. Binnen dezelfde
+# geïsoleerde buildengine is de lokale socket bereikbaar zonder TLS-sleutels.
+client=$(docker create --user 0:0 --network host \
+  --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
+  --env DOCKER_HOST=unix:///var/run/docker.sock \
   --mount "type=volume,source=$volume,target=$map" --workdir "$map" \
   --env "TMPDIR=$map/tijdelijk" --env "GITHUB_STEP_SUMMARY=$map/uitvoer/proef-samenvatting.md" \
   --entrypoint sleep "$image" infinity)
 docker start "$client" >/dev/null
 docker exec "$client" mkdir -p "$map/bron" "$map/tijdelijk" "$map/uitvoer"
 uitvoeren() { docker exec --workdir "$map/bron" "$client" "$@"; }
-[[ -n "$engine" && "$(uitvoeren docker info --format '{{.ID}}')" == "$engine" ]]
+if [[ -z "$engine" || "$(uitvoeren docker info --format '{{.ID}}')" != "$engine" ]]; then
+  echo "De proefclient bereikt de geïsoleerde buildengine van deze job niet." >&2
+  exit 1
+fi
 bewijs=1
 git archive HEAD -- apps/core services/encoder/app deploy scripts tests/fixtures/aio tests/contract/mediaserver |
   docker exec -i "$client" tar -x -C "$map/bron"
