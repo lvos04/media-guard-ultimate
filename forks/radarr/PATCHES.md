@@ -135,6 +135,12 @@ movie. The default must be fail-safe when the identity is in doubt.
 **Upstream-maintenance impact.** Low. Import specifications have had a stable shape for years. The
 patch touches the import pipeline only through the interface, plus the enum append.
 
+Bij de controle van Radarr 7 voegt upstream `NotCustomFormatUpgradeAfterRename` op dezelfde
+plaats toe als patch 0003. De kandidaatpatch behoudt alle upstreamwaarden in hun oorspronkelijke
+volgorde en voegt de drie MediaGuard-redenen erachter toe. Het controlescript herkent de drie
+exacte Git-versies van dat bestand. Elk ander conflict blokkeert de proef. Het rapport vraagt
+om beoordeling van de kandidaatpatch en de nieuwe SDK vóór een overstap.
+
 ---
 
 ## Rebuilding the series after a change

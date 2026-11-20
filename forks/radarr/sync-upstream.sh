@@ -91,6 +91,10 @@ for p in "$HERE"/patches/*.patch; do
   name="$(basename "$p")"
   if git am -q --3way "$p" >/dev/null 2>"$OUT/am-$name.log"; then
     echo "- ✅ \`$name\` applied" >> "$REPORT"
+  elif [[ -f "$HERE/los-kandidaatconflict-op.sh" ]] &&
+       bash "$HERE/los-kandidaatconflict-op.sh" >>"$OUT/am-$name.log" 2>&1; then
+    echo "- ✅ \`$name\` toegepast met de vastgelegde samenvoeging. Beoordeel de kandidaatpatch vóór promotie." >> "$REPORT"
+    WARN=1
   else
     APPLY_OK=0
     echo "- ❌ \`$name\` CONFLICT in: $(git diff --name-only --diff-filter=U | tr '\n' ' ')" >> "$REPORT"
