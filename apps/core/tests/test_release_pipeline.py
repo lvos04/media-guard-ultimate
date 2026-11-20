@@ -203,6 +203,17 @@ def test_forgejo_behoudt_de_linuxjobs_en_publicatiepoorten():
     assert "secrets" not in ci["on"]["workflow_call"]
 
 
+def test_forgejo_kan_elke_job_afzonderlijk_inlezen():
+    # De server slaat iedere job afzonderlijk op. Een anker uit een andere job
+    # werkt daarom ook niet als de volledige workflow geldige YAML is.
+    for pad in (ROOT / ".forgejo" / "workflows").glob("*.yml"):
+        bron = pad.read_text(encoding="utf-8")
+        jobs = next(node for key, node in yaml.compose(bron).value if key.value == "jobs")
+        for naam, job in jobs.value:
+            start = naam.start_mark.index - naam.start_mark.column
+            assert naam.value in yaml.safe_load(bron[start:job.end_mark.index]), pad.name
+
+
 def test_release_publishes_nothing_without_tests_and_smoke():
     jobs = _wf("release.yml")["jobs"]
     assert jobs["tests"]["uses"] == "./.github/workflows/ci.yml"

@@ -12,10 +12,10 @@ on:
         description: "Ook zware jobs (encoder-image, fork-images, upstream-sync, contracttest mediaservers) draaien"
         type: boolean
         default: true
-      alleen_nachtproeven:
-        description: "Bij een zware run alleen de jobs van het nachtrooster uitvoeren"
+      dagproeven:
+        description: "Ook de dagproeven uitvoeren (uitzetten voor alleen het nachtrooster bij een zware run)"
         type: boolean
-        default: false
+        default: true
       encoderbewijs:
         description: "Vergelijk het encoder-image met een build op de ongewijzigde basis-tag"
         type: boolean
@@ -55,9 +55,7 @@ jobs:
   # toolchain.encode.python). test_release_pipeline.py bewaakt dat die twee overeenkomen.
   core:
     name: core (python ${{ matrix.python }}, ruff, pytest)
-    if: &dagproeven >-
-      github.event_name != 'schedule' &&
-      !(github.event_name == 'workflow_dispatch' && format('{0}', inputs.heavy) == 'true' && format('{0}', inputs.alleen_nachtproeven) == 'true')
+    if: github.event_name != 'schedule' && format('{0}', inputs.dagproeven) != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -93,7 +91,7 @@ jobs:
 
   upgradehistorie:
     name: herstart en gegevensbehoud met historische releases
-    if: *dagproeven
+    if: github.event_name != 'schedule' && format('{0}', inputs.dagproeven) != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -121,7 +119,7 @@ jobs:
   # een nieuwere bron is een waarschuwing (bewust bijwerken). De offline controle draait ook in de core-tests.
   kopieen:
     name: kopieën contract en Peil (gepinde bron-commit)
-    if: *dagproeven
+    if: github.event_name != 'schedule' && format('{0}', inputs.dagproeven) != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -175,9 +173,7 @@ jobs:
   # in release.yml vóór publish.
   upgradebewijs:
     name: upgradebewijs (vorige release → kern en encoder van deze commit)
-    if: >-
-      github.event_name != 'schedule' && format('{0}', inputs.upgradebewijs) != 'false' &&
-      !(github.event_name == 'workflow_dispatch' && format('{0}', inputs.heavy) == 'true' && format('{0}', inputs.alleen_nachtproeven) == 'true')
+    if: github.event_name != 'schedule' && format('{0}', inputs.dagproeven) != 'false' && format('{0}', inputs.upgradebewijs) != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -223,7 +219,7 @@ jobs:
 
   encoder-unit:
     name: encoder unit (zonder toolchain)
-    if: *dagproeven
+    if: github.event_name != 'schedule' && format('{0}', inputs.dagproeven) != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -370,7 +366,7 @@ jobs:
 
   web:
     name: web (node 22, lint, typecheck, build, e2e)
-    if: *dagproeven
+    if: github.event_name != 'schedule' && format('{0}', inputs.dagproeven) != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
