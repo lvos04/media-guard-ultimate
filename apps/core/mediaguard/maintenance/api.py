@@ -501,6 +501,7 @@ def _restore_backup(name: str, body: RestoreBody, request: Request, principal: P
         with ctx.db._lock:
             src.backup(conn)
     ctx.config.invalidate()  # instellingen komen nu uit de herstelde database
+    ctx.services.pop("connector_items:backups:viewer", None)
     audit(ctx.db, actor=principal.actor, action="backup.restore", target_type="backup",
           target_id=name, reason="Herstel uit back-up",
           undo_hint=f"Herstel veiligheidsback-up {safety['file']}")

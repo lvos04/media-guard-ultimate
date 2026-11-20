@@ -452,7 +452,10 @@ def list_sets(folder: Path) -> list[dict[str, Any]]:
             meta = _read_meta(p)
             if meta is None:
                 continue
-            size = sum(int(f.get("size") or 0) for f in meta.get("files") or [])
+            try:
+                size = sum(int(f.get("size") or 0) for f in meta.get("files") or [])
+            except (AttributeError, TypeError, ValueError):
+                continue
             out.append({**meta, "name": p.name, "size": size, "legacy": False})
         elif p.is_file() and _LEGACY_NAME.match(p.name):
             m = re.match(r"^mediaguard-(.+)-naar-(.+)-(\d{8}T\d{6}Z)\.db$", p.name)
@@ -540,6 +543,11 @@ def _set_files(core_dir: Path, path: Path) -> dict[str, tuple[Path, int, str]]:
         size, digest = entry.get("size"), entry.get("sha256")
         if name != expected or not isinstance(size, int) or not isinstance(digest, str):
             raise SetError("ongeldige metadata in de back-upset")
+        if "legacy_cursor_key" in entry:
+            try:
+                event_keys.load_legacy(core_dir, entry["legacy_cursor_key"])
+            except (OSError, ValueError) as exc:
+                raise SetError("de historische cursorsleutel is niet beschikbaar") from exc
         entries[rel] = (path / expected, size, digest)
     if f"{core_dir.name}/mediaguard.db" not in entries:
         raise SetError("MediaGuard-database ontbreekt in de back-upset")
@@ -548,8 +556,20 @@ def _set_files(core_dir: Path, path: Path) -> dict[str, tuple[Path, int, str]]:
     return entries
 
 
+def _restore_primary(core: Path, targets: set[str]) -> str | None:
+    folder = encoder_backup_dir(core)
+    primary = primary_encoder_db(folder)
+    if (not os.environ.get("DATABASE_URL") and not any(rel.startswith("encode/") for rel in targets)
+            and not any(folder.glob("*.db"))):
+        return None  # Een historische kernset op een installatie zonder actieve encoder.
+    if (primary is None or primary.parent.resolve() != (core.parent / "encode").resolve()
+            or f"encode/{primary.name}" not in targets):
+        raise _PreviousDataError("De ingestelde primaire AV1-database ontbreekt in de herstelset")
+    return f"encode/{primary.name}"
+
+
 def _check_restore_copy(path: Path, rel: str, size: int, digest: str,
-                        av1_migrations: Path, work: Path) -> None:
+                        av1_migrations: Path, work: Path, primary: str | None) -> None:
     try:
         if not path.is_file():
             raise SetError(f"klaargezette kopie ontbreekt: {path.name}")
@@ -567,7 +587,7 @@ def _check_restore_copy(path: Path, rel: str, size: int, digest: str,
                 raise SetError(f"{path.name} heeft een ongecontroleerd SQLite-journaal")
         with checked_database(work, {"": path}) as (db, _):
             if rel.startswith("encode/"):
-                encoder_copy_versions(db, av1_migrations)
+                encoder_copy_versions(db, av1_migrations, primary=rel == primary)
             else:
                 check_schema_versions(path, connection=db)
     except (OSError, sqlite3.Error) as exc:
@@ -596,15 +616,22 @@ def stage(core_dir: Path, path: Path, *, actor: str) -> dict[str, Any]:
         return _stage(core_dir, path, actor)
 
 
-def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
-    config_root = core_dir.parent
+def checked_restore_sources(core_dir: Path, path: Path, work: Path) -> tuple[
+        dict[str, tuple[Path, int, str]], bytes | None, str | None]:
+    """Gedeelde leescontrole vóór de rapportage of enige wijziging aan een herstelopdracht."""
     pairs = _set_files(core_dir, path)
+    primary = _restore_primary(core_dir, set(pairs))
     migrations = encoder_migrations(os.environ)
     for rel, (src, size, digest) in pairs.items():
-        _check_restore_copy(src, rel, size, digest, migrations, core_dir)
+        dest = core_dir.parent / (rel + STAGED_SUFFIX)
+        live = core_dir.parent / rel
+        if (dest.resolve() != dest.absolute() or live.resolve() != live.absolute()
+                or not dest.parent.is_dir() or src.resolve() != src.absolute()):
+            raise SetError("ongeldig pad naar de klaargezette database")
+        _check_restore_copy(src, rel, size, digest, migrations, work, primary)
     core_rel = f"{core_dir.name}/mediaguard.db"
     core_src = pairs[core_rel][0]
-    with checked_database(core_dir, {"": core_src}) as (reader, _):
+    with checked_database(work, {"": core_src}) as (reader, _):
         ref = _cursor_value(reader)
     legacy = None
     if isinstance(ref, str) and ref.startswith(event_keys.LEGACY_PREFIX):
@@ -612,6 +639,14 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
             legacy = event_keys.load_legacy(core_dir, ref)
         except (OSError, ValueError) as exc:
             raise SetError("de historische cursorsleutel is niet beschikbaar") from exc
+    return pairs, legacy, primary
+
+
+def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
+    config_root = core_dir.parent
+    pairs, legacy, primary = checked_restore_sources(core_dir, path, core_dir)
+    core_rel = f"{core_dir.name}/mediaguard.db"
+    migrations = encoder_migrations(os.environ)
     need = sum(size for _, size, _ in pairs.values())
     free = shutil.disk_usage(config_root).free
     if free < need * 1.1 + 256 * 1024**2:
@@ -639,7 +674,7 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
                 shutil.copyfile(src, part)
                 # Controleer de kopie tegen de gekozen set vóór het herstellen van de sleutel
                 # of het vrijgeven van een terugzetpaar voor handmatig herstel.
-                _check_restore_copy(part, live, size, digest, migrations, core_dir)
+                _check_restore_copy(part, live, size, digest, migrations, core_dir, primary)
                 if live == core_rel and legacy is not None:
                     # Alleen de expliciet klaargezette database voor de oude lezer krijgt
                     # zijn sleutel terug. De markering dekt de uiteindelijke bytes.
@@ -647,7 +682,7 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
                         old.execute("UPDATE outbox_retention SET cursor_key=? WHERE singleton=1",
                                     (legacy,))
                     size, digest = part.stat().st_size, _sha256(part)
-                    _check_restore_copy(part, live, size, digest, migrations, core_dir)
+                    _check_restore_copy(part, live, size, digest, migrations, core_dir, primary)
                 _sync(part)
                 _check_preparation(core_dir, preparation["poging"])
                 os.replace(part, dest)
@@ -890,7 +925,7 @@ def _begin_swap(root: Path, pairs: list[_RestorePair], requested: datetime,
     return {"vorige": aside.name, "originelen": originals, "stap": step}
 
 
-def _check_position(work: Path, pairs: list[_RestorePair], aside: Path, originals: dict,
+def _check_position(core: Path, work: Path, pairs: list[_RestorePair], aside: Path, originals: dict,
                     moves: list[tuple[Path, Path]], step: int, migrations: Path,
                     proof: dict | None = None) -> dict:
     """Bewijs elke volledige database, ook tussen de rename van de kern en haar WAL."""
@@ -898,9 +933,10 @@ def _check_position(work: Path, pairs: list[_RestorePair], aside: Path, original
     expected = set()
     allowed = set()
     measured = {}
+    primary = _restore_primary(core, {pair.rel for pair in pairs})
     for pair in pairs:
         restored = moved.get(pair.staged, pair.staged)
-        _check_restore_copy(restored, pair.rel, pair.size, pair.digest, migrations, work)
+        _check_restore_copy(restored, pair.rel, pair.size, pair.digest, migrations, work, primary)
         expected.add(restored)
         allowed.add(pair.staged)
         family = {}
@@ -1002,7 +1038,7 @@ def _swap_plan(core: Path, info: dict, pairs: list[_RestorePair], journal: dict 
             step += 1
     if continuing and "databases" not in state:
         raise SetError("het vorige databasebewijs ontbreekt in het fasebestand")
-    measured = _check_position(work, pairs, aside, originals, moves, step, migrations,
+    measured = _check_position(core, work, pairs, aside, originals, moves, step, migrations,
                                state.get("databases"))
     if not continuing:
         state["databases"] = measured
@@ -1065,7 +1101,7 @@ def _swap(core: Path, info: dict, pairs: list[_RestorePair], journal: dict | Non
                 raise SetError("de aanvraag is tijdens de omwisseling gewijzigd")
         elif position != len(moves):
             raise SetError("de aanvraag voor de onvoltooide omwisseling ontbreekt")
-        _check_position(core, pairs, aside, originals, moves, position, migrations,
+        _check_position(core, core, pairs, aside, originals, moves, position, migrations,
                         state["databases"])
 
     verify_step(step)
@@ -1201,7 +1237,7 @@ def encoder_copy_versions(db: sqlite3.Connection, migrations: Path, *,
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
         if 1 not in have or any(version in have and not required <= tables
                                 for version, required in _ENCODER_PROGRESS_TABLES.items()):
-            raise SetError("Voortgangstabellen ontbreken in de primaire AV1-back-up")
+            raise _PreviousDataError("Voortgangstabellen ontbreken in de primaire AV1-back-up")
     return have
 
 

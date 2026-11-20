@@ -94,11 +94,13 @@ def fase(naam, root):
             before = db.fetch_one("SELECT cursor_key FROM outbox_retention")[0]
             assert isinstance(before, bytes) and len(before) == 32
             (root / "digest").write_bytes(hashlib.sha256(before).digest())
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "apps/core/tests"))
+        from av1_fixture import maak_av1_v1
+
         encoder = root / "encode/app.db"
         encoder.parent.mkdir(exist_ok=True)
         with closing(sqlite3.connect(encoder)) as engine, engine:
-            engine.execute("CREATE TABLE job (percent INTEGER)")
-            engine.execute("INSERT INTO job VALUES (75)")
+            maak_av1_v1(engine, 75)
         assert stand(pad)[0:2] == (0.75, 2) and stand(pad)[2].startswith("155_")
         return 0
     if naam == "nieuw":

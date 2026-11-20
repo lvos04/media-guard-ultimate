@@ -53,9 +53,9 @@
   "id": "B04-006",
   "status": "Bezig",
   "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS)",
-  "bewijs": "S-P3-635, rijen 006a–c. Herstel na R-HARDE-EIS-1 t/m -7: regressies in apps/core/tests/test_connector_lezen.py. De tabel Herstelrapport in docs/CONNECTOR.md koppelt elke controle aan haar proef. Ook apps/core/tests/test_bundle.py en apps/core/tests/test_notify.py.",
+  "bewijs": "S-P3-635, rijen 006a–c. De tabel Herstelrapport in docs/CONNECTOR.md koppelt de acht reviewbevindingen aan regressies in apps/core/tests/test_connector_lezen.py. Bundelherstel gebruikt twee AV1-taken en een opgeslagen koppeling. De tests voor klaarzetten en omwisselen controleren ook de actieve taken en de bestaande herstelopdracht. Zie ook apps/core/tests/test_bundle.py en apps/core/tests/test_notify.py.",
   "blokkade": "NIET GEVALIDEERD (echte NAS): herstelproef en appdata-snapshot via de executor, onderdeel N-P6-02.",
-  "opmerking": "Het rapport controleert de volledige kernmigraties, de primaire AV1-database en haar voortgangstabellen, het aanmaakbewijs van bundel en sleutel, teruglezing van beide bestanden voor het huidige offsite-doel, leesbare forkconfiguratie en de klaargezette terugzetset. Verandert of reset het doel, dan vervalt het offsite-bewijs. Een ongeldige markering geeft staged=null. De simulators controleren alleen-lezen verkeer en de afscherming van de beheerroute. De gevulde releasefixture controleert behoud van databaserijen.",
+  "opmerking": "Bij bundelaanmaak worden koppelingen met de gekopieerde sleutel ontsleuteld en wordt de ingestelde primaire AV1-kopie op haar voortgangstabellen getoetst. Het rapport controleert het inhoudsbewijs ook op de teruggelezen offsite-kopie. Het gebruikt de leescontroles van de herstelroute voor pre-updatesets en kiest bij weigering een bruikbare oudere kopie of meldt degraded. Doelreset maakt offsite-bewijs ongeldig. Een ongeldige terugzetmarkering geeft staged=null. De gevulde releasefixture toetst HTTP 200 direct na herstel van een oude kernkopie, met behoud van de open overdracht en de databaserijen. Forkverkeer en toegangscontrole zijn met simulators beproefd.",
   "repo": "media-guard-ultimate",
   "bijgewerkt": "2026-11-20"
  },

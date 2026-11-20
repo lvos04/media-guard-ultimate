@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from av1_fixture import maak_av1_v1
 from fastapi import Request
 from fastapi.testclient import TestClient
 from test_connector_events import PATH, expired, page, publish, row_position
@@ -563,9 +564,7 @@ def test_herstelset_volgt_ook_de_encoder(settings, old_schema, monkeypatch, wijz
     pad = encoder / "app.db"
     with closing(sqlite3.connect(pad)) as schrijver:
         schrijver.execute("PRAGMA journal_mode=WAL")
-        schrijver.execute("CREATE TABLE job (percent INTEGER)")
-        schrijver.execute("INSERT INTO job VALUES (25)")
-        schrijver.commit()
+        maak_av1_v1(schrijver, 25)
         env = {}
         aio.before_services(env, config, None)
         eerste = Path(env["MG_PRE_UPDATE_SET"])
@@ -654,8 +653,7 @@ def test_gemelde_set_herstelt_laatste_kern_en_encodertransactie(settings, old_sc
         db.execute("INSERT INTO jobs(job_type,status,progress,created_at) "
                    "VALUES ('herstelproef','running',0.25,?)", (STAMP,))
     with closing(sqlite3.connect(engine)) as db, db:
-        db.execute("CREATE TABLE job (percent INTEGER)")
-        db.execute("INSERT INTO job VALUES (25)")
+        maak_av1_v1(db, 25)
 
     make = preupdate._make_set
     sets = []

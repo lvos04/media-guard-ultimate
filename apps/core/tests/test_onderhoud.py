@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from av1_fixture import maak_av1_v1
 
 from mediaguard import __version__, aio, jobs, notices
 from mediaguard.db import Database, migration_marker, migration_of, stale_migrations
@@ -420,8 +421,8 @@ def test_info_lines_are_kept_and_level_setting_works(ctx, client, tmp_path, monk
 def _encoder_db(path: Path, versions: list[int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.execute("CREATE TABLE IF NOT EXISTS schema_versie (versie INTEGER PRIMARY KEY, "
-                 "naam TEXT, toegepast_op TEXT)")
+    if not conn.execute("SELECT 1 FROM sqlite_schema WHERE name='schema_versie'").fetchone():
+        maak_av1_v1(conn)
     for v in versions:
         conn.execute("INSERT OR IGNORE INTO schema_versie VALUES (?,?,?)", (v, f"{v}", "x"))
     conn.commit()

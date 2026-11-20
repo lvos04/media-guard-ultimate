@@ -184,9 +184,10 @@ def _local_databases(ctx: AppContext, now: datetime) -> tuple[CoreCoverage, Enco
                                                      for f in files):
                 continue
             try:
-                if preupdate.verify(path, core_dir=ctx.settings.data_dir):
-                    continue
-            except (OSError, TypeError, ValueError):
+                with tempfile.TemporaryDirectory(prefix="mg-herstelcontrole-") as work:
+                    preupdate.checked_restore_sources(ctx.settings.data_dir, path, Path(work))
+            except (OSError, sqlite3.Error, RuntimeError, preupdate.SetError,
+                    TypeError, ValueError):
                 continue
             core_path = path / "mediaguard.db"
             core_meta = next((f for f in files if f["name"] == "mediaguard.db"), {})

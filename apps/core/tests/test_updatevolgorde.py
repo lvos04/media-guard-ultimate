@@ -8,6 +8,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 import pytest
+from av1_fixture import maak_av1_v1
 
 from mediaguard import aio, db, event_keys
 from mediaguard.maintenance import preupdate
@@ -23,13 +24,7 @@ def encoder_update(tmp_path):
     (sql / "001_basis.sql").write_text("")
     (sql / "002_vervolg.sql").write_text("CREATE TABLE vervolg (id INTEGER);")
     with closing(sqlite3.connect(encoder)) as con, con:
-        con.executescript("""
-            CREATE TABLE schema_versie (versie INTEGER PRIMARY KEY, naam TEXT, toegepast_op TEXT);
-            INSERT INTO schema_versie VALUES (1, '001_basis.sql', 'proef');
-            CREATE TABLE job (percent INTEGER);
-            INSERT INTO job VALUES (25);
-            CREATE TABLE auditlog (actie TEXT);
-        """)
+        maak_av1_v1(con, 25)
     env = {"MG_AIO_ENCODER_DIR": str(sql.parents[1])}
     return encoder, sql, env
 
@@ -67,7 +62,8 @@ def test_alleen_encoder_migreert_onder_de_laatste_geverifieerde_set(
         if len(publicaties) == 1:
             with closing(sqlite3.connect(encoder, timeout=0)) as schrijver, schrijver:
                 schrijver.execute("UPDATE job SET percent=75")
-                schrijver.execute("INSERT INTO auditlog VALUES ('hervat')")
+                schrijver.execute("INSERT INTO auditlog(soort,onderwerp,tijd) "
+                                 "VALUES ('proef','hervat',CURRENT_TIMESTAMP)")
         return archief
 
     monkeypatch.setattr(preupdate, "_make_set", na_publicatie)
@@ -81,7 +77,7 @@ def test_alleen_encoder_migreert_onder_de_laatste_geverifieerde_set(
     assert preupdate.apply_staged(core, av1_migrations=sql)["ok"]
     with closing(sqlite3.connect(encoder)) as con:
         assert con.execute("SELECT percent FROM job").fetchall() == [(75,)]
-        assert con.execute("SELECT actie FROM auditlog").fetchall() == [("hervat",)]
+        assert con.execute("SELECT onderwerp FROM auditlog").fetchall() == [("hervat",)]
         assert con.execute("SELECT max(versie) FROM schema_versie").fetchone() == (1,)
 
 

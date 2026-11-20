@@ -9,6 +9,8 @@ import tempfile
 from contextlib import closing
 from pathlib import Path
 
+from av1_fixture import maak_av1_v1
+
 from mediaguard import aio, db
 from mediaguard.maintenance import preupdate
 
@@ -45,10 +47,9 @@ with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as werk:
     enc = config / "encode/app.db"
     enc.parent.mkdir()
     with closing(sqlite3.connect(enc)) as conn, conn:
-        conn.execute("CREATE TABLE job(percent INTEGER)")
-        conn.execute("INSERT INTO job VALUES(75)")
+        maak_av1_v1(conn, 75)
     voor = [stand(kern), stand(enc)]
-    assert voor[0][0] > 100 and voor[1][0] == 1
+    assert voor[0][0] > 100 and voor[1][0] == 17
     env = {}
     try:
         aio.before_services(env, config, None, migrate_core=True)
@@ -92,5 +93,5 @@ assert result["ok"] and result["set"] == naam and preupdate.pending(core) is Non
     assert [stand(kern), stand(enc)] == voor
     print(
         f"Schema 155 bleef intact bij weigering en na terugzetten door de oude supervisor: "
-        f"{voor[0][0]} kerntabellen en {voor[1][0]} encodertabel inhoudelijk gelijk."
+        f"{voor[0][0]} kerntabellen en {voor[1][0]} encodertabellen inhoudelijk gelijk."
     )

@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import io
 import os
 import re
 import shutil
+import sqlite3
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -93,8 +95,14 @@ def secret_name(field: str) -> str:
     return f"backup.offsite.{field}"
 
 
-def generation(ctx: AppContext) -> str:
-    return ctx.db.fetch_one("SELECT generation FROM offsite_target_generation WHERE id=1")[0]
+def generation(ctx: AppContext) -> str | None:
+    try:
+        row = ctx.db.fetch_one("SELECT generation FROM offsite_target_generation WHERE id=1")
+    except sqlite3.OperationalError as exc:
+        if str(exc) != "no such table: offsite_target_generation":
+            raise
+        return None  # Direct herstelde kernkopie van vóór de verificatiemigratie.
+    return row[0] if row else None
 
 
 def config(ctx: AppContext) -> dict[str, Any]:
@@ -164,6 +172,8 @@ async def maybe_run(ctx: AppContext) -> dict[str, Any] | None:
         return None
     target = target_label(ctx)
     current = generation(ctx)
+    if current is None:
+        return None
     done = ctx.db.fetch_one(
         "SELECT 1 FROM offsite_copies WHERE bundle_name=? AND target_kind=? AND target=? "
         "AND status='ok' AND (EXISTS (SELECT 1 FROM offsite_verification "
@@ -186,6 +196,8 @@ async def maybe_run(ctx: AppContext) -> dict[str, Any] | None:
 
 async def run(ctx: AppContext, *, actor: str = "svc:offsite") -> dict[str, Any]:
     current = generation(ctx)
+    if current is None:
+        return {"ok": False, "error": "Het doel kan pas na de herstart worden geverifieerd"}
     ctx.config.invalidate()
     kind = str(_v(ctx, "kind"))
     latest = _latest_bundle(ctx)
@@ -198,7 +210,8 @@ async def run(ctx: AppContext, *, actor: str = "svc:offsite") -> dict[str, Any]:
     expected = None
     try:
         if keyfile is not None:
-            _, expected = await asyncio.to_thread(bundle.verify_pair, bundle_path, keyfile)
+            _, expected = await asyncio.to_thread(bundle.verify_pair, bundle_path, keyfile,
+                                                  require_content=False)
         if bundle.has_pair_proof(bundle_path) and expected is None:
             raise OffsiteError("Aanmaakbewijs van bundel en herstelsleutel klopt niet")
         if keyfile is None or keyfile.is_symlink() or bundle_path.is_symlink():
@@ -270,12 +283,17 @@ def _copies(path: Path, keyfile: Path, expected: dict[str, str] | None) -> tuple
     return describe(path, "bundle"), describe(keyfile, "key")
 
 
-def _verify_path(dest: Path, files: tuple[_Copy, _Copy]) -> None:
+def _verify_path(dest: Path, files: tuple[_Copy, _Copy], *, require_complete: bool = False) -> None:
     for copy in files:
         path = dest / copy.path.name
-        if (path.is_symlink() or not path.is_file() or path.stat().st_size != copy.size
-                or _sha(path) != copy.sha256):
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != copy.size:
             raise OffsiteError("Controle mislukt: teruggelezen kopie wijkt af")
+        with path.open("rb") as handle:
+            if require_complete and copy is files[0]:
+                bundle.require_complete(handle)
+                handle.seek(0)
+            if hashlib.file_digest(handle, "sha256").hexdigest() != copy.sha256:
+                raise OffsiteError("Controle mislukt: teruggelezen kopie wijkt af")
 
 
 def _copy_path(dest: Path, files: tuple[_Copy, _Copy], keep: int) -> None:
@@ -373,7 +391,7 @@ def _destination(ctx: AppContext, kind: str) -> Path | _Remote:
 
 
 async def _transfer_http(ctx: AppContext, dest: _Remote, files: tuple[_Copy, _Copy], *,
-                         upload: bool = False) -> None:
+                         upload: bool = False, require_complete: bool = False) -> None:
     async with _client(ctx) as client:
         for copy in files:
             url = f"{dest.base}/{quote(copy.path.name)}"
@@ -387,6 +405,7 @@ async def _transfer_http(ctx: AppContext, dest: _Remote, files: tuple[_Copy, _Co
                     raise OffsiteError(f"Offsite-doel weigerde upload ({put.status_code})")
             digest = hashlib.sha256()
             size = 0
+            prefix = bytearray() if require_complete and copy is files[0] else None
             async with client.stream("GET", url, auth=dest.auth,
                                      headers=dest.headers("GET", url, b"")) as got:
                 if got.status_code != 200:
@@ -396,8 +415,13 @@ async def _transfer_http(ctx: AppContext, dest: _Remote, files: tuple[_Copy, _Co
                     if size > copy.size:
                         raise OffsiteError("Controle mislukt: teruggelezen kopie is te groot")
                     digest.update(chunk)
+                    if prefix is not None:
+                        remaining = len(bundle.MAGIC) + 4 + bundle.MAX_HEADER - len(prefix)
+                        prefix.extend(chunk[:remaining])
             if size != copy.size or digest.hexdigest() != copy.sha256:
                 raise OffsiteError("Controle mislukt: teruggelezen kopie wijkt af")
+            if prefix is not None:
+                bundle.require_complete(io.BytesIO(prefix))
 
 
 async def verified_copy(ctx: AppContext, kind: str) -> dict[str, Any] | None:
@@ -405,6 +429,8 @@ async def verified_copy(ctx: AppContext, kind: str) -> dict[str, Any] | None:
     if kind not in READBACK_KINDS:
         return None
     current = generation(ctx)
+    if current is None:
+        return None
     ctx.config.invalidate()
     if _v(ctx, "kind") != kind:
         return None
@@ -426,11 +452,11 @@ async def verified_copy(ctx: AppContext, kind: str) -> dict[str, Any] | None:
         if current != generation(ctx):
             return None
         if isinstance(dest, Path):
-            await asyncio.to_thread(_verify_path, dest, files)
+            await asyncio.to_thread(_verify_path, dest, files, require_complete=True)
         else:
             async with asyncio.timeout(10):
-                await _transfer_http(ctx, dest, files)
-    except (OffsiteError, OSError, httpx.HTTPError, ValueError, TimeoutError):
+                await _transfer_http(ctx, dest, files, require_complete=True)
+    except (OffsiteError, bundle.BundleError, OSError, httpx.HTTPError, ValueError, TimeoutError):
         return None
     return dict(row) if current == generation(ctx) else None
 

@@ -6,6 +6,7 @@ import sqlite3
 from contextlib import closing
 
 import pytest
+from av1_fixture import maak_av1_v1
 
 from mediaguard import aio, schema
 from mediaguard.db import Database
@@ -101,8 +102,7 @@ def test_geweigerd_herstel_laat_appdata_gelijk(tmp_path, monkeypatch, gebrek):
     encode = tmp_path / "encode"
     encode.mkdir()
     with closing(sqlite3.connect(encode / "app.db")) as conn, conn:
-        conn.execute("CREATE TABLE schema_versie (versie INTEGER PRIMARY KEY)")
-        conn.execute("INSERT INTO schema_versie VALUES (1)")
+        maak_av1_v1(conn)
     backup = preupdate.make_set(core / "backups" / preupdate.FOLDER, live, encode_dir=encode)
     marker = core / preupdate.STAGE_MARKER
     info = preupdate.stage(core, backup, actor="proef")
@@ -146,13 +146,12 @@ def test_klaarzetten_weigert_set_met_onbekende_versie(tmp_path, onbekend):
     encode = tmp_path / "encode"
     encode.mkdir()
     with closing(sqlite3.connect(encode / "app.db")) as conn, conn:
-        conn.execute("CREATE TABLE schema_versie (versie INTEGER PRIMARY KEY)")
-        conn.execute("INSERT INTO schema_versie VALUES (1)")
+        maak_av1_v1(conn)
     backup = preupdate.make_set(core / "backups" / preupdate.FOLDER, live, encode_dir=encode)
     entry = "mediaguard.db" if onbekend == "core" else "encode/app.db"
     copy = backup / entry
     sql = ("INSERT INTO schema_migrations VALUES ('999_toekomst', 'proef')" if onbekend == "core"
-           else "INSERT INTO schema_versie VALUES (999)")
+           else "INSERT INTO schema_versie(versie) VALUES (999)")
     with closing(sqlite3.connect(copy)) as conn, conn:
         conn.execute(sql)
     meta = backup / "meta.json"

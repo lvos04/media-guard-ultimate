@@ -32,10 +32,12 @@ import sqlite3
 import sys
 import tarfile
 import tempfile
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -49,6 +51,7 @@ if TYPE_CHECKING:
     from mediaguard.context import AppContext
 
 MAGIC = b"MGBUNDLE1\n"
+MAX_HEADER = 1024 * 1024
 STATE_KEY = "backup.bundle"
 KEYFILE = "herstelsleutel.json"
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # geen 0/O/1/I
@@ -130,16 +133,35 @@ def _config_root(ctx: AppContext) -> Path:
     return Path(os.environ.get("MG_AIO_CONFIG") or ctx.settings.data_dir.parent)
 
 
-def _sqlite_copy(src: Path) -> bytes:
+def _sqlite_copy(src: Path, *, primary: bool) -> tuple[bytes, bool]:
     with tempfile.TemporaryDirectory() as tmp:
         dest = Path(tmp) / "copy.db"
-        s, d = sqlite3.connect(f"file:{src}?mode=ro", uri=True), sqlite3.connect(dest)
-        try:
+        with closing(sqlite3.connect(src.resolve().as_uri() + "?mode=ro", uri=True)) as s, \
+                closing(sqlite3.connect(dest)) as d:
             s.backup(d)
-        finally:
-            s.close()
-            d.close()
-        return dest.read_bytes()
+            try:
+                preupdate.encoder_copy_versions(d, preupdate.encoder_migrations(os.environ),
+                                               primary=primary)
+                usable = d.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+            except (sqlite3.Error, RuntimeError, preupdate.SetError):
+                usable = False
+        return dest.read_bytes(), usable
+
+
+def _core_readable(core: Path, key: bytes | None) -> bool:
+    """Toets de versleutelde rijen met precies de sleutelbytes die meegaan in het archief."""
+    with closing(sqlite3.connect(core.as_uri() + "?immutable=1", uri=True)) as db:
+        try:
+            if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                return False
+            cipher = Fernet(key.strip()) if key is not None else None
+            for (token,) in db.execute("SELECT ciphertext FROM secrets"):
+                if cipher is None:
+                    return False
+                cipher.decrypt(token).decode("utf-8")
+        except (InvalidToken, ValueError, TypeError, sqlite3.Error):
+            return False
+    return True
 
 
 def _add(tar: tarfile.TarFile, name: str, data: bytes) -> None:
@@ -148,21 +170,30 @@ def _add(tar: tarfile.TarFile, name: str, data: bytes) -> None:
     tar.addfile(info, io.BytesIO(data))
 
 
-def _payload(ctx: AppContext) -> tuple[bytes, list[str]]:
+def _payload(ctx: AppContext) -> tuple[bytes, list[str], bool]:
     buf, names = io.BytesIO(), []
+    key_path = ctx.settings.secret_key_path
+    key = key_path.read_bytes() if key_path.exists() else None
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         with tempfile.TemporaryDirectory() as tmp:
             core = Path(tmp) / "core.db"
             ctx.db.backup_to(core)
+            usable = _core_readable(core, key)
             _add(tar, "core/mediaguard.db", core.read_bytes())
             names.append("core/mediaguard.db")
         root = _config_root(ctx)
-        for db in sorted(preupdate.encoder_backup_dir(ctx.settings.data_dir).glob("*.db")):
-            _add(tar, f"encode/{db.name}", _sqlite_copy(db))
+        encoder = preupdate.encoder_backup_dir(ctx.settings.data_dir)
+        primary = preupdate.primary_encoder_db(encoder)
+        primary_included = False
+        for db in sorted(encoder.glob("*.db")):
+            is_primary = primary is not None and db.name == primary.name
+            data, db_ok = _sqlite_copy(db, primary=is_primary)
+            primary_included |= is_primary
+            usable = usable and db_ok
+            _add(tar, f"encode/{db.name}", data)
             names.append(f"encode/{db.name}")
-        key = ctx.settings.secret_key_path
-        if key.exists():
-            _add(tar, "core/secret.key", key.read_bytes())
+        if key is not None:
+            _add(tar, "core/secret.key", key)
             names.append("core/secret.key")
         index = ctx.settings.download_index_path
         if index.is_symlink():
@@ -176,7 +207,7 @@ def _payload(ctx: AppContext) -> tuple[bytes, list[str]]:
                 rel = f"secrets/{f.relative_to(sec)}"
                 _add(tar, rel, f.read_bytes())
                 names.append(rel)
-    return buf.getvalue(), names
+    return buf.getvalue(), names, usable and primary_included
 
 
 def create(ctx: AppContext, *, actor: str = "system") -> dict[str, Any] | None:
@@ -190,7 +221,7 @@ def _create(ctx: AppContext, actor: str) -> dict[str, Any] | None:
     st = ctx.state_get(STATE_KEY, {}) or {}
     if not st.get("public"):
         return None
-    payload, names = _payload(ctx)
+    payload, names, complete = _payload(ctx)
     pub = X25519PublicKey.from_public_bytes(base64.b64decode(st["public"]))
     eph = X25519PrivateKey.generate()
     eph_pub = eph.public_key().public_bytes(serialization.Encoding.Raw,
@@ -198,7 +229,8 @@ def _create(ctx: AppContext, actor: str) -> dict[str, Any] | None:
     shared = eph.exchange(pub)
     kek = HKDF(hashes.SHA256(), 32, salt=eph_pub, info=b"mediaguard-bundle").derive(shared)
     data_key, n1, n2 = AESGCM.generate_key(bit_length=256), os.urandom(12), os.urandom(12)
-    header = {"v": 1, "created_at": _now(), "files": names, "eph": _b64(eph_pub),
+    header = {"v": 1, "created_at": _now(), "files": names, "complete": complete,
+              "eph": _b64(eph_pub),
               "n1": _b64(n1), "n2": _b64(n2),
               "wrapped": _b64(AESGCM(kek).encrypt(n1, data_key, b"key")),
               "fingerprint": st.get("fingerprint")}
@@ -257,11 +289,17 @@ def _read_header(handle: io.BufferedIOBase) -> tuple[dict[str, Any], bytes]:
     if handle.read(len(MAGIC)) != MAGIC:
         raise BundleError("Geen MediaGuard-herstelbundel")
     size = int.from_bytes(handle.read(4), "big")
-    if not 0 < size <= 1024 * 1024:
+    if not 0 < size <= MAX_HEADER:
         raise BundleError("Ongeldige kop van de herstelbundel")
     raw = handle.read(size)
     header = _read_fields(raw, {"eph": 32, "n1": 12, "n2": 12, "wrapped": 48})
     return header, raw
+
+
+def require_complete(handle: io.BufferedIOBase) -> None:
+    header, _ = _read_header(handle)
+    if header.get("complete") is not True:
+        raise BundleError("De herstelinhoud van deze bundel is niet geverifieerd")
 
 
 def _read_fields(raw: bytes, fields: dict[str, int]) -> dict[str, Any]:
@@ -296,8 +334,10 @@ def _check_pair_proof(path: Path, digests: dict[str, str]) -> bool:
     return True
 
 
-def verify_pair(path: Path, keyfile: Path) -> tuple[bool | None, dict[str, str] | None]:
-    """Controleer dezelfde bundelkop en herstelsleutel als bij het openen."""
+def verify_pair(
+    path: Path, keyfile: Path, *, require_content: bool = True,
+) -> tuple[bool | None, dict[str, str] | None]:
+    """Een inhoudsbewijs vereist ook de controle van koppelingen en AV1 bij het maken."""
     try:
         if any(p.is_symlink() or not p.is_file() for p in (path, keyfile)):
             return None, None
@@ -307,7 +347,8 @@ def verify_pair(path: Path, keyfile: Path) -> tuple[bool | None, dict[str, str] 
             if len(handle.read(17)) < 17:
                 return None, None
             matches = _key_matches(header, _read_key(raw_key))
-            if not matches or not has_pair_proof(path):
+            if (not matches or not has_pair_proof(path)
+                    or (require_content and header.get("complete") is not True)):
                 return matches, None
             proof = {"bundle": "", "key": _digest(raw_key)}
             handle.seek(0)

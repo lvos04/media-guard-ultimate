@@ -121,6 +121,9 @@ def principal_from_request(request: Request) -> Principal | None:
     from mediaguard.context import get_app_context
 
     app = get_app_context(request)
+    route = getattr(request.scope.get("route"), "path_format", None)
+    backup_report = (request.scope.get("method") == "GET" and route == "/connector/v1/items"
+                     and request.query_params.get("type") == "backups")
     internal = request.headers.get("X-MediaGuard-Token")
     if internal and internal_token_ok(request, internal, app.settings.internal_token):
         return Principal(username="internal", role="admin", machine=True)
@@ -131,7 +134,7 @@ def principal_from_request(request: Request) -> Principal | None:
         from mediaguard.apikeys import authenticate
 
         # geldig -> principal; anders HTTPException 401/429 (geen terugval op de cookie)
-        principal = authenticate(app, request, api_key)
+        principal = authenticate(app, request, api_key, backup_report=backup_report)
         scope_guard(request, principal)
         return principal
     if app.settings.dev_auth_bypass:
@@ -148,14 +151,12 @@ def principal_from_request(request: Request) -> Principal | None:
     if row is None or row["disabled"] or row["expires_at"] < utcnow():
         return None
     now = utcnow()
-    if not row["last_seen_at"] or row["last_seen_at"][:16] != now[:16]:
+    if not backup_report and (not row["last_seen_at"] or row["last_seen_at"][:16] != now[:16]):
         # hooguit één schrijfactie per minuut per sessie (overzicht 'ingelogde apparaten')
         def touch() -> None:
             app.db.execute("UPDATE sessions SET last_seen_at=? WHERE token_hash=?", (now, th))
 
-        if getattr(request.scope.get("route"), "path_format", None) == (
-            "/api/v1/backups/{name}/restore"
-        ):
+        if route == "/api/v1/backups/{name}/restore":
             # Een geweigerde herstelkopie mag ook de sessie niet wijzigen.
             request.state.touch_restore_session = touch
         else:

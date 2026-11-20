@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from av1_fixture import maak_av1_v1
 
 from mediaguard import aio, db, schema
 from mediaguard.maintenance import preupdate
@@ -31,12 +32,7 @@ def installatie(tmp_path):
     enc = tmp_path / "encode/app.db"
     enc.parent.mkdir()
     with closing(sqlite3.connect(enc)) as conn:
-        conn.executescript("""
-            CREATE TABLE schema_versie (versie INTEGER PRIMARY KEY, naam TEXT, toegepast_op TEXT);
-            INSERT INTO schema_versie VALUES (1, '001_basis.sql', 'proef');
-            CREATE TABLE job (percent INTEGER);
-            INSERT INTO job VALUES (75);
-        """)
+        maak_av1_v1(conn, 75)
     migraties = tmp_path / "motor/app/migrations"
     migraties.mkdir(parents=True)
     (migraties / "001_basis.sql").write_text("")

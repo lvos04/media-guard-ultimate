@@ -1854,7 +1854,7 @@ def test_lezen_op_gevulde_release(populated_installation):
     for instantie in list_instances(ctx):
         ctx.secrets.set(apikey_secret(instantie.id), secrets.token_urlsafe(20))
         transports[instantie.id] = httpx.MockTransport(alleen_lezen)
-    voor = database_snapshot(ctx, allow_auth_timestamps=True)
+    voor = database_snapshot(ctx)
     open_werk = ctx.db.fetch_one(
         "SELECT COUNT(*) AS n FROM mediaserver_pending WHERE done_at IS NULL"
     )["n"]
@@ -1865,6 +1865,290 @@ def test_lezen_op_gevulde_release(populated_installation):
         assert antwoord.status_code == 200
         assert antwoord.json()["items"][0]["status"] == "degraded"
     assert aanvragen
-    assert_database_preserved(ctx, voor, allow_auth_timestamps=True)
+    assert_database_preserved(ctx, voor)
     print(f"Releasefixture: tabellen={len(voor)}, gevuld={sum(bool(v) for v in voor.values())}, "
           f"open overdrachten={open_werk}, rijverschillen=0, fork-GET={len(aanvragen)}")
+
+
+def _av1_taken(path):
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+        return db.execute("SELECT id,status,percent FROM job ORDER BY id").fetchall()
+
+
+@pytest.mark.parametrize("gebrek", ["kernsleutel", "andere_sleutel", "primair", "taaktabel"])
+def test_herstelde_bundel_is_bruikbaar(client, machine, ctx, herstelbronnen, tmp_path,
+                                      monkeypatch, gebrek):
+    from cryptography.fernet import Fernet
+
+    from mediaguard.db import Database
+    from mediaguard.secrets_store import SecretStore
+
+    _, inrichting, _, forks, _ = herstelbronnen
+    naam = apikey_secret(next(iter(forks)))
+    verwacht = ctx.secrets.get(naam)
+    assert verwacht
+    # De standaardnaam blijft als hulpdatabase liggen naast de ingestelde primaire database.
+    engine = tmp_path / "encode"
+    primair = engine / "wachtrij.db"
+    (engine / "app.db").rename(primair)
+    with closing(sqlite3.connect(engine / "app.db")) as hulp:
+        hulp.execute("CREATE TABLE hulp (id INTEGER)")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{primair}")
+    assert ub.vul(primair, "encode")["toegevoegd"]["job"] == 2
+    taken = _av1_taken(primair)
+    bewaar = tmp_path / "offsite"
+    bewaar.mkdir()
+    ctx.config.set("global", "", "backup.offsite.kind", "path", "proef")
+    ctx.config.set("global", "", "backup.offsite.path", str(bewaar), "proef")
+    headers = key(client)
+    monkeypatch.setattr(backups, "CACHE_SECONDS", 0)
+
+    def herstel_vanaf_doel(doel):
+        gemaakt = client.post("/api/v1/backups/bundle")
+        assert gemaakt.status_code == 200
+        assert client.post("/api/v1/notify/offsite/run").json()["ok"]
+        bundle.restore(bewaar / gemaakt.json()["file"], inrichting["recovery_code"],
+                       bewaar / bundle.KEYFILE, doel)
+        return rapport(machine, headers)
+
+    goed = tmp_path / "volledig"
+    dekking = herstel_vanaf_doel(goed)
+    assert dekking["bundle"]["verified"] and dekking["offsite"]["verified"]
+    with closing(Database(goed / "core/mediaguard.db")) as db:
+        assert SecretStore(db, goed / "core/secret.key").get(naam) == verwacht
+    assert _av1_taken(goed / "encode" / primair.name) == taken
+
+    sleutel = ctx.settings.secret_key_path
+    if gebrek in ("kernsleutel", "andere_sleutel"):
+        sleutel.rename(tmp_path / "bewaarde-sleutel")
+        if gebrek == "andere_sleutel":
+            sleutel.write_bytes(Fernet.generate_key())
+    elif gebrek == "primair":
+        primair.rename(tmp_path / "bewaarde-taken.db")
+    else:
+        with closing(sqlite3.connect(primair)) as db:
+            db.execute("DROP TABLE job")
+
+    deels = tmp_path / "onvolledig"
+    dekking = herstel_vanaf_doel(deels)
+    assert not dekking["bundle"]["verified"] and not dekking["offsite"]["verified"]
+    assert dekking["bundle"]["status"] == dekking["offsite"]["status"] == dekking["status"] \
+        == "degraded"
+    if gebrek in ("kernsleutel", "andere_sleutel"):
+        with closing(Database(deels / "core/mediaguard.db")) as db:
+            assert db.fetch_one("SELECT 1 FROM secrets WHERE name=?", (naam,))
+            if gebrek == "andere_sleutel":
+                assert SecretStore(db, deels / "core/secret.key").get(naam) is None
+            else:
+                assert not (deels / "core/secret.key").exists()
+        assert _av1_taken(deels / "encode" / primair.name) == taken
+    elif gebrek == "primair":
+        assert not (deels / "encode" / primair.name).exists()
+    else:
+        with closing(sqlite3.connect(deels / "encode" / primair.name)) as db:
+            assert not db.execute("SELECT 1 FROM sqlite_schema WHERE name='job'").fetchone()
+
+
+@pytest.mark.parametrize("fase", ["klaarzetten", "zonder-primair", "omwisselen", "andere-primair"])
+def test_klaargezette_primaire_database_behoudt_taken(client, machine, ctx, herstelbronnen,
+                                                      tmp_path, monkeypatch, fase):
+    monkeypatch.setenv("MG_AIO_SUPERVISOR", "1")
+    core = ctx.settings.data_dir
+    engine = tmp_path / "encode"
+    primair = engine / "taken.db"
+    (engine / "app.db").rename(primair)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{primair}")
+    assert ub.vul(primair, "encode")["toegevoegd"]["job"] == 2
+    taken = _av1_taken(primair)
+    with closing(sqlite3.connect(engine / "app.db")) as hulp:
+        hulp.execute("CREATE TABLE schema_versie (versie INTEGER)")
+        hulp.execute("INSERT INTO schema_versie VALUES (1)")
+        hulp.commit()
+    archief = preupdate.make_set(ctx.settings.backup_dir / preupdate.FOLDER, ctx.db.path,
+                                encode_dir=engine)
+    info = preupdate.stage(core, archief, actor="proef")
+    headers = key(client)
+    assert rapport(machine, headers)["rollback"]["staged"] is True
+    marker = core / preupdate.STAGE_MARKER
+    bij_aanvraag = fase in ("klaarzetten", "zonder-primair")
+    if bij_aanvraag:
+        # Een nieuwe onvolledige set mag de eerdere geldige aanvraag niet verdringen.
+        gekozen = preupdate.make_set(archief.parent, ctx.db.path, encode_dir=engine)
+        pad = gekozen / "encode" / primair.name
+        manifest = gekozen / "meta.json"
+        veld = "name"
+    else:
+        # Een oudere schrijver kon de onvolledige set mét geldige checksums publiceren.
+        pad = primair.with_name(primair.name + preupdate.STAGED_SUFFIX)
+        manifest = marker
+        veld = "live"
+    meta = json.loads(manifest.read_bytes())
+    rij = next(r for r in meta["files"] if r[veld] == f"encode/{primair.name}")
+    if fase == "andere-primair":
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{engine / 'app.db'}")
+    else:
+        if fase == "zonder-primair":
+            pad.unlink()
+            meta["files"].remove(rij)
+        else:
+            with closing(sqlite3.connect(pad)) as db:
+                db.execute("DROP TABLE job")
+            rij.update(size=pad.stat().st_size, sha256=hashlib.sha256(pad.read_bytes()).hexdigest())
+        if fase == "omwisselen":
+            # Markering in het formaat van vóór het fasebestand.
+            meta.pop("voorbereiding", None)
+            (core / preupdate.COMMIT_ORIGIN).unlink(missing_ok=True)
+            meta["manifest"] = preupdate._manifest(info["set"], meta["files"])
+        manifest.write_text(json.dumps(meta))
+    bewaard = marker.read_bytes()
+    staged = {p: p.read_bytes() for p in tmp_path.rglob("*.terugzetten")}
+
+    if bij_aanvraag:
+        antwoord = client.post(f"/api/v1/backups/{gekozen.name}/restore",
+                               json={"confirm": gekozen.name})
+        assert antwoord.status_code == 409 and "primaire AV1" in antwoord.text
+    else:
+        monkeypatch.setattr(backups, "CACHE_SECONDS", 0)
+        assert rapport(machine, headers)["rollback"]["staged"] is None
+        resultaat = preupdate.apply_staged(core)
+        assert resultaat and not resultaat["ok"] and "Voortgangstabellen" in resultaat["error"]
+    assert _av1_taken(primair) == taken
+    assert marker.read_bytes() == bewaard
+    assert all(p.read_bytes() == data for p, data in staged.items())
+    assert not (ctx.settings.backup_dir / preupdate.ASIDE_FOLDER).exists()
+
+
+def test_kernset_zonder_ingestelde_primaire_kopie(client, machine, ctx, tmp_path, monkeypatch):
+    monkeypatch.setenv("MG_AIO_SUPERVISOR", "1")
+    primair = tmp_path / "encode" / "taken.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{primair}")
+    archief = preupdate.make_set(ctx.settings.backup_dir / preupdate.FOLDER, ctx.db.path,
+                                encode_dir=primair.parent)
+    antwoord = client.post(f"/api/v1/backups/{archief.name}/restore",
+                           json={"confirm": archief.name})
+    assert antwoord.status_code == 409 and "primaire AV1" in antwoord.text
+    assert not (ctx.settings.data_dir / preupdate.STAGE_MARKER).exists()
+    item = rapport(machine, key(client))
+    assert item["core"]["sha256"] is None and item["status"] == "degraded"
+
+
+def test_set_met_afwijkend_herstelpad(client, machine, ctx, herstelbronnen, tmp_path, monkeypatch):
+    monkeypatch.setenv("MG_AIO_SUPERVISOR", "1")
+    backup, *_ = herstelbronnen
+    kopie = ctx.settings.backup_dir / backup["file"]
+    bron = tmp_path / "vorige-inrichting/core/mediaguard.db"
+    bron.parent.mkdir(parents=True)
+    bron.write_bytes(kopie.read_bytes())
+    kopie.with_suffix(".json").unlink()
+    setmap = preupdate.make_set(ctx.settings.backup_dir / preupdate.FOLDER, bron,
+                                encode_dir=tmp_path / "encode")
+    antwoord = client.post(f"/api/v1/backups/{setmap.name}/restore", json={"confirm": setmap.name})
+    assert antwoord.status_code == 409 and "ongeldig databasepad" in antwoord.text
+    item = rapport(machine, key(client))
+    assert item["core"]["sha256"] is None and item["encoder"]["databases"] == []
+    assert item["core"]["status"] == item["encoder"]["status"] == item["status"] == "degraded"
+
+
+def test_deels_gemaakte_set_met_andere_geldige_kopie(
+    client, machine, ctx, herstelbronnen, tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("MG_AIO_SUPERVISOR", "1")
+    vorige, *_ = herstelbronnen
+    engine = tmp_path / "encode"
+    with closing(sqlite3.connect(engine / "hulp.db")) as hulp:
+        hulp.execute("CREATE TABLE hulp (id INTEGER)")
+    kopieer = preupdate._copy_sqlite
+
+    def leesfout(src, dest):
+        if src.name == "hulp.db":
+            raise preupdate.SetError("Gesimuleerde leesfout")
+        return kopieer(src, dest)
+
+    with monkeypatch.context() as proef:
+        proef.setattr(preupdate, "_copy_sqlite", leesfout)
+        deels = preupdate.make_set(ctx.settings.backup_dir / preupdate.FOLDER, ctx.db.path,
+                                   encode_dir=engine)
+    assert hashlib.sha256((deels / "mediaguard.db").read_bytes()).hexdigest() != vorige["sha256"]
+    antwoord = client.post(f"/api/v1/backups/{deels.name}/restore", json={"confirm": deels.name})
+    assert antwoord.status_code == 409 and "onvolledig" in antwoord.text
+    item = rapport(machine, key(client))
+    assert item["core"]["sha256"] == vorige["sha256"] and item["core"]["verified"]
+    assert [db["sha256"] for db in item["encoder"]["databases"]] == [
+        row["sha256"] for row in vorige["extra_files"]]
+    assert item["encoder"]["verified"]
+    naam = vorige["file"]
+    assert client.post(f"/api/v1/backups/{naam}/restore", json={"confirm": naam}).status_code == 200
+
+
+def test_direct_herstel_voor_migratie_120(populated_installation, tmp_path):
+    from mediaguard.apikeys import KEY_PREFIX, key_hash
+
+    ctx, admin, _ = populated_installation
+    for instantie in list_instances(ctx):
+        ctx.services.setdefault("arr_transports", {})[instantie.id] = httpx.MockTransport(
+            lambda _: httpx.Response(200, json=[]))
+    fixture = ROOT / "tests/fixtures/aio"
+    archief = ctx.settings.backup_dir / "mediaguard-vorige-release.db"
+    archief.parent.mkdir(exist_ok=True)
+    leessleutel = KEY_PREFIX + secrets.token_urlsafe(32)
+    with closing(sqlite3.connect(archief)) as db, db:
+        db.executescript((fixture / "core-1.2.2.sql").read_text())
+        assert not db.execute("SELECT 1 FROM sqlite_schema WHERE name='offsite_target_generation'"
+                              ).fetchone()
+        assert db.execute("UPDATE api_keys SET key_hash=? WHERE id=1 AND role='viewer'",
+                          (key_hash(leessleutel),)).rowcount == 1
+        for veld, waarde in (("kind", "path"), ("path", str(tmp_path))):
+            db.execute("INSERT INTO settings_values VALUES ('global','',?,?,?,NULL)",
+                       (f"backup.offsite.{veld}", json.dumps(waarde), utcnow()))
+        overdrachten = db.execute("SELECT * FROM mediaserver_pending WHERE done_at IS NULL")\
+            .fetchall()
+    assert overdrachten
+    assert admin.get(BACKUP_REPORT_ROUTE).status_code == 200
+    antwoord = admin.post(f"/api/v1/backups/{archief.name}/restore", json={"confirm": archief.name})
+    assert antwoord.status_code == 200
+    toegang = json.loads((fixture / "core-1.2.2.json").read_text())
+    login = {"username": toegang["user"], "password": toegang["password"]}
+    assert admin.post("/api/v1/auth/login", json=login).is_success
+    ctx.db.execute("UPDATE sessions SET last_seen_at=NULL")
+    voor = database_snapshot(ctx)
+    for headers in ({}, {"X-Api-Key": leessleutel}):
+        item = rapport(admin, headers)
+        assert item["offsite"]["target_kind"] == "path" and not item["offsite"]["verified"]
+        assert item["offsite"]["status"] == item["status"] == "degraded"
+    assert_database_preserved(ctx, voor)
+    na = ctx.db.fetch_all("SELECT * FROM mediaserver_pending WHERE done_at IS NULL")
+    assert [tuple(r) for r in na] == overdrachten
+
+
+def test_oud_aanmaakbewijs_bewijst_geen_bundelinhoud(
+    client, machine, ctx, herstelbronnen, tmp_path, monkeypatch, respx_mock,
+):
+    _, inrichting, *_ = herstelbronnen
+    schrijf_json = json.dumps
+
+    def historisch_formaat(obj, **kwargs):
+        # De vorige schrijver bond dezelfde hashes aan een kop zonder inhoudscontrole.
+        if isinstance(obj, dict) and "eph" in obj:
+            obj = {k: v for k, v in obj.items() if k != "complete"}
+        return schrijf_json(obj, **kwargs)
+
+    with monkeypatch.context() as oud:
+        oud.setattr(bundle.json, "dumps", historisch_formaat)
+        gemaakt = client.post("/api/v1/backups/bundle")
+    assert gemaakt.status_code == 200
+    naam = gemaakt.json()["file"]
+    pad = bundle.bundle_dir(ctx) / naam
+    sleutel = pad.parent / bundle.KEYFILE
+    assert bundle.has_pair_proof(pad)
+    assert "core/mediaguard.db" in bundle.restore(pad, inrichting["recovery_code"], sleutel,
+                                                  tmp_path / "oude-bundel")
+    doel = "https://bundel.invalid/kopie"
+    ctx.config.set("global", "", "backup.offsite.kind", "webdav", "proef")
+    ctx.config.set("global", "", "backup.offsite.webdav_url", doel, "proef")
+    for bron in (pad, sleutel):
+        respx_mock.put(f"{doel}/{bron.name}").respond(201)
+        respx_mock.get(f"{doel}/{bron.name}").respond(200, content=bron.read_bytes())
+    assert client.post("/api/v1/notify/offsite/run").json()["ok"]
+    item = rapport(machine, key(client))
+    assert not item["offsite"]["verified"] and not item["bundle"]["verified"]
+    assert item["status"] == "degraded"

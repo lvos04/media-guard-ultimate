@@ -398,6 +398,7 @@ async def _snapshot(ctx: AppContext, principal: Principal, kind: ItemType) -> Sn
     def fresh(previous: Snapshot | None,
               state: tuple[str | None, tuple[bool, bool] | None]) -> bool:
         return (previous is not None
+                and (kind != "backups" or state[0] is not None)
                 and (previous.target_generation, previous.rollback_request) == state
                 and time.monotonic() - previous.collected_at < cache_seconds)
 

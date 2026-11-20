@@ -169,7 +169,8 @@ def _reject(ctx: AppContext, request: HTTPConnection, key: str, why: str, *,
     return HTTPException(status_code=401, detail=INVALID_DETAIL)
 
 
-def authenticate(ctx: AppContext, request: HTTPConnection, key: str) -> Principal:
+def authenticate(ctx: AppContext, request: HTTPConnection, key: str, *,
+                 backup_report: bool = False) -> Principal:
     """Geldige sleutel → machine-principal; anders 401 (of 429 bij te veel fouten)."""
     from mediaguard.auth import Principal
 
@@ -193,12 +194,16 @@ def authenticate(ctx: AppContext, request: HTTPConnection, key: str) -> Principa
         raise _reject(ctx, request, key, f"verlopen sleutel '{row['name']}'", count=False)
     if row["role"] not in ROLES:  # verdedigt tegen een handmatig aangepaste database
         raise _reject(ctx, request, key, "ongeldige rol")
+    if backup_report and "scopes" not in row.keys():  # noqa: SIM118 - sqlite3.Row bevat waarden
+        # De historische sleutel is geldig. Voor het rapport volstaan uitsluitend leesrechten.
+        return Principal(username=f"apikey:{row['name']}", role="viewer", machine=True, scopes=())
     scopes = parse_scopes(row["scopes"])
     if scopes is not None and row["role"] != "viewer":
         # kan alleen via een handmatig aangepaste database: nooit stil als operator gebruiken
         raise _reject(ctx, request, key, f"rechten (scopes) op sleutel '{row['name']}' met rol "
                                          f"{row['role']}", count=False)
-    _touch(ctx, int(row["id"]), row["last_used_at"])
+    if not backup_report:
+        _touch(ctx, int(row["id"]), row["last_used_at"])
     return Principal(username=f"apikey:{row['name']}", role=str(row["role"]), machine=True,
                      scopes=scopes)
 
