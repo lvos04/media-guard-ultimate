@@ -740,6 +740,8 @@ volgt de taal waarin de kern die aanlevert. Geen echte schermlezer, NAS of tv ge
 De eerste volledige lokale run telde 252 groene en vijf rode tests. De browserproef had
 een lokale themakeuze opgeslagen die de kern overnam als gebruikersvoorkeur. De proef
 gebruikt nu de systeemkleur van Chromium. De ontkoppeldialoog behoudt de getoetste
-mededeling dat adres en sleutel bewaard blijven. De drie daaropvolgende fouten kwamen
+mededeling dat adres en sleutel bewaard blijven. De herhaling bevestigde het themaherstel
+en wees op de tweede getoetste mededeling. De verwijderdialoog vermeldt dat andere
+mediaservers gekoppeld blijven. In beide proeven kwamen de drie daaropvolgende fouten
 door de tweede testserver die de mislukte dialoogproef had achtergelaten. De bestaande
 thema- en mediaservercontroles zijn behouden.

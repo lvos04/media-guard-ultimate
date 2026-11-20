@@ -84,7 +84,7 @@ export const nl = {
   "ms.detach.body": "MediaGuard stopt met verversen, afspeeltests en kijkpauze voor {label}. Adres en sleutel blijven bewaard voor een nieuwe koppeling.",
   "ms.remove.title": "{label} verwijderen?",
   "ms.remove.confirm": "Server verwijderen",
-  "ms.remove.body": "Je verwijdert de koppeling met {label} uit MediaGuard, inclusief adres, sleutel en maptoewijzingen.",
+  "ms.remove.body": "Je verwijdert de koppeling met {label} uit MediaGuard, inclusief adres, sleutel en maptoewijzingen. Andere mediaservers blijven gekoppeld.",
   "ms.detached": "{label} is ontkoppeld. Adres en sleutel zijn bewaard.",
   "ms.attached": "{label} is weer gekoppeld.",
   "ms.removed": "{label} is verwijderd uit MediaGuard.",
