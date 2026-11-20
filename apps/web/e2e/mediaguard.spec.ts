@@ -215,27 +215,37 @@ for (const theme of ["light", "dark"] as const) {
     await page.setViewportSize({ width: 768, height: 900 });
     await page.emulateMedia({ colorScheme: theme });
     await page.clock.install();
+    await login(page);
+    const routes = ["status", "attention", "provisioning/status", "migration/runs", "seerr/settings",
+      "jobs?status=failed&limit=20", "jobs?status=running&limit=5", "wanted/kpis", "health/summary",
+      "library/kpis", "notifications/count", "recovery/readiness"];
+    let meettijd = await page.evaluate(() => Date.now());
     let mode: "fresh" | "stale" | "offline" = "fresh";
-    // De gezonde lokale testbronnen bemonsteren op dezelfde klok als de nagebootste engine.
-    await page.route(/\/api\/v1\/(?:attention|provisioning\/status|migration\/runs|seerr\/settings|jobs|wanted\/kpis|health\/summary|library\/kpis|notifications\/count|recovery\/readiness)(?:\?|$)/, async route => {
-      const response = await route.fetch();
-      if (!response.ok()) return route.fulfill({ response });
+    // Lees de lokale testkern vooraf. De gecontroleerde browserklok dateert elk volgend antwoord.
+    for (const pad of routes) {
+      const url = new URL("/api/v1/" + pad, page.url());
+      const response = await page.request.get(url.href);
+      expect(response.ok(), url.pathname).toBeTruthy();
       const data = await response.json();
-      const measured = await page.evaluate(() => new Date().toISOString());
-      if (data && typeof data === "object" && "generated_at" in data) data.generated_at = measured;
-      return route.fulfill({ json: data, headers: { date: new Date(measured).toUTCString() } });
-    });
-    await page.route("**/api/v1/status", async route => {
-      const res = await route.fetch();
-      return route.fulfill({ json: { ...await res.json(), time: await page.evaluate(() => new Date().toISOString()) } });
-    });
+      await page.route(link => link.origin === url.origin && link.pathname === url.pathname &&
+        link.searchParams.get("status") === url.searchParams.get("status"), route => {
+        const tijd = new Date(meettijd);
+        const json = pad === "status" ? { ...data, time: tijd.toISOString() }
+          : data && typeof data === "object" && "generated_at" in data ? { ...data, generated_at: tijd.toISOString() } : data;
+        return route.fulfill({ json, headers: { date: tijd.toUTCString() } });
+      });
+    }
+    const volgendeMeting = () => {
+      meettijd += 60_000;
+      return page.clock.fastForward(60_000);
+    };
     await page.route("**/api/v1/instances", (route) => route.fulfill({ json: [{
       id: "testfilms", name: "Testfilms", app: "radarr", status: "healthy", last_check_at: "2025-01-01T00:00:00Z",
     }] }));
     await page.route("**/api/v1/encoder/health", (route) => route.fulfill(mode === "offline"
       ? { status: 503, json: { detail: "Testbron reageert niet" } }
       : { json: { status: "ok" }, headers: mode === "stale" ? { "X-MediaGuard-Stale": "90" } : {} }));
-    await login(page);
+    await page.goto("/");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     await page.addStyleTag({ content: 'body { font-family: "DejaVu Sans", sans-serif !important; }' });
     const panel = page.getByRole("region", { name: "Systeemstatus" });
@@ -249,7 +259,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(core.locator('[data-status="healthy"]')).toBeVisible();
     await expect(instance.locator('[data-status="stale"]')).toHaveText("Verouderd");
     mode = "stale";
-    await page.clock.fastForward(60_000);
+    await volgendeMeting();
     await expect(stale).toHaveText("Verouderd");
     await expect(stale).toHaveCSS("border-top-style", "dashed");
     await expect(stale).not.toHaveCSS("color", healthyColor);
@@ -264,7 +274,7 @@ for (const theme of ["light", "dark"] as const) {
       await page.screenshot({ path: `${process.env.MG_PEIL_680_SHOTS}/overzicht-768-${theme}.png`, animations: "disabled" });
     }
     mode = "offline";
-    await page.clock.fastForward(60_000);
+    await volgendeMeting();
     await expect(stale).toBeVisible();
     await expect(healthy).toHaveCount(0);
     mode = "fresh";
