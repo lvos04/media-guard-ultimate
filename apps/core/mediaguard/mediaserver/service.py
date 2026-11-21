@@ -192,7 +192,7 @@ def mg_roots(ctx: AppContext) -> list[str]:
 
 
 async def path_map(ctx: AppContext, client: Server,
-                   server: M.ServerConf | int = M.LEGACY_ID) -> P.Mapping:
+                   server: M.ServerConf | int = M.LEGACY_ID, *, strict: bool = False) -> P.Mapping:
     cached = M.sget(ctx, server, "path_map", {}) or {}
     at = cached.get("at")
     if at and (now_utc() - datetime.fromisoformat(at)) < timedelta(hours=1) \
@@ -201,6 +201,8 @@ async def path_map(ctx: AppContext, client: Server,
     try:
         locs = await client.locations()
     except MediaServerError:
+        if strict:
+            raise
         return [tuple(p) for p in cached.get("map") or []]  # type: ignore[misc]
     mapping = P.build_map(mg_roots(ctx), locs)
     M.sset(ctx, server, "path_map", {"map": mapping, "at": utcnow(), "server": locs})
@@ -289,40 +291,45 @@ def collect_handoffs(ctx: AppContext, servers: list[M.ServerConf] | None = None)
     """Nieuwe afgeronde overdrachten/terugzettingen in de wachtrij zetten, met een taak per
     gevolgde server (verversen, afspeeltest, NL-ondertitels)."""
     servers = M.followed(ctx) if servers is None else servers
-    cursor = ctx.state_get("mediaserver_txn_cursor")
-    if cursor is None:
-        row = ctx.db.fetch_one("SELECT COALESCE(MAX(id),0) AS m FROM replacement_transactions")
-        ctx.state_set("mediaserver_txn_cursor", int(row["m"]) if row else 0)
-        return 0
-    rows = ctx.db.fetch_dicts(
-        "SELECT id, kind, final_path, encoding_job_id FROM replacement_transactions "
-        "WHERE id>? AND state='committed' ORDER BY id LIMIT 200", (int(cursor),))
-    for r in rows:
-        test_after = None
-        # afspeeltest alleen voor een AV1-versie; een verkeerd bestand dat MediaGuard in
-        # quarantaine zette heeft geen nieuw bestand om af te spelen (verbeterlijst 12)
-        if r["kind"] == "replace" and r["encoding_job_id"] is not None and \
-                bool(_v(ctx, "playback_test")):
-            test_after = (now_utc() + timedelta(minutes=TEST_DELAY_MIN)).isoformat(
-                timespec="seconds")
-        ctx.db.execute(
-            "INSERT OR IGNORE INTO mediaserver_pending(transaction_id,path,kind,encoding_job_id,"
-            "test_after,created_at) VALUES (?,?,?,?,?,?)",
-            (r["id"], r["final_path"], r["kind"], r["encoding_job_id"], test_after, utcnow()))
-        for srv in servers:
+    with ctx.db.transaction():
+        cursor = ctx.state_get("mediaserver_txn_cursor")
+        if cursor is None:
+            row = ctx.db.fetch_one("SELECT COALESCE(MAX(id),0) AS m FROM replacement_transactions")
+            ctx.state_set("mediaserver_txn_cursor", int(row["m"]) if row else 0)
+            return 0
+        rows = ctx.db.fetch_dicts(
+            "SELECT id, kind, final_path, encoding_job_id FROM replacement_transactions t "
+            "WHERE id>? AND state='committed' AND NOT EXISTS (SELECT 1 FROM mediaserver_pending p "
+            "WHERE p.transaction_id=t.id) ORDER BY id LIMIT 200", (int(cursor),))
+        for r in rows:
+            test_after = None
+            # afspeeltest alleen voor een AV1-versie; een verkeerd bestand dat MediaGuard in
+            # quarantaine zette heeft geen nieuw bestand om af te spelen (verbeterlijst 12)
+            if r["kind"] == "replace" and r["encoding_job_id"] is not None and \
+                    bool(_v(ctx, "playback_test")):
+                test_after = (now_utc() + timedelta(minutes=TEST_DELAY_MIN)).isoformat(
+                    timespec="seconds")
             ctx.db.execute(
-                "INSERT OR IGNORE INTO mediaserver_server_results(transaction_id,server_id,"
-                "test_after,created_at) VALUES (?,?,?,?)", (r["id"], srv.id, test_after, utcnow()))
-    # nog niet afgeronde transacties niet overslaan: cursor tot vóór de eerste open
-    open_row = ctx.db.fetch_one(
-        "SELECT MIN(id) AS m FROM replacement_transactions WHERE id>? AND state NOT IN "
-        "('committed','rolled_back','aborted','conflict')", (int(cursor),))
-    top = ctx.db.fetch_one("SELECT COALESCE(MAX(id),0) AS m FROM replacement_transactions")
-    new_cursor = int(top["m"]) if top else int(cursor)
-    if open_row and open_row["m"] is not None:
-        new_cursor = min(new_cursor, int(open_row["m"]) - 1)
-    ctx.state_set("mediaserver_txn_cursor", max(int(cursor), new_cursor))
-    return len(rows)
+                "INSERT OR IGNORE INTO mediaserver_pending(transaction_id,path,kind,"
+                "encoding_job_id,test_after,created_at) VALUES (?,?,?,?,?,?)",
+                (r["id"], r["final_path"], r["kind"], r["encoding_job_id"], test_after, utcnow()))
+            for srv in servers:
+                ctx.db.execute(
+                    "INSERT OR IGNORE INTO mediaserver_server_results(transaction_id,server_id,"
+                    "test_after,created_at) VALUES (?,?,?,?)",
+                    (r["id"], srv.id, test_after, utcnow()))
+        # nog niet afgeronde transacties niet overslaan: cursor tot vóór de eerste open
+        open_row = ctx.db.fetch_one(
+            "SELECT MIN(id) AS m FROM replacement_transactions WHERE id>? AND state NOT IN "
+            "('committed','rolled_back','aborted','conflict')", (int(cursor),))
+        top = ctx.db.fetch_one("SELECT COALESCE(MAX(id),0) AS m FROM replacement_transactions")
+        new_cursor = int(top["m"]) if top else int(cursor)
+        if len(rows) == 200:
+            new_cursor = rows[-1]["id"]
+        if open_row and open_row["m"] is not None:
+            new_cursor = min(new_cursor, int(open_row["m"]) - 1)
+        ctx.state_set("mediaserver_txn_cursor", max(int(cursor), new_cursor))
+        return len(rows)
 
 
 def ensure_legacy_rows(ctx: AppContext, servers: list[M.ServerConf]) -> None:
@@ -340,10 +347,115 @@ def ensure_legacy_rows(ctx: AppContext, servers: list[M.ServerConf]) -> None:
         "r.transaction_id=p.transaction_id)", (M.LEGACY_ID,))
 
 
+def _warn_changed_paths(ctx: AppContext, sid: int, label: str) -> None:
+    from mediaguard.api.system import notify
+
+    rows = ctx.db.fetch_dicts(
+        "SELECT r.transaction_id, t.library_path, p.path FROM mediaserver_server_results r "
+        "JOIN mediaserver_pending p USING(transaction_id) "
+        "LEFT JOIN replacement_transactions t ON t.id=r.transaction_id "
+        "WHERE r.server_id=? AND r.done_at IS NULL AND t.library_path IS NOT p.path", (sid,))
+    for row in rows:
+        txn = row["transaction_id"]
+        original = row["library_path"] or "(onbekend)"
+        detail = (f"Bronpad: {original}. Huidig pad: {row['path']}. Controleer in {label} "
+                  "het bibliotheekitem en de kijkgegevens voordat je zelf ververst.")
+        with ctx.db.transaction():
+            changed = ctx.db.execute(
+                "UPDATE mediaserver_server_results SET done_at=?, result='skipped', detail_nl=? "
+                "WHERE server_id=? AND transaction_id=? AND done_at IS NULL",
+                (utcnow(), detail, sid, txn))
+            if changed:
+                notify(ctx, "warning", f"Controleer het bibliotheekpad in {label}", detail,
+                       link="/inrichten?tab=mediaserver", dedupe_key=f"mediaserver.pad.{sid}.{txn}")
+
+
+def _refresh_failed(ctx: AppContext, sid: int, txn: int, label: str, error: MediaServerError
+                    ) -> None:
+    with ctx.db.transaction():
+        previous = M.sget(ctx, sid, "refresh_backoff")
+        delay = min(previous["minutes"] * 2, FULL_REFRESH_GAP_MIN) if previous else 1
+        retry_at = now_utc() + timedelta(minutes=delay)
+        M.sset(ctx, sid, "refresh_backoff", {"minutes": delay, "until": retry_at.isoformat()})
+        if not previous:
+            ctx.events.publish("mediaserver.refresh.failed", {"correlation_id": txn,
+                                                             "server_id": sid})
+            log_action(ctx, "refresh", f"{label}: verversen mislukt. {error}. Controleer de "
+                       "verbinding. MediaGuard probeert het later opnieuw.", ok=False,
+                       server_id=sid, txn=txn)
+
+
+def _refresh_accepted(ctx: AppContext, sid: int, label: str, rows: list[dict[str, Any]],
+                      *, full_scan: bool = False, end_backoff: bool = False) -> int:
+    count = 0
+    with ctx.db.transaction():
+        if full_scan:
+            M.sset(ctx, sid, "full_refresh_at", now_utc().isoformat())
+        if end_backoff:
+            M.sset(ctx, sid, "refresh_backoff", None)
+        for row in rows:
+            txn = row["transaction_id"]
+            if ctx.db.execute(
+                "UPDATE mediaserver_server_results SET refreshed_at=? WHERE server_id=? "
+                "AND transaction_id=? AND refreshed_at IS NULL AND done_at IS NULL",
+                (utcnow(), sid, txn),
+            ):
+                ctx.events.publish("mediaserver.refresh.requested", {"correlation_id": txn,
+                                                                     "server_id": sid})
+                action = "Volledige scan" if full_scan else "Verversing"
+                log_action(ctx, "refresh", f"{action} aangevraagd bij {label}.", path=row["path"],
+                           txn=txn, server_id=sid)
+                count += 1
+    return count
+
+
+async def _refresh_jellyfin(ctx: AppContext, client: Server, sid: int,
+                            rows: list[dict[str, Any]]) -> int:
+    backoff = M.sget(ctx, sid, "refresh_backoff")
+    if backoff and now_utc() < datetime.fromisoformat(backoff["until"]):
+        return 0
+    accepted = 0
+    pending = rows
+    try:
+        mapping = await path_map(ctx, client, sid, strict=True)
+        exact, paths, unmapped = [], [], []
+        for row in rows:
+            path = P.to_server(row["path"], mapping)
+            if path is None:
+                unmapped.append(row)
+            else:
+                exact.append(row)
+                paths.append(path)
+        last = M.sget(ctx, sid, "full_refresh_at")
+        scan_due = bool(unmapped) and (
+            not last or now_utc() - datetime.fromisoformat(last)
+            >= timedelta(minutes=FULL_REFRESH_GAP_MIN))
+        if exact:
+            pending = exact
+            await client.refresh_paths(paths)
+            accepted = _refresh_accepted(ctx, sid, client.label, exact,
+                                         end_backoff=bool(backoff) and not scan_due)
+        if scan_due:
+            pending = unmapped
+            await client.refresh_all()
+            accepted += _refresh_accepted(ctx, sid, client.label, unmapped,
+                                          full_scan=True, end_backoff=bool(backoff))
+    except MediaServerError as exc:
+        _refresh_failed(ctx, sid, pending[0]["transaction_id"], client.label, exc)
+    return accepted
+
+
 async def refresh_pending(ctx: AppContext, client: Server,
                           server: M.ServerConf | None = None) -> int:
     sid = server.id if server else M.LEGACY_ID
-    if not bool(_v(ctx, "refresh_after_handoff")):
+    if client.kind == "jellyfin":
+        _warn_changed_paths(ctx, sid, client.label)
+        if not _v(ctx, "refresh_after_handoff"):
+            ctx.db.execute("UPDATE mediaserver_server_results SET result='skipped', done_at=? "
+                           "WHERE server_id=? AND done_at IS NULL AND test_after IS NULL",
+                           (utcnow(), sid))
+            return 0
+    elif not _v(ctx, "refresh_after_handoff"):
         ctx.db.execute("UPDATE mediaserver_server_results SET refreshed_at=? WHERE "
                        "refreshed_at IS NULL AND server_id=?", (utcnow(), sid))
         return 0
@@ -353,6 +465,8 @@ async def refresh_pending(ctx: AppContext, client: Server,
         "r.refreshed_at IS NULL AND r.done_at IS NULL ORDER BY r.transaction_id LIMIT 100", (sid,))
     if not rows:
         return 0
+    if client.kind == "jellyfin":
+        return await _refresh_jellyfin(ctx, client, sid, rows)
     mapping = await path_map(ctx, client, sid)
     mapped = [(r, P.to_server(r["path"], mapping)) for r in rows]
     exact = [p for _, p in mapped if p]
@@ -398,8 +512,9 @@ async def run_playback_tests(ctx: AppContext, client: Server,
         "SELECT r.transaction_id, r.attempts, p.path, p.encoding_job_id FROM "
         "mediaserver_server_results r JOIN mediaserver_pending p ON "
         "p.transaction_id=r.transaction_id WHERE r.server_id=? AND r.done_at IS NULL AND "
-        "r.test_after IS NOT NULL AND r.test_after<=? AND r.refreshed_at IS NOT NULL "
-        "ORDER BY r.test_after LIMIT 5", (sid, utcnow()))
+        "r.test_after IS NOT NULL AND r.test_after<=? AND (r.refreshed_at IS NOT NULL OR ?) "
+        "ORDER BY r.test_after LIMIT 5",
+        (sid, utcnow(), client.kind == "jellyfin" and not _v(ctx, "refresh_after_handoff")))
     mapping = await path_map(ctx, client, sid) if due else []
     for r in due:
         server_path = P.to_server(r["path"], mapping) or r["path"]

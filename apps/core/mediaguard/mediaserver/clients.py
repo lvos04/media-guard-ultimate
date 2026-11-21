@@ -140,7 +140,8 @@ def _where(url: httpx.URL) -> str:
 async def _call(services: dict[str, Any], method: str, url: str, *,
                 headers: dict[str, str], params: Any = None, json: Any = None,
                 timeout: httpx.Timeout | float = TIMEOUT, raw: bool = False,
-                any_host: bool = False, body_secrets: Iterable[str] = ()) -> Any:
+                any_host: bool = False, body_secrets: Iterable[str] = (),
+                confirm_post: bool = False) -> Any:
     """Eén verzoek. Een omleiding wordt alleen gevolgd op dezelfde server (``_same_server``);
     wijst ze naar een ander adres, dan een ``MediaServerError`` en gaat er geen verzoek (en dus
     geen sleutel) daarheen. ``any_host`` is alleen voor een verzoek zonder sleutel (de
@@ -155,6 +156,8 @@ async def _call(services: dict[str, Any], method: str, url: str, *,
             start, hops = resp.request.url, 0
             while resp.next_request is not None:
                 target = resp.next_request
+                if confirm_post and target.method != "POST":
+                    raise MediaServerError("verversverzoek niet bevestigd", resp.status_code)
                 if not foreign_ok and not _same_server(start, target.url):
                     raise MediaServerError(
                         f"server stuurt door naar een ander adres: {_where(target.url)}",
@@ -174,6 +177,8 @@ async def _call(services: dict[str, Any], method: str, url: str, *,
         # eerst de sleutels eruit, dan pas inkorten (anders blijft een halve sleutel staan)
         clean = _clean(resp.text, headers, body_secrets)
         raise MediaServerError(f"fout {resp.status_code}: {clean[:200]}", resp.status_code)
+    if confirm_post and not resp.is_success:
+        raise MediaServerError("verversverzoek niet bevestigd", resp.status_code)
     if raw:
         return resp.content
     if not resp.content:
@@ -279,11 +284,12 @@ class EmbyClient:
 
     async def refresh_paths(self, paths: list[str]) -> None:
         await _call(self.services, "POST", self.url + "/Library/Media/Updated",
-                    headers=self.headers,
+                    headers=self.headers, confirm_post=self.kind == "jellyfin",
                     json={"Updates": [{"Path": p, "UpdateType": "Modified"} for p in paths]})
 
     async def refresh_all(self) -> None:
-        await _call(self.services, "POST", self.url + "/Library/Refresh", headers=self.headers)
+        await _call(self.services, "POST", self.url + "/Library/Refresh", headers=self.headers,
+                    confirm_post=self.kind == "jellyfin")
 
     async def sessions(self) -> list[Session]:
         rows = await self._get("/Sessions", ActiveWithinSeconds=120)

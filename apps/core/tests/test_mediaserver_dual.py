@@ -24,17 +24,22 @@ import html
 import json
 import re
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, quote_plus
+from uuid import UUID
 
 import httpx
 import pytest
+from test_encoding_support import FakeInstance, FakeRegistry
+from test_recovery import Env
 
 from mediaguard.db import utcnow
 from mediaguard.mediaserver import servers as M
 from mediaguard.mediaserver import service as S
 from mediaguard.mediaserver.clients import EmbyClient, MediaServerError, auth_headers, valid_key
+from mediaguard.recovery import executor
 
 MG_ROOT = "/data/Media/Films"
 FILM = f"{MG_ROOT}/Stormvogel (2017)/Stormvogel (2017).mkv"
@@ -64,6 +69,8 @@ class Server:
         self.sessions: list[dict[str, Any]] = []
         self.subs = True
         self.film = FILM.replace(MG_ROOT, root)
+        self.item_ids = {self.film: "9"}
+        self.user_data: dict[tuple[str, str], dict] = {}
         #: foutpagina die de ontvangen aanmeldkoppen terugkaatst (letterlijk, kaal en als JSON)
         self.echo: int | None = None
         #: eigen foutpagina bij ``echo``: krijgt de ontvangen sleutel en bepaalt vorm en plaats
@@ -120,7 +127,9 @@ class Server:
         if path == "/Library/VirtualFolders":
             return httpx.Response(200, json=[{"Name": "Films", "Locations": [self.root]}])
         if path == "/Library/Media/Updated":
-            self.updated += [u["Path"] for u in json.loads(request.content)["Updates"]]
+            for update in json.loads(request.content)["Updates"]:
+                self.updated.append(update["Path"])
+                self.item_ids.setdefault(update["Path"], str(10 + len(self.item_ids)))
             return httpx.Response(204)
         if path == "/Library/Refresh":
             return httpx.Response(204)
@@ -129,8 +138,12 @@ class Server:
         if path == "/Users":
             return httpx.Response(200, json=[{"Id": "u1", "Policy": {"IsAdministrator": True}}])
         if path == "/Items":
-            return httpx.Response(200, json={"Items": [{"Id": "9", "Type": "Movie",
-                                                        "Path": self.film}]})
+            user = request.url.params.get("UserId", "")
+            return httpx.Response(200, json={"Items": [
+                {"Id": item, "Type": "Movie", "Path": p,
+                 "UserData": self.user_data.get((user, item))}
+                for p, item in self.item_ids.items()
+            ]})
         if path.endswith("/PlaybackInfo"):
             streams: list[dict[str, Any]] = [{"Type": "Video", "Codec": "av1"}]
             if self.subs:
@@ -202,6 +215,216 @@ def _due(ctx, txn: int) -> None:  # type: ignore[no-untyped-def]
 
 def tick(ctx, **kw: Any) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     return asyncio.run(S.tick(ctx, **kw))
+
+
+def refresh_events(ctx):
+    return [(r["topic"], json.loads(r["payload"])) for r in ctx.db.fetch_all(
+        "SELECT topic,payload FROM outbox_events WHERE topic LIKE 'mediaserver.refresh.%' "
+        "ORDER BY id")]
+
+
+@pytest.mark.parametrize(("ext", "refresh"), [
+    pytest.param(".mkv", True, id="zelfde-pad"),
+    pytest.param(".mp4", True, id="padwissel"),
+    pytest.param(".mp4", False, id="padwissel-verversen-uit"),
+])
+async def test_jellyfin_av1_vervanging_met_kijkgegevens(ctx, net, tmp_path, monkeypatch,
+                                                       ext, refresh):
+    _, jf = net
+    ctx.config.set("global", "", "mediaserver.kind", "off", "test")
+    sid = _add_jelly_leon(ctx)
+    ctx.config.set("global", "", "mediaserver.refresh_after_handoff", refresh, "test")
+    ctx.services["instance_registry"] = FakeRegistry(FakeInstance("sonarr-series"))
+    env = Env(ctx, tmp_path, ext=ext)
+    monkeypatch.setattr(S, "mg_roots", lambda _: [str(env.dir)])
+    jf.root = "/bibliotheek/Season 01"
+    oud = f"{jf.root}/{env.lib.name}"
+    jf.item_ids = {oud: "17"}
+    for n in (1, 2):
+        jf.user_data[(f"u{n}", "17")] = {
+            "Played": n == 1, "PlaybackPositionTicks": 12000 * n, "IsFavorite": n == 2,
+            "Rating": 5 + n, "AudioStreamIndex": n, "SubtitleStreamIndex": n + 2,
+        }
+
+    async def lees_kijkgegevens():
+        transport = ctx.services["mediaserver_transport"]
+        headers = auth_headers("jellyfin", jf.key)
+        async with httpx.AsyncClient(base_url="http://jellyleon:8096", transport=transport,
+                                     headers=headers) as client:
+            return [(await client.get("/Items", params={"UserId": user})).json()["Items"]
+                    for user in ("u1", "u2")]
+
+    voor = await lees_kijkgegevens()
+    assert all(items[0]["Path"] == oud and items[0]["Id"] == "17" for items in voor)
+    assert [items[0]["UserData"] for items in voor] == [jf.user_data[(u, "17")]
+                                                       for u in ("u1", "u2")]
+    await S.tick(ctx, sessions=False)
+    txn = env.txn(encoding_job_id=7)
+    await executor.run_transaction(ctx, txn)
+    assert env.assert_consistent(txn)["state"] == "committed"
+    jf.requests.clear()
+    await S.tick(ctx, sessions=False)
+    _due(ctx, txn)
+    await S.tick(ctx, sessions=False)
+    await S.tick(ctx, sessions=False)
+    verzoeken = [(r.method, r.url.path) for r in jf.requests]
+    assert await lees_kijkgegevens() == voor
+    assert not any(method == "POST" and "UserData" in path for method, path in verzoeken)
+    melding = ctx.db.fetch_dicts("SELECT title,body,count FROM notifications "
+                                 "WHERE title LIKE '%pad%'")
+    uitkomst = S.playback_for_job(ctx, 7)
+    if ext == ".mkv":
+        assert not melding and env.lib == env.final
+        assert jf.updated == [oud] and uitkomst["result"] == "ok"
+        assert [p for m, p in verzoeken if m == "POST"] == [
+            "/Library/Media/Updated", "/Items/17/PlaybackInfo"]
+        assert refresh_events(ctx) == [
+            ("mediaserver.refresh.requested", {"correlation_id": txn, "server_id": sid})]
+    else:
+        assert env.lib != env.final and not env.lib.exists()
+        assert len(melding) == 1 and melding[0]["count"] == 1
+        assert env.lib.name in melding[0]["body"] and env.final.name in melding[0]["body"]
+        assert verzoeken == [] and refresh_events(ctx) == [] and uitkomst["result"] == "skipped"
+        assert ctx.db.fetch_one("SELECT refreshed_at FROM mediaserver_pending "
+                                "WHERE transaction_id=?", (txn,))[0] is None
+
+
+def test_jellyfin_offline_een_melding_met_backoff_en_herstel(ctx, net, monkeypatch, client):
+    emby, jf = net
+    sid = _add_jelly_leon(ctx)
+    nu = datetime.now(UTC)
+    monkeypatch.setattr(S, "now_utc", lambda: nu)
+    tick(ctx, sessions=False)
+    txn = _txn(ctx)
+    jf.down = True
+    stand = tick(ctx, sessions=False)
+    assert stand["servers"][str(sid)]["refreshed"] == 0 and emby.updated == [EMBY_FILM]
+    payload = {"correlation_id": txn, "server_id": sid}
+    mislukt = ("mediaserver.refresh.failed", payload)
+    assert refresh_events(ctx) == [mislukt]
+    pogingen = len(jf.requests)
+    assert pogingen > 0
+    ctx.db.close()   # de volgende ronde leest de wachttijd uit de heropende database
+    tick(ctx, sessions=False)
+    assert len(jf.requests) == pogingen
+    nu += timedelta(minutes=1)
+    tick(ctx, sessions=False)
+    assert len(jf.requests) > pogingen and refresh_events(ctx) == [mislukt]
+    pogingen = len(jf.requests)
+    nu += timedelta(minutes=1)
+    tick(ctx, sessions=False)
+    assert len(jf.requests) == pogingen
+    assert ctx.db.fetch_one("SELECT refreshed_at FROM mediaserver_pending "
+                            "WHERE transaction_id=?", (txn,))[0] is None
+    assert not ctx.db.fetch_one("SELECT 1 FROM mediaserver_actions WHERE server_id=? AND "
+                                "kind='refresh' AND ok=1", (sid,))
+    jf.down = False
+    nu += timedelta(minutes=1)
+    tick(ctx, sessions=False)
+    tick(ctx, sessions=False)
+    assert jf.updated == [JF_FILM]
+    assert refresh_events(ctx) == [mislukt, ("mediaserver.refresh.requested", payload)]
+    page = client.get("/connector/v1/events")
+    assert page.status_code == 200
+    events = [e for e in page.json()["events"] if e["entity"]["id"] == "refresh"]
+    assert [(e["event_type"], UUID(e["correlation_id"]).int, e["payload"]) for e in events] == [
+        ("media.refresh.failed", txn, {"ernst": "hoog"}),
+        ("media.refresh.requested", txn, {"ernst": "info"}),
+    ]
+    tweede = _txn(ctx)
+    jf.down = True
+    tick(ctx, sessions=False)
+    assert refresh_events(ctx)[2:] == [
+        ("mediaserver.refresh.failed", {"correlation_id": tweede, "server_id": sid})]
+
+
+def test_jellyfin_volledige_scan_tijdens_wachttijd_blijft_open(ctx, net, monkeypatch):
+    _, jf = net
+    sid = _add_jelly_leon(ctx)
+    nu = datetime.now(UTC)
+    monkeypatch.setattr(S, "now_utc", lambda: nu)
+    tick(ctx, sessions=False)
+    eerste = _txn(ctx, "/elders/eerste.mkv", job=None)
+    tick(ctx, sessions=False)
+    tweede = _txn(ctx, "/elders/tweede.mkv", job=None)
+    exact = _txn(ctx)
+    tick(ctx, sessions=False)
+    assert jf.updated == [JF_FILM]
+    assert [p["correlation_id"] for _, p in refresh_events(ctx)] == [eerste, exact]
+    assert ctx.db.fetch_one("SELECT refreshed_at FROM mediaserver_server_results WHERE "
+                            "transaction_id=? AND server_id=?", (tweede, sid))[0] is None
+    nu += timedelta(minutes=31)
+    tick(ctx, sessions=False)
+    assert [p["correlation_id"] for _, p in refresh_events(ctx)] == [eerste, exact, tweede]
+    assert [r.url.path for r in jf.requests].count("/Library/Refresh") == 2
+
+
+def test_jellyfin_mislukte_volledige_scan_herhaalt_alleen_de_open_taak(ctx, net, monkeypatch):
+    _, jf = net
+    sid = _add_jelly_leon(ctx)
+    nu = datetime.now(UTC)
+    monkeypatch.setattr(S, "now_utc", lambda: nu)
+    tick(ctx, sessions=False)
+    exact = _txn(ctx)
+    volledig = _txn(ctx, "/elders/film.mkv", job=None)
+    handle = jf.handle
+
+    def fail_scan(request):
+        if request.url.path == "/Library/Refresh":
+            return httpx.Response(503)
+        return handle(request)
+
+    monkeypatch.setattr(jf, "handle", fail_scan)
+    tick(ctx, sessions=False)
+    assert refresh_events(ctx) == [
+        ("mediaserver.refresh.requested", {"correlation_id": exact, "server_id": sid}),
+        ("mediaserver.refresh.failed", {"correlation_id": volledig, "server_id": sid}),
+    ]
+    monkeypatch.setattr(jf, "handle", handle)
+    nu += timedelta(minutes=1)
+    tick(ctx, sessions=False)
+    assert jf.updated == [JF_FILM]
+    assert refresh_events(ctx)[2:] == [
+        ("mediaserver.refresh.requested", {"correlation_id": volledig, "server_id": sid})]
+
+
+@pytest.mark.parametrize("status", [302, 304])
+def test_jellyfin_verversing_zonder_postbevestiging_blijft_open(ctx, net, monkeypatch, status):
+    _, jf = net
+    sid = _add_jelly_leon(ctx)
+    handle = jf.handle
+
+    def antwoord(request):
+        if request.url.path == "/Library/Media/Updated":
+            return httpx.Response(status, headers={"Location": "/System/Info/Public"})
+        return handle(request)
+
+    monkeypatch.setattr(jf, "handle", antwoord)
+    tick(ctx, sessions=False)
+    txn = _txn(ctx)
+    tick(ctx, sessions=False)
+    assert refresh_events(ctx) == [
+        ("mediaserver.refresh.failed", {"correlation_id": txn, "server_id": sid})]
+    assert ctx.db.fetch_one("SELECT refreshed_at FROM mediaserver_pending "
+                            "WHERE transaction_id=?", (txn,))[0] is None
+
+
+def test_jellyfin_overdrachten_na_een_open_transactie_en_een_volle_pagina(ctx, net):
+    sid = _add_jelly_leon(ctx)
+    tick(ctx, sessions=False)
+    with ctx.db.transaction():
+        open_txn = _txn(ctx)
+        ctx.db.execute("UPDATE replacement_transactions SET state='pending' WHERE id=?",
+                       (open_txn,))
+        later = [_txn(ctx, job=None) for _ in range(201)]
+    for _ in range(3):
+        tick(ctx, sessions=False)
+    assert [p for _, p in refresh_events(ctx)] == [
+        {"correlation_id": txn, "server_id": sid} for txn in later]
+    ctx.db.execute("UPDATE replacement_transactions SET state='committed' WHERE id=?", (open_txn,))
+    tick(ctx, sessions=False)
+    assert refresh_events(ctx)[len(later):] == [
+        ("mediaserver.refresh.requested", {"correlation_id": open_txn, "server_id": sid})]
 
 
 # -- Δ-MG-AUTH ---------------------------------------------------------------------------------
@@ -596,7 +819,7 @@ def test_mislukte_afspeeltest_op_een_server_meldt_met_slechtste_uitkomst(ctx, ne
     tick(ctx, sessions=False)
     txn = _txn(ctx)
     tick(ctx, sessions=False)
-    jf.film = "/elders/onbekend.mkv"          # Jelly Leon vindt het bestand niet
+    jf.item_ids = {"/elders/onbekend.mkv": "9"}   # Jelly Leon biedt alleen een ander pad aan
     _due(ctx, txn)
     for _ in range(3):
         tick(ctx, sessions=False)

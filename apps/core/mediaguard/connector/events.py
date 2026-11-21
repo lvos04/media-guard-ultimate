@@ -41,6 +41,8 @@ TOPICS: dict[str, tuple[str, Ernst]] = {
     "instance.status": ("media.instance.changed", "info"),
     "instance.suspended": ("media.instance.suspended", "laag"),
     "library.synced": ("media.library.synced", "info"),
+    "mediaserver.refresh.requested": ("media.refresh.requested", "info"),
+    "mediaserver.refresh.failed": ("media.refresh.failed", "hoog"),
     "migration.autopilot": ("media.migration.changed", "info"),
     "migration.step": ("media.migration.progressed", "info"),
     "policy.profile_changed": ("media.policy.changed", "info"),
@@ -104,6 +106,7 @@ def _envelope(row: sqlite3.Row) -> EventEnvelope:
     timestamp = datetime.fromisoformat(row["ts"])
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=UTC)  # oude timestamps zonder offset waren UTC
+    txn = row["refresh_transaction"]
     return EventEnvelope(
         event_id=uuid5(NAMESPACE_URL, f"mediaguard:{identifier}"),
         source_event_id=identifier,
@@ -111,6 +114,7 @@ def _envelope(row: sqlite3.Row) -> EventEnvelope:
         entity=EventEntity(id=event_type.split(".")[1]),
         timestamp_utc=timestamp.astimezone(UTC),
         trace_id=uuid5(NAMESPACE_URL, f"mediaguard:trace:{identifier}"),
+        correlation_id=UUID(int=txn) if isinstance(txn, int) and 0 < txn <= MAX_SQLITE_ID else None,
         actor=EventActor(),
         payload=EventPayload(ernst=ernst),
     )

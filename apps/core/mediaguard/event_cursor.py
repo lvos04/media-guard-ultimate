@@ -64,7 +64,12 @@ def read_batch(db: Database, cursor: str | None, *, channel: Literal["poll", "ss
             raise ExpiredCursor
 
     # Alleen SSE leest de oorspronkelijke payload. De connector selecteert enkel envelopevelden.
-    fields = "e.instance_id, e.payload," if channel == "sse" else ""
+    fields = "e.instance_id, e.payload," if channel == "sse" else """
+        CASE WHEN e.topic IN ('mediaserver.refresh.requested', 'mediaserver.refresh.failed')
+                  AND json_valid(e.payload)
+             THEN CASE WHEN json_type(e.payload, '$.correlation_id')='integer'
+                       THEN json_extract(e.payload, '$.correlation_id') END
+        END AS refresh_transaction,"""
     order = "DESC" if newest else "ASC"
     rows = db.fetch_all(
         f"""SELECT r.deleted_through, r.revision, r.cursor_key, g.generation,

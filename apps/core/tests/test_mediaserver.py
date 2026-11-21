@@ -30,6 +30,7 @@ class FakeEmby:
         self.key = key
         self.product = product
         self.updated: list[str] = []
+        self.requests: list[tuple[str, str]] = []
         self.full_refresh = 0
         self.sessions: list[dict[str, Any]] = []
         self.playback: dict[str, Any] = {"MediaSources": [{
@@ -42,6 +43,7 @@ class FakeEmby:
         if url.host not in ("nas",) or url.port != 8096:
             raise httpx.ConnectError("geen server", request=request)
         path = url.path
+        self.requests.append((request.method, path))
         if not path.startswith(self.prefix):
             return httpx.Response(404)
         path = path[len(self.prefix):]
@@ -174,6 +176,26 @@ def test_unmapped_path_falls_back_to_full_scan_once(ctx, emby) -> None:  # type:
     _commit_txn(ctx, path="/elders/b.mkv", job=None)
     asyncio.run(S.tick(ctx, sessions=False))
     assert emby.full_refresh == 1 and emby.updated == []
+
+
+@pytest.mark.parametrize(("mapped", "refresh"), [
+    (True, "/emby/Library/Media/Updated"), (False, "/emby/Library/Refresh"),
+])
+def test_emby_behoudt_de_verzoeken_bij_padwissel(ctx, emby, mapped, refresh):
+    asyncio.run(S.tick(ctx, sessions=False))
+    final = MOVIE if mapped else "/elders/film.mkv"
+    txn = _commit_txn(ctx, path=final)
+    ctx.db.execute("UPDATE replacement_transactions SET library_path=? WHERE id=?",
+                   (final.removesuffix(".mkv") + ".mp4", txn))
+    emby.known = {EMBY_MOVIE if mapped else final: "42"}
+    emby.requests.clear()
+    asyncio.run(S.tick(ctx, sessions=False))
+    _due(ctx, txn)
+    asyncio.run(S.tick(ctx, sessions=False))
+    assert emby.requests == [
+        ("GET", "/emby/Library/VirtualFolders"), ("POST", refresh),
+        ("GET", "/emby/Users"), ("GET", "/emby/Items"), ("POST", "/emby/Items/42/PlaybackInfo"),
+    ]
 
 
 def test_watching_holds_encodes_and_marks_recent(ctx, emby) -> None:  # type: ignore[no-untyped-def]

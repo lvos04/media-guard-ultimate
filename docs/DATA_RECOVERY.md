@@ -39,6 +39,32 @@ Tests: `apps/core/tests/test_recovery.py` (fault injection bij elke stap).
 
 Eindstatussen: `committed`, `rolled_back`, `aborted`, `conflict`.
 
+### Jellyfin na een AV1-vervanging
+
+Als automatisch verversen aanstaat en het bibliotheekpad gelijk blijft, vraagt MediaGuard
+Jellyfin om het bestaande bestand opnieuw te indexeren. Wanneer Jellyfin het verzoek aanvaardt,
+verschijnt `mediaserver.refresh.requested` in de outbox. De afspeeltest volgt afzonderlijk. Bij een
+onbekende mapvertaling blijft de taak open tot Jellyfin een volledige scan aanvaardt. Tussen
+twee volledige scans zit minstens een halfuur.
+
+Bij een padwissel, bijvoorbeeld van `.mp4` naar `.mkv`, toont MediaGuard één melding met het
+bronpad en het nieuwe pad, ook als automatisch verversen uitstaat. Controleer in Jellyfin of
+het item, de gezien-status, het hervatpunt en de spoorkeuzes nog bij de juiste gebruiker horen
+voordat je zelf ververst. MediaGuard slaat
+voor dit item de automatische Jellyfin-verversing en afspeeltest over. Emby volgt de bestaande
+procedure voor het bijwerken van de bibliotheek. Kijkgegevens blijven in beheer van de mediaserver.
+
+Bij uitval houdt MediaGuard de taken vast. De outbox bevat één `mediaserver.refresh.failed`
+per storing van een Jellyfin-server, gekoppeld aan de eerste getroffen transactie. Controleer
+de verbinding onder **Instellingen › Koppelingen**. MediaGuard probeert na één minuut opnieuw
+en verdubbelt de wachttijd tot maximaal een halfuur. Ook na een herstart geldt die wachttijd.
+Na herstel krijgt elke aanvaarde taak haar eigen `requested`-event.
+
+Beide outbox-events bevatten het lokale servernummer en de bestaande transactie-ID als
+`correlation_id`. Via `/connector/v1/events` heten ze `media.refresh.requested` en
+`media.refresh.failed`. Het UUID-veld van de connector bevat hetzelfde getal in UUID-vorm.
+De Hub ontvangt de ernst. Bestandspaden, filmtitels en kijkgegevens blijven buiten het event.
+
 ## 3. Wat er gebeurt na een crash (journal replay)
 
 Bij het starten van de recovery-container (`MG_ROLE=recovery`) roept `startup` →

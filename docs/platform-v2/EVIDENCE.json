@@ -61,13 +61,13 @@
  },
  {
   "id": "B04-007",
-  "status": "Niet gestart",
-  "validatie": "NIET GEVALIDEERD (echte NAS)",
-  "bewijs": "commits 341a0cc + 7ad00d6 (code = tag v1.2.2 / 30f7415); tweede lezing 4ab64dd (DELTA_MATRIX.md §K); DELTA_MATRIX.md §B04-007 en §K.4 (N-06)",
-  "blokkade": "Eindacceptatie (juiste playback en watch-state na AV1-vervanging) vraagt de echte Jellyfin/Jelly Leon op de NAS en echte clients.",
-  "opmerking": "Nieuw werk nog niet gebouwd. Bestaand deel (1.2.2): verversen na overdracht en afspeeltest zijn unit-getest; watch-state niet getest. Hiaat: test met Jellyfin-simulator voor padbehoud en watch-state, en outbox-events met correlatie (P3-11). Bij een extensiewissel .mp4→.mkv verandert het pad. S-P3-620: events in envelope. De padtest volgt in S-P3-675.",
+  "status": "Bezig",
+  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "S-P3-675. apps/core/tests/test_mediaserver_dual.py::test_jellyfin_av1_vervanging_met_kijkgegevens vergelijkt pad, ItemId en kijkgegevens van twee simulatorgebruikers vóór en na een vervangtransactie. test_jellyfin_offline_een_melding_met_backoff_en_herstel toetst uitval, wachttijd, herstel en correlatie in de outbox en connector. apps/core/tests/test_mediaserver.py::test_emby_behoudt_de_verzoeken_bij_padwissel toetst beide bestaande verversroutes en de afspeeltest. De lokale contracttest tests/contract/mediaserver/run.sh telde 24 tests en 113 controles. De kandidaat vroeg Emby niets nieuws. scripts/upgradebewijs.py poort op de gevulde releasefixture 1.2.2 meldde bij upgrade en terugzetten dat er niets verloren ging.",
+  "blokkade": "STAPPEN_P6.md, N-P6-05. De gebruiker controleert afspelen en kijkgegevens per gebruiker op de echte Jellyfin/Jelly Leon met de eigen clients.",
+  "opmerking": "Rijen 007b, 007d en N-06. Een padwissel geeft een melding. De simulator behoudt bij hetzelfde pad ook gezien-status, hervatpunt, favoriet, beoordeling en spoorkeuzes. De connector geeft verversgebeurtenissen door zonder kijkgegevens. De spelerweergave uit 007c hoort bij jelly-leon-clients.",
   "repo": "media-guard-ultimate",
-  "bijgewerkt": "2026-11-18"
+  "bijgewerkt": "2026-11-21"
  },
  {
   "id": "B04-008",
