@@ -70,11 +70,14 @@ case "$proef" in
   mediaservers)
     uitvoeren env DEBIAN_FRONTEND=noninteractive apt-get update
     uitvoeren env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg python3-venv
-    uitvoeren python3 -m venv "$map/venv"
-    uitvoeren "$map/venv/bin/pip" install -e 'apps/core[test]'
+    # De buildengine mount de gedeelde proefdata met noexec. De interpreter en
+    # geïnstalleerde modules horen op de uitvoerbare laag van deze proefclient.
+    pythonmap=/opt/mediaserverproef
+    uitvoeren python3 -m venv "$pythonmap"
+    uitvoeren "$pythonmap/bin/python" -m pip install -e 'apps/core[test]'
     uitvoeren env "COMPOSE_PROJECT_NAME=mgms-${volume:0:16}" "MGMS_BOUWTAG=$kandidaat" \
       "MGMS_MG_PORT=$poort" "MGMS_EMBY_PORT=$emby" "MGMS_JELLYFIN_PORT=$jellyfin" \
-      "MGMS_BEWIJS=$map/uitvoer/mediaservers-bewijs" "MG_CORE_PYTHON=$map/venv/bin/python" \
-      tests/contract/mediaserver/run.sh
+      "MGMS_BEWIJS=$map/uitvoer/mediaservers-bewijs" "MG_CORE_PYTHON=$pythonmap/bin/python" \
+      bash tests/contract/mediaserver/run.sh
     ;;
 esac
