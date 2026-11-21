@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from mediaguard import storage_forecast
 from mediaguard.app import create_app
 from mediaguard.config import load_settings
 
@@ -26,7 +28,12 @@ def app(settings):  # type: ignore[no-untyped-def]
     # Verbinding expliciet sluiten: anders sluit de garbage collector hem later, midden in een
     # andere test (WAL-checkpoint + fsync, ~1 s), wat tijdmetingen zoals
     # test_pre_grab_audio_preference_score_and_speed liet falen na test_coverage_matrix.
-    application.state.ctx.db.close()
+    ctx = application.state.ctx
+    try:
+        # Ook zonder TestClient heeft create_app de meetwerker en zijn sloten aangemeld.
+        asyncio.run(storage_forecast.shutdown(ctx))
+    finally:
+        ctx.db.close()
 
 
 @pytest.fixture
