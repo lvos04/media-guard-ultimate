@@ -27,13 +27,13 @@ sys.modules["kopie_herkomst"] = kh  # dataclasses zoeken hun module op
 _spec.loader.exec_module(kh)
 
 #: bron-commits in lvos04/ai-server-manager (branch ccr-c133d7a0-kuz1cv); de twee sets hebben
-#: elk een eigen pin. Contract 1.3 met de aanvulling C-12 (blijft 1.3):
-CONTRACT_BRON_COMMIT = "e88a290c9ad5fef4acf498d05ad3414395a4fcb5"
+#: elk een eigen pin. Contract 1.3 met de aanvullingen C-12 en M1/M3 (blijft 1.3):
+CONTRACT_BRON_COMMIT = "bc1746e88e7b742fa8dae270ef94c34cbbc3fc4a"
 #: Peil 1.1.1 (ongewijzigd sinds de review van contract 1.3):
 PEIL_BRON_COMMIT = "0a7143bc0a94ed5317a9655fa785e73a1fb07ba1"
 CONTRACT_SHA256 = {
     "docs/platform-v2/PLATFORM_CONTRACTEN.md": (
-        "4712dd62c837c2f2594fa4152a925464f6f7481e898473660f09607cc113c511"
+        "e3a8f6cdd11e6460708fdfae5fd6c44da05f62a8670bfebce951824d6aa46c0a"
     ),
     "docs/platform-v2/CONTRACT_1.3_CONFORMITEIT.md": (
         "b5ebba073a8fe8beb715d58e6760feae38e33ad445956d107e64840133dd7924"
