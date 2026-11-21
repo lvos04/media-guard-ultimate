@@ -595,8 +595,14 @@ def _safety_hours(ctx: AppContext) -> int:
 
 
 def _commit(ctx: AppContext, txn_id: int, *, recovered: bool) -> None:
+    from mediaguard.mediaserver.service import note_committed
+
     txn = load(ctx, txn_id)
-    _state(ctx, txn_id, "committed", finished_at=utcnow())
+    with ctx.db.transaction():
+        _state(ctx, txn_id, "committed", finished_at=utcnow())
+        # zelfde boeking: elke afgeronde overdracht krijgt haar mediaservertaken, ook na
+        # journaalherstel vóór de eerste mediaserverronde
+        note_committed(ctx, txn_id)
     audit(ctx.db, actor="svc:recovery", action=f"recovery.{txn['kind']}_committed",
           target_type=txn["media_kind"] or "file", target_id=txn["provider_id"],
           instance_id=txn["instance_id"], correlation_id=txn["correlation_id"],

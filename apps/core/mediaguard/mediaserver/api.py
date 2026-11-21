@@ -167,7 +167,8 @@ def status(_: Principal = Depends(require_viewer),
     tests = _test_rows(ctx)
     sub_bazarr = T.bazarr(ctx)
     sub_missing = T.missing(ctx, limit=0)["total"]
-    return {
+    # één maskering voor de hele uitvoer, ook voor regels van vóór deze versie
+    return S.mask(ctx, {
         "kind": top["kind"], "label": top["label"],
         "url": top["url"], "url_source": top["url_source"], "key_set": top["key_set"],
         "setting_kind": ctx.config.value("mediaserver.kind"),
@@ -207,7 +208,7 @@ def status(_: Principal = Depends(require_viewer),
             "missing": sub_missing,
             "last": ctx.state_get("subtitles_last"),
         },
-    }
+    })
 
 
 # -- instellen ---------------------------------------------------------------------------------
@@ -380,7 +381,7 @@ async def test(server_id: int | None = Query(None, ge=1),
                _: Principal = Depends(require_operator),
                ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
     """Verbinding testen: zonder ``server_id`` de bestaande koppeling (zoals in 1.2.2)."""
-    return await S.test_connection(ctx, server_id)
+    return S.mask(ctx, await S.test_connection(ctx, server_id))
 
 
 @router.post("/discover")
@@ -392,7 +393,7 @@ async def discover(_: Principal = Depends(require_operator),
 @router.get("/playback/{encoding_job_id}")
 def playback(encoding_job_id: int, _: Principal = Depends(require_viewer),
              ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
-    return {"result": S.playback_for_job(ctx, encoding_job_id)}
+    return S.mask(ctx, {"result": S.playback_for_job(ctx, encoding_job_id)})
 
 
 class SubtitleConfig(BaseModel):
@@ -472,7 +473,7 @@ async def subtitles_run(_: Principal = Depends(require_operator),
 def subtitles_missing(limit: int = Query(100, ge=0, le=1000),
                       _: Principal = Depends(require_viewer),
                       ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
-    return T.missing(ctx, limit)
+    return S.mask(ctx, T.missing(ctx, limit))
 
 
 # -- achtergrond -------------------------------------------------------------------------------

@@ -1044,8 +1044,8 @@ def test_omleiding_alleen_binnen_dezelfde_server(ctx, kind: str, start: str, loc
     assert str(exc.value) == f"server stuurt door naar een ander adres: {adres}"
     assert key not in str(exc.value) and "geheim-pad" not in str(exc.value)
     assert len(seen) == 1 and not seen[0].url.path.startswith("/doel")
-    if kind != "plex":                        # ook een POST (verversen) gaat niet mee
-        with pytest.raises(MediaServerError, match="ander adres"):
+    if kind != "plex":                        # verversen volgt nooit een omleiding
+        with pytest.raises(MediaServerError, match="niet bevestigd"):
             asyncio.run(srv.refresh_paths(["/media/x.mkv"]))
     assert not any(r.url.path.startswith("/doel") for r in seen)
     assert not any(_met_sleutel(r, key) for r in seen if r.url.host != "ms"
@@ -1332,9 +1332,15 @@ def test_meer_open_transacties_dan_een_ronde_aankan_krijgen_allemaal_taken(ctx, 
     assert aantallen == {M.LEGACY_ID: len(ids), sid: len(ids)}
 
 
-@pytest.mark.parametrize("status", [304, 303])
+@pytest.mark.parametrize(("pad", "route"), [("/zonder-koppeling/film.mkv", "/Library/Refresh"),
+                                           (FILM, "/Library/Media/Updated")],
+                         ids=["volledige-scan", "gericht"])
+@pytest.mark.parametrize("status", [304, 303, 307, 308])
 @pytest.mark.parametrize("soort", ["emby", "jellyfin"])
-def test_onbevestigde_volledige_scan_houdt_de_taak_open(ctx, net, monkeypatch, soort, status):
+def test_onbevestigde_volledige_scan_houdt_de_taak_open(ctx, net, monkeypatch, soort, status,
+                                                         pad, route):
+    """Alleen een directe 2xx van de server telt; een omleiding (ook naar een aanmeldpagina
+    op dezelfde server die 200 geeft) laat de taak open, ook na een herstart."""
     emby, jf = net
     server = emby
     if soort == "jellyfin":
@@ -1344,13 +1350,15 @@ def test_onbevestigde_volledige_scan_houdt_de_taak_open(ctx, net, monkeypatch, s
     nu = datetime.now(UTC)
     monkeypatch.setattr(S, "now_utc", lambda: nu)
     tick(ctx, sessions=False)
-    txn = _txn(ctx, "/zonder-koppeling/film.mkv", job=None)
+    txn = _txn(ctx, pad, job=None)
     echt = server.handle
+    aanmeldingen = []
 
     def onbevestigd(verzoek: httpx.Request) -> httpx.Response:
-        if verzoek.url.path.endswith("/Library/Refresh"):
+        if verzoek.url.path.endswith(route):
             return httpx.Response(status, headers={"Location": "/aanmelden"})
         if verzoek.url.path == "/aanmelden":
+            aanmeldingen.append(verzoek.method)
             return httpx.Response(200, text="Aanmelden")
         return echt(verzoek)
 
@@ -1358,10 +1366,94 @@ def test_onbevestigde_volledige_scan_houdt_de_taak_open(ctx, net, monkeypatch, s
     tick(ctx, sessions=False)
     open_ = "SELECT refreshed_at FROM mediaserver_server_results WHERE transaction_id=?"
     assert ctx.db.fetch_one(open_, (txn,))[0] is None
+    assert aanmeldingen == []  # de omleiding is niet gevolgd
     monkeypatch.setattr(server, "handle", echt)
-    nu += timedelta(minutes=32)
-    tick(ctx, sessions=False)
-    assert ctx.db.fetch_one(open_, (txn,))[0] is not None
+    nieuw = _herstart(ctx)
+    try:
+        nu += timedelta(minutes=32)
+        tick(nieuw, sessions=False)
+        assert nieuw.db.fetch_one(open_, (txn,))[0] is not None
+        assert sum(r.url.path.endswith(route) for r in server.requests) >= 1
+    finally:
+        nieuw.db.close()
+
+
+@pytest.mark.parametrize("pad", ["normaal", "journaalherstel"])
+def test_elke_afgeronde_overdracht_krijgt_een_taak_per_server(ctx, net, tmp_path, pad):
+    """Ook als de cursor van een eerdere versie al voorbij de transactie staat en ze vóór de
+    eerste mediaserverronde wordt afgerond (normaal of via journaalherstel)."""
+    sid = _add_jelly_leon(ctx)
+    bestanden = Env(ctx, tmp_path)
+    nummer = bestanden.txn(encoding_job_id=1, refresh={})
+    historisch = _txn(ctx)
+    ctx.state_set("mediaserver_txn_cursor", historisch)  # zoals een eerdere versie dat deed
+    if pad == "normaal":
+        assert asyncio.run(executor.run_transaction(ctx, nummer))["state"] == "committed"
+    else:
+        def onderbreek(stap: str) -> None:
+            if stap == "activate":
+                raise executor.SimulatedCrash(stap)
+
+        with pytest.raises(executor.SimulatedCrash):
+            asyncio.run(executor.run_transaction(ctx, nummer, fault=onderbreek))
+        executor.recover_pending(ctx)
+        assert executor.load(ctx, nummer)["state"] == "committed"
+    for _ in range(2):
+        tick(ctx, sessions=False)
+    taken = ctx.db.fetch_all("SELECT server_id FROM mediaserver_server_results "
+                             "WHERE transaction_id=? ORDER BY server_id", (nummer,))
+    assert [r[0] for r in taken] == [M.LEGACY_ID, sid]
+    assert ctx.db.fetch_one("SELECT count(*) FROM mediaserver_pending WHERE transaction_id=?",
+                            (historisch,))[0] == 0
+    assert ctx.state_get(S.COMMITTED_KEY) == []
+
+
+@pytest.mark.parametrize("soort", ["emby", "jellyfin"])
+def test_uitvoer_maskeert_de_sleutel_ook_in_regels_van_voor_de_upgrade(client, ctx, net, soort):
+    """Status (tests[].path, actielog), afspeeltest en meldingen: één maskering bij uitvoer,
+    ook voor regels die een eerdere versie onbewerkt opsloeg."""
+    from mediaguard.api.system import notify
+
+    emby, jf = net
+    if soort == "jellyfin":
+        ctx.config.set("global", "", "mediaserver.kind", "off", "test")
+        sid = _add_jelly_leon(ctx)
+    else:
+        sid = M.LEGACY_ID
+    sleutel = (jf if soort == "jellyfin" else emby).key
+    pad = f"{MG_ROOT}/{sleutel}/Proef.mkv"
+    txn = _txn(ctx, pad, job=3)
+    # zoals een eerdere versie ze opsloeg: onbewerkt
+    ctx.db.execute("INSERT INTO mediaserver_pending(transaction_id,path,kind,encoding_job_id,"
+                   "result,detail_nl,done_at,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                   (txn, pad, "replace", 3, "ok",
+                    f"Gezien in {pad}", utcnow(), utcnow()))
+    ctx.db.execute("INSERT INTO mediaserver_server_results(transaction_id,server_id,result,"
+                   "detail_nl,done_at,created_at) VALUES (?,?,?,?,?,?)",
+                   (txn, sid, "ok", f"Gezien in {pad}", utcnow(), utcnow()))
+    ctx.db.execute("INSERT INTO mediaserver_actions(ts,kind,path,transaction_id,ok,detail_nl,"
+                   "server_id) VALUES (?,?,?,?,?,?,?)",
+                   (utcnow(), "refresh", pad, txn, 1, f"ververst: {pad}", sid))
+    ctx.db.execute("INSERT INTO notifications(ts,severity,title,body,read,count,dedupe_key) "
+                   "VALUES (?,?,?,?,0,1,?)", (utcnow(), "warning", f"Oud: {sleutel}", pad, "oud"))
+    queue = ctx.events.subscribe()
+    try:
+        notify(ctx, "warning", f"Padwissel: {sleutel}.mkv", f"Bestand {pad}",
+               dedupe_key="mediaserver.padwissel.proef")
+        live = [e for e in iter(lambda: None if queue.empty() else queue.get_nowait(), None)]
+    finally:
+        ctx.events.unsubscribe(queue)
+    uitvoer = {"status": client.get("/api/v1/mediaserver/status").json(),
+               "playback": client.get("/api/v1/mediaserver/playback/3").json(),
+               "meldingen": client.get("/api/v1/notifications?full=true").json(),
+               "live": live}
+    uitvoer["melding"] = client.get(f"/api/v1/notifications/{uitvoer['meldingen'][0]['id']}"
+                                    ).json()
+    assert uitvoer["status"]["tests"][0]["path"].endswith("/***/Proef.mkv")
+    assert uitvoer["status"]["actions"] and len(uitvoer["meldingen"]) == 2 and live
+    assert uitvoer["playback"]["result"]["detail_nl"]
+    for naam, inhoud in uitvoer.items():
+        assert sleutel not in json.dumps(inhoud, default=str), naam
 
 
 def test_emby_houdt_een_overdracht_open_tot_de_volgende_volledige_scan(ctx, net, monkeypatch):

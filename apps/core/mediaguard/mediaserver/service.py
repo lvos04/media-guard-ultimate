@@ -67,14 +67,29 @@ def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
-def _mask(ctx: AppContext, text: str) -> str:
-    """Zoals ``redact``, plus elke bewaarde mediaserversleutel, ook zonder label (als mapnaam)."""
-    out = redact(text)
-    for srv in M.all_servers(ctx):
-        key = ctx.secrets.get(srv.secret_name)
-        if key and len(key) >= 4:
-            out = out.replace(key, "***")
-    return out
+def mask(ctx: AppContext, value: Any) -> Any:
+    """De ene redactie voor alles wat naar gebruiker, melding, log of opslag gaat: ``redact``
+    plus elke bewaarde mediaserversleutel, ook zonder label (als map- of bestandsnaam). Werkt
+    op tekst en op (geneste) dicts/lijsten, dus ook op regels die vóór deze versie zijn
+    opgeslagen."""
+    keys = [k for r in ctx.db.fetch_all(
+        "SELECT name FROM secrets WHERE name=? OR name LIKE 'mediaserver.server.%.api_key'",
+        (M.LEGACY_SECRET,)) if (k := ctx.secrets.get(r["name"])) and len(k) >= 4]
+    keys.sort(key=len, reverse=True)
+
+    def clean(v: Any) -> Any:
+        if isinstance(v, str):
+            out = redact(v)
+            for key in keys:
+                out = out.replace(key, "***")
+            return out
+        if isinstance(v, dict):
+            return {k: clean(x) for k, x in v.items()}
+        if isinstance(v, list | tuple):
+            return [clean(x) for x in v]
+        return v
+
+    return clean(value)
 
 
 def log_action(ctx: AppContext, kind: str, detail: str, *, path: str | None = None,
@@ -82,8 +97,8 @@ def log_action(ctx: AppContext, kind: str, detail: str, *, path: str | None = No
     ctx.db.execute(
         "INSERT INTO mediaserver_actions(ts,kind,path,transaction_id,ok,detail_nl,server_id) "
         "VALUES (?,?,?,?,?,?,?)",
-        (utcnow(), kind, None if path is None else _mask(ctx, path), txn, 1 if ok else 0,
-         _mask(ctx, detail)[:500], server_id))
+        (utcnow(), kind, None if path is None else mask(ctx, path), txn, 1 if ok else 0,
+         mask(ctx, detail)[:500], server_id))
     ctx.db.execute("DELETE FROM mediaserver_actions WHERE id NOT IN (SELECT id FROM "
                    "mediaserver_actions ORDER BY id DESC LIMIT 500)")
 
@@ -299,6 +314,18 @@ async def discover(ctx: AppContext, *, hosts: list[str] | None = None,
 
 
 # -- (a) verversen na overdracht + (b) afspeeltest ---------------------------------------------
+COMMITTED_KEY = "mediaserver_txn_committed"
+
+
+def note_committed(ctx: AppContext, txn_id: int) -> None:
+    """Bij elke afronding (normaal, journaalherstel, terugzetten) vastleggen dat deze overdracht
+    taken krijgt; ``collect_handoffs`` maakt ze bij de volgende ronde, ook als de cursor al
+    voorbij deze transactie staat. Roep aan binnen de transactie die ``committed`` boekt."""
+    noted = ctx.state_get(COMMITTED_KEY) or []
+    if txn_id not in noted:
+        ctx.state_set(COMMITTED_KEY, [*noted, int(txn_id)])
+
+
 def collect_handoffs(ctx: AppContext, servers: list[M.ServerConf] | None = None) -> int:
     """Nieuwe afgeronde overdrachten/terugzettingen in de wachtrij zetten, met een taak per
     gevolgde server (verversen, afspeeltest, NL-ondertitels)."""
@@ -320,11 +347,12 @@ def collect_handoffs(ctx: AppContext, servers: list[M.ServerConf] | None = None)
             waiting = [int(r["id"]) for r in ctx.db.fetch_all(
                 "SELECT id FROM replacement_transactions WHERE id<=? AND state NOT IN "
                 "('committed','rolled_back','aborted','conflict')", (int(cursor),))]
+        noted = ctx.state_get(COMMITTED_KEY) or []
         rows = ctx.db.fetch_dicts(
             "SELECT id, kind, final_path, encoding_job_id FROM replacement_transactions t "
             "WHERE (id>? OR id IN (SELECT value FROM json_each(?))) AND state='committed' "
             "AND NOT EXISTS (SELECT 1 FROM mediaserver_pending p WHERE p.transaction_id=t.id) "
-            "ORDER BY id LIMIT 200", (int(cursor), json.dumps(waiting)))
+            "ORDER BY id LIMIT 200", (int(cursor), json.dumps([*waiting, *noted])))
         for r in rows:
             test_after = None
             # afspeeltest alleen voor een AV1-versie; een verkeerd bestand dat MediaGuard in
@@ -348,6 +376,11 @@ def collect_handoffs(ctx: AppContext, servers: list[M.ServerConf] | None = None)
             "json_each(?)) AND (state NOT IN ('committed','rolled_back','aborted','conflict') OR "
             "(state='committed' AND NOT EXISTS (SELECT 1 FROM mediaserver_pending p "
             "WHERE p.transaction_id=t.id)))", (json.dumps(waiting),))])
+        if noted:
+            ctx.state_set(COMMITTED_KEY, [int(r["id"]) for r in ctx.db.fetch_all(
+                "SELECT id FROM replacement_transactions t WHERE id IN (SELECT value FROM "
+                "json_each(?)) AND state='committed' AND NOT EXISTS (SELECT 1 FROM "
+                "mediaserver_pending p WHERE p.transaction_id=t.id)", (json.dumps(noted),))])
         # nog niet afgeronde transacties niet overslaan: cursor tot vóór de eerste open
         open_row = ctx.db.fetch_one(
             "SELECT MIN(id) AS m FROM replacement_transactions WHERE id>? AND state NOT IN "
@@ -392,7 +425,7 @@ def _warn_changed_paths(ctx: AppContext, sid: int, label: str) -> None:
     for row in rows:
         txn = row["transaction_id"]
         original = row["library_path"] or "(onbekend)"
-        detail = _mask(ctx, f"Bronpad: {original}. Huidig pad: {row['path']}. Controleer in "
+        detail = mask(ctx, f"Bronpad: {original}. Huidig pad: {row['path']}. Controleer in "
                        f"{label} het bibliotheekitem en de kijkgegevens voordat je zelf ververst.")
         with ctx.db.transaction():
             changed = ctx.db.execute(
@@ -562,18 +595,19 @@ async def run_playback_tests(ctx: AppContext, client: Server,
             res = PlaybackResult("failed" if r["attempts"] >= 2 else "retry",
                                  f"{client.label}: {exc}")
         attempts = int(r["attempts"]) + 1
+        detail = mask(ctx, res.detail_nl)
         if res.result in ("not_found", "retry") and attempts < 3:
             ctx.db.execute(
                 "UPDATE mediaserver_server_results SET attempts=?, test_after=?, detail_nl=? "
                 "WHERE transaction_id=? AND server_id=?",
                 (attempts, (now_utc() + timedelta(minutes=TEST_DELAY_MIN)).isoformat(
-                    timespec="seconds"), res.detail_nl, r["transaction_id"], sid))
+                    timespec="seconds"), detail, r["transaction_id"], sid))
             continue
         final = "not_found" if res.result == "retry" else res.result
         subs = nl_subtitles_outcome(ctx, r["path"], final, res)
         ctx.db.execute("UPDATE mediaserver_server_results SET attempts=?, result=?, detail_nl=?, "
                        "nl_subtitles=?, done_at=? WHERE transaction_id=? AND server_id=?",
-                       (attempts, final, res.detail_nl, subs, utcnow(), r["transaction_id"], sid))
+                       (attempts, final, detail, subs, utcnow(), r["transaction_id"], sid))
         ok = final in ("ok", "transcode", "skipped")
         log_action(ctx, "playback_test", f"{client.label} · {Path(r['path']).name}: "
                    f"{res.detail_nl}" if server and not server.legacy else
@@ -652,7 +686,8 @@ def summarize(ctx: AppContext) -> int:
             "UPDATE mediaserver_pending SET attempts=?, result=?, detail_nl=?, done_at=? "
             "WHERE transaction_id=?",
             (max(int(x["attempts"]) for x in parts), worst["result"] or "skipped",
-             (detail or "")[:500], max(str(x["done_at"]) for x in parts), p["transaction_id"]))
+             mask(ctx, detail or "")[:500], max(str(x["done_at"]) for x in parts),
+             p["transaction_id"]))
         n += 1
     return n
 
@@ -681,8 +716,8 @@ async def _playback_failed(ctx: AppContext, row: dict[str, Any], res: PlaybackRe
            link="/inrichten?tab=mediaserver", dedupe_key="mediaserver.playback_failed",
            group_title="{n} AV1-bestanden slaagden niet voor de afspeeltest")
     audit(ctx.db, actor="svc:mediaserver", action="mediaserver.playback_failed",
-          target_type="file", target_id=row["transaction_id"], reason=res.detail_nl,
-          new_value={"path": row["path"], "restored": restored, "server": label})
+          target_type="file", target_id=row["transaction_id"], reason=mask(ctx, res.detail_nl),
+          new_value=mask(ctx, {"path": row["path"], "restored": restored, "server": label}))
 
 
 def playback_for_job(ctx: AppContext, encoding_job_id: int) -> dict[str, Any] | None:

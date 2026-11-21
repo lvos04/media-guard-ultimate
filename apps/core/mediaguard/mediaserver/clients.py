@@ -147,7 +147,8 @@ async def _call(services: dict[str, Any], method: str, url: str, *,
     geen sleutel) daarheen. ``any_host`` is alleen voor een verzoek zonder sleutel (de
     downloadlink van OpenSubtitles, zoals in 1.2.2); met een sleutelkop telt het niet.
     ``body_secrets``: geheimen in de body; ze komen net als de sleutels uit de koppen nooit in
-    een foutmelding."""
+    een foutmelding. ``confirm_post``: scan- of verversverzoek; alleen een directe 2xx van de
+    server zelf telt, een omleiding wordt nooit gevolgd."""
     foreign_ok = any_host and not _secrets(headers)
     try:
         async with httpx.AsyncClient(transport=_transport(services), timeout=timeout,
@@ -156,8 +157,11 @@ async def _call(services: dict[str, Any], method: str, url: str, *,
             start, hops = resp.request.url, 0
             while resp.next_request is not None:
                 target = resp.next_request
-                if confirm_post and target.method != "POST":
-                    raise MediaServerError("verversverzoek niet bevestigd", resp.status_code)
+                if confirm_post:
+                    # scan/verversen telt alleen als de server zelf direct 2xx geeft; een
+                    # omleiding (ook naar een aanmeldpagina met 200) is nooit een bevestiging
+                    raise MediaServerError("verversverzoek niet bevestigd (omleiding)",
+                                           resp.status_code)
                 if not foreign_ok and not _same_server(start, target.url):
                     raise MediaServerError(
                         f"server stuurt door naar een ander adres: {_where(target.url)}",
@@ -456,11 +460,12 @@ class PlexClient:
                     parent = p.rsplit("/", 1)[0]
                     await _call(self.services, "GET",
                                 f"{self.url}/library/sections/{s['key']}/refresh",
-                                headers=self.headers, params={"path": parent})
+                                headers=self.headers, params={"path": parent},
+                                confirm_post=True)
 
     async def refresh_all(self) -> None:
         await _call(self.services, "GET", self.url + "/library/sections/all/refresh",
-                    headers=self.headers)
+                    headers=self.headers, confirm_post=True)
 
     async def sessions(self) -> list[Session]:
         data = await _call(self.services, "GET", self.url + "/status/sessions",

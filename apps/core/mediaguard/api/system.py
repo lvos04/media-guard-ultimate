@@ -329,8 +329,10 @@ def notifications(unread_only: bool = False, limit: int = 50, before_id: int | N
     if where:
         sql += " WHERE " + " AND ".join(where)
     rows = ctx.db.fetch_dicts(sql + " ORDER BY ts DESC, id DESC LIMIT ?", [*params, limit])
+    from mediaguard.mediaserver.service import mask
     from mediaguard.textfmt import plain_fields
 
+    rows = mask(ctx, rows)  # ook meldingen die vóór de maskering zijn opgeslagen
     for r in rows:
         plain_fields(r, "title", "body")
         r["summary"] = _summary(r["body"])
@@ -371,9 +373,10 @@ def notification_detail(notification_id: int, _: Principal = Depends(require_vie
     row = ctx.db.fetch_one("SELECT * FROM notifications WHERE id=?", (notification_id,))
     if row is None:
         raise HTTPException(404, "Melding niet gevonden")
+    from mediaguard.mediaserver.service import mask
     from mediaguard.textfmt import plain_fields
 
-    return plain_fields(dict(row), "title", "body")
+    return plain_fields(mask(ctx, dict(row)), "title", "body")
 
 
 @router.post("/notifications/read-all")
@@ -391,11 +394,11 @@ def notify(ctx: AppContext, severity: str, title: str, body: str = "", *,
     Ruwe structuren in titel/tekst worden leesbaar gemaakt (rapport 3, R15).
     ``group_title`` vervangt de titel zodra er meer dan één is ('{n} originelen: …').
     ``category`` kiest de meldingssoort (bv. 'errors') in plaats van die af te leiden."""
-    from mediaguard.secrets_store import redact
+    from mediaguard.mediaserver.service import mask
     from mediaguard.textfmt import plain_nl
 
     # meldingen gaan naar browser en externe kanalen: nooit een sleutel uit een pad of fout
-    title, body = redact(plain_nl(title)), redact(plain_nl(body))
+    title, body, group_title = mask(ctx, [plain_nl(title), plain_nl(body), group_title])
     key = dedupe_key or f"{severity}|{title}|{(link or '').split('?', 1)[0]}"
     row = ctx.db.fetch_one("SELECT id, count, link FROM notifications WHERE dedupe_key=? AND "
                            "read=0 AND resolved_at IS NULL ORDER BY id DESC LIMIT 1", (key,))
