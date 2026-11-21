@@ -40,6 +40,7 @@ from mediaguard.mediaserver.clients import (
     Server,
     make_server,
 )
+from mediaguard.secrets_store import redact
 
 if TYPE_CHECKING:
     from mediaguard.context import AppContext
@@ -71,7 +72,8 @@ def log_action(ctx: AppContext, kind: str, detail: str, *, path: str | None = No
     ctx.db.execute(
         "INSERT INTO mediaserver_actions(ts,kind,path,transaction_id,ok,detail_nl,server_id) "
         "VALUES (?,?,?,?,?,?,?)",
-        (utcnow(), kind, path, txn, 1 if ok else 0, detail[:500], server_id))
+        (utcnow(), kind, None if path is None else redact(path), txn, 1 if ok else 0,
+         redact(detail)[:500], server_id))
     ctx.db.execute("DELETE FROM mediaserver_actions WHERE id NOT IN (SELECT id FROM "
                    "mediaserver_actions ORDER BY id DESC LIMIT 500)")
 
@@ -296,11 +298,23 @@ def collect_handoffs(ctx: AppContext, servers: list[M.ServerConf] | None = None)
         if cursor is None:
             row = ctx.db.fetch_one("SELECT COALESCE(MAX(id),0) AS m FROM replacement_transactions")
             ctx.state_set("mediaserver_txn_cursor", int(row["m"]) if row else 0)
+            # transacties die bij de eerste ronde nog liepen, krijgen na afronding alsnog hun
+            # taken; historische afgeronde overdrachten blijven ongemoeid
+            ctx.state_set("mediaserver_txn_open_at_start", [int(r["id"]) for r in ctx.db.fetch_all(
+                "SELECT id FROM replacement_transactions WHERE state NOT IN "
+                "('committed','rolled_back','aborted','conflict')")])
             return 0
+        waiting = ctx.state_get("mediaserver_txn_open_at_start") or []
         rows = ctx.db.fetch_dicts(
             "SELECT id, kind, final_path, encoding_job_id FROM replacement_transactions t "
-            "WHERE id>? AND state='committed' AND NOT EXISTS (SELECT 1 FROM mediaserver_pending p "
-            "WHERE p.transaction_id=t.id) ORDER BY id LIMIT 200", (int(cursor),))
+            "WHERE (id>? OR id IN (SELECT value FROM json_each(?))) AND state='committed' "
+            "AND NOT EXISTS (SELECT 1 FROM mediaserver_pending p WHERE p.transaction_id=t.id) "
+            "ORDER BY id LIMIT 200", (int(cursor), json.dumps(waiting)))
+        if waiting:
+            ctx.state_set("mediaserver_txn_open_at_start", [int(r["id"]) for r in ctx.db.fetch_all(
+                "SELECT id FROM replacement_transactions WHERE id IN (SELECT value FROM "
+                "json_each(?)) AND state NOT IN ('committed','rolled_back','aborted','conflict')",
+                (json.dumps(waiting),))])
         for r in rows:
             test_after = None
             # afspeeltest alleen voor een AV1-versie; een verkeerd bestand dat MediaGuard in
@@ -470,6 +484,7 @@ async def refresh_pending(ctx: AppContext, client: Server,
     mapping = await path_map(ctx, client, sid)
     mapped = [(r, P.to_server(r["path"], mapping)) for r in rows]
     exact = [p for _, p in mapped if p]
+    scanned = False
     try:
         if exact:
             await client.refresh_paths(exact)
@@ -479,10 +494,13 @@ async def refresh_pending(ctx: AppContext, client: Server,
                     minutes=FULL_REFRESH_GAP_MIN):
                 await client.refresh_all()
                 M.sset(ctx, sid, "full_refresh_at", utcnow())
+                scanned = True
     except MediaServerError as exc:
         log_action(ctx, "refresh", f"{client.label}: verversen mislukt — {exc}", ok=False,
                    server_id=sid)
         return 0
+    # zonder gekoppelde map wacht de taak open op de volgende volledige scan
+    mapped = [(r, p) for r, p in mapped if p or scanned]
     for r, p in mapped:
         ctx.db.execute("UPDATE mediaserver_server_results SET refreshed_at=? WHERE "
                        "transaction_id=? AND server_id=?", (utcnow(), r["transaction_id"], sid))
@@ -490,7 +508,7 @@ async def refresh_pending(ctx: AppContext, client: Server,
         log_action(ctx, "refresh", f"{client.label} ververst: {Path(r['path']).name} ({what})"
                    + ("" if p else " — volledige scan, map niet gekoppeld"),
                    path=r["path"], txn=r["transaction_id"], server_id=sid)
-    return len(rows)
+    return len(mapped)
 
 
 def _search_term(path: str) -> str:

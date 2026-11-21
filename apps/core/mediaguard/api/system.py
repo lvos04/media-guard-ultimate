@@ -391,9 +391,11 @@ def notify(ctx: AppContext, severity: str, title: str, body: str = "", *,
     Ruwe structuren in titel/tekst worden leesbaar gemaakt (rapport 3, R15).
     ``group_title`` vervangt de titel zodra er meer dan één is ('{n} originelen: …').
     ``category`` kiest de meldingssoort (bv. 'errors') in plaats van die af te leiden."""
+    from mediaguard.secrets_store import redact
     from mediaguard.textfmt import plain_nl
 
-    title, body = plain_nl(title), plain_nl(body)
+    # meldingen gaan naar browser en externe kanalen: nooit een sleutel uit een pad of fout
+    title, body = redact(plain_nl(title)), redact(plain_nl(body))
     key = dedupe_key or f"{severity}|{title}|{(link or '').split('?', 1)[0]}"
     row = ctx.db.fetch_one("SELECT id, count, link FROM notifications WHERE dedupe_key=? AND "
                            "read=0 AND resolved_at IS NULL ORDER BY id DESC LIMIT 1", (key,))

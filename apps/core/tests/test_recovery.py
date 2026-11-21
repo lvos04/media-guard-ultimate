@@ -134,6 +134,8 @@ async def test_error_at_every_step_is_handled_in_process(env, ctx, point):
 @pytest.mark.parametrize("point", POINTS + ["activate:after_unlink"])
 async def test_extension_change_crash_consistency(ctx, tmp_path, point):
     ctx.services["instance_registry"] = FakeRegistry(FakeInstance("sonarr-series"))
+    # zonder mediaserver mag het pad wijzigen (met mediaserver: uitgesteld, test_mediaserver_dual)
+    ctx.config.set("global", "", "mediaserver.kind", "off", "test")
     e = Env(ctx, tmp_path, ext=".mp4")
     txn_id = e.txn()
 

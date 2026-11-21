@@ -889,7 +889,8 @@ async def handoff(ctx: AppContext, job_id: int, *, actor: str,
 ENV_RETRY_HOURS = 6
 TEMPORARY_ABORTS = {"LOCKED", "IMPORT_IN_PROGRESS", "EMERGENCY_STOP", "LIBRARY_LOCKED",
                     "INSUFFICIENT_SPACE", "HARDLINK_CONFIRMATION_REQUIRED", "SNAPSHOT_FAILED",
-                    "ENVIRONMENT"}
+                    "ENVIRONMENT", "PATH_CHANGE"}
+SLOW_RETRY_ABORTS = {"ENVIRONMENT", "PATH_CHANGE"}
 
 
 def _abort_code(ctx: AppContext, txn_id: int) -> str | None:
@@ -926,13 +927,15 @@ async def _sync_handoff(ctx: AppContext, job: dict[str, Any]) -> dict[str, Any]:
     elif txn["state"] == "aborted" and \
             (code := _abort_code(ctx, job["transaction_id"])) in TEMPORARY_ABORTS:
         fields: dict[str, Any] = {}
-        if code == "ENVIRONMENT":
-            # rechten/ruimte: niet elke 10 min opnieuw (quarantainekopie kost veel I/O)
+        if code in SLOW_RETRY_ABORTS:
+            # rechten/ruimte of padwissel: niet elke 10 min opnieuw (kost veel I/O of lost
+            # zichzelf niet op)
             meta = dict(job.get("decision") or {})
             meta["retry_after"] = (datetime.now(UTC) + timedelta(hours=ENV_RETRY_HOURS)
                                    ).isoformat(timespec="seconds")
             fields["decision_json"] = dumps(meta)
-        retry = (datetime.now(UTC) + (timedelta(hours=ENV_RETRY_HOURS) if code == "ENVIRONMENT"
+        slow = code in SLOW_RETRY_ABORTS
+        retry = (datetime.now(UTC) + (timedelta(hours=ENV_RETRY_HOURS) if slow
                                       else timedelta(minutes=AUTO_RETRY_MINUTES)))
         _update(ctx, job["id"], status="awaiting_activation", transaction_id=None,
                 error=f"Activatie uitgesteld: {txn['error']} — {_retry_nl(retry)}", **fields)

@@ -191,6 +191,12 @@ def _validate_paths(ctx: AppContext, txn: dict[str, Any]) -> None:
         raise Abort("PATH_NOT_ALLOWED", "Doel moet in dezelfde map als het origineel staan")
 
 
+def _media_servers(ctx: AppContext) -> bool:
+    from mediaguard.mediaserver import servers
+
+    return bool(servers.all_servers(ctx))
+
+
 def quarantine_dir(ctx: AppContext, txn_id: int, lib: Path) -> Path:
     if ctx.config.value("recovery.quarantine_location") == "library_root":
         for root in _allowed_roots(ctx):
@@ -240,6 +246,12 @@ async def run_transaction(ctx: AppContext, txn_id: int, *, fault: FaultHook | No
         # 2/3. validatie ----------------------------------------------------------
         journal(ctx, txn_id, "validate", "begin")
         _validate_paths(ctx, txn)
+        if txn["kind"] == "replace" and final != lib and _media_servers(ctx):
+            # HARDE EIS: een nieuw pad geeft na de bibliotheekscan een nieuw item zonder
+            # favorieten en kijkgegevens; bron blijft staan, de encode wacht in staging
+            raise Abort("PATH_CHANGE", f"Het pad wijzigt ({lib.suffix} wordt {final.suffix}); de "
+                        "mediaserver zou het item en de kijkgegevens kwijtraken. Vervanging "
+                        "uitgesteld, het bronbestand blijft staan.")
         st = _stat(lib)
         if st is None:
             raise Abort("SOURCE_MISSING", "Bronbestand bestaat niet meer")

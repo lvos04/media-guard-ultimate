@@ -47,12 +47,14 @@ verschijnt `mediaserver.refresh.requested` in de outbox. De afspeeltest volgt af
 onbekende mapvertaling blijft de taak open tot Jellyfin een volledige scan aanvaardt. Tussen
 twee volledige scans zit minstens een halfuur.
 
-Bij een padwissel, bijvoorbeeld van `.mp4` naar `.mkv`, toont MediaGuard één melding met het
-bronpad en het nieuwe pad, ook als automatisch verversen uitstaat. Controleer in Jellyfin of
-het item, de gezien-status, het hervatpunt en de spoorkeuzes nog bij de juiste gebruiker horen
-voordat je zelf ververst. MediaGuard slaat
-voor dit item de automatische Jellyfin-verversing en afspeeltest over. Emby volgt de bestaande
-procedure voor het bijwerken van de bibliotheek. Kijkgegevens blijven in beheer van de mediaserver.
+Een vervanging die het pad wijzigt, bijvoorbeeld van `.mp4` naar `.mkv`, voert MediaGuard niet
+uit zolang er een mediaserver bekend is (Emby, Jellyfin of Jelly Leon). Na een bibliotheekscan
+zou de server een nieuw item maken zonder gezien-status, hervatpunt en favorieten. De transactie
+stopt vóór het veiligstellen met code `PATH_CHANGE`; het bronbestand blijft staan en de
+geverifieerde encode wacht in staging (opnieuw over zes uur). Een padwissel uit een oudere versie
+of een terugzetting geeft één melding met het bronpad en het nieuwe pad; MediaGuard slaat dan de
+automatische Jellyfin-verversing en afspeeltest voor dat item over. Sleutels in een pad worden in
+meldingen en het actielog gemaskeerd. Kijkgegevens blijven in beheer van de mediaserver.
 
 Bij uitval houdt MediaGuard de taken vast. De outbox bevat één `mediaserver.refresh.failed`
 per storing van een Jellyfin-server, gekoppeld aan de eerste getroffen transactie. Controleer

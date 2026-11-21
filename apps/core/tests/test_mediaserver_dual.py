@@ -261,7 +261,7 @@ async def test_jellyfin_av1_vervanging_met_kijkgegevens(ctx, net, tmp_path, monk
     await S.tick(ctx, sessions=False)
     txn = env.txn(encoding_job_id=7)
     await executor.run_transaction(ctx, txn)
-    assert env.assert_consistent(txn)["state"] == "committed"
+    assert env.assert_consistent(txn)["state"] == ("committed" if ext == ".mkv" else "aborted")
     jf.requests.clear()
     await S.tick(ctx, sessions=False)
     _due(ctx, txn)
@@ -281,12 +281,10 @@ async def test_jellyfin_av1_vervanging_met_kijkgegevens(ctx, net, tmp_path, monk
         assert refresh_events(ctx) == [
             ("mediaserver.refresh.requested", {"correlation_id": txn, "server_id": sid})]
     else:
-        assert env.lib != env.final and not env.lib.exists()
-        assert len(melding) == 1 and melding[0]["count"] == 1
-        assert env.lib.name in melding[0]["body"] and env.final.name in melding[0]["body"]
-        assert verzoeken == [] and refresh_events(ctx) == [] and uitkomst["result"] == "skipped"
-        assert ctx.db.fetch_one("SELECT refreshed_at FROM mediaserver_pending "
-                                "WHERE transaction_id=?", (txn,))[0] is None
+        # padwissel: vervanging uitgesteld, het bronbestand en dus het item blijven bestaan
+        assert env.lib != env.final and env.lib.exists() and not env.final.exists()
+        assert not melding and uitkomst is None
+        assert verzoeken == [] and refresh_events(ctx) == []
 
 
 def test_jellyfin_offline_een_melding_met_backoff_en_herstel(ctx, net, monkeypatch, client):
@@ -1259,3 +1257,116 @@ def test_emby_sleutel_met_stuurteken_wordt_nooit_verstuurd(ctx, net, key: str) -
     tick(ctx)
     assert not M.connected(ctx, M.legacy(ctx))
     assert all(r.url.path.endswith("/System/Info/Public") for r in emby.requests[n:])
+
+
+# -- S-P3-675 herstel (R-HARDE-EIS) -------------------------------------------------------------
+def _herstart(ctx):  # type: ignore[no-untyped-def]
+    from mediaguard.app import create_app
+
+    transport = ctx.services["mediaserver_transport"]
+    ctx.db.close()
+    nieuw = create_app(ctx.settings).state.ctx
+    nieuw.services["mediaserver_transport"] = transport
+    return nieuw
+
+
+def test_open_transactie_tijdens_de_eerste_ronde_krijgt_een_taak_per_server(ctx, net):
+    sid = _add_jelly_leon(ctx)
+    assert ctx.state_get("mediaserver_txn_cursor") is None
+    open_txn = _txn(ctx)
+    ctx.db.execute("UPDATE replacement_transactions SET state='pending' WHERE id=?", (open_txn,))
+    historisch = _txn(ctx)
+    tick(ctx, sessions=False)
+    ctx.db.execute("UPDATE replacement_transactions SET state='committed' WHERE id=?", (open_txn,))
+    for _ in range(3):
+        tick(ctx, sessions=False)
+    taken = ctx.db.fetch_all("SELECT server_id FROM mediaserver_server_results "
+                             "WHERE transaction_id=? ORDER BY server_id", (open_txn,))
+    assert [r[0] for r in taken] == [M.LEGACY_ID, sid]
+    assert refresh_events(ctx) == [
+        ("mediaserver.refresh.requested", {"correlation_id": open_txn, "server_id": sid})]
+    # afgeronde overdrachten van vóór de eerste ronde blijven ongemoeid
+    assert ctx.db.fetch_one("SELECT count(*) FROM mediaserver_pending WHERE transaction_id=?",
+                            (historisch,))[0] == 0
+
+
+def test_emby_houdt_een_overdracht_open_tot_de_volgende_volledige_scan(ctx, net, monkeypatch):
+    emby, _ = net
+    nu = datetime.now(UTC)
+    monkeypatch.setattr(S, "now_utc", lambda: nu)
+    tick(ctx, sessions=False)
+    _txn(ctx, "/zonder-koppeling/eerste.mkv", job=None)
+    tick(ctx, sessions=False)
+    scans = lambda: sum(r.url.path == "/emby/Library/Refresh" for r in emby.requests)  # noqa: E731
+    assert scans() == 1
+    nu += timedelta(minutes=1)
+    tweede = _txn(ctx, "/zonder-koppeling/tweede.mkv", job=None)
+    tick(ctx, sessions=False)
+    assert scans() == 1
+    open_ = "SELECT refreshed_at FROM mediaserver_server_results WHERE transaction_id=?"
+    assert ctx.db.fetch_one(open_, (tweede,))[0] is None
+    nieuw = _herstart(ctx)
+    try:
+        nu += timedelta(minutes=31)
+        tick(nieuw, sessions=False)
+        tick(nieuw, sessions=False)
+        assert scans() == 2
+        assert nieuw.db.fetch_one(open_, (tweede,))[0] is not None
+    finally:
+        nieuw.db.close()
+
+
+@pytest.mark.parametrize("soort", ["emby", "jellyfin"])
+def test_meldingen_en_actielog_tonen_geen_gevoelige_padonderdelen(ctx, net, soort):
+    emby, jf = net
+    if soort == "jellyfin":
+        ctx.config.set("global", "", "mediaserver.kind", "off", "test")
+        sid = _add_jelly_leon(ctx)
+    else:
+        sid = M.LEGACY_ID
+    sleutel = (jf if soort == "jellyfin" else emby).key
+    tick(ctx, sessions=False)
+    bron = f"{MG_ROOT}/token={sleutel}/Proef"
+    gelijk = _txn(ctx, bron + ".mkv")
+    wissel = _txn(ctx, bron + "-nieuw.mkv")
+    ctx.db.execute("UPDATE replacement_transactions SET library_path=? WHERE id=?",
+                   (bron + ".mp4", wissel))
+    queue = ctx.events.subscribe()
+    try:
+        tick(ctx, sessions=False)
+        live = []
+        while not queue.empty():
+            live.append(queue.get_nowait())
+    finally:
+        ctx.events.unsubscribe(queue)
+    acties = ctx.db.fetch_dicts("SELECT path,detail_nl FROM mediaserver_actions "
+                                "WHERE server_id=? AND transaction_id=?", (sid, gelijk))
+    meldingen = ctx.db.fetch_dicts("SELECT title,body FROM notifications")
+    assert acties
+    if soort == "jellyfin":
+        assert len([e for e in live if e["topic"] == "notification"]) == 1
+    for uitvoer in (live, acties, meldingen):
+        assert sleutel not in json.dumps(uitvoer, default=str)
+
+
+@pytest.mark.parametrize("soort", ["emby", "jellyfin"])
+async def test_padwissel_wordt_uitgesteld_en_het_bronbestand_blijft(ctx, net, tmp_path, soort):
+    from mediaguard.encoding.service import TEMPORARY_ABORTS
+
+    emby, jf = net
+    if soort == "jellyfin":
+        ctx.config.set("global", "", "mediaserver.kind", "off", "test")
+        _add_jelly_leon(ctx)
+    ctx.services["instance_registry"] = FakeRegistry(FakeInstance("sonarr-series"))
+    env = Env(ctx, tmp_path, ext=".mp4")
+    txn = env.txn(encoding_job_id=7)
+    await executor.run_transaction(ctx, txn)
+    rij = env.assert_consistent(txn)
+    assert rij["state"] == "aborted"
+    assert env.lib.exists() and not env.final.exists() and env.staged.exists()
+    code = ctx.db.fetch_one("SELECT detail_json FROM replacement_journal WHERE transaction_id=? "
+                            "AND step='abort'", (txn,))[0]
+    assert json.loads(code)["code"] in TEMPORARY_ABORTS
+    await S.tick(ctx, sessions=False)
+    assert emby.updated == jf.updated == [] and refresh_events(ctx) == []
+    assert not [r for r in emby.requests + jf.requests if r.method == "POST"]
