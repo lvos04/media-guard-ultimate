@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -12,6 +13,14 @@ from fastapi.testclient import TestClient
 from mediaguard import storage_forecast
 from mediaguard.app import create_app
 from mediaguard.config import load_settings
+
+
+@pytest.fixture(scope="module", autouse=True)
+def ruim_testverbindingen_op() -> Iterator[None]:
+    yield
+    # SQLite-verbindingen van beëindigde TestClient-threads kunnen in een referentiecyclus
+    # zitten. Laat hun bestanden vrij vóór de volgende testmodule begint.
+    gc.collect()
 
 
 @pytest.fixture
