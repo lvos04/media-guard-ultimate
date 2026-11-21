@@ -67,6 +67,7 @@ COMMIT_STEP = "update-commitstap.json"
 COMMIT_ORIGIN = "update-oorsprong.json"
 MANUAL_CHOICE = "wacht op handmatige keuze"
 LEGACY_KEY_META = "meta-met-sleutelverwijzing.json"
+_CONFLICT_PREFIX = "meta-conflict-"
 STAGED_SUFFIX = ".terugzetten"
 KEEP_SETS = 5
 PARTIAL_GRACE_S = 3600
@@ -445,7 +446,8 @@ def _read_meta(set_dir: Path) -> dict[str, Any] | None:
 
 def _single_manifest(folder: Path) -> Path:
     legacy, normal = folder / LEGACY_KEY_META, folder / "meta.json"
-    if os.path.lexists(legacy) and os.path.lexists(normal):
+    if (os.path.lexists(legacy) and os.path.lexists(normal)
+            or any(folder.glob(_CONFLICT_PREFIX + "*.json"))):
         raise _PreviousDataError("de herstelset heeft twee verschillende manifesten")
     manifest = legacy if os.path.lexists(legacy) else normal
     if manifest.is_symlink():
@@ -453,22 +455,47 @@ def _single_manifest(folder: Path) -> Path:
     return manifest
 
 
-def _old_manifests(folder: Path) -> Iterator[Path]:
-    """Dezelfde leescontrole vóór de proef en vóór de naamswijzigingen."""
+def _uses_legacy_key(manifest: Path) -> bool | None:
+    """None als uit deze manifestnaam geen betrouwbare bestandenlijst te lezen is."""
+    if manifest.is_symlink() or not manifest.is_file():
+        return None
+    try:
+        files = json.loads(manifest.read_text(encoding="utf-8"))["files"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(files, list):
+        return None
+    if any(isinstance(row, dict) and "legacy_cursor_key" in row for row in files):
+        return True
+    return False if all(isinstance(row, dict) for row in files) else None
+
+
+def _old_manifests(folder: Path) -> Iterator[tuple[Path, Path]]:
+    """Plan welke gewone manifestnamen voor beheer op schema 155 moeten verdwijnen."""
     for manifest in folder.glob(SET_PREFIX + "*/meta.json"):
         if not _SET_NAME.fullmatch(manifest.parent.name):
             continue
-        _single_manifest(manifest.parent)
-        meta = _read_meta(manifest.parent) or {}
-        files = meta.get("files")
-        if isinstance(files, list) and any(isinstance(f, dict) and "legacy_cursor_key" in f
-                                           for f in files):
-            yield manifest
+        target = manifest.with_name(LEGACY_KEY_META)
+        historical = _uses_legacy_key(manifest)
+        parked = any(manifest.parent.glob(_CONFLICT_PREFIX + "*.json"))
+        if parked or os.path.lexists(target):
+            if not parked and historical is False and _uses_legacy_key(target) is False:
+                continue
+            # Bewaar beide versies. Het oude beheer kent alleen meta.json en de
+            # huidige lezer blijft de set ook na deze naamswijziging weigeren.
+            target = manifest.with_name(f"{_CONFLICT_PREFIX}{uuid4().hex}.json")
+        else:
+            _single_manifest(manifest.parent)
+            if historical is not True:
+                continue
+        if manifest.parent.is_symlink():
+            raise _PreviousDataError("de herstelset is geen zelfstandige map")
+        yield manifest, target
 
 
 def _protect_old_manifests(folder: Path) -> None:
-    for manifest in list(_old_manifests(folder)):
-        manifest.rename(manifest.with_name(LEGACY_KEY_META))
+    for manifest, target in list(_old_manifests(folder)):
+        manifest.rename(target)
         _sync(manifest.parent)
 
 
@@ -839,6 +866,8 @@ def _stage(core_dir: Path, path: Path, actor: str) -> dict[str, Any]:
     preparation = {"fase": "klaarzetten", "poging": uuid4().hex, "set": path.name,
                    "databases": [_source_state(core_dir, rel, record_content=True) for rel in pairs
                                  if (config_root / rel).is_file()], "update": previous}
+    if path.is_dir():
+        _single_manifest(path)
     _protect_old_manifests(core_dir / "backups" / FOLDER)
     _write_phase(core_dir, preparation)
     _cancel(core_dir)

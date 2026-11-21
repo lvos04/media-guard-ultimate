@@ -200,6 +200,118 @@ def test_twee_manifesten_naast_elkaar(client, machine, ctx, herstelbronnen,
     assert wachtrij(engine) == taken
 
 
+@pytest.mark.parametrize("sleutelmanifest", [None, "meta.json", preupdate.LEGACY_KEY_META],
+                         ids=["huidig", "historisch-gewoon", "historisch-speciaal"])
+def test_geldige_set_naast_dubbel_manifest(
+    client, machine, ctx, herstelbronnen, geverifieerde_offsite, tmp_path, monkeypatch,
+    sleutelmanifest,
+):
+    losse, *_ = herstelbronnen
+    (ctx.settings.backup_dir / losse["file"]).with_suffix(".json").unlink()
+    core = ctx.settings.data_dir
+    engine = tmp_path / "encode/app.db"
+    taken = vul_taken(engine)
+    root = ctx.settings.backup_dir / preupdate.FOLDER
+    headers = key(client)
+
+    def klaarzetten(archief):
+        url = f"/api/v1/backups/{archief.name}/restore"
+        return client.post(url, json={"confirm": archief.name})
+
+    ctx.state_set("proef.archief", {"nummer": 1})
+    goed = preupdate.make_set(root, ctx.db.path, encode_dir=engine.parent)
+    digest = hashlib.sha256((goed / "mediaguard.db").read_bytes()).hexdigest()
+    assert rapport(machine, headers)["core"]["sha256"] == digest
+    ctx.state_set("proef.archief", {"nummer": 2})
+    with closing(sqlite3.connect(engine)) as db, db:
+        db.execute("UPDATE job SET percent=percent+1")
+    actief = wachtrij(engine)
+    assert sorted(rij[4] for rij in actief) == [38, 83]
+    bron = ctx.db.path
+    if sleutelmanifest:
+        oud = tmp_path / "bron-155"
+        oud.mkdir()
+        bron = kern_155.__wrapped__(oud, monkeypatch)
+    ander = preupdate.make_set(root, bron, encode_dir=engine.parent)
+    nieuwste = hashlib.sha256((ander / "mediaguard.db").read_bytes()).hexdigest()
+    assert nieuwste != digest
+    assert rapport(machine, headers)["core"]["sha256"] == nieuwste
+    assert klaarzetten(goed).status_code == 200
+    assert client.post("/api/v1/backups/terugzetten/annuleren").json()["cancelled"]
+
+    normaal, speciaal = ander / "meta.json", ander / preupdate.LEGACY_KEY_META
+    if sleutelmanifest:
+        shutil.copyfile(speciaal, normaal)
+        zonder = speciaal if sleutelmanifest == normaal.name else normaal
+        meta = json.loads(zonder.read_bytes())
+        assert any("legacy_cursor_key" in rij for rij in meta["files"])
+        for rij in meta["files"]:
+            rij.pop("legacy_cursor_key", None)
+        zonder.write_text(json.dumps(meta))
+    else:
+        shutil.copyfile(normaal, speciaal)
+        bestanden = json.loads(normaal.read_bytes())["files"]
+        assert all("legacy_cursor_key" not in rij for rij in bestanden)
+    manifesten = sorted([normaal.read_bytes(), speciaal.read_bytes()])
+    geweigerd = klaarzetten(ander)
+    assert geweigerd.status_code == 409 and "twee verschillende manifesten" in geweigerd.text
+    assert not (core / preupdate.STAGE_MARKER).exists()
+    item = rapport(machine, headers)
+    assert item["core"]["sha256"] == digest
+    assert sorted([normaal.read_bytes(), speciaal.read_bytes()]) == manifesten
+    assert klaarzetten(goed).status_code == 200
+    marker = core / preupdate.STAGE_MARKER
+    fase = core / preupdate.COMMIT_ORIGIN
+    bewaard = marker.read_bytes(), fase.read_bytes()
+    geweigerd = klaarzetten(ander)
+    assert geweigerd.status_code == 409 and "twee verschillende manifesten" in geweigerd.text
+    assert (marker.read_bytes(), fase.read_bytes()) == bewaard
+    assert ctx.state_get("proef.archief") == {"nummer": 2} and wachtrij(engine) == actief
+    assert speciaal.is_file() and normaal.exists() == (sleutelmanifest is None)
+    assert sorted(p.read_bytes() for p in ander.glob("*.json")) == manifesten
+
+    offline = tmp_path / "offline"
+    shutil.copytree(core, offline / "core", ignore=shutil.ignore_patterns("mediaguard.pool-fifo"))
+    shutil.copytree(engine.parent, offline / "encode")
+    shutil.copytree(tmp_path / "secrets", offline / "secrets")
+    monkeypatch.setenv("MG_AIO_CONFIG", str(offline))
+    monkeypatch.setenv("MG_SECRETS_DIR", str(offline / "secrets"))
+    assert preupdate.apply_staged(offline / "core")["ok"]
+    assert wachtrij(offline / "encode/app.db") == taken
+    buurkopie = offline / "core/backups" / preupdate.FOLDER / ander.name
+    with pytest.raises(preupdate.SetError, match="twee verschillende manifesten"):
+        preupdate.trial_set(offline / "core", buurkopie)
+    assert sorted(p.read_bytes() for p in buurkopie.glob("*.json")) == manifesten
+    hersteld = offline / "core/mediaguard.db"
+    with closing(sqlite3.connect(hersteld.as_uri() + "?mode=ro", uri=True)) as db:
+        waarde, = db.execute("SELECT value_json FROM system_state WHERE key=?",
+                             ("proef.archief",)).fetchone()
+        assert json.loads(waarde) == {"nummer": 1}
+
+
+def test_tweede_manifest_na_proef_laat_de_klaargezette_keuze_intact(
+    client, ctx, herstelbronnen, tmp_path, monkeypatch,
+):
+    core = ctx.settings.data_dir
+    root = ctx.settings.backup_dir / preupdate.FOLDER
+    archief = preupdate.make_set(root, ctx.db.path, encode_dir=tmp_path / "encode")
+    preupdate.stage(core, archief, actor="proef")
+    fase, marker = core / preupdate.COMMIT_ORIGIN, core / preupdate.STAGE_MARKER
+    bewaard = fase.read_bytes(), marker.read_bytes()
+    proef = preupdate.trial_set
+
+    def tweede_na_proef(kern, gekozen):
+        result = proef(kern, gekozen)
+        shutil.copyfile(gekozen / "meta.json", gekozen / preupdate.LEGACY_KEY_META)
+        return result
+
+    monkeypatch.setattr(preupdate, "trial_set", tweede_na_proef)
+    url = f"/api/v1/backups/{archief.name}/restore"
+    antwoord = client.post(url, json={"confirm": archief.name})
+    assert antwoord.status_code == 409 and "twee verschillende manifesten" in antwoord.text
+    assert (fase.read_bytes(), marker.read_bytes()) == bewaard
+
+
 def test_geweigerde_startcontrole_publiceert_geen_herstelbewijs(
     client, machine, ctx, herstelbronnen, tmp_path, monkeypatch,
 ):

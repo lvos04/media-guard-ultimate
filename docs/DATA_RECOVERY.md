@@ -262,6 +262,13 @@ de versie die de verwijzing kan lezen. Die versie herstelt de oorspronkelijke sl
 de wachtende database en schrijft een markering die ook de oude supervisor kan toepassen.
 Bewaar de set en neem de geheimenmap mee in de herstelbundel.
 
+Staan beide manifestnamen in één set, dan weigert MediaGuard die set. Je kunt een andere
+geverifieerde set kiezen en terugzetten. Als een van beide manifesten een historische
+sleutelverwijzing bevat of de bestandenlijst onleesbaar is, bewaart MediaGuard bij het
+klaarzetten of bij de supervisorstart het gewone manifest onder `meta-conflict-<id>.json`.
+Zo blijven beide bestanden beschikbaar voor onderzoek en kan beheer op schema 155 de set
+niet aanbieden. Het herstelrapport zelf wijzigt geen manifesten.
+
 De alles-in-één-supervisor controleert vóór de migratie of de kernel Landlock ABI 3
 of hoger ondersteunt. De kernel schermt de kerngeheimen, terugzetkopieën en tijdelijke
 kernbestanden af voor alle zeven nevendiensten. De encoder en hookwacht kunnen de actieve
