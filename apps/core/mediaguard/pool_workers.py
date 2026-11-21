@@ -15,9 +15,10 @@ from uuid import uuid4
 from weakref import finalize
 
 from mediaguard.context import AppContext
-from mediaguard.db import loads
+from mediaguard.db import dumps, loads, utcnow
 
 _PREFIX = "pool_worker_v1:"
+_RESERVED = "pool_toelating_v2:"
 _PENDING = ".pool-aanmelding-"
 _ADMISSIONS_STATE = "pool_aanmeldbestand_v1"
 LOGGER = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ def _admissions(ctx: AppContext, *, create: bool = False, readonly: bool = False
     return stream
 
 
-def _note(stream: io.FileIO, slot: int, state: str) -> None:
+def _note(stream: io.FileIO, slot: int | str, state: str) -> None:
     line = f"{slot} {state}\n".encode("ascii")
     if stream.write(line) != len(line):
         raise OSError("Onvolledige aanmelding van de poolwerker")
@@ -88,18 +89,69 @@ def _note(stream: io.FileIO, slot: int, state: str) -> None:
 
 def _outstanding(stream: io.FileIO) -> dict[int, str]:
     pending = {}
+    before = os.fstat(stream.fileno())
     for line in stream:
         slot, sep, state = line.partition(b" ")
+        if slot == b"generatie":
+            slot = b"0"  # Oudere lezers weigeren dit record en kunnen dus geen toestemming geven.
         if not sep or not slot.isdigit() or not state.endswith(b"\n"):
             raise OSError("Onleesbare aanmelding van een poolwerker")
         if not state.isascii():
             raise OSError("Onleesbare identiteit in het aanmeldbestand")
         owner = state[:-1].decode("ascii")
+        if slot == b"0" and (len(owner) != 32 or any(c not in "0123456789abcdef" for c in owner)):
+            raise OSError("Onleesbare generatie in het aanmeldbestand")
         if owner == "verwerkt":
             pending.pop(int(slot), None)
         else:
             pending[int(slot)] = owner
+    if os.fstat(stream.fileno()).st_ctime_ns != before.st_ctime_ns:
+        raise OSError("Het aanmeldbestand veranderde tijdens het lezen")
     return pending
+
+
+def _stamp(info: os.stat_result, generation: str) -> list[str | int]:
+    # copy2 kan de mtime en de inhoud exact terugzetten, ook op dezelfde inode.
+    return [generation, info.st_dev, info.st_ino, info.st_ctime_ns, info.st_size]
+
+
+def _saved_stamp(ctx: AppContext) -> list | None:
+    try:
+        saved = ctx.state_get(_ADMISSIONS_STATE)
+    except ValueError as exc:
+        raise OSError("De opgeslagen registergeneratie is onleesbaar") from exc
+    # De vorige kern bewaarde alleen een generatie en een tijdstempel.
+    if saved is not None and not (
+        isinstance(saved, list) and len(saved) in (2, 5) and isinstance(saved[0], str)
+        and len(saved[0]) == 32 and all(c in "0123456789abcdef" for c in saved[0])
+        and all(type(field) is int for field in saved[1:])
+    ):
+        raise OSError("De opgeslagen registergeneratie is ongeldig")
+    return saved
+
+
+def _generation(ctx: AppContext, stream: io.FileIO, pending: dict[int, str],
+                saved: list | None) -> str:
+    identity = pending.pop(0, None)
+    if identity and saved == _stamp(os.fstat(stream.fileno()), identity):
+        return identity
+    # Ook bij terugplaatsen van het oorspronkelijke bestand geldt een nieuwe generatie.
+    # Eerst schrijven op schijf. Bij een onderbreking kunnen de twee getuigen uitsluitend
+    # weer overeenkomen door een volgende, nieuwe generatie uit te geven.
+    generation = uuid4().hex
+    _note(stream, "generatie", generation)
+    os.fsync(stream.fileno())
+    with ctx.db.transaction():
+        # Een aanmelding uit een oudere kern kan nog uitsluitend in dit bestand staan.
+        # Houd de waargenomen werker ook na een volgende terugplaatsing in de ledenlijst.
+        for slot, owner in pending.items():
+            if owner != "afgesloten":
+                ctx.db.execute(
+                    "INSERT OR IGNORE INTO system_state(key,value_json,updated_at) VALUES(?,?,?)",
+                    (_RESERVED + str(slot), dumps(owner), utcnow()))
+        ctx.db.execute("DELETE FROM system_state WHERE key=?", (CLEANUP_REQUEST,))
+        ctx.state_set(_ADMISSIONS_STATE, _stamp(os.fstat(stream.fileno()), generation))
+    return generation
 
 
 class Lease:
@@ -122,11 +174,13 @@ class WorkerVote:
         self.life: Lease | None = None
         self.ready: Lease | None = None
         self.channel: list[int] | None = None
+        self.generation: str | None = None
         self.owner = _owner()
         self.pending: Path | None = None
         self.admission: io.FileIO | None = None
         self.guard: io.FileIO | None = None
         self.unregistered = False
+        self.reserved = False
 
     def withdraw(self) -> None:
         if self.ready is not None:
@@ -138,28 +192,58 @@ class WorkerVote:
         if stream is not None:
             info = os.fstat(stream.fileno())
             channel = [info.st_dev, info.st_ino]
-        if self.ready is not None and self.channel == channel:
-            return
         try:
+            saved = _saved_stamp(ctx)
+            if (saved and self.ready is not None and self.channel == channel
+                    and self.generation == saved[0]):
+                return
             with ctx.db.transaction():
+                if saved is None:
+                    with _admissions(ctx, create=True) as ledger:
+                        fcntl.flock(ledger, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        generation = _generation(ctx, ledger, _outstanding(ledger), saved)
+                else:
+                    with _admissions(ctx, readonly=True) as ledger:
+                        info = os.fstat(ledger.fileno())
+                        generation = saved[0] if saved == _stamp(info, saved[0]) else None
                 reconnecting = self.ready is None or self.channel is not None
-                if self.unregistered or (stream is not None and reconnecting):
+                if (self.unregistered or (stream is not None and reconnecting)
+                        or (self.generation is not None and self.generation != generation)):
                     ctx.db.execute("DELETE FROM system_state WHERE key=?", (CLEANUP_REQUEST,))
                 if self.life is None:
                     self.life = Lease(ctx, self.slot)
                 if self.ready is None:
                     self.ready = Lease(ctx, self.slot + 1)
-                info = os.fstat(self.life.fd)
-                ctx.state_set(self.key, {
-                    "owner": self.owner, "directory": [info.st_dev, info.st_ino],
-                    "channel": channel,
-                })
+                self._record(ctx, channel, generation)
+                if self.reserved:
+                    ctx.db.execute("DELETE FROM system_state WHERE key=?",
+                                   (_RESERVED + str(self.slot),))
             self.clear_pending()
             self.unregistered = False
+            self.reserved = False
         except BaseException:
             self.withdraw()
             raise
         self.channel = channel
+        self.generation = generation
+
+    def _record(self, ctx: AppContext, channel: list[int] | None, generation: str | None) -> None:
+        assert self.life is not None
+        info = os.fstat(self.life.fd)
+        record = {
+            "owner": self.owner, "directory": [info.st_dev, info.st_ino],
+            "channel": channel, "generation": generation,
+        }
+        if self.unregistered:
+            ctx.state_set(self.key, record)
+        elif ctx.db.execute("UPDATE system_state SET value_json=?, updated_at=? WHERE key=?",
+                            (dumps(record), utcnow(), self.key)) != 1:
+            raise OSError("De inschrijving van de poolwerker ontbreekt in het register")
+
+    def confirm_generation(self, ctx: AppContext, generation: str) -> None:
+        if self.ready is not None and not self.unregistered and self.generation != generation:
+            self._record(ctx, self.channel, generation)
+            self.generation = generation
 
     def clear_pending(self) -> None:
         if self.admission is not None:
@@ -181,95 +265,116 @@ class WorkerVote:
                 # Deze werker kon tot de afmelding fouten doorgeven. Een meting
                 # die onder zijn meldslot is gedaan, blijft geldig.
                 ctx.db.path.with_name(prefix + "gemeld").mkdir(mode=0o700)
-            elif self.admission is not None:
-                with self.admission:
-                    _note(self.admission, self.slot, "afgesloten")
-            elif self.guard is not None:
-                self.guard.close()
-            elif self.pending is not None or self.life is None:
+            elif self.pending is not None or self.reserved or self.life is None:
                 closed = ctx.db.path.with_name(prefix + "afgesloten")
-                if self.pending is None:
+                if self.pending is not None:
+                    self.pending.rename(closed)
+                elif self.admission is None:
                     closed.mkdir(mode=0o700)
                 else:
-                    self.pending.rename(closed)
+                    # De open descriptor kan na terugplaatsen naar een oud bestand wijzen.
+                    # De afsluiting hoort bij de werker, ook in de nieuwe generatie.
+                    with self.admission:
+                        _note(self.admission, self.slot, "afgesloten")
+                        path = ctx.db.path.with_suffix(".pool-aanmeldingen")
+                        if not os.path.samestat(os.fstat(self.admission.fileno()), path.lstat()):
+                            closed.mkdir(mode=0o700)
         finally:
+            if self.guard is not None:
+                self.guard.close()
             self.withdraw()
             if self.life is not None:
                 self.life.close()
 
 
+def _reserve(ctx: AppContext, vote: WorkerVote) -> None:
+    # De ledenlijst moet ook na vervanging van het aanmeldbestand compleet zijn.
+    name = f"{ctx.db.path.name}{_PENDING}{vote.slot}_{vote.owner}"
+    marker = ctx.db.path.with_name(name)
+    try:
+        marker.mkdir(mode=0o700)
+        vote.pending = marker
+        return
+    except OSError:
+        LOGGER.warning("Poolwerker kan geen aanmeldmap maken, toelating via SQLite vereist")
+    # De reservering staat los van de intrekking van de laatste meting. Ook een
+    # geweigerde intrekking mag deze inschrijving niet terugdraaien.
+    with ctx.db.durable_transaction():
+        ctx.state_set(_RESERVED + str(vote.slot), vote.owner)
+    vote.reserved = True
+    try:
+        vote.admission = _admissions(ctx, create=True)
+        _note(vote.admission, vote.slot, vote.owner)
+    except OSError:
+        if vote.admission is not None:
+            vote.admission.close()
+            vote.admission = None
+        LOGGER.warning("Aanmeldbestand niet schrijfbaar, poolwerker wacht op bevestiging")
+        try:
+            vote.guard = _admissions(ctx, readonly=True)
+            fcntl.flock(vote.guard, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            os.utime(vote.guard.fileno())
+        except OSError:
+            if vote.guard is not None:
+                vote.guard.close()
+                vote.guard = None
+            LOGGER.exception("Aanmeldbestand of aanmeldslot geweigerd, poolwerker blijft onbekend")
+
+
 def register(ctx: AppContext) -> WorkerVote:
     # Byte nul blijft voor het gedeelde terugvalslot. Iedere werker krijgt twee eigen bytes.
     vote = WorkerVote((uuid4().int % (1 << 61) + 1) * 2)
-    try:
-        with ctx.db.transaction():
-            while ctx.db.fetch_one("SELECT 1 FROM system_state WHERE key=?", (vote.key,)):
-                vote = WorkerVote((uuid4().int % (1 << 61) + 1) * 2)
-            ctx.state_set(vote.key, {"owner": vote.owner, "directory": None})
-    except (OSError, sqlite3.Error):
-        vote.unregistered = True
-        # De naam is de volledige melding. mkdir maakt deze in één stap zichtbaar,
-        # ook zonder SQLite, leesbare meetbestanden of beschikbare recordsloten.
-        name = f"{ctx.db.path.name}{_PENDING}{vote.slot}_{vote.owner}"
-        marker = ctx.db.path.with_name(name)
+    with ctx.db.startup_lock():
         try:
-            marker.mkdir(mode=0o700)
-            vote.pending = marker
-        except OSError:
+            with ctx.db.transaction():
+                while ctx.db.fetch_one("SELECT 1 FROM system_state WHERE key IN (?,?)",
+                                       (vote.key, _RESERVED + str(vote.slot))):
+                    vote = WorkerVote((uuid4().int % (1 << 61) + 1) * 2)
+                ctx.state_set(vote.key, {"owner": vote.owner, "directory": None})
+        except (OSError, sqlite3.Error):
+            vote.unregistered = True
+            LOGGER.warning("SQLite-inschrijving van de poolwerker uitgesteld")
+            _reserve(ctx, vote)
+        if not vote.unregistered:
             try:
-                vote.admission = _admissions(ctx, create=True)
-                _note(vote.admission, vote.slot, vote.owner)
-            except OSError:
-                if vote.admission is not None:
-                    vote.admission.close()
-                    vote.admission = None
-                # Een alleen leesbaar bestand kan nog steeds een gedeeld flock
-                # dragen. De tijdstempel trekt ook na abrupt vertrek de oude meting in.
-                with suppress(OSError):
-                    vote.guard = _admissions(ctx, readonly=True)
-                    fcntl.flock(vote.guard, fcntl.LOCK_SH | fcntl.LOCK_NB)
-                    os.utime(vote.guard.fileno())
-                with suppress(OSError, sqlite3.Error):
-                    ctx.db.execute("DELETE FROM system_state WHERE key=?", (CLEANUP_REQUEST,))
-        LOGGER.warning("SQLite-inschrijving van de poolwerker uitgesteld")
+                vote.report(ctx)
+            except (OSError, sqlite3.Error):
+                LOGGER.exception("Poolwerker ingeschreven, meldbaarheid nog niet bevestigd")
     ctx.services[SERVICE] = vote
-    if not vote.unregistered:
-        with suppress(OSError, sqlite3.Error):  # De onbekende registratie is al gecommit.
-            vote.report(ctx)
     return vote
 
 
 def all_reported(ctx: AppContext, fd: int, *, new_measurement: bool) -> bool:
-    saved = ctx.state_get(_ADMISSIONS_STATE)
+    vote = ctx.services.get(SERVICE) or register(ctx)
+    if vote.unregistered or vote.ready is None:
+        return False
+    saved = _saved_stamp(ctx)
     with _admissions(ctx, create=new_measurement and saved is None) as admissions:
         fcntl.flock(admissions, fcntl.LOCK_EX | fcntl.LOCK_NB)
         unfinished = _outstanding(admissions)
-        # Slot nul identificeert het aanmeldbestand. Een lege vervanger kan
-        # geen uitsluitsel geven over werkers die alleen in het origineel staan.
-        identity = unfinished.pop(0, None)
-        if saved is not None:
-            if identity != saved[0] or (
-                    not new_measurement and os.fstat(admissions.fileno()).st_mtime_ns != saved[1]):
-                return False
-        elif not new_measurement:
+        generation = _generation(ctx, admissions, unfinished, saved)
+        if new_measurement:
+            vote.confirm_generation(ctx, generation)
+        elif not saved or saved[0] != generation:
             return False
-        elif identity is None:
-            identity = uuid4().hex
-            _note(admissions, 0, identity)
-        for owner in unfinished.values():
-            if not new_measurement or (owner != "afgesloten" and not _exited(owner)):
-                return False
-        if not _registered_reported(ctx, fd, new_measurement, set(unfinished)):
+        if unfinished and not new_measurement:
+            return False
+        exited = {slot for slot, owner in unfinished.items() if owner == "afgesloten"
+                  or _exited(owner)}
+        if not _registered_reported(ctx, fd, new_measurement, exited,
+                                    (set(unfinished) - exited) | {vote.slot}, generation):
             return False
         for slot in unfinished:
             _note(admissions, slot, "verwerkt")
-        stamp = [identity, os.fstat(admissions.fileno()).st_mtime_ns]
-        if new_measurement and stamp != saved:
+        stamp = _stamp(os.fstat(admissions.fileno()), generation)
+        if unfinished:
             ctx.state_set(_ADMISSIONS_STATE, stamp)
-    return True
+        path = ctx.db.path.with_suffix(".pool-aanmeldingen")
+        return stamp == ctx.state_get(_ADMISSIONS_STATE) == _stamp(path.lstat(), generation)
 
 
-def _registered_reported(ctx: AppContext, fd: int, new_measurement: bool, exited: set[int]) -> bool:
+def _registered_reported(ctx: AppContext, fd: int, new_measurement: bool, exited: set[int],
+                         pending: set[int], generation: str) -> bool:
     prefix = ctx.db.path.name + _PENDING
     closed = {}
     reported = set()
@@ -281,6 +386,15 @@ def _registered_reported(ctx: AppContext, fd: int, new_measurement: bool, exited
             elif not new_measurement or (owner != "afgesloten" and not _exited(owner)):
                 return False
             closed[int(slot)] = name
+    pending.difference_update(closed)
+    reservations = ctx.db.fetch_all("SELECT key, value_json FROM system_state WHERE key GLOB ?",
+                                    (_RESERVED + "*",))
+    if reservations and not new_measurement:
+        return False
+    for row in reservations:
+        slot = int(row["key"][len(_RESERVED):])
+        if slot not in closed and slot not in exited and not _exited(loads(row["value_json"])):
+            pending.add(slot)
     rows = ctx.db.fetch_all("SELECT key, value_json FROM system_state WHERE key GLOB ?",
                             (_PREFIX + "*",))
     directory_info = os.fstat(fd)
@@ -297,19 +411,27 @@ def _registered_reported(ctx: AppContext, fd: int, new_measurement: bool, exited
         else:
             return False
         if life == fcntl.F_UNLCK:
+            pending.discard(slot)
             if not new_measurement:
                 if slot not in reported:
                     return False
                 continue
             ctx.db.execute("DELETE FROM system_state WHERE key=?", (row["key"],))
             continue
-        if life != fcntl.F_RDLCK or record_lock(fd, slot + 1, probe=True) != fcntl.F_RDLCK:
+        if (record.get("generation") != generation or life != fcntl.F_RDLCK
+                or record_lock(fd, slot + 1, probe=True) != fcntl.F_RDLCK):
             return False
         if record["channel"] is not None:
             info = channel.lstat()
             if record["channel"] != [info.st_dev, info.st_ino]:
                 return False
+        # Een herstelde journaalkopie kan een inmiddels bevestigde aanmelding bevatten.
+        pending.discard(slot)
+    if pending:
+        return False
     if new_measurement:
+        for row in reservations:
+            ctx.db.execute("DELETE FROM system_state WHERE key=?", (row["key"],))
         for name in closed.values():
             os.rmdir(name, dir_fd=fd)
     return True

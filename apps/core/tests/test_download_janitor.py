@@ -9,11 +9,12 @@ import fcntl
 import multiprocessing
 import os
 import select
+import shutil
 import sqlite3
 import stat
 import subprocess
 import sys
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -23,7 +24,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from mediaguard import jobs, monitor
+from mediaguard import jobs, monitor, pool_workers
 from mediaguard import storage_forecast as storage
 from mediaguard.app import create_app
 from mediaguard.config import load_settings
@@ -904,6 +905,150 @@ def _weiger_eerste_inschrijving(ctx):
     ctx.db.execute("CREATE TRIGGER weiger_werker BEFORE INSERT ON system_state "
                    "WHEN NEW.key GLOB 'pool_worker_v1:*' "
                    "BEGIN SELECT RAISE(FAIL, 'Inschrijving geweigerd'); END")
+
+
+async def _controleer_aanmeldpauze(ctx, cleanup_round, toestand):
+    gather, source, trash, sab = cleanup_round
+    archief = b"enige prullenbakkopie van de proef"
+    (trash / "video.mkv").write_bytes(archief)
+    _pool_response(ctx, True)
+    assert (await storage.refresh_pool(ctx))["reachable"]
+    register = ctx.db.path.with_suffix(".pool-aanmeldingen")
+    kopie = register.with_suffix(".vorige")
+    if toestand == "oude-kopie":
+        shutil.copy2(register, kopie)
+    _weiger_eerste_inschrijving(ctx)
+    processen = multiprocessing.get_context("spawn")
+    ouder, kind = processen.Pipe()
+    werker = processen.Process(target=_meter_zonder_terugvalslot,
+                               args=(ctx.settings, kind, errno.ENOLCK, True))
+    try:
+        with ExitStack() as herstel:
+            if toestand == "bezet":
+                slot = herstel.enter_context(register.open("rb"))
+                fcntl.flock(slot, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            mapmodus = stat.S_IMODE(register.parent.stat().st_mode)
+            herstel.callback(register.parent.chmod, mapmodus)
+            register.parent.chmod(mapmodus & ~0o222)
+            if toestand != "oude-kopie":
+                modus = stat.S_IMODE(register.stat().st_mode)
+                herstel.callback(register.chmod, modus)
+                register.chmod(0 if toestand == "onleesbaar" else modus & ~0o222)
+            werker.start()
+            kind.close()
+            assert ouder.poll(30) and ouder.recv() == (200, errno.ENOLCK)
+            assert ctx.state_get("slotproef") == "schrijfbaar"
+        if toestand == "oude-kopie":
+            assert kopie.read_bytes() != register.read_bytes()
+            kopie.replace(register)
+        assert (await storage.refresh_pool(ctx))["reachable"]
+        ouder.send("meet")
+        assert ouder.poll(30) and ouder.recv() == (200, 0)
+        ronde = await J.run_once(ctx, gatherer=gather)
+        assert werker.is_alive()
+        assert (ronde["status"], ronde["trashed"], ronde["purged"], sab.deleted) == (
+            "skipped", 0, 0, [])
+        assert "werker" in ronde["summary_nl"]
+        assert (source / "video.mkv").read_bytes() == b"x" * 10
+        assert [p for p in source.parent.rglob("*.mkv") if p.read_bytes() == archief] == [
+            trash / "video.mkv"]
+        ouder.send("afsluiten")
+        werker.join(20)
+        assert werker.exitcode == 0
+        await _expect_pause(ctx, cleanup_round)
+        await _resume_with_healthy_pool(ctx, cleanup_round)
+    finally:
+        ouder.close()
+        kind.close()
+        if werker.is_alive():
+            werker.kill()
+            werker.join()
+        werker.close()
+        ctx.db.execute("DROP TRIGGER weiger_werker")
+        await storage.shutdown(ctx)
+
+
+async def test_bezet_aanmeldslot_pauzeert_opruimen(ctx, cleanup_round, pool_configured):
+    await _controleer_aanmeldpauze(ctx, cleanup_round, "bezet")
+
+
+async def test_onleesbaar_aanmeldbestand_pauzeert_opruimen(ctx, cleanup_round, pool_configured):
+    await _controleer_aanmeldpauze(ctx, cleanup_round, "onleesbaar")
+
+
+async def test_oude_registerkopie_pauzeert_opruimen(ctx, cleanup_round, pool_configured):
+    await _controleer_aanmeldpauze(ctx, cleanup_round, "oude-kopie")
+
+
+def test_geen_nieuwe_werker_zonder_zichtbare_inschrijving(ctx, client):
+    datamap = ctx.db.path.parent
+    modus = stat.S_IMODE(datamap.stat().st_mode)
+    ctx.db.execute("CREATE TRIGGER weiger_toelating BEFORE INSERT ON system_state "
+                   "WHEN NEW.key GLOB 'pool_worker_v1:*' OR NEW.key GLOB 'pool_toelating_v2:*' "
+                   "BEGIN SELECT RAISE(FAIL, 'Geen inschrijving'); END")
+    try:
+        datamap.chmod(modus & ~0o222)
+        with pytest.raises(sqlite3.IntegrityError, match="Geen inschrijving"):
+            create_app(ctx.settings)
+    finally:
+        datamap.chmod(modus)
+        ctx.db.execute("DROP TRIGGER weiger_toelating")
+    assert client.get("/readyz").status_code == 200
+
+
+@pytest.mark.parametrize("terugzetten", ["vervangen", "overschrijven"])
+async def test_registergeneratie_vergt_elke_werker_en_nieuwe_meting(
+        ctx, cleanup_round, pool_configured, terugzetten):
+    andere = create_app(ctx.settings).state.ctx
+    register = ctx.db.path.with_suffix(".pool-aanmeldingen")
+    kopie = register.with_suffix(".kopie")
+    try:
+        await storage.startup(andere)
+        assert _healthy_pool(ctx)["reachable"]
+        assert storage.pool_cleanup_pause_reason(ctx) is None
+        shutil.copy2(register, kopie)
+        generaties = {register.read_bytes()}
+        for _ in range(2):
+            if terugzetten == "vervangen":
+                vervanger = register.with_suffix(".vervanger")
+                shutil.copy2(kopie, vervanger)
+                vervanger.replace(register)
+            else:
+                shutil.copy2(kopie, register)
+            await _expect_pause(ctx, cleanup_round)
+            assert _healthy_pool(ctx)["reachable"]
+            await _expect_pause(ctx, cleanup_round)
+            assert register.read_bytes() not in generaties
+            generaties.add(register.read_bytes())
+            await storage.startup(andere)
+            await _expect_pause(ctx, cleanup_round)
+            assert _healthy_pool(ctx)["reachable"]
+            assert storage.pool_cleanup_pause_reason(ctx) is None
+        await _resume_with_healthy_pool(ctx, cleanup_round)
+    finally:
+        await storage.shutdown(andere)
+        andere.db.close()
+        await storage.shutdown(ctx)
+
+
+async def test_registerkopie_behoudt_eerder_gelezen_oude_aanmelding(
+        ctx, cleanup_round, pool_configured):
+    assert _healthy_pool(ctx)["reachable"]
+    register = ctx.db.path.with_suffix(".pool-aanmeldingen")
+    kopie = register.with_suffix(".vorige")
+    shutil.copy2(register, kopie)
+    # De vorige kern kon na een SQLite-fout uitsluitend een journaalregel achterlaten.
+    with register.open("a") as ledger:
+        ledger.write(f"2 {pool_workers._owner()}\n")
+    assert _healthy_pool(ctx)["reachable"]
+    await _expect_pause(ctx, cleanup_round)
+    kopie.replace(register)
+    assert _healthy_pool(ctx)["reachable"]
+    await _expect_pause(ctx, cleanup_round)
+    with register.open("a") as ledger:
+        ledger.write("2 afgesloten\n")
+    await _expect_pause(ctx, cleanup_round)
+    await _resume_with_healthy_pool(ctx, cleanup_round)
 
 
 @pytest.mark.parametrize(("foutnummer", "inschrijving"), [

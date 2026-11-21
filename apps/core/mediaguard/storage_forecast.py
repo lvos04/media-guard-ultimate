@@ -264,7 +264,16 @@ def _workers_connected(ctx: AppContext, *, new_measurement: bool = False) -> boo
             fd, conflict = _directory_worker_lock(ctx, held, probe=True)
             return conflict == fcntl.F_UNLCK and pool_workers.all_reported(
                 ctx, fd, new_measurement=new_measurement)
-    except OSError:
+    except BlockingIOError:
+        # Het gedeelde slot van een andere werker pauzeert de ronde. Deze lezer
+        # kan zijn eigen meetfouten nog steeds via zijn bevestigde kanaal melden.
+        LOGGER.warning("Een slot voor de poolwerkers is bezet, opruimen is gepauzeerd")
+        return False
+    except (OSError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+        if vote := ctx.services.get(pool_workers.SERVICE):
+            vote.withdraw()
+        LOGGER.warning("Register of slot van de poolwerkers niet beschikbaar (%s)",
+                       type(exc).__name__)
         return False
 
 
@@ -440,14 +449,18 @@ def pool_degraded(ctx: AppContext, *, state: dict[str, Any] | None = None) -> li
 def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> str | None:
     """Bij een ingestelde sleutel is alleen een verse, gezonde poolmeting voldoende."""
     unknown = "De TrueNAS-poolstatus is onbekend doordat een recente, geldige meting ontbreekt."
+    unknown_worker = ("De TrueNAS-poolstatus is onbekend. De inschrijving of meldbaarheid van "
+                      "een poolwerker is nog niet bevestigd.")
+    vote = ctx.services.get(pool_workers.SERVICE)
     try:
-        vote = ctx.services.get(pool_workers.SERVICE)
         if vote is not None and vote.unregistered:
-            return unknown
+            return unknown_worker
         if not ctx.secrets.exists("truenas:apikey"):
             with ctx.db.startup_lock():
+                if vote is not None and vote.ready is None:
+                    _hold_request_pipe(ctx)
                 if not _workers_connected(ctx, new_measurement=True):
-                    return unknown
+                    return unknown_worker
             # De quarantaine respecteerde een laatst bekende zieke pool ook na ontkoppeling.
             if quarantine and (degraded := pool_degraded(ctx)):
                 return f"TrueNAS-pool {pool_names_nl(degraded)} is niet gezond."
@@ -459,11 +472,11 @@ def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> s
         state = ctx.state_get(POOL_STATE, {})
         request_id = ctx.state_get(POOL_REQUEST)
         with ctx.db.startup_lock():
-            if (not isinstance(request_id, str) or not _current_request(ctx, request_id)
-                    or ctx.state_get(pool_workers.CLEANUP_REQUEST) != request_id):
-                return unknown
+            current = isinstance(request_id, str) and _current_request(ctx, request_id)
             if not _workers_connected(ctx):
                 _revoke_pool_request(ctx)
+                return unknown_worker
+            if not current or ctx.state_get(pool_workers.CLEANUP_REQUEST) != request_id:
                 return unknown
     except Exception:  # noqa: BLE001 - een onleesbare meting geeft geen toestemming
         try:
@@ -471,7 +484,7 @@ def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> s
         except Exception:  # een werker zonder lees- én schrijfrecht mag evenmin opruimen
             LOGGER.exception("intrekking van de poolopdracht mislukt")
         LOGGER.exception("poolstatus voor opruimen lezen mislukt")
-        return unknown
+        return unknown_worker if vote is not None and vote.ready is None else unknown
     if (not isinstance(state, dict) or state.get("reachable") is not True
             or not request_id
             or state.get("request_id") != request_id):
