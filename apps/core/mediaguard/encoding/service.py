@@ -914,6 +914,13 @@ async def _sync_handoff(ctx: AppContext, job: dict[str, Any]) -> dict[str, Any]:
                            (job["transaction_id"],))
     if txn is None or txn["state"] not in ("committed", "rolled_back", "aborted", "conflict"):
         return job
+    if txn["state"] in ("aborted", "rolled_back"):
+        from mediaguard.recovery import executor
+
+        # onderbroken herstel nog niet afgerond (stroom weg na de eindtoestand): eerst het
+        # oordeel INTERRUPTED vastleggen, anders volgt een afwijzing die staging opruimt
+        executor.finish_interrupted(ctx, int(job["transaction_id"]),
+                                    "Onderbroken (herstart/stroomstoring)")
     client = get_encoder_client(ctx)
     if txn["state"] == "committed":
         try:

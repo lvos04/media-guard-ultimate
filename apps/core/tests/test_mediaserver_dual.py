@@ -1556,6 +1556,10 @@ async def test_padwissel_wordt_uitgesteld_en_het_bronbestand_blijft(ctx, net, tm
 KIJK = {"Played": True, "PlaybackPositionTicks": 0, "IsFavorite": True}
 BEZIG = {"Played": False, "PlaybackPositionTicks": 78901234, "IsFavorite": True}
 PROV = {"Tmdb": "4242", "Imdb": "tt0004242"}
+# shortcut: padwissel uit in versie 1 (Jellyfin verliest kijkgegevens, ook met provider-ID);
+# deze tests horen bij de padwissel met provider-ID en draaien weer in versie 2
+VERSIE2 = pytest.mark.skip(reason="VERSIE 2: padwissel uit in versie 1 (besluit gebruiker "
+                           "2026-11-21, Jellyfin verliest kijkgegevens), zie VERVOLGPUNTEN")
 
 
 def _padwissel_opzet(ctx, net, tmp_path, monkeypatch, soorten=("emby", "jellyfin")):
@@ -1592,6 +1596,7 @@ def _klok(monkeypatch, minuten: int) -> None:
     monkeypatch.setattr(S, "now_utc", lambda: later)
 
 
+@VERSIE2
 @pytest.mark.parametrize("soorten", [("emby",), ("jellyfin",), ("emby", "jellyfin")],
                          ids=["emby", "jellyfin", "beide"])
 async def test_padwissel_met_provider_id_behoudt_kijkgegevens(ctx, net, tmp_path, monkeypatch,
@@ -1625,7 +1630,8 @@ async def test_padwissel_met_provider_id_behoudt_kijkgegevens(ctx, net, tmp_path
     assert Path(item["quarantine_path"]).exists()
 
 
-@pytest.mark.parametrize("fout", ["geen-provider-id", "onbereikbaar", "plex", "losgemaakt"])
+@pytest.mark.parametrize("fout", ["met-provider-id", "geen-provider-id", "onbereikbaar", "plex",
+                                  "losgemaakt"])
 async def test_padwissel_zonder_volledige_controle_blijft_uitgesteld(ctx, net, tmp_path,
                                                                      monkeypatch, fout):
     from mediaguard.mediaserver import padwissel
@@ -1647,13 +1653,36 @@ async def test_padwissel_zonder_volledige_controle_blijft_uitgesteld(ctx, net, t
     assert env.lib.exists() and not env.final.exists() and env.staged.exists()
     abort = json.loads(ctx.db.fetch_one("SELECT detail_json FROM replacement_journal WHERE "
                                         "transaction_id=? AND step='abort'", (txn,))[0])
-    assert abort["code"] == "PATH_CHANGE"
-    assert {"geen-provider-id": "geen provider-ID", "onbereikbaar": "niet bereikbaar",
-            "plex": "niet te controleren", "losgemaakt": "niet actief gekoppeld"}[fout] \
-        in abort["message"]
+    assert abort["code"] == "PATH_CHANGE" and "Vervanging uitgesteld" in abort["message"]
     assert padwissel.snapshot(ctx, txn) is None and _quarantaine(ctx, txn) is None
 
 
+@pytest.mark.parametrize("soorten", [("emby",), ("jellyfin",), ("emby", "jellyfin")],
+                         ids=["emby", "jellyfin", "beide"])
+async def test_padwissel_blijft_in_versie_1_uitgesteld_met_elke_gekoppelde_server(
+        ctx, net, tmp_path, monkeypatch, soorten):
+    """Besluit gebruiker 2026-11-21: padwissel uit. Ook als elke server het item met
+    provider-ID kent en de kijkgegevens leesbaar zijn: uitstel, bron en staging blijven."""
+    from mediaguard.mediaserver import padwissel
+
+    env, actief = _padwissel_opzet(ctx, net, tmp_path, monkeypatch, soorten)
+    await S.tick(ctx, sessions=False)
+    txn = env.txn(encoding_job_id=7)
+    bron, encode = env.lib.read_bytes(), env.staged.read_bytes()
+    assert (await executor.run_transaction(ctx, txn))["state"] == "aborted"
+    env.assert_consistent(txn)
+    assert env.lib.read_bytes() == bron and env.staged.read_bytes() == encode
+    assert not env.final.exists() and _quarantaine(ctx, txn) is None
+    abort = json.loads(ctx.db.fetch_one("SELECT detail_json FROM replacement_journal WHERE "
+                                        "transaction_id=? AND step='abort'", (txn,))[0])
+    assert abort["code"] == "PATH_CHANGE" and "Vervanging uitgesteld" in abort["message"]
+    assert padwissel.snapshot(ctx, txn) is None
+    await S.tick(ctx, sessions=False)
+    for srv in actief:
+        assert srv.updated == [] and not [r for r in srv.requests if r.method == "POST"]
+
+
+@VERSIE2
 @pytest.mark.parametrize("afwijking", ["kijkgegevens", "niet-gevonden"])
 async def test_padwissel_afwijking_meldt_en_bewaart_het_origineel(ctx, net, tmp_path,
                                                                   monkeypatch, afwijking):
@@ -1706,6 +1735,7 @@ def _zonder_nieuw_item(srv):
     return handle
 
 
+@VERSIE2
 async def test_padwissel_controle_slaagt_alsnog_na_herstel_in_de_server(ctx, net, tmp_path,
                                                                         monkeypatch):
     from mediaguard.mediaserver import padwissel
@@ -1727,10 +1757,13 @@ async def test_padwissel_controle_slaagt_alsnog_na_herstel_in_de_server(ctx, net
 
 
 # -- S-P3-676: R-HARDE-EIS-4 en -5 uit de herreview van S-P3-675 -----------------------------------
+@pytest.mark.parametrize("provider", [False, True], ids=["zonder-id", "met-id"])
 @pytest.mark.parametrize("soort", ["emby", "jellyfin"])
 async def test_terugzetten_met_padwissel_zonder_provider_id_blijft_uitgesteld(ctx, net, tmp_path,
-                                                                             monkeypatch, soort):
-    """R-HARDE-EIS-4: terugzetten (.mkv -> .mp4) verandert het pad van het kijkitem net zo."""
+                                                                             monkeypatch, soort,
+                                                                             provider):
+    """R-HARDE-EIS-4: terugzetten (.mkv -> .mp4) verandert het pad van het kijkitem net zo.
+    In versie 1 ook met provider-ID uitgesteld (padwissel uit)."""
     from mediaguard.recovery import service as recovery
 
     emby, jf = net
@@ -1750,23 +1783,31 @@ async def test_terugzetten_met_padwissel_zonder_provider_id_blijft_uitgesteld(ct
     srv = emby if soort == "emby" else jf
     monkeypatch.setattr(S, "mg_roots", lambda _: [str(env.dir)])
     srv.root = "/bibliotheek/Season 01"
-    srv.item_ids = {f"{srv.root}/{env.final.name}": "21"}  # het actuele kijkitem, zonder ID
+    srv.item_ids = {f"{srv.root}/{env.final.name}": "21"}  # het actuele kijkitem
+    if provider:  # alles wat de padwissel met provider-ID nodig had (versie 2)
+        srv.providers = {"21": dict(PROV)}
+        srv.new_item_providers = dict(PROV)
+        srv.users = [{"Id": "u1", "Name": "Jan", "Policy": {"IsAdministrator": True}}]
+        srv.user_data = {("u1", "tmdb:4242"): dict(KIJK)}
     item = _quarantaine(ctx, txn)
     terug, _ = recovery.create_restore(ctx, item["id"], "test")
     uit = await executor.run_transaction(ctx, terug)
     assert uit["state"] == "aborted"
     abort = json.loads(ctx.db.fetch_one("SELECT detail_json FROM replacement_journal WHERE "
                                         "transaction_id=? AND step='abort'", (terug,))[0])
-    assert abort["code"] == "PATH_CHANGE" and "geen provider-ID" in abort["message"]
+    assert abort["code"] == "PATH_CHANGE" and "uitgesteld" in abort["message"]
     assert env.final.read_bytes() != ORIGINAL and not env.lib.exists()
     assert Path(item["quarantine_path"]).read_bytes() == ORIGINAL
     assert _quarantaine(ctx, txn)["status"] == "restorable"
 
 
+@pytest.mark.parametrize("onderbrekingen", [1, 2])
 @pytest.mark.parametrize("soort", ["emby", "jellyfin"])
 def test_onderbroken_herpoging_houdt_de_geverifieerde_encode(ctx, client, net, tmp_path,
-                                                             monkeypatch, soort):
-    """R-HARDE-EIS-5: een herstart midden in een herpoging is geen afwijzing van de encode."""
+                                                             monkeypatch, soort, onderbrekingen):
+    """R-HARDE-EIS-5: een herstart midden in een herpoging is geen afwijzing van de encode.
+    Bij 2 valt de stroom opnieuw weg tijdens het herstel, na de eindtoestand en vóór
+    INTERRUPTED (S-P3-676 R-HARDE-EIS-5)."""
     import hashlib
 
     from test_encoding import SRC, job_body
@@ -1802,13 +1843,31 @@ def test_onderbroken_herpoging_houdt_de_geverifieerde_encode(ctx, client, net, t
 
     with pytest.raises(executor.SimulatedCrash):
         asyncio.run(executor.run_transaction(ctx, txn, fault=stop_bij_slot))
-    ctx.db.close()
-    nieuw = create_app(ctx.settings).state.ctx
-    for naam in ("mediaserver_transport", "encoder_transport", "instance_registry"):
-        if naam in ctx.services:
-            nieuw.services[naam] = ctx.services[naam]
+    def herstart(oud):
+        oud.db.close()
+        nieuw = create_app(oud.settings).state.ctx
+        for naam in ("mediaserver_transport", "encoder_transport", "instance_registry"):
+            if naam in oud.services:
+                nieuw.services[naam] = oud.services[naam]
+        return nieuw
+
+    nieuw = herstart(ctx)
+    if onderbrekingen == 2:
+        schrijf = executor.journal
+
+        def stroom_weg(c, nummer, stap, fase, **detail):
+            if stap == "abort" and detail.get("code") == "INTERRUPTED":
+                raise executor.SimulatedCrash("stroom weg tijdens herstel")
+            schrijf(c, nummer, stap, fase, **detail)
+
+        with monkeypatch.context() as m:
+            m.setattr(executor, "journal", stroom_weg)
+            with pytest.raises(executor.SimulatedCrash):
+                executor.recover_pending(nieuw)
+        assert executor.load(nieuw, txn)["state"] in ("aborted", "rolled_back")
+        nieuw = herstart(nieuw)
     try:
-        executor.recover_pending(nieuw)
+        assert len(executor.recover_pending(nieuw)) == 1
         job = asyncio.run(encode.sync_job(nieuw, jid))
         assert job["status"] == "awaiting_activation"
         assert not any(p.endswith("/rejected") for _, p, _ in fake.calls)
@@ -1817,6 +1876,7 @@ def test_onderbroken_herpoging_houdt_de_geverifieerde_encode(ctx, client, net, t
         nieuw.db.close()
 
 
+@VERSIE2
 async def test_terugzetten_met_provider_id_controleert_kijkgegevens(ctx, net, tmp_path,
                                                                     monkeypatch):
     """R-HARDE-EIS-4, goede pad: terugzetten mag, met dezelfde vastlegging en nacontrole."""

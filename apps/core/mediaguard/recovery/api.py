@@ -355,6 +355,11 @@ async def _job_delete(jc: jobs.JobContext) -> dict[str, Any]:
                                   (int(jc.payload["item_id"]),))
         if row is None or row["status"] in ("held", "pending", "purged"):
             return {"deleted": False}
+        if (kept := _only_original(jc.app, dict(row))) is not None:
+            # ook een taak van vóór deze controle of uit een oudere versie: nooit de enige
+            # kopie van het origineel verwijderen
+            jc.log(kept, "warning")
+            return {"deleted": False, "kept_nl": kept}
         if paused := pool_cleanup_pause_reason(jc.app):
             jc.log(f"{paused} Bevestig het verwijderen opnieuw na een gezonde meting.", "warning")
             raise jobs.JobCancelled
@@ -379,6 +384,20 @@ def rejected_av1_reason(ctx: AppContext, item: dict[str, Any]) -> str:
         "'%origineel teruggezet%' ORDER BY id DESC LIMIT 1", (item.get("original_path"),))
     why = plain_nl(row["error"]) if row and row["error"] else "vrijgavecontrole afgekeurd"
     return f"Afgekeurde AV1-versie verwijderd ({why})"[:500]
+
+
+def _only_original(ctx: AppContext, item: dict[str, Any]) -> str | None:
+    """Reden om niet te verwijderen, of None. HARDE EIS: zolang de vrijgavecontrole niet
+    geslaagd is (open of failed), is dit de enige geverifieerde kopie van het origineel,
+    tenzij het origineel aantoonbaar terug in de bibliotheek staat (teruggezet) of dit item
+    de weggezette AV1-versie is. Ook 'force_unverified' verandert dat niet."""
+    check = release_check.check_status(ctx, int(item["id"]))
+    if (check is not None and check["status"] == "passed") or item["status"] == "restored" \
+            or is_rejected_av1(item):
+        return None
+    stand = "afgekeurd" if check is not None and check["status"] == "failed" else "nog open"
+    return (f"Origineel blijft bewaard: de vrijgavecontrole is {stand} en dit is de enige "
+            "kopie van het origineel. Zet het terug of wacht tot de controle slaagt.")
 
 
 def _delete_item_file(ctx: AppContext, item: dict[str, Any], reason: str) -> None:
@@ -633,6 +652,8 @@ def quarantine_delete(item_id: int, body: ConfirmBody,
         raise HTTPException(409, "Item hoort bij een lopende transactie en kan niet weg")
     if not body.confirm:
         raise HTTPException(422, "Definitief verwijderen vereist bevestiging ('confirm': true)")
+    if (kept := _only_original(ctx, dict(row))) is not None:
+        raise HTTPException(409, kept)
     check = release_check.check_status(ctx, item_id)
     if (check is None or check["status"] != "passed") and not body.force_unverified:
         raise HTTPException(409, "Het nieuwe bestand is nog niet (succesvol) gecontroleerd. "
@@ -653,10 +674,13 @@ def quarantine_bulk_delete(body: BulkDeleteBody, principal: Principal = Depends(
     blocked = [r["id"] for r in rows if r["status"] in ("held", "pending", "purged")]
     unverified = [r["id"] for r in rows if r["id"] not in blocked and (
         (c := release_check.check_status(ctx, int(r["id"]))) is None or c["status"] != "passed")]
-    deletable = [r for r in rows if r["id"] not in blocked and
+    # enige kopie van het origineel: nooit verwijderbaar, ook niet met 'force_unverified'
+    kept = [r["id"] for r in rows if r["id"] in unverified and _only_original(ctx, r)]
+    unverified = [i for i in unverified if i not in kept]
+    deletable = [r for r in rows if r["id"] not in blocked and r["id"] not in kept and
                  (body.force_unverified or r["id"] not in unverified)]
     preview = {"count": len(deletable), "bytes": sum(int(r["size"] or 0) for r in deletable),
-               "blocked": blocked, "unverified": unverified}
+               "blocked": blocked, "unverified": unverified, "kept_only_original": kept}
     if not body.confirm:
         return {"dry_run": True, **preview}
     job_ids = [_enqueue_delete(ctx, r["id"], body.reason or "bulk", principal.actor)

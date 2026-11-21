@@ -51,6 +51,11 @@ LOGGER = logging.getLogger(__name__)
 TERMINAL = {"committed", "rolled_back", "aborted", "conflict"}
 PRE_ACTIVATION = {"pending", "locked", "validated", "snapshotted", "quarantined", "temp_ready"}
 POST_ACTIVATION = {"activated", "recorded", "refreshed"}
+# shortcut: padwissel uit in versie 1 (Jellyfin verliest kijkgegevens), zie VERVOLGPUNTEN.
+# Met een bekende mediaserver wordt elke padwissel uitgesteld (PATH_CHANGE); de code met
+# provider-ID en nacontrole (mediaserver/padwissel.py) blijft staan voor versie 2. Geen
+# instelling of UI zet dit aan.
+PADWISSEL_MET_PROVIDER_ID = False
 FaultHook = Callable[[str], None]
 
 
@@ -251,6 +256,10 @@ async def run_transaction(ctx: AppContext, txn_id: int, *, fault: FaultHook | No
             # HARDE EIS: een nieuw pad geeft een nieuw item. Alleen als elke mediaserver het
             # item met een provider-ID kent (kijkgegevens hangen daaraan) en de kijkgegevens
             # vastliggen; anders blijft de bron staan en wacht de encode in staging
+            if not PADWISSEL_MET_PROVIDER_ID:
+                raise Abort("PATH_CHANGE", f"Het pad wijzigt ({lib.suffix} wordt "
+                            f"{final.suffix}); de mediaserver zou het item en de kijkgegevens "
+                            "kwijtraken. Vervanging uitgesteld, het bronbestand blijft staan.")
             from mediaguard.mediaserver import padwissel
 
             try:
@@ -630,18 +639,40 @@ def reconcile(ctx: AppContext, txn_id: int, *, failure: str | None = None,
     geverifieerde staging na het terugdraaien nog ongewijzigd, dan krijgt de transactie code
     ``INTERRUPTED`` (tijdelijke weigering): de encode wordt later opnieuw geactiveerd en nooit
     afgewezen (anders ruimt de encoder de stagingkopie op)."""
+    if interrupted and load(ctx, txn_id)["state"] not in TERMINAL:
+        # write-ahead: valt de stroom weg tussen eindtoestand en INTERRUPTED, dan maakt de
+        # volgende start (of de encodersynchronisatie) het oordeel alsnog af
+        journal(ctx, txn_id, "interrupted", "begin")
     state = _reconcile(ctx, txn_id, failure=failure, aborted=aborted)
-    if interrupted and state in ("aborted", "rolled_back"):
-        txn = load(ctx, txn_id)
-        staged = _stat(Path(txn["staged_path"])) if txn["staged_path"] else None
-        if _matches_snapshot(_stat(Path(txn["library_path"])),
-                             loads(txn["source_snapshot_json"], {})) and staged is not None \
-                and (txn["staged_size"] is None or staged.size == int(txn["staged_size"])) \
-                and _journal_detail(ctx, txn_id, "interrupted") == {}:
-            journal(ctx, txn_id, "abort", "error", code="INTERRUPTED", message=failure or
-                    "Onderbroken vóór activatie; bron en encode ongewijzigd")
-            journal(ctx, txn_id, "interrupted", "done", state=state)
+    finish_interrupted(ctx, txn_id, failure)
     return state
+
+
+def _interrupted_open(ctx: AppContext, txn_id: int) -> bool:
+    row = ctx.db.fetch_one(
+        "SELECT SUM(phase='begin') AS b, SUM(phase='done') AS d FROM replacement_journal "
+        "WHERE transaction_id=? AND step='interrupted'", (txn_id,))
+    return bool(row and row["b"] and not row["d"])
+
+
+def finish_interrupted(ctx: AppContext, txn_id: int, failure: str | None = None) -> None:
+    """Rond een onderbroken herstel af (idempotent): staan bron en geverifieerde staging na
+    het terugdraaien ongewijzigd, dan code ``INTERRUPTED`` in plaats van een afwijzing."""
+    if not _interrupted_open(ctx, txn_id):
+        return
+    txn = load(ctx, txn_id)
+    if txn["state"] not in ("aborted", "rolled_back"):
+        if txn["state"] in TERMINAL:
+            journal(ctx, txn_id, "interrupted", "done", state=txn["state"], kept=False)
+        return
+    staged = _stat(Path(txn["staged_path"])) if txn["staged_path"] else None
+    kept = _matches_snapshot(_stat(Path(txn["library_path"])),
+                             loads(txn["source_snapshot_json"], {})) and staged is not None \
+        and (txn["staged_size"] is None or staged.size == int(txn["staged_size"]))
+    if kept:
+        journal(ctx, txn_id, "abort", "error", code="INTERRUPTED", message=failure or
+                "Onderbroken vóór activatie; bron en encode ongewijzigd")
+    journal(ctx, txn_id, "interrupted", "done", state=txn["state"], kept=kept)
 
 
 def _reconcile(ctx: AppContext, txn_id: int, *, failure: str | None = None,
@@ -815,4 +846,11 @@ def recover_pending(ctx: AppContext) -> list[dict[str, Any]]:
         state = reconcile(ctx, int(row["id"]), failure="Onderbroken (herstart/stroomstoring)",
                           interrupted=True)
         out.append({"id": int(row["id"]), "from": row["state"], "to": state})
+    for row in ctx.db.fetch_all(
+            "SELECT DISTINCT t.id, t.state FROM replacement_transactions t JOIN "
+            "replacement_journal j ON j.transaction_id=t.id AND j.step='interrupted' "
+            "WHERE t.state IN ('rolled_back','aborted') ORDER BY t.id"):
+        if _interrupted_open(ctx, int(row["id"])):
+            finish_interrupted(ctx, int(row["id"]), "Onderbroken (herstart/stroomstoring)")
+            out.append({"id": int(row["id"]), "from": row["state"], "to": row["state"]})
     return out

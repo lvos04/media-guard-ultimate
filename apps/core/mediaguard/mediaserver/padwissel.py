@@ -1,6 +1,10 @@
 """Padwissel bij een AV1-vervanging (bijvoorbeeld ``.mp4`` naar ``.mkv``) met behoud van
 kijkgegevens (S-P3-676, besluit van de gebruiker 2026-11-21).
 
+shortcut: padwissel uit in versie 1 (Jellyfin verliest kijkgegevens), zie VERVOLGPUNTEN. De
+executor roept ``record`` niet aan zolang ``executor.PADWISSEL_MET_PROVIDER_ID`` False is; dan
+wordt elke padwissel met een bekende mediaserver uitgesteld (PATH_CHANGE).
+
 Emby en Jellyfin bewaren gezien-status, hervatpunt en favoriet op de provider-ID van een item
 (Imdb, Tmdb, Tvdb), niet op het pad. Een padwissel mag daarom alleen als **elke** bekende
 mediaserver het item kent met een provider-ID. MediaGuard leest alleen; het schrijft nooit

@@ -3,6 +3,7 @@ verwijderen via de API."""
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -172,12 +173,10 @@ async def test_encode_submit_blocked_when_quarantine_full(ctx):
 @pytest.mark.skipif(not FFMPEG, reason="ffmpeg ontbreekt")
 def test_manual_delete_and_bulk_delete(client, ctx, tmp_path):
     item = _seed(ctx, tmp_path)
-    # niet gecontroleerd: gewone bevestiging is niet genoeg
-    r = client.request("DELETE", f"/api/v1/quarantine/{item}", json={"confirm": True})
-    assert r.status_code == 409
-    r = client.request("DELETE", f"/api/v1/quarantine/{item}",
-                       json={"confirm": True, "force_unverified": True})
-    assert r.status_code == 200 and r.json()["job_id"]
+    # niet gecontroleerd: ook met 'force_unverified' blijft de enige kopie van het origineel
+    for body in ({"confirm": True}, {"confirm": True, "force_unverified": True}):
+        r = client.request("DELETE", f"/api/v1/quarantine/{item}", json=body)
+        assert r.status_code == 409 and "Origineel blijft bewaard" in r.json()["detail"]
     other = _seed(ctx, tmp_path)
     release_check.run_check(ctx, other)
     preview = client.post("/api/v1/quarantine/bulk-delete",
@@ -271,3 +270,49 @@ def test_changed_active_file_is_never_auto_restored(ctx, tmp_path):
         fh.write(b"door Sonarr vervangen")
     release_check.run_check(ctx, item)
     assert restore_failed_checks(ctx) == 0
+
+
+def _enige_kopie(ctx, tmp_path: Path, *, controle: str | None, reden: str | None = None
+                 ) -> tuple[int, Path]:
+    q = tmp_path / "q"
+    q.mkdir(exist_ok=True)
+    kopie = q / f"ep{len(list(q.iterdir()))}.orig.mp4"
+    kopie.write_bytes(b"enige kopie van het origineel")
+    txn = ctx.db.execute_insert(
+        "INSERT INTO replacement_transactions(kind,library_path,final_path,staged_path,"
+        "source_snapshot_json,state,created_at,updated_at) VALUES "
+        "('replace',?,?,'x','{}','committed','x','x')",
+        (str(tmp_path / "ep.mkv"), str(tmp_path / "ep.mkv")))
+    item = ctx.db.execute_insert(
+        "INSERT INTO quarantine_items(transaction_id,original_path,quarantine_path,method,"
+        "status,reason,created_at,size) VALUES (?,?,?,'link','restorable',?,'x',10)",
+        (txn, str(tmp_path / "ep.mkv"), str(kopie), reden))
+    if controle:
+        ctx.db.execute("INSERT INTO quarantine_release_checks(item_id,status,checks_json,"
+                       "checked_at) VALUES (?,?,'[]','x')", (item, controle))
+    return item, kopie
+
+
+@pytest.mark.parametrize("controle", [None, "failed"], ids=["open", "failed"])
+def test_force_unverified_verwijdert_nooit_de_enige_kopie(client, ctx, tmp_path, controle):
+    """R-HARDE-EIS-6 (S-P3-676): controle open of afgekeurd en geen andere kopie -> weigeren,
+    in beide routes én in de worker (taak van vóór deze versie)."""
+    item, kopie = _enige_kopie(ctx, tmp_path, controle=controle)
+    r = client.request("DELETE", f"/api/v1/quarantine/{item}",
+                       json={"confirm": True, "force_unverified": True})
+    assert r.status_code == 409 and "Origineel blijft bewaard" in r.json()["detail"]
+    bulk = client.post("/api/v1/quarantine/bulk-delete",
+                       json={"item_ids": [item], "confirm": True, "force_unverified": True}).json()
+    assert bulk["job_ids"] == [] and bulk["kept_only_original"] == [item]
+    assert bulk["count"] == 0 and bulk["unverified"] == []
+    jobs.enqueue(ctx.db, "quarantine.delete", {"item_id": item, "reason": "oude taak"})
+    object.__setattr__(ctx.settings, "role", "all")
+    asyncio.run(jobs.JobRunner(ctx, concurrency=1).run_until_idle())
+    assert kopie.read_bytes() == b"enige kopie van het origineel"
+    assert ctx.db.fetch_one("SELECT status FROM quarantine_items WHERE id=?",
+                            (item,))[0] == "restorable"
+    # de weggezette AV1-versie (origineel staat terug) mag wel met een expliciete keuze weg
+    av1, _ = _enige_kopie(ctx, tmp_path, controle=controle, reden=api.RESTORE_DISPLACED)
+    r = client.request("DELETE", f"/api/v1/quarantine/{av1}",
+                       json={"confirm": True, "force_unverified": True})
+    assert r.status_code == 200 and r.json()["job_id"]
