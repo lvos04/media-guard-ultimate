@@ -148,6 +148,7 @@ async def test_hdr_metadata_ongelijk_na_gpu_gaat_naar_de_cpu(tmp_path: Path) -> 
     assert "HDR10 mastering display" in json.loads(row["payload"])["reden"]
 
 
+@pytest.mark.usefixtures("mg_testdata")
 def test_rebalance_verplaatst_hdr10_maar_niet_na_terugval(mg_client) -> None:
     from conftest import mg_fixture
     from mg_helpers import FAST, HEADERS, copy_into_media
