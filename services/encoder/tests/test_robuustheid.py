@@ -23,6 +23,8 @@ from app import afstelling, noodstop, uitvoerder
 from app.db import SchemaTooNew
 from app.onderhoud import sweep_finished_job_cache
 from app.planner import Planner
+from app.vervanging import file_sha256
+from app.wachtrijherstel import recover_queue
 
 
 @pytest.fixture(autouse=True)
@@ -209,12 +211,13 @@ async def test_achtergebleven_cache_blokkeert_volgende_poging_niet(
     job_id = ids[0]
     leftover = configured.cache_root / str(job_id)
     leftover.mkdir()
-    (leftover / "resultaat.mkv.deel").write_bytes(b"oud")
+    restbestand = leftover / "vorige-poging.tmp"
+    restbestand.write_bytes(b"oud")
     database.execute("UPDATE job SET status='bezig',pogingen=1 WHERE id=?", (job_id,))
     seen: dict[str, bool] = {}
 
     async def stop_after_check(*_args: Any, **_kwargs: Any) -> Any:
-        seen["old_gone"] = not (leftover / "resultaat.mkv.deel").exists()
+        seen["old_gone"] = leftover.is_dir() and not restbestand.exists()
         raise uitvoerder.ExecutionError("test: hier stoppen")
 
     monkeypatch.setattr(uitvoerder, "capture_comparison_frames", stop_after_check)
@@ -224,6 +227,33 @@ async def test_achtergebleven_cache_blokkeert_volgende_poging_niet(
     logs = " ".join(str(r[0]) for r in database.fetch_all(
         "SELECT tekst FROM logregel WHERE job_id=?", (job_id,)))
     assert "Achtergebleven cache" in logs
+
+
+@pytest.mark.asyncio
+async def test_oud_deel_zonder_eerste_percentagemeting_blijft_bewaard(tmp_path: Path) -> None:
+    """Release 1.2.2 kon al een deelbestand schrijven vóór de eerste voortgangsmeting."""
+    database, configured, ids = _planner_case(tmp_path)
+    job_id = ids[0]
+    start = database.fetch_one(
+        "SELECT b.pad,j.percent,j.commando,j.bron_inode FROM job j "
+        "JOIN bestand b ON b.id=j.bestand_id WHERE j.id=?", (job_id,))
+    assert tuple(start[1:]) == (0, None, None)
+    bron = Path(start["pad"])
+    bronhash = file_sha256(bron)
+    deel = configured.cache_root / str(job_id) / "resultaat.mkv.deel"
+    deel.parent.mkdir()
+    deel.write_bytes(b"oud")
+    database.execute("UPDATE job SET status='bezig',pogingen=1 WHERE id=?", (job_id,))
+
+    assert not await uitvoerder.run_job(database, configured, job_id,
+                                        storage_validator=lambda: None, already_claimed=True)
+    row = database.fetch_one("SELECT status,foutsoort,percent,fout FROM job WHERE id=?", (job_id,))
+    assert tuple(row[:3]) == ("mislukt", "Hervatfout", 0)
+    assert "bronidentiteit" in row["fout"]
+    assert job_id not in sweep_finished_job_cache(database, configured)
+    recover_queue(database, configured)
+    assert deel.read_bytes() == b"oud"
+    assert file_sha256(bron) == bronhash
 
 
 @pytest.mark.asyncio
