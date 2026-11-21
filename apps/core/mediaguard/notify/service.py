@@ -339,6 +339,8 @@ def link_url(ctx: AppContext, link: str | None) -> str | None:
 # -- verzenden --------------------------------------------------------------------------------
 async def dispatch(ctx: AppContext, *, limit: int = 30) -> dict[str, int]:
     """Verstuur wat klaarstaat; herhaal met oplopende wachttijd, geef het na 6x op."""
+    from mediaguard.mediaserver.service import mask
+
     now = utcnow()
     rows = ctx.db.fetch_dicts(
         "SELECT o.*, c.kind, c.enabled FROM notify_outbox o JOIN notify_channels c ON "
@@ -349,7 +351,9 @@ async def dispatch(ctx: AppContext, *, limit: int = 30) -> dict[str, int]:
         channel = get_channel(ctx, int(row["channel_id"]))
         if channel is None:
             continue
-        msg = ch.Message(title=row["title"], body=row["body"] or "", link=row["link"],
+        # laatste uitgang: ook wat vóór de maskering (vorige versie) in de wachtrij kwam
+        title, body = mask(ctx, [row["title"], row["body"] or ""])
+        msg = ch.Message(title=title, body=body, link=row["link"],
                          priority=row["priority"],
                          attachment=Path(row["attachment_path"]) if row["attachment_path"]
                          else None)

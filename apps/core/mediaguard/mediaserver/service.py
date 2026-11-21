@@ -654,13 +654,28 @@ def _nl_subtitles_missing(ctx: AppContext, row: dict[str, Any], label: str, sid:
            group_title="{n} bestanden zonder zichtbare NL-ondertitel in " + label)
 
 
+def _mask_done_paths(ctx: AppContext) -> None:
+    """Eenmaal per proces: afgeronde taken van vóór deze versie blijvend gemaskeerd opslaan,
+    zolang de huidige sleutel nog bekend is."""
+    if ctx.services.get("mediaserver_done_paths_masked"):
+        return
+    rows = ctx.db.fetch_dicts(
+        "SELECT transaction_id, path FROM mediaserver_pending WHERE done_at IS NOT NULL")
+    for row, clean in zip(rows, mask(ctx, [r["path"] for r in rows]), strict=True):
+        if clean != row["path"]:
+            ctx.db.execute("UPDATE mediaserver_pending SET path=? WHERE transaction_id=?",
+                           (clean, row["transaction_id"]))
+    ctx.services["mediaserver_done_paths_masked"] = True
+
+
 def summarize(ctx: AppContext) -> int:
     """Per overdracht de uitkomst van alle servers samenvatten in ``mediaserver_pending`` (zoals
     1.2.2 het las): ververst als elke server ververste; de afspeeltest is klaar als elke server
     klaar is, met de slechtste uitkomst. Met één server is dat precies zijn eigen uitkomst."""
     rank = {"failed": 0, "not_found": 1, "transcode": 2, "ok": 3, "skipped": 4}
+    _mask_done_paths(ctx)
     rows = ctx.db.fetch_dicts(
-        "SELECT p.transaction_id, p.test_after, p.refreshed_at FROM mediaserver_pending p "
+        "SELECT p.transaction_id, p.path, p.test_after, p.refreshed_at FROM mediaserver_pending p "
         "WHERE p.done_at IS NULL AND EXISTS (SELECT 1 FROM mediaserver_server_results r WHERE "
         "r.transaction_id=p.transaction_id)")
     n = 0
@@ -683,9 +698,12 @@ def summarize(ctx: AppContext) -> int:
             detail = " · ".join(f"{labels.get(int(x['server_id']), 'Mediaserver')}: "
                                 f"{x['detail_nl'] or x['result']}" for x in tested)
         ctx.db.execute(
-            "UPDATE mediaserver_pending SET attempts=?, result=?, detail_nl=?, done_at=? "
+            # afgerond: het pad is alleen nog weergave; gemaskeerd vastleggen zodat een latere
+            # sleutelwissel niets onthult (open taken houden het werkpad voor verversen)
+            "UPDATE mediaserver_pending SET path=?, attempts=?, result=?, detail_nl=?, done_at=? "
             "WHERE transaction_id=?",
-            (max(int(x["attempts"]) for x in parts), worst["result"] or "skipped",
+            (mask(ctx, p["path"]), max(int(x["attempts"]) for x in parts),
+             worst["result"] or "skipped",
              mask(ctx, detail or "")[:500], max(str(x["done_at"]) for x in parts),
              p["transaction_id"]))
         n += 1

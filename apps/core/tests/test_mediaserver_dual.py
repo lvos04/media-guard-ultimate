@@ -1456,6 +1456,65 @@ def test_uitvoer_maskeert_de_sleutel_ook_in_regels_van_voor_de_upgrade(client, c
         assert sleutel not in json.dumps(inhoud, default=str), naam
 
 
+def _proefserver(ctx, net, soort):  # type: ignore[no-untyped-def]
+    emby, jf = net
+    if soort == "emby":
+        return M.LEGACY_ID, emby.key
+    ctx.config.set("global", "", "mediaserver.kind", "off", "test")
+    return _add_jelly_leon(ctx), jf.key
+
+
+@pytest.mark.parametrize("soort", ["emby", "jellyfin"])
+def test_wachtende_melding_van_voor_de_upgrade_wordt_bij_aflevering_gemaskeerd(
+        ctx, net, monkeypatch, soort):
+    from test_notify import _ntfy
+
+    from mediaguard.notify import service as N
+
+    _, sleutel = _proefserver(ctx, net, soort)
+    kanaal = _ntfy(ctx)
+    # zoals een eerdere versie hem klaarzette: onbewerkt in de wachtrij
+    ctx.db.execute("INSERT INTO notify_outbox(channel_id,category,title,body,next_attempt_at,"
+                   "created_at) VALUES (?,?,?,?,?,?)",
+                   (kanaal["id"], "waiting", f"Afspeeltest mislukt: {sleutel}.mkv",
+                    f"Bestand {MG_ROOT}/{sleutel}.mkv?api_key=geheim-oud", utcnow(), utcnow()))
+    ontvangen: list[Any] = []
+
+    async def ontvanger(context, channel, bericht, link):  # type: ignore[no-untyped-def]
+        ontvangen.append(bericht)
+
+    monkeypatch.setattr(N.ch, "send", ontvanger)
+    assert asyncio.run(N.dispatch(ctx))["sent"] == 1
+    bericht, = ontvangen
+    assert bericht.title == "Afspeeltest mislukt: ***.mkv"
+    assert sleutel not in bericht.body and "geheim-oud" not in bericht.body
+
+
+@pytest.mark.parametrize("soort", ["emby", "jellyfin"])
+def test_afgeronde_taak_blijft_gemaskeerd_na_sleutelwissel(client, ctx, net, soort):
+    sid, sleutel = _proefserver(ctx, net, soort)
+    rijen = {}
+    for naam, done in (("historisch", utcnow()), ("nieuw", None), ("open", None)):
+        pad = f"{MG_ROOT}/{sleutel}/{naam}.mkv"
+        txn = rijen[naam] = _txn(ctx, pad, job=None)
+        ctx.db.execute("INSERT INTO mediaserver_pending(transaction_id,path,kind,result,"
+                       "test_after,done_at,created_at) VALUES (?,?,?,?,?,?,?)",
+                       (txn, pad, "replace", "ok" if done else None, utcnow(), done, utcnow()))
+        ctx.db.execute("INSERT INTO mediaserver_server_results(transaction_id,server_id,result,"
+                       "refreshed_at,test_after,done_at,created_at) VALUES (?,?,?,?,?,?,?)",
+                       (txn, sid, "ok", utcnow(), utcnow(),
+                        None if naam == "open" else utcnow(), utcnow()))
+    S.summarize(ctx)
+    ctx.secrets.set(M.secret_name(sid), sleutel[::-1], "test")
+    paden = {r["transaction_id"]: r["path"]
+             for r in client.get("/api/v1/mediaserver/status").json()["tests"]}
+    assert paden == {rijen["historisch"]: f"{MG_ROOT}/***/historisch.mkv",
+                     rijen["nieuw"]: f"{MG_ROOT}/***/nieuw.mkv"}
+    # open taak houdt het werkpad voor verversen en afspeeltest
+    assert ctx.db.fetch_one("SELECT path FROM mediaserver_pending WHERE transaction_id=?",
+                            (rijen["open"],))[0] == f"{MG_ROOT}/{sleutel}/open.mkv"
+
+
 def test_emby_houdt_een_overdracht_open_tot_de_volgende_volledige_scan(ctx, net, monkeypatch):
     emby, _ = net
     nu = datetime.now(UTC)
