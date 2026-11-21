@@ -486,17 +486,20 @@ test.describe("quarantaine (opslag schaars)", () => {
     await expect(page.getByTestId(`q-item-${verified}`)).toContainText("Vrijgavecontrole: geslaagd");
     await expect(page.getByTestId(`q-item-${unchecked}`)).toContainText("nog niet gecontroleerd");
 
-    // bulk preview → only the verified item is deletable unless forced
+    // bulk preview → only the verified item is deletable; the unchecked original is the only
+    // copy and stays, also when forced (HARDE EIS, S-P3-676 R-HARDE-EIS-6)
     await page.getByTestId(`q-item-${verified}`).getByRole("checkbox").check();
     await page.getByTestId(`q-item-${unchecked}`).getByRole("checkbox").check();
     await page.getByTestId("bulk-delete").click();
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toContainText("1 originelen definitief verwijderen?");
     await expect(dialog).toContainText("4 GB");
-    await expect(dialog.getByTestId("force-unverified")).toBeVisible();
+    await expect(dialog).toContainText("Blijft bewaard");
+    await expect(dialog).toContainText("1 originelen: vrijgavecontrole niet geslaagd, dit is de enige kopie");
+    await expect(dialog.getByTestId("force-unverified")).toHaveCount(0);
     await dialog.getByRole("button", { name: "Annuleren" }).click();
 
-    // single delete of the unchecked item → 409 → explicit second warning → force
+    // single delete of the unchecked item → 409 → kept, no forced second step
     await page.getByTestId(`q-item-${unchecked}`).getByTestId("row-menu").click();
     await page.getByTestId(`delete-${unchecked}`).click();
     let confirm = page.getByRole("alertdialog");
@@ -505,11 +508,10 @@ test.describe("quarantaine (opslag schaars)", () => {
     await confirm.getByLabel(/Typ VERWIJDER/).fill("VERWIJDER");
     await confirmButton.click();
     confirm = page.getByRole("alertdialog");
-    await expect(confirm).toContainText("Vrijgavecontrole niet geslaagd.");
-    await expect(confirm.getByRole("button", { name: "Toch verwijderen zonder controle" })).toBeDisabled();
-    await confirm.getByLabel(/Typ VERWIJDER/).fill("VERWIJDER");
-    await confirm.getByRole("button", { name: "Toch verwijderen zonder controle" }).click();
-    await expect(page.getByText(/Verwijderen ingepland/)).toBeVisible();
+    await expect(confirm).toContainText("Origineel blijft bewaard");
+    await expect(confirm.getByRole("button", { name: "Toch verwijderen zonder controle" })).toHaveCount(0);
+    await confirm.getByRole("button", { name: "Annuleren" }).click();
+    await expect(page.getByTestId(`q-item-${unchecked}`)).toBeVisible();
 
     // purge preview
     await page.getByTestId("purge-button").click();

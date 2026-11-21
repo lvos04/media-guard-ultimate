@@ -243,6 +243,8 @@ export const en: Record<keyof typeof nl, string> = {
   "quarantine.deleteNoRollback": "Cannot be undone",
   "quarantine.blocked": "Skipped",
   "quarantine.blockedValue": "{count} belong to a running transaction",
+  "quarantine.keptOnlyOriginal": "Kept",
+  "quarantine.keptOnlyOriginalValue": "{count} originals: release check not passed, this is the only copy",
   "quarantine.deleteWord": "DELETE",
   "quarantine.deleteForce": "Delete anyway without check",
   "quarantine.deleteConfirm": "Delete permanently",

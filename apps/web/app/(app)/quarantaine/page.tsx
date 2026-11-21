@@ -327,6 +327,7 @@ export default function QuarantinePage() {
           { label: t("dialog.statusChange"), value: t("quarantine.deleteStatus") },
           { label: t("dialog.rollback"), value: <span className="t-danger">{t("quarantine.deleteNoRollback")}</span> },
           ...(bulkPreview?.blocked.length ? [{ label: t("quarantine.blocked"), value: t("quarantine.blockedValue", { count: num(bulkPreview.blocked.length) }) }] : []),
+          ...(bulkPreview?.kept_only_original?.length ? [{ label: t("quarantine.keptOnlyOriginal"), value: t("quarantine.keptOnlyOriginalValue", { count: num(bulkPreview.kept_only_original.length) }) }] : []),
         ]}
         confirmWord={t("quarantine.deleteWord")} confirmLabel={del?.force ? t("quarantine.deleteForce") : t("quarantine.deleteConfirm")} error={del?.error && !del.force ? del.error : null}
         onConfirm={() => void confirmDelete()}>

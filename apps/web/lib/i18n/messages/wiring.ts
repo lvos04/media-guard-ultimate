@@ -242,6 +242,8 @@ export const nl = {
   "quarantine.deleteNoRollback": "Niet terug te draaien",
   "quarantine.blocked": "Overgeslagen",
   "quarantine.blockedValue": "{count} horen bij een lopende transactie",
+  "quarantine.keptOnlyOriginal": "Blijft bewaard",
+  "quarantine.keptOnlyOriginalValue": "{count} originelen: vrijgavecontrole niet geslaagd, dit is de enige kopie",
   "quarantine.deleteWord": "VERWIJDER",
   "quarantine.deleteForce": "Toch verwijderen zonder controle",
   "quarantine.deleteConfirm": "Definitief verwijderen",

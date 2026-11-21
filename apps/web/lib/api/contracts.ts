@@ -357,7 +357,7 @@ export interface QuarantineUsage {
   queue_pause_reason_nl?: string | null;
   orphans?: { checked_at?: string | null; removed?: number; left?: number; left_bytes?: number; freed_bytes?: number } | null;
 }
-export interface BulkDeletePreview { dry_run?: boolean; count: number; bytes: number; blocked: number[]; unverified: number[]; job_ids?: number[] }
+export interface BulkDeletePreview { dry_run?: boolean; count: number; bytes: number; blocked: number[]; unverified: number[]; kept_only_original?: number[]; job_ids?: number[] }
 
 export interface DvTraceEntry { value: unknown; source: string; source_label_nl?: string; levels: Array<{ scope: string; scope_id: string; value: unknown; set: boolean; label_nl?: string }> }
 export interface DvPolicyResponse {
