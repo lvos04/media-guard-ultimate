@@ -224,7 +224,7 @@ jobs:
         working-directory: ${{ steps.bron.outputs.pad }}/services/encoder
         run: >-
           bash "$GITHUB_WORKSPACE/.forgejo/scripts/als-testgebruiker" python -m pytest -v -rfEs
-          -o faulthandler_timeout=120 --durations=5 -p no:cacheprovider
+          -o faulthandler_timeout=120 -o tmp_path_retention_policy=failed --durations=5 -p no:cacheprovider
           tests/test_mediaguard_policy.py tests/test_beslissen.py tests/test_bestandsfilter.py
           tests/test_db.py tests/test_schema_ingangen.py tests/test_scanner.py
           tests/test_opslag.py tests/test_onderhoud.py
@@ -333,10 +333,10 @@ jobs:
       - name: pytest + ruff + mypy in het image
         if: steps.proef.outputs.suite == 'true'
         run: |
-          # Het image krijgt per container een eigen /work-volume voor fixtures en SQLite.
+          # Houd de gedeelde testfilms en alleen de werkmappen van mislukte tests op /work.
           docker run --rm --env TESTDATA=/work/testdata "$ENCODE_IMAGE:test" \
             python3 -m pytest --basetemp=/work/pytest -v -rfEs \
-            -o faulthandler_timeout=180 --durations=5 -p no:cacheprovider
+            -o faulthandler_timeout=180 -o tmp_path_retention_policy=failed --durations=5 -p no:cacheprovider
           docker run --rm "$ENCODE_IMAGE:test" sh -c "ruff check app tests && mypy app"
 
       - name: Eigen encoderimages opruimen

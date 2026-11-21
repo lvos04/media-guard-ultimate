@@ -101,13 +101,13 @@ def test_platformpauze_behoudt_kijkpauze_en_vervalt_zelfstandig(
     from mg_helpers import HEADERS
 
     from app.mediaguard import holds
+    from app.onderhoud import storage_guard
     from app.planner import Planner
 
     client, database, settings = mg_client
     route = "/api/mediaguard/v1/settings/playback-hold"
     now = 2_000_000_000
     monkeypatch.setattr(holds, "time", lambda: now)
-    database.execute("UPDATE worker_config SET gepauzeerd=0, pauze_reden=NULL")
     planner = Planner(database, settings, machine_guard=lambda _: (True, None))
 
     # Ook de gezondheidsaanvraag voert de hardwarepoort uit. De simulator heeft
@@ -116,6 +116,11 @@ def test_platformpauze_behoudt_kijkpauze_en_vervalt_zelfstandig(
         return {"lanes": {"cpu": {"enabled": True}, "gpu": {"enabled": True}}, "gpu_status": {}}
 
     monkeypatch.setattr(client.app.state.capabilities, "detect", detect)
+    # Werk ook overlappende opstartpauzes bij met de opslag- en hardwaremeting van de proef.
+    storage_guard(database, settings)
+    assert client.get("/api/mediaguard/v1/health", headers=HEADERS).status_code == 200
+    assert planner._lane_available("cpu") == (True, None)
+    assert planner._lane_available("gpu") == (True, None)
 
     def pause(active: bool, lanes: list[str]) -> None:
         response = client.put(route, headers=HEADERS, json={"active": active, "lanes": lanes})
