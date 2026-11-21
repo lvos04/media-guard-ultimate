@@ -32,6 +32,6 @@ docker exec "$client" bash -eu -o pipefail -c '
 # Het noexec-volume bevat zowel de testdatabases van pytest als de herstelkopieën.
 # De uitvoerbare Docker-simulators voor de releaseproeven krijgen een eigen map in /werk.
 docker exec -i --user mg-proef --env HOME=/werk/thuis --env TMPDIR=/proef/tijdelijk \
-  --env PYTEST_ADDOPTS=--basetemp=/proef/tijdelijk/pytest --env MG_CI_PROGRAMMAMAP=/werk/proeven \
+  --env MG_CI_PROGRAMMAMAP=/werk/proeven \
   --env PATH=/opt/ci-python/bin:/usr/local/bin:/usr/bin:/bin \
   --workdir /werk/bron/apps/core "$client" "$@"
