@@ -67,13 +67,23 @@ def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
+def _mask(ctx: AppContext, text: str) -> str:
+    """Zoals ``redact``, plus elke bewaarde mediaserversleutel, ook zonder label (als mapnaam)."""
+    out = redact(text)
+    for srv in M.all_servers(ctx):
+        key = ctx.secrets.get(srv.secret_name)
+        if key and len(key) >= 4:
+            out = out.replace(key, "***")
+    return out
+
+
 def log_action(ctx: AppContext, kind: str, detail: str, *, path: str | None = None,
                txn: int | None = None, ok: bool = True, server_id: int | None = None) -> None:
     ctx.db.execute(
         "INSERT INTO mediaserver_actions(ts,kind,path,transaction_id,ok,detail_nl,server_id) "
         "VALUES (?,?,?,?,?,?,?)",
-        (utcnow(), kind, None if path is None else redact(path), txn, 1 if ok else 0,
-         redact(detail)[:500], server_id))
+        (utcnow(), kind, None if path is None else _mask(ctx, path), txn, 1 if ok else 0,
+         _mask(ctx, detail)[:500], server_id))
     ctx.db.execute("DELETE FROM mediaserver_actions WHERE id NOT IN (SELECT id FROM "
                    "mediaserver_actions ORDER BY id DESC LIMIT 500)")
 
@@ -304,17 +314,17 @@ def collect_handoffs(ctx: AppContext, servers: list[M.ServerConf] | None = None)
                 "SELECT id FROM replacement_transactions WHERE state NOT IN "
                 "('committed','rolled_back','aborted','conflict')")])
             return 0
-        waiting = ctx.state_get("mediaserver_txn_open_at_start") or []
+        waiting = ctx.state_get("mediaserver_txn_open_at_start")
+        if waiting is None:
+            # upgrade: een eerdere versie zette de cursor al terwijl er transacties open waren
+            waiting = [int(r["id"]) for r in ctx.db.fetch_all(
+                "SELECT id FROM replacement_transactions WHERE id<=? AND state NOT IN "
+                "('committed','rolled_back','aborted','conflict')", (int(cursor),))]
         rows = ctx.db.fetch_dicts(
             "SELECT id, kind, final_path, encoding_job_id FROM replacement_transactions t "
             "WHERE (id>? OR id IN (SELECT value FROM json_each(?))) AND state='committed' "
             "AND NOT EXISTS (SELECT 1 FROM mediaserver_pending p WHERE p.transaction_id=t.id) "
             "ORDER BY id LIMIT 200", (int(cursor), json.dumps(waiting)))
-        if waiting:
-            ctx.state_set("mediaserver_txn_open_at_start", [int(r["id"]) for r in ctx.db.fetch_all(
-                "SELECT id FROM replacement_transactions WHERE id IN (SELECT value FROM "
-                "json_each(?)) AND state NOT IN ('committed','rolled_back','aborted','conflict')",
-                (json.dumps(waiting),))])
         for r in rows:
             test_after = None
             # afspeeltest alleen voor een AV1-versie; een verkeerd bestand dat MediaGuard in
@@ -332,6 +342,12 @@ def collect_handoffs(ctx: AppContext, servers: list[M.ServerConf] | None = None)
                     "INSERT OR IGNORE INTO mediaserver_server_results(transaction_id,server_id,"
                     "test_after,created_at) VALUES (?,?,?,?)",
                     (r["id"], srv.id, test_after, utcnow()))
+        # pas uit de startlijst als de taken vastliggen (de LIMIT kan er een laten wachten)
+        ctx.state_set("mediaserver_txn_open_at_start", [int(r["id"]) for r in ctx.db.fetch_all(
+            "SELECT id FROM replacement_transactions t WHERE id IN (SELECT value FROM "
+            "json_each(?)) AND (state NOT IN ('committed','rolled_back','aborted','conflict') OR "
+            "(state='committed' AND NOT EXISTS (SELECT 1 FROM mediaserver_pending p "
+            "WHERE p.transaction_id=t.id)))", (json.dumps(waiting),))])
         # nog niet afgeronde transacties niet overslaan: cursor tot vóór de eerste open
         open_row = ctx.db.fetch_one(
             "SELECT MIN(id) AS m FROM replacement_transactions WHERE id>? AND state NOT IN "
@@ -372,8 +388,8 @@ def _warn_changed_paths(ctx: AppContext, sid: int, label: str) -> None:
     for row in rows:
         txn = row["transaction_id"]
         original = row["library_path"] or "(onbekend)"
-        detail = (f"Bronpad: {original}. Huidig pad: {row['path']}. Controleer in {label} "
-                  "het bibliotheekitem en de kijkgegevens voordat je zelf ververst.")
+        detail = _mask(ctx, f"Bronpad: {original}. Huidig pad: {row['path']}. Controleer in "
+                       f"{label} het bibliotheekitem en de kijkgegevens voordat je zelf ververst.")
         with ctx.db.transaction():
             changed = ctx.db.execute(
                 "UPDATE mediaserver_server_results SET done_at=?, result='skipped', detail_nl=? "

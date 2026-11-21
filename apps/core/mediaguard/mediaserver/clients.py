@@ -284,12 +284,12 @@ class EmbyClient:
 
     async def refresh_paths(self, paths: list[str]) -> None:
         await _call(self.services, "POST", self.url + "/Library/Media/Updated",
-                    headers=self.headers, confirm_post=self.kind == "jellyfin",
+                    headers=self.headers, confirm_post=True,
                     json={"Updates": [{"Path": p, "UpdateType": "Modified"} for p in paths]})
 
     async def refresh_all(self) -> None:
         await _call(self.services, "POST", self.url + "/Library/Refresh", headers=self.headers,
-                    confirm_post=self.kind == "jellyfin")
+                    confirm_post=True)
 
     async def sessions(self) -> list[Session]:
         rows = await self._get("/Sessions", ActiveWithinSeconds=120)

@@ -1290,6 +1290,68 @@ def test_open_transactie_tijdens_de_eerste_ronde_krijgt_een_taak_per_server(ctx,
                             (historisch,))[0] == 0
 
 
+def test_bestaande_cursor_van_een_eerdere_versie_laat_open_transacties_niet_vallen(ctx, net):
+    sid = _add_jelly_leon(ctx)
+    open_txn = _txn(ctx)
+    ctx.db.execute("UPDATE replacement_transactions SET state='pending' WHERE id=?", (open_txn,))
+    historisch = _txn(ctx)
+    ctx.state_set("mediaserver_txn_cursor", historisch)  # zoals een eerdere versie dat deed
+    tick(ctx, sessions=False)
+    ctx.db.execute("UPDATE replacement_transactions SET state='committed' WHERE id=?", (open_txn,))
+    tick(ctx, sessions=False)
+    taken = ctx.db.fetch_all("SELECT server_id FROM mediaserver_server_results "
+                             "WHERE transaction_id=? ORDER BY server_id", (open_txn,))
+    assert [r[0] for r in taken] == [M.LEGACY_ID, sid]
+    assert ctx.db.fetch_one("SELECT count(*) FROM mediaserver_pending WHERE transaction_id=?",
+                            (historisch,))[0] == 0
+
+
+def test_meer_open_transacties_dan_een_ronde_aankan_krijgen_allemaal_taken(ctx, net):
+    sid = _add_jelly_leon(ctx)
+    with ctx.db.transaction():
+        ids = [_txn(ctx, f"{MG_ROOT}/Film {n}.mkv", job=None) for n in range(201)]
+        ctx.db.execute("UPDATE replacement_transactions SET state='pending'")
+    tick(ctx, sessions=False)
+    ctx.db.execute("UPDATE replacement_transactions SET state='committed'")
+    for _ in range(3):
+        tick(ctx, sessions=False)
+    aantallen = dict(ctx.db.fetch_all("SELECT server_id, count(*) FROM "
+                                      "mediaserver_server_results GROUP BY server_id"))
+    assert aantallen == {M.LEGACY_ID: len(ids), sid: len(ids)}
+
+
+@pytest.mark.parametrize("status", [304, 303])
+@pytest.mark.parametrize("soort", ["emby", "jellyfin"])
+def test_onbevestigde_volledige_scan_houdt_de_taak_open(ctx, net, monkeypatch, soort, status):
+    emby, jf = net
+    server = emby
+    if soort == "jellyfin":
+        ctx.config.set("global", "", "mediaserver.kind", "off", "test")
+        _add_jelly_leon(ctx)
+        server = jf
+    nu = datetime.now(UTC)
+    monkeypatch.setattr(S, "now_utc", lambda: nu)
+    tick(ctx, sessions=False)
+    txn = _txn(ctx, "/zonder-koppeling/film.mkv", job=None)
+    echt = server.handle
+
+    def onbevestigd(verzoek: httpx.Request) -> httpx.Response:
+        if verzoek.url.path.endswith("/Library/Refresh"):
+            return httpx.Response(status, headers={"Location": "/aanmelden"})
+        if verzoek.url.path == "/aanmelden":
+            return httpx.Response(200, text="Aanmelden")
+        return echt(verzoek)
+
+    monkeypatch.setattr(server, "handle", onbevestigd)
+    tick(ctx, sessions=False)
+    open_ = "SELECT refreshed_at FROM mediaserver_server_results WHERE transaction_id=?"
+    assert ctx.db.fetch_one(open_, (txn,))[0] is None
+    monkeypatch.setattr(server, "handle", echt)
+    nu += timedelta(minutes=32)
+    tick(ctx, sessions=False)
+    assert ctx.db.fetch_one(open_, (txn,))[0] is not None
+
+
 def test_emby_houdt_een_overdracht_open_tot_de_volgende_volledige_scan(ctx, net, monkeypatch):
     emby, _ = net
     nu = datetime.now(UTC)
@@ -1316,8 +1378,9 @@ def test_emby_houdt_een_overdracht_open_tot_de_volgende_volledige_scan(ctx, net,
         nieuw.db.close()
 
 
+@pytest.mark.parametrize("label", ["token=", ""])
 @pytest.mark.parametrize("soort", ["emby", "jellyfin"])
-def test_meldingen_en_actielog_tonen_geen_gevoelige_padonderdelen(ctx, net, soort):
+def test_meldingen_en_actielog_tonen_geen_gevoelige_padonderdelen(ctx, net, soort, label):
     emby, jf = net
     if soort == "jellyfin":
         ctx.config.set("global", "", "mediaserver.kind", "off", "test")
@@ -1326,7 +1389,7 @@ def test_meldingen_en_actielog_tonen_geen_gevoelige_padonderdelen(ctx, net, soor
         sid = M.LEGACY_ID
     sleutel = (jf if soort == "jellyfin" else emby).key
     tick(ctx, sessions=False)
-    bron = f"{MG_ROOT}/token={sleutel}/Proef"
+    bron = f"{MG_ROOT}/{label}{sleutel}/Proef"
     gelijk = _txn(ctx, bron + ".mkv")
     wissel = _txn(ctx, bron + "-nieuw.mkv")
     ctx.db.execute("UPDATE replacement_transactions SET library_path=? WHERE id=?",
@@ -1342,10 +1405,12 @@ def test_meldingen_en_actielog_tonen_geen_gevoelige_padonderdelen(ctx, net, soor
     acties = ctx.db.fetch_dicts("SELECT path,detail_nl FROM mediaserver_actions "
                                 "WHERE server_id=? AND transaction_id=?", (sid, gelijk))
     meldingen = ctx.db.fetch_dicts("SELECT title,body FROM notifications")
+    jobdetail = ctx.db.fetch_dicts("SELECT detail_nl FROM mediaserver_server_results UNION ALL "
+                                   "SELECT detail_nl FROM mediaserver_pending")
     assert acties
     if soort == "jellyfin":
         assert len([e for e in live if e["topic"] == "notification"]) == 1
-    for uitvoer in (live, acties, meldingen):
+    for uitvoer in (live, acties, meldingen, jobdetail):
         assert sleutel not in json.dumps(uitvoer, default=str)
 
 
