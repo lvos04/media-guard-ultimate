@@ -47,14 +47,33 @@ verschijnt `mediaserver.refresh.requested` in de outbox. De afspeeltest volgt af
 onbekende mapvertaling blijft de taak open tot Jellyfin een volledige scan aanvaardt. Tussen
 twee volledige scans zit minstens een halfuur.
 
-Een vervanging die het pad wijzigt, bijvoorbeeld van `.mp4` naar `.mkv`, voert MediaGuard niet
-uit zolang er een mediaserver bekend is (Emby, Jellyfin of Jelly Leon). Na een bibliotheekscan
-zou de server een nieuw item maken zonder gezien-status, hervatpunt en favorieten. De transactie
-stopt vóór het veiligstellen met code `PATH_CHANGE`; het bronbestand blijft staan en de
-geverifieerde encode wacht in staging (opnieuw over zes uur). Een padwissel uit een oudere versie
-of een terugzetting geeft één melding met het bronpad en het nieuwe pad; MediaGuard slaat dan de
-automatische Jellyfin-verversing en afspeeltest voor dat item over. Sleutels in een pad worden in
-meldingen en het actielog gemaskeerd. Kijkgegevens blijven in beheer van de mediaserver.
+Een vervanging die het pad wijzigt, bijvoorbeeld van `.mp4` naar `.mkv`, voert MediaGuard alleen
+uit als elke bekende mediaserver (Emby, Jellyfin of Jelly Leon) het item kent met een provider-ID
+(Imdb, Tmdb of Tvdb). Emby en Jellyfin bewaren gezien-status, hervatpunt en favoriet op die
+provider-ID, niet op het pad. Vóór het veiligstellen leest MediaGuard per server en per gebruiker
+die drie waarden en legt ze vast in het journaal van de transactie. MediaGuard leest alleen: het
+wijzigt nooit kijkgegevens en leest of schrijft nooit de database van een mediaserver.
+
+Ontbreekt bij één server de provider-ID, is een server onbereikbaar, losgemaakt of een soort
+waarvan MediaGuard de kijkgegevens niet kan lezen (Plex), of lukt het lezen van één gebruiker
+niet, dan stopt de transactie vóór het veiligstellen met code `PATH_CHANGE`. Het bronbestand
+blijft dan staan en de geverifieerde encode wacht in staging (opnieuw over zes uur). Een
+provider-ID geef je de server bijvoorbeeld met een `.nfo` naast de film (`tmdbid`, `imdbid`) of
+via de metadata in de mediaserver.
+
+Na de vervanging zoekt MediaGuard bij elke mediaserverronde het nieuwe item op het nieuwe pad,
+eist dezelfde provider-ID en vergelijkt de kijkgegevens per gebruiker met de vastgelegde
+waarden. Zolang dat niet gelijk is, slaagt de vrijgavecontrole niet en blijft het origineel in
+quarantaine; automatisch opruimen gebeurt dan nooit. Na drie mislukte controles komt er één
+melding met de vastgelegde waarden per gebruiker en wat er afwijkt. MediaGuard blijft daarna
+controleren (eerst elke tien minuten, later elke zes uur); herstel je de gegevens in de
+mediaserver, dan slaagt de controle alsnog. Je kunt het origineel ook terugzetten vanuit de
+quarantaine. Terugzetten vanuit de quarantaine (bijvoorbeeld `.mkv` terug naar `.mp4`)
+volgt dezelfde regels: zonder provider-ID op elke server blijft het actuele bestand staan en
+het origineel in quarantaine. Een padwissel uit een oudere versie of een terugzetting geeft één melding met het
+bronpad en het nieuwe pad; MediaGuard slaat dan de automatische Jellyfin-verversing en
+afspeeltest voor dat item over. Sleutels in een pad worden in meldingen en het actielog
+gemaskeerd. Kijkgegevens blijven in beheer van de mediaserver.
 
 Bij uitval houdt MediaGuard de taken vast. De outbox bevat één `mediaserver.refresh.failed`
 per storing van een Jellyfin-server, gekoppeld aan de eerste getroffen transactie. Controleer
@@ -128,6 +147,9 @@ consistent (G2).
 - Jobs in `awaiting_activation` blijven wachten op **Activeer na verificatie**; jobs in
   `handed_off` volgen de recovery-transactie. Is die `rolled_back`/`aborted`, dan meldt
   core `rejected` aan de encoder (staging wordt opgeruimd) en blijft het origineel.
+  Uitzondering: brak een herstart of stroomstoring de activatie af vóór de wissel, en zijn
+  bron en geverifieerde encode nog ongewijzigd, dan is dat geen afwijzing. De job gaat terug
+  naar `awaiting_activation`, de encoder hoort niets en de stagingkopie blijft staan.
 - Is de bron intussen gewijzigd (nieuwe import), dan weigert stap 2 de vervanging
   (`SOURCE_CHANGED`); plan een nieuwe encode.
 - Noodstop (`POST /api/v1/system/emergency-stop`) stopt nieuwe grabs, encodes,

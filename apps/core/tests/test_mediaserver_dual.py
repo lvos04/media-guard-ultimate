@@ -33,7 +33,7 @@ from uuid import UUID
 import httpx
 import pytest
 from test_encoding_support import FakeInstance, FakeRegistry
-from test_recovery import Env
+from test_recovery import ORIGINAL, Env
 
 from mediaguard.db import utcnow
 from mediaguard.mediaserver import servers as M
@@ -71,6 +71,12 @@ class Server:
         self.film = FILM.replace(MG_ROOT, root)
         self.item_ids = {self.film: "9"}
         self.user_data: dict[tuple[str, str], dict] = {}
+        #: ProviderIds per item-ID; kijkgegevens mogen ook op ``"tmdb:<id>"`` staan (zoals echte
+        #: servers ze op de provider-ID bewaren)
+        self.providers: dict[str, dict[str, str]] = {}
+        #: ProviderIds die een nieuw item na verversen krijgt (zoals uit een .nfo)
+        self.new_item_providers: dict[str, str] | None = None
+        self.users: list[dict[str, Any]] = [{"Id": "u1", "Policy": {"IsAdministrator": True}}]
         #: foutpagina die de ontvangen aanmeldkoppen terugkaatst (letterlijk, kaal en als JSON)
         self.echo: int | None = None
         #: eigen foutpagina bij ``echo``: krijgt de ontvangen sleutel en bepaalt vorm en plaats
@@ -129,20 +135,26 @@ class Server:
         if path == "/Library/Media/Updated":
             for update in json.loads(request.content)["Updates"]:
                 self.updated.append(update["Path"])
-                self.item_ids.setdefault(update["Path"], str(10 + len(self.item_ids)))
+                if update["Path"] not in self.item_ids:
+                    self.item_ids[update["Path"]] = str(10 + len(self.item_ids))
+                    if self.new_item_providers is not None:
+                        self.providers[self.item_ids[update["Path"]]] = self.new_item_providers
             return httpx.Response(204)
         if path == "/Library/Refresh":
             return httpx.Response(204)
         if path == "/Sessions":
             return httpx.Response(200, json=self.sessions)
         if path == "/Users":
-            return httpx.Response(200, json=[{"Id": "u1", "Policy": {"IsAdministrator": True}}])
+            return httpx.Response(200, json=self.users)
         if path == "/Items":
             user = request.url.params.get("UserId", "")
+            ids = request.url.params.get("Ids")
             return httpx.Response(200, json={"Items": [
                 {"Id": item, "Type": "Movie", "Path": p,
-                 "UserData": self.user_data.get((user, item))}
-                for p, item in self.item_ids.items()
+                 "UserData": self.user_data.get((user, item)) or self.user_data.get(
+                     (user, f"tmdb:{self.providers.get(item, {}).get('Tmdb')}")),
+                 **({"ProviderIds": self.providers[item]} if item in self.providers else {})}
+                for p, item in self.item_ids.items() if ids is None or item == ids
             ]})
         if path.endswith("/PlaybackInfo"):
             streams: list[dict[str, Any]] = [{"Type": "Video", "Codec": "av1"}]
@@ -1435,3 +1447,304 @@ async def test_padwissel_wordt_uitgesteld_en_het_bronbestand_blijft(ctx, net, tm
     await S.tick(ctx, sessions=False)
     assert emby.updated == jf.updated == [] and refresh_events(ctx) == []
     assert not [r for r in emby.requests + jf.requests if r.method == "POST"]
+
+
+# -- S-P3-676: padwissel toegestaan met provider-ID ------------------------------------------------
+#
+# Toestandstabel (één test per rij):
+#   A  elke bekende server kent het item met provider-ID     -> vervangen; na de scan kijkgegevens
+#                                                               per gebruiker gelijk -> vrijgave
+#   B  één server zonder provider-ID                          -> PATH_CHANGE-uitstel, bron blijft
+#   C  een server onbereikbaar bij het vastleggen             -> PATH_CHANGE-uitstel, bron blijft
+#   D  een server die kijkgegevens niet kan tonen (Plex)      -> PATH_CHANGE-uitstel, bron blijft
+#   E  na de scan wijken kijkgegevens af                      -> melding met vastgelegde waarden,
+#                                                               origineel blijft, geen vrijgave
+#   F  na de scan is het nieuwe item niet te vinden           -> idem
+#   G  afwijking later verholpen in de mediaserver           -> controle slaagt alsnog
+KIJK = {"Played": True, "PlaybackPositionTicks": 0, "IsFavorite": True}
+BEZIG = {"Played": False, "PlaybackPositionTicks": 78901234, "IsFavorite": True}
+PROV = {"Tmdb": "4242", "Imdb": "tt0004242"}
+
+
+def _padwissel_opzet(ctx, net, tmp_path, monkeypatch, soorten=("emby", "jellyfin")):
+    emby, jf = net
+    if "emby" not in soorten:
+        # geen Emby: ook geen bewaard adres of sleutel (anders is Emby bekend maar losgemaakt)
+        ctx.config.set("global", "", "mediaserver.kind", "off", "test")
+        ctx.config.set("global", "", "mediaserver.url", "", "test")
+        ctx.secrets.delete(S.SECRET_KEY)
+    if "jellyfin" in soorten:
+        _add_jelly_leon(ctx)
+    ctx.services["instance_registry"] = FakeRegistry(FakeInstance("sonarr-series"))
+    env = Env(ctx, tmp_path, ext=".mp4")
+    monkeypatch.setattr(S, "mg_roots", lambda _: [str(env.dir)])
+    actief = [s for s, n in ((emby, "emby"), (jf, "jellyfin")) if n in soorten]
+    for srv in actief:
+        srv.root = "/bibliotheek/Season 01"
+        srv.item_ids = {f"{srv.root}/{env.lib.name}": "17"}
+        srv.providers = {"17": dict(PROV)}
+        srv.new_item_providers = dict(PROV)
+        srv.users = [{"Id": "u1", "Name": "Jan", "Policy": {"IsAdministrator": True}},
+                     {"Id": "u2", "Name": "Els", "Policy": {}}]
+        # zoals Emby en Jellyfin: kijkgegevens op de provider-ID, niet op het pad
+        srv.user_data = {("u1", "tmdb:4242"): dict(KIJK), ("u2", "tmdb:4242"): dict(BEZIG)}
+    return env, actief
+
+
+def _quarantaine(ctx, txn):
+    return ctx.db.fetch_one("SELECT * FROM quarantine_items WHERE transaction_id=?", (txn,))
+
+
+def _klok(monkeypatch, minuten: int) -> None:
+    later = datetime.now(UTC) + timedelta(minutes=minuten)
+    monkeypatch.setattr(S, "now_utc", lambda: later)
+
+
+@pytest.mark.parametrize("soorten", [("emby",), ("jellyfin",), ("emby", "jellyfin")],
+                         ids=["emby", "jellyfin", "beide"])
+async def test_padwissel_met_provider_id_behoudt_kijkgegevens(ctx, net, tmp_path, monkeypatch,
+                                                              soorten):
+    from mediaguard.mediaserver import padwissel
+    from mediaguard.recovery import release_check
+
+    env, actief = _padwissel_opzet(ctx, net, tmp_path, monkeypatch, soorten)
+    await S.tick(ctx, sessions=False)
+    txn = env.txn(encoding_job_id=7)
+    assert (await executor.run_transaction(ctx, txn))["state"] == "committed"
+    env.assert_consistent(txn)
+    snap = padwissel.snapshot(ctx, txn)
+    assert [s["users"]["u2"]["position"] for s in snap["servers"]] == [78901234] * len(actief)
+    item = _quarantaine(ctx, txn)
+    assert release_check.run_check(ctx, item["id"])["status"] == "pending"
+    await S.tick(ctx, sessions=False)
+    for srv in actief:
+        nieuw = srv.item_ids[f"{srv.root}/{env.final.name}"]
+        assert nieuw != "17" and srv.updated == [f"{srv.root}/{env.final.name}"]
+    assert padwissel.release_state(ctx, txn)[0] == "passed"
+    checks = release_check.run_check(ctx, item["id"])["checks"]
+    assert {"name": "kijkgegevens", "passed": True,
+            "detail": "kijkgegevens na de padwissel gelijk op elke mediaserver"} in checks
+    assert not ctx.db.fetch_all("SELECT 1 FROM notifications WHERE title LIKE '%adwissel%' "
+                                "OR title LIKE '%bibliotheekpad%'")
+    for srv in actief:
+        assert not [r for r in srv.requests if r.method == "POST" and "UserData" in r.url.path]
+        assert {r.method for r in srv.requests if "/Items" in r.url.path
+                and "PlaybackInfo" not in r.url.path} == {"GET"}
+    assert Path(item["quarantine_path"]).exists()
+
+
+@pytest.mark.parametrize("fout", ["geen-provider-id", "onbereikbaar", "plex", "losgemaakt"])
+async def test_padwissel_zonder_volledige_controle_blijft_uitgesteld(ctx, net, tmp_path,
+                                                                     monkeypatch, fout):
+    from mediaguard.mediaserver import padwissel
+
+    env, (emby, jf) = _padwissel_opzet(ctx, net, tmp_path, monkeypatch)
+    if fout == "geen-provider-id":
+        jf.providers = {}
+    elif fout == "onbereikbaar":
+        emby.down = True
+    elif fout == "plex":
+        M.add(ctx, "plex", "http://plex:32400", "Plex", "test")
+        ctx.secrets.set(M.secret_name(3), "plex-sleutel", "test")
+    else:
+        # Emby losgemaakt, adres en sleutel bewaard: bekend, dus niet te controleren
+        ctx.config.set("global", "", "mediaserver.kind", "off", "test")
+    txn = env.txn(encoding_job_id=7)
+    assert (await executor.run_transaction(ctx, txn))["state"] == "aborted"
+    env.assert_consistent(txn)
+    assert env.lib.exists() and not env.final.exists() and env.staged.exists()
+    abort = json.loads(ctx.db.fetch_one("SELECT detail_json FROM replacement_journal WHERE "
+                                        "transaction_id=? AND step='abort'", (txn,))[0])
+    assert abort["code"] == "PATH_CHANGE"
+    assert {"geen-provider-id": "geen provider-ID", "onbereikbaar": "niet bereikbaar",
+            "plex": "niet te controleren", "losgemaakt": "niet actief gekoppeld"}[fout] \
+        in abort["message"]
+    assert padwissel.snapshot(ctx, txn) is None and _quarantaine(ctx, txn) is None
+
+
+@pytest.mark.parametrize("afwijking", ["kijkgegevens", "niet-gevonden"])
+async def test_padwissel_afwijking_meldt_en_bewaart_het_origineel(ctx, net, tmp_path,
+                                                                  monkeypatch, afwijking):
+    from mediaguard.mediaserver import padwissel
+    from mediaguard.recovery import release_check
+    from mediaguard.recovery import service as recovery
+
+    env, (emby, jf) = _padwissel_opzet(ctx, net, tmp_path, monkeypatch)
+    ctx.config.set("global", "", "quarantine.retention_days", 0, "test")
+    ctx.config.set("global", "", "quarantine.min_age_hours", 0, "test")
+    await S.tick(ctx, sessions=False)
+    txn = env.txn(encoding_job_id=7)
+    assert (await executor.run_transaction(ctx, txn))["state"] == "committed"
+    if afwijking == "kijkgegevens":
+        # Jellyfin zou het nieuwe item (ID 11) zonder de oude kijkgegevens aanmaken
+        leeg = {"Played": False, "PlaybackPositionTicks": 0, "IsFavorite": False}
+        jf.user_data.update({("u1", "11"): dict(leeg), ("u2", "11"): dict(leeg)})
+    else:
+        jf.new_item_providers = None
+        jf.item_ids.clear()
+        jf.handle = _zonder_nieuw_item(jf)
+    for stap in range(padwissel.NOTIFY_AFTER):
+        _klok(monkeypatch, stap * padwissel.FAST_MIN + 1)
+        await S.tick(ctx, sessions=False)
+    melding = ctx.db.fetch_dicts("SELECT title, body FROM notifications WHERE title LIKE "
+                                 "'Kijkgegevens na padwissel%'")
+    assert len(melding) == 1
+    body = melding[0]["body"]
+    assert "Jan: gezien ja, hervatpunt 0:00:00, favoriet ja" in body
+    assert "Els: gezien nee, hervatpunt 0:00:07, favoriet ja" in body
+    assert ("Jellyfin" in body or "Jelly Leon" in body) and "origineel blijft" in body
+    item = _quarantaine(ctx, txn)
+    uitslag = release_check.run_check(ctx, item["id"])
+    assert uitslag["status"] == "failed"
+    assert not next(c for c in uitslag["checks"] if c["name"] == "kijkgegevens")["passed"]
+    assert item["id"] not in [q["id"] for q in recovery.purge_candidates(ctx)]
+    assert Path(item["quarantine_path"]).read_bytes() == ORIGINAL
+    assert not [r for r in emby.requests + jf.requests if r.method == "POST"
+                and "UserData" in r.url.path]
+
+
+def _zonder_nieuw_item(srv):
+    origineel = Server.handle.__get__(srv)
+
+    def handle(request):
+        if request.url.path.endswith("/Library/Media/Updated"):
+            srv.requests.append(request)
+            return httpx.Response(204)
+        return origineel(request)
+    return handle
+
+
+async def test_padwissel_controle_slaagt_alsnog_na_herstel_in_de_server(ctx, net, tmp_path,
+                                                                        monkeypatch):
+    from mediaguard.mediaserver import padwissel
+
+    env, (_, jf) = _padwissel_opzet(ctx, net, tmp_path, monkeypatch)
+    await S.tick(ctx, sessions=False)
+    txn = env.txn(encoding_job_id=7)
+    assert (await executor.run_transaction(ctx, txn))["state"] == "committed"
+    goed = dict(jf.user_data)
+    jf.user_data = {}
+    for stap in range(padwissel.NOTIFY_AFTER):
+        _klok(monkeypatch, stap * padwissel.FAST_MIN + 1)
+        await S.tick(ctx, sessions=False)
+    assert padwissel.release_state(ctx, txn)[0] == "failed"
+    jf.user_data = goed
+    _klok(monkeypatch, padwissel.NOTIFY_AFTER * padwissel.FAST_MIN + 1)
+    await S.tick(ctx, sessions=False)
+    assert padwissel.release_state(ctx, txn)[0] == "passed"
+
+
+# -- S-P3-676: R-HARDE-EIS-4 en -5 uit de herreview van S-P3-675 -----------------------------------
+@pytest.mark.parametrize("soort", ["emby", "jellyfin"])
+async def test_terugzetten_met_padwissel_zonder_provider_id_blijft_uitgesteld(ctx, net, tmp_path,
+                                                                             monkeypatch, soort):
+    """R-HARDE-EIS-4: terugzetten (.mkv -> .mp4) verandert het pad van het kijkitem net zo."""
+    from mediaguard.recovery import service as recovery
+
+    emby, jf = net
+    ctx.config.set("global", "", "mediaserver.kind", "off", "test")
+    ctx.config.set("global", "", "mediaserver.url", "", "test")
+    ctx.secrets.delete(S.SECRET_KEY)
+    ctx.services["instance_registry"] = FakeRegistry(FakeInstance("sonarr-series"))
+    env = Env(ctx, tmp_path, ext=".mp4")
+    txn = env.txn(encoding_job_id=7)
+    assert (await executor.run_transaction(ctx, txn))["state"] == "committed"  # zonder server
+    if soort == "emby":
+        ctx.config.set("global", "", "mediaserver.kind", "emby", "test")
+        ctx.config.set("global", "", "mediaserver.url", "http://emby:8096", "test")
+        ctx.secrets.set(S.SECRET_KEY, "emby-sleutel", "test")
+    else:
+        _add_jelly_leon(ctx)
+    srv = emby if soort == "emby" else jf
+    monkeypatch.setattr(S, "mg_roots", lambda _: [str(env.dir)])
+    srv.root = "/bibliotheek/Season 01"
+    srv.item_ids = {f"{srv.root}/{env.final.name}": "21"}  # het actuele kijkitem, zonder ID
+    item = _quarantaine(ctx, txn)
+    terug, _ = recovery.create_restore(ctx, item["id"], "test")
+    uit = await executor.run_transaction(ctx, terug)
+    assert uit["state"] == "aborted"
+    abort = json.loads(ctx.db.fetch_one("SELECT detail_json FROM replacement_journal WHERE "
+                                        "transaction_id=? AND step='abort'", (terug,))[0])
+    assert abort["code"] == "PATH_CHANGE" and "geen provider-ID" in abort["message"]
+    assert env.final.read_bytes() != ORIGINAL and not env.lib.exists()
+    assert Path(item["quarantine_path"]).read_bytes() == ORIGINAL
+    assert _quarantaine(ctx, txn)["status"] == "restorable"
+
+
+@pytest.mark.parametrize("soort", ["emby", "jellyfin"])
+def test_onderbroken_herpoging_houdt_de_geverifieerde_encode(ctx, client, net, tmp_path,
+                                                             monkeypatch, soort):
+    """R-HARDE-EIS-5: een herstart midden in een herpoging is geen afwijzing van de encode."""
+    import hashlib
+
+    from test_encoding import SRC, job_body
+    from test_encoding_support import install
+
+    from mediaguard.app import create_app
+    from mediaguard.encoding import service as encode
+    from mediaguard.recovery import service as herstel
+
+    if soort == "jellyfin":
+        ctx.config.set("global", "", "mediaserver.kind", "off", "test")
+        _add_jelly_leon(ctx)
+    ctx.services.pop("encoder_client", None)
+    fake = install(ctx, ctx.settings.staging_dir)
+    bron = tmp_path / "library" / "Show" / "Season 01" / "Show - S01E01.mp4"
+    bron.parent.mkdir(parents=True)
+    bron.write_bytes(SRC)
+    fake.add_source(bron, codec="h264", height=1080, audio=[("jpn", ""), ("eng", "")])
+    ctx.settings.quarantine_dir.mkdir(parents=True, exist_ok=True)
+    ctx.config.set("global", "", "recovery.min_free_gb", 0, "test")
+    ctx.config.set("global", "", "encoding.auto_commit_after_verify", False, "test")
+    herstel.mark_heartbeat(ctx)
+    jid = client.post("/api/v1/encoding/jobs", json=job_body(bron)).json()["id"]
+    klaar = asyncio.run(encode.sync_job(ctx, jid))
+    staged = Path(klaar["staged_output"]["path"])
+    hashes = [hashlib.sha256(p.read_bytes()).digest() for p in (bron, staged)]
+    txn = client.post(f"/api/v1/encoding/jobs/{jid}/activate",
+                      json={"confirm": True}).json()["transaction_id"]
+
+    def stop_bij_slot(stap):
+        if stap == "lock":
+            raise executor.SimulatedCrash(stap)
+
+    with pytest.raises(executor.SimulatedCrash):
+        asyncio.run(executor.run_transaction(ctx, txn, fault=stop_bij_slot))
+    ctx.db.close()
+    nieuw = create_app(ctx.settings).state.ctx
+    for naam in ("mediaserver_transport", "encoder_transport", "instance_registry"):
+        if naam in ctx.services:
+            nieuw.services[naam] = ctx.services[naam]
+    try:
+        executor.recover_pending(nieuw)
+        job = asyncio.run(encode.sync_job(nieuw, jid))
+        assert job["status"] == "awaiting_activation"
+        assert not any(p.endswith("/rejected") for _, p, _ in fake.calls)
+        assert [hashlib.sha256(p.read_bytes()).digest() for p in (bron, staged)] == hashes
+    finally:
+        nieuw.db.close()
+
+
+async def test_terugzetten_met_provider_id_controleert_kijkgegevens(ctx, net, tmp_path,
+                                                                    monkeypatch):
+    """R-HARDE-EIS-4, goede pad: terugzetten mag, met dezelfde vastlegging en nacontrole."""
+    from mediaguard.mediaserver import padwissel
+    from mediaguard.recovery import release_check
+    from mediaguard.recovery import service as recovery
+
+    env, actief = _padwissel_opzet(ctx, net, tmp_path, monkeypatch)
+    await S.tick(ctx, sessions=False)
+    txn = env.txn(encoding_job_id=7)
+    assert (await executor.run_transaction(ctx, txn))["state"] == "committed"
+    await S.tick(ctx, sessions=False)
+    assert padwissel.release_state(ctx, txn)[0] == "passed"
+    terug, _ = recovery.create_restore(ctx, _quarantaine(ctx, txn)["id"], "test")
+    assert (await executor.run_transaction(ctx, terug))["state"] == "committed"
+    assert env.lib.read_bytes() == ORIGINAL and not env.final.exists()
+    snap = padwissel.snapshot(ctx, terug)
+    assert [s["users"]["u2"]["position"] for s in snap["servers"]] == [78901234] * len(actief)
+    item = _quarantaine(ctx, terug)
+    assert release_check.run_check(ctx, item["id"])["status"] == "pending"
+    await S.tick(ctx, sessions=False)
+    assert padwissel.release_state(ctx, terug)[0] == "passed"
+    assert Path(item["quarantine_path"]).exists()

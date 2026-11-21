@@ -889,7 +889,7 @@ async def handoff(ctx: AppContext, job_id: int, *, actor: str,
 ENV_RETRY_HOURS = 6
 TEMPORARY_ABORTS = {"LOCKED", "IMPORT_IN_PROGRESS", "EMERGENCY_STOP", "LIBRARY_LOCKED",
                     "INSUFFICIENT_SPACE", "HARDLINK_CONFIRMATION_REQUIRED", "SNAPSHOT_FAILED",
-                    "ENVIRONMENT", "PATH_CHANGE"}
+                    "ENVIRONMENT", "PATH_CHANGE", "INTERRUPTED"}
 SLOW_RETRY_ABORTS = {"ENVIRONMENT", "PATH_CHANGE"}
 
 
@@ -924,7 +924,7 @@ async def _sync_handoff(ctx: AppContext, job: dict[str, Any]) -> dict[str, Any]:
                 return job  # volgende sync probeert opnieuw
         # rapport 6 / N4: een eerdere 'Activatie uitgesteld'-melding hoort niet te blijven staan
         _update(ctx, job["id"], status="committed", error=None)
-    elif txn["state"] == "aborted" and \
+    elif txn["state"] in ("aborted", "rolled_back") and \
             (code := _abort_code(ctx, job["transaction_id"])) in TEMPORARY_ABORTS:
         fields: dict[str, Any] = {}
         if code in SLOW_RETRY_ABORTS:

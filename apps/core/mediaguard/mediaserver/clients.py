@@ -316,7 +316,13 @@ class EmbyClient:
     async def find_item(self, server_path: str, search: str, user_id: str | None
                         ) -> str | None:
         """Zoek het item met precies dit pad (op titel, daarna afleveringen van de serie)."""
-        params: dict[str, Any] = {"Recursive": "true", "Fields": "Path",
+        item = await self.item_by_path(server_path, search, user_id, fields="Path")
+        return str(item["Id"]) if item else None
+
+    async def item_by_path(self, server_path: str, search: str, user_id: str | None,
+                           fields: str = "Path,ProviderIds") -> dict[str, Any] | None:
+        """Het item met precies dit pad (alleen lezen); standaard met ``ProviderIds``."""
+        params: dict[str, Any] = {"Recursive": "true", "Fields": fields,
                                   "IncludeItemTypes": "Movie,Series,Episode",
                                   "SearchTerm": search, "Limit": 50}
         if user_id:
@@ -325,16 +331,28 @@ class EmbyClient:
         items = (found or {}).get("Items") or []
         for it in items:
             if it.get("Path") == server_path:
-                return str(it["Id"])
+                return dict(it)
         for it in items:
             if it.get("Type") != "Series":
                 continue
             eps = await self._get("/Items", ParentId=it["Id"], Recursive="true",
-                                  IncludeItemTypes="Episode", Fields="Path",
+                                  IncludeItemTypes="Episode", Fields=fields,
                                   **({"UserId": user_id} if user_id else {}))
             for ep in (eps or {}).get("Items") or []:
                 if ep.get("Path") == server_path:
-                    return str(ep["Id"])
+                    return dict(ep)
+        return None
+
+    async def users(self) -> list[dict[str, Any]]:
+        return list(await self._get("/Users") or [])
+
+    async def user_data(self, item_id: str, user_id: str) -> dict[str, Any] | None:
+        """Kijkgegevens van één gebruiker voor één item (alleen lezen); None = niet gevonden."""
+        found = await self._get("/Items", Ids=item_id, UserId=user_id, EnableUserData="true")
+        for it in (found or {}).get("Items") or []:
+            if str(it.get("Id")) == item_id:
+                data = it.get("UserData")
+                return dict(data) if isinstance(data, dict) else None
         return None
 
     async def playback_test(self, server_path: str, search: str) -> PlaybackResult:

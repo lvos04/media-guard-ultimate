@@ -202,6 +202,15 @@ def run_check(ctx: AppContext, item_id: int) -> dict[str, Any]:
     txn = ctx.db.fetch_one("SELECT * FROM replacement_transactions WHERE id=?",
                            (item["transaction_id"],))
     checks: list[dict[str, Any]] = []
+    from mediaguard.mediaserver.padwissel import release_state
+
+    watch = release_state(ctx, int(item["transaction_id"])) if txn is not None else None
+    if watch is not None and watch[0] == "pending":
+        # padwissel: eerst moeten de kijkgegevens op elke mediaserver bevestigd zijn
+        return {"item_id": item_id, "status": "pending", "checks": [], "skipped": True}
+    if watch is not None:
+        checks.append({"name": "kijkgegevens", "passed": watch[0] == "passed",
+                       "detail": watch[1]})
     if txn is None or txn["state"] != "committed":
         checks.append({"name": "transactie", "passed": False,
                        "detail": "transactie niet afgerond"})

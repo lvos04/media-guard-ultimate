@@ -384,7 +384,11 @@ def _warn_changed_paths(ctx: AppContext, sid: int, label: str) -> None:
         "SELECT r.transaction_id, t.library_path, p.path FROM mediaserver_server_results r "
         "JOIN mediaserver_pending p USING(transaction_id) "
         "LEFT JOIN replacement_transactions t ON t.id=r.transaction_id "
-        "WHERE r.server_id=? AND r.done_at IS NULL AND t.library_path IS NOT p.path", (sid,))
+        "WHERE r.server_id=? AND r.done_at IS NULL AND t.library_path IS NOT p.path "
+        # toegestane padwissel (provider-ID, kijkgegevens vastgelegd): gewoon verversen
+        "AND NOT EXISTS (SELECT 1 FROM replacement_journal j WHERE "
+        "j.transaction_id=r.transaction_id AND j.step='mediaserver_kijkgegevens' AND "
+        "j.phase='done')", (sid,))
     for row in rows:
         txn = row["transaction_id"]
         original = row["library_path"] or "(onbekend)"
@@ -879,6 +883,12 @@ async def tick(ctx: AppContext, *, sessions: bool = True) -> dict[str, Any]:
             res["error"] = type(exc).__name__
         per[srv.id] = res
     summarize(ctx)
+    try:
+        from mediaguard.mediaserver import padwissel
+
+        out["path_changes_verified"] = await padwissel.verify(ctx)
+    except Exception:  # noqa: BLE001 - de controle mag de ronde nooit stoppen
+        LOGGER.exception("controle van kijkgegevens na padwissel mislukt")
     if sessions and not single:
         await combine_hold(ctx, servers, reached)
     first = per[servers[0].id]

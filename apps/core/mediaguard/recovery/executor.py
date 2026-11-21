@@ -213,7 +213,7 @@ async def run_transaction(ctx: AppContext, txn_id: int, *, fault: FaultHook | No
         return txn
     if txn["state"] != "pending":
         # halverwege onderbroken (crash/herstart): eerst consistente toestand herstellen
-        await asyncio.to_thread(reconcile, ctx, txn_id)
+        await asyncio.to_thread(reconcile, ctx, txn_id, interrupted=True)
         return load(ctx, txn_id)
     hit = fault or (lambda _point: None)
     lib, final, staged = (Path(txn["library_path"]), Path(txn["final_path"]),
@@ -246,12 +246,20 @@ async def run_transaction(ctx: AppContext, txn_id: int, *, fault: FaultHook | No
         # 2/3. validatie ----------------------------------------------------------
         journal(ctx, txn_id, "validate", "begin")
         _validate_paths(ctx, txn)
-        if txn["kind"] == "replace" and final != lib and _media_servers(ctx):
-            # HARDE EIS: een nieuw pad geeft na de bibliotheekscan een nieuw item zonder
-            # favorieten en kijkgegevens; bron blijft staan, de encode wacht in staging
-            raise Abort("PATH_CHANGE", f"Het pad wijzigt ({lib.suffix} wordt {final.suffix}); de "
-                        "mediaserver zou het item en de kijkgegevens kwijtraken. Vervanging "
-                        "uitgesteld, het bronbestand blijft staan.")
+        # ook terugzetten (AV1 .mkv -> origineel .mp4) verandert het pad van het kijkitem
+        if txn["kind"] in ("replace", "restore") and final != lib and _media_servers(ctx):
+            # HARDE EIS: een nieuw pad geeft een nieuw item. Alleen als elke mediaserver het
+            # item met een provider-ID kent (kijkgegevens hangen daaraan) en de kijkgegevens
+            # vastliggen; anders blijft de bron staan en wacht de encode in staging
+            from mediaguard.mediaserver import padwissel
+
+            try:
+                await padwissel.record(ctx, txn_id, str(lib), str(final))
+            except padwissel.Refused as exc:
+                raise Abort("PATH_CHANGE", f"Het pad wijzigt ({lib.suffix} wordt "
+                            f"{final.suffix}) en {exc}; de mediaserver zou het item en de "
+                            "kijkgegevens kunnen kwijtraken. Vervanging uitgesteld, het "
+                            "bronbestand blijft staan.") from exc
         st = _stat(lib)
         if st is None:
             raise Abort("SOURCE_MISSING", "Bronbestand bestaat niet meer")
@@ -608,9 +616,30 @@ def _commit(ctx: AppContext, txn_id: int, *, recovered: bool) -> None:
 
 # ── reconciliatie (rollback / roll-forward) ──────────────────────────────────
 def reconcile(ctx: AppContext, txn_id: int, *, failure: str | None = None,
-              aborted: bool = False) -> str:
+              aborted: bool = False, interrupted: bool = False) -> str:
     """Breng een onderbroken/mislukte transactie naar een consistente eindtoestand.
-    Wordt ook bij opstarten aangeroepen (journal replay). Idempotent."""
+    Wordt ook bij opstarten aangeroepen (journal replay). Idempotent.
+
+    ``interrupted``: herstart of stroomstoring, geen oordeel over de encode. Staan bron en
+    geverifieerde staging na het terugdraaien nog ongewijzigd, dan krijgt de transactie code
+    ``INTERRUPTED`` (tijdelijke weigering): de encode wordt later opnieuw geactiveerd en nooit
+    afgewezen (anders ruimt de encoder de stagingkopie op)."""
+    state = _reconcile(ctx, txn_id, failure=failure, aborted=aborted)
+    if interrupted and state in ("aborted", "rolled_back"):
+        txn = load(ctx, txn_id)
+        staged = _stat(Path(txn["staged_path"])) if txn["staged_path"] else None
+        if _matches_snapshot(_stat(Path(txn["library_path"])),
+                             loads(txn["source_snapshot_json"], {})) and staged is not None \
+                and (txn["staged_size"] is None or staged.size == int(txn["staged_size"])) \
+                and _journal_detail(ctx, txn_id, "interrupted") == {}:
+            journal(ctx, txn_id, "abort", "error", code="INTERRUPTED", message=failure or
+                    "Onderbroken vóór activatie; bron en encode ongewijzigd")
+            journal(ctx, txn_id, "interrupted", "done", state=state)
+    return state
+
+
+def _reconcile(ctx: AppContext, txn_id: int, *, failure: str | None = None,
+               aborted: bool = False) -> str:
     txn = load(ctx, txn_id)
     if txn["state"] in TERMINAL:
         return str(txn["state"])
@@ -777,6 +806,7 @@ def recover_pending(ctx: AppContext) -> list[dict[str, Any]]:
     for row in ctx.db.fetch_all(
             "SELECT id, state FROM replacement_transactions WHERE state NOT IN "
             "('committed','rolled_back','aborted','conflict','pending') ORDER BY id"):
-        state = reconcile(ctx, int(row["id"]), failure="Onderbroken (herstart/stroomstoring)")
+        state = reconcile(ctx, int(row["id"]), failure="Onderbroken (herstart/stroomstoring)",
+                          interrupted=True)
         out.append({"id": int(row["id"]), "from": row["state"], "to": state})
     return out
