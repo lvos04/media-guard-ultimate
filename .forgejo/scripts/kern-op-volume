@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Gebruik de Python en SQLite van het losse kernimage en een eigen schijfvolume voor de proefdata.
+# Gebruik de Python en SQLite van de gekozen kernruntime en een eigen schijfvolume voor de proefdata.
 set -euo pipefail
 bron=${MG_CI_BRON:?werkkopie ontbreekt}
-basis=$(awk '$1 == "FROM" { image = $2 } END { print image }' "$bron/apps/core/Dockerfile")
-if [[ "$basis" != *@sha256:* ]]; then
-  echo "De runtimebasis van het kernimage heeft geen vaste digest." >&2
+reeks=${PYTHON_REEKS:-3.12}
+case "$reeks" in
+  3.12) basis=$(awk '$1 == "FROM" { image = $2 } END { print image }' "$bron/apps/core/Dockerfile") ;;
+  3.14) basis=$(sed -n 's/^ARG BASE_IMAGE=//p' "$bron/services/encoder/Dockerfile") ;;
+  *) echo "Onbekende Python-reeks voor de kernproeven: $reeks" >&2; exit 2 ;;
+esac
+if [[ ! "$basis" =~ ^[^@[:space:]]+@sha256:[[:xdigit:]]{64}$ ]]; then
+  echo "De runtimebasis voor Python $reeks heeft geen vaste digest." >&2
   exit 1
 fi
 client=$(docker create --mount type=volume,target=/proef --entrypoint sleep "$basis" infinity)
@@ -20,15 +25,17 @@ trap 'exit 130' INT
 docker start "$client" >/dev/null
 docker exec "$client" mkdir -p /werk/bron /werk/proeven /proef/tijdelijk
 docker cp "$bron/." "$client:/werk/bron/"
-docker exec "$client" bash -eu -o pipefail -c '
-  python -c "import sqlite3, sys; assert sys.version_info[:2] == (3, 12); print(sys.version, sqlite3.sqlite_version)"
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg mediainfo git jq
-  useradd --create-home --home-dir /werk/thuis mg-proef
-  chown -R mg-proef /werk/bron /werk/proeven /proef/tijdelijk
-  python -m venv /opt/ci-python
-  /opt/ci-python/bin/pip install -e "/werk/bron/apps/core[test]"
-'
+docker exec -i --env "PYTHON_REEKS=$reeks" "$client" bash -seu -o pipefail <<'INRICHTEN'
+pakketten=(ca-certificates ffmpeg mediainfo git jq)
+if [[ "$PYTHON_REEKS" == 3.14 ]]; then pakketten+=(python3-venv); fi
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${pakketten[@]}"
+python3 -c 'import sqlite3, sys; assert f"{sys.version_info.major}.{sys.version_info.minor}" == sys.argv[1]; print(sys.version, sqlite3.sqlite_version)' "$PYTHON_REEKS"
+useradd --create-home --home-dir /werk/thuis mg-proef
+chown -R mg-proef /werk/bron /werk/proeven /proef/tijdelijk
+python3 -m venv /opt/ci-python
+/opt/ci-python/bin/pip install -e '/werk/bron/apps/core[test]'
+INRICHTEN
 # Het noexec-volume bevat zowel de testdatabases van pytest als de herstelkopieën.
 # De uitvoerbare Docker-simulators voor de releaseproeven krijgen een eigen map in /werk.
 docker exec -i --user mg-proef --env HOME=/werk/thuis --env TMPDIR=/proef/tijdelijk \

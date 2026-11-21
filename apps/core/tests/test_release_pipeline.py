@@ -202,6 +202,11 @@ def test_forgejo_behoudt_de_linuxjobs_en_publicatiepoorten():
     ci = _wf("ci.yml", workflows)
     # De server verwerkt secrets op de aanroepende job bij het inplannen van een push.
     assert "secrets" not in ci["on"]["workflow_call"]
+    kern = ci["jobs"]["core"]
+    bronmatrix = _wf("ci.yml")["jobs"]["core"]["strategy"]["matrix"]
+    assert kern["strategy"]["matrix"]["python"] == bronmatrix["python"]
+    proef = next(s for s in kern["steps"] if ".forgejo/scripts/kern-op-volume" in s.get("run", ""))
+    assert proef["env"]["PYTHON_REEKS"] == "${{ matrix.python }}"
 
 
 def test_forgejo_kan_elke_job_afzonderlijk_inlezen():
