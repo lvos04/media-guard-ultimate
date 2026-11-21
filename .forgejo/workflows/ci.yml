@@ -175,6 +175,9 @@ jobs:
         run: >-
           bash .forgejo/scripts/dockerproef upgradebewijs --vorige "$VORIGE" --vorige-versie "$VORIGE_VERSIE"
           --nieuw "mediaguard/upgrade-kandidaat:ci-${GITHUB_RUN_ID}" --versie "$VERSIE"
+      - name: Eigen proefclient en proefcontainers opruimen
+        if: always()
+        run: bash .forgejo/scripts/dockerproef ruim
       - name: ruim het kandidaatimage van deze run op
         if: always()
         run: docker image rm "mediaguard/upgrade-kandidaat:ci-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true
@@ -434,6 +437,9 @@ jobs:
       - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Contracttest met tijdelijke mediaservers op de geïsoleerde buildengine
         run: bash .forgejo/scripts/dockerproef mediaservers
+      - name: Eigen proefclient en proefcontainers opruimen
+        if: always()
+        run: bash .forgejo/scripts/dockerproef ruim
       - name: uitkomst in job-samenvatting
         if: always()
         run: |
