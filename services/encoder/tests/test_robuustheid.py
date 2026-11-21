@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import maak_ffmpeg
 from test_planner import _planner_case
 
 from app import afstelling, noodstop, uitvoerder
@@ -29,14 +30,6 @@ def _reset_noodstop() -> Any:
     noodstop._reset_for_tests()
     yield
     noodstop._reset_for_tests()
-
-
-def _fake_ffmpeg(tmp_path: Path, body: str, name: str = "ffmpeg") -> Path:
-    path = tmp_path / "bin" / name
-    path.parent.mkdir(exist_ok=True)
-    path.write_text("#!/usr/bin/env python3\nimport sys, time\n" + body, encoding="utf-8")
-    path.chmod(0o755)
-    return path
 
 
 def _progress(step_us: int, sleep: float, count: int) -> str:
@@ -60,12 +53,12 @@ def _slow_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, in
 
 
 @pytest.mark.asyncio
-async def test_na_noodstop_niet_te_traag(tmp_path: Path,
-                                         monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_na_noodstop_niet_te_traag(
+        tmp_path: Path, programmamap: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Vroeger telde de bevroren tijd mee: 1 s rekenen + 3 s noodstop leek 4× zo traag."""
     database, job_id = _slow_case(tmp_path, monkeypatch)
     # 1 s beeld per 0,02 s = 50×; 600 s bron → rest ruim onder de grens van 36 s
-    fake = _fake_ffmpeg(tmp_path, _progress(1_000_000, 0.02, 150))
+    fake = maak_ffmpeg(programmamap, _progress(1_000_000, 0.02, 150))
     task = asyncio.create_task(uitvoerder._run_process(
         database, job_id, [str(fake), "-progress", "pipe:1"], tmp_path / "log.txt", 600.0))
     await asyncio.sleep(0.3)
@@ -110,10 +103,10 @@ async def test_onbekend_schema_stopt_het_eigen_mediaproces(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 async def test_echt_te_trage_cpu_encode_stopt_nog_steeds(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        tmp_path: Path, programmamap: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     database, job_id = _slow_case(tmp_path, monkeypatch)
     # 0,1 s beeld per 0,05 s = 2×; rest ± 300 s > 36 s
-    fake = _fake_ffmpeg(tmp_path, _progress(100_000, 0.05, 400))
+    fake = maak_ffmpeg(programmamap, _progress(100_000, 0.05, 400))
     with pytest.raises(uitvoerder.EncodeTooSlow, match="te traag voor de CPU"):
         await asyncio.wait_for(uitvoerder._run_process(
             database, job_id, [str(fake), "-progress", "pipe:1"], tmp_path / "log.txt",
@@ -148,10 +141,11 @@ def test_foutmelding_noemt_de_oorzaak() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mislukte_stap_krijgt_specifieke_fout(tmp_path: Path) -> None:
+async def test_mislukte_stap_krijgt_specifieke_fout(tmp_path: Path, programmamap: Path) -> None:
     database, _configured, ids = _planner_case(tmp_path)
-    fake = _fake_ffmpeg(tmp_path, "print('Unknown encoder \\'libsvtav1\\'', flush=True)\n"
-                                  "sys.exit(8)\n")
+    fake = maak_ffmpeg(
+        programmamap, "print('Unknown encoder \\'libsvtav1\\'', flush=True)\n"
+        "sys.exit(8)\n")
     assert await uitvoerder._run_process(database, ids[0], [str(fake)], tmp_path / "l",
                                          1.0) is False
     failure = uitvoerder._step_failed(database, ids[0], "encoderproces faalde")

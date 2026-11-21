@@ -190,19 +190,18 @@ async def test_mislukte_encode_ruimt_cache_op(native: tuple[Database, Settings, 
 
 
 async def test_mkvmerge_waarschuwing_exit_1_is_succes(
-    native: tuple[Database, Settings, Path], tmp_path: Path
+    native: tuple[Database, Settings, Path], tmp_path: Path, programmamap: Path
 ) -> None:
     database, _configured, library = native
     source = library / "film.mkv"
     shutil.copy2(TESTDATA / "sdr-meertalig.mkv", source)
     job_id = _job(database, library, source)
-    fake = tmp_path / "bin" / "mkvmerge"
-    fake.parent.mkdir()
+    fake = programmamap / "mkvmerge"
     fake.write_text("#!/bin/sh\necho 'Warning: iets'\nexit 1\n", encoding="utf-8")
     fake.chmod(0o755)
     log = tmp_path / "log.txt"
     assert await _run_process(database, job_id, [str(fake)], log, 1.0) is True
-    other = tmp_path / "bin" / "tool"
+    other = programmamap / "tool"
     shutil.copy2(fake, other)
     assert await _run_process(database, job_id, [str(other)], log, 1.0) is False
 

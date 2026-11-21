@@ -5,6 +5,7 @@ import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pytest
@@ -29,6 +30,20 @@ def _backdate(root: Path) -> None:
     for path in root.rglob("*"):
         if path.is_file() and path.stat().st_mtime > moment:
             os.utime(path, (moment, moment))
+
+
+@pytest.fixture
+def programmamap() -> Iterator[Path]:
+    """Tijdelijke uitvoerbare scripts, ook wanneer de testdatabases op een noexec-volume staan."""
+    with TemporaryDirectory(prefix="encoderprogramma-") as mapnaam:
+        yield Path(mapnaam)
+
+
+def maak_ffmpeg(programmamap: Path, body: str) -> Path:
+    path = programmamap / "ffmpeg"
+    path.write_text("#!/usr/bin/env python3\nimport sys, time\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+    return path
 
 
 @pytest.fixture(scope="session", autouse=True)

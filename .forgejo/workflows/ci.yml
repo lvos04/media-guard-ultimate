@@ -332,7 +332,10 @@ jobs:
       - name: pytest + ruff + mypy in het image
         if: steps.proef.outputs.suite == 'true'
         run: |
-          docker run --rm "$ENCODE_IMAGE:test" python3 -m pytest -v -rfEs -o faulthandler_timeout=180 --durations=5 -p no:cacheprovider
+          # Het image krijgt per container een eigen /work-volume voor fixtures en SQLite.
+          docker run --rm --env TESTDATA=/work/testdata "$ENCODE_IMAGE:test" \
+            python3 -m pytest --basetemp=/work/pytest -v -rfEs \
+            -o faulthandler_timeout=180 --durations=5 -p no:cacheprovider
           docker run --rm "$ENCODE_IMAGE:test" sh -c "ruff check app tests && mypy app"
 
       - name: Eigen encoderimages opruimen

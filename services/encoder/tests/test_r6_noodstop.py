@@ -9,6 +9,7 @@ from typing import Any
 
 import psutil
 import pytest
+from conftest import maak_ffmpeg
 from mg_helpers import HEADERS
 from test_planner import _planner_case
 
@@ -25,14 +26,6 @@ def _reset_noodstop() -> Any:
     noodstop._reset_for_tests()
     yield
     noodstop._reset_for_tests()
-
-
-def _fake_ffmpeg(tmp_path: Path, body: str) -> Path:
-    path = tmp_path / "bin" / "ffmpeg"
-    path.parent.mkdir(exist_ok=True)
-    path.write_text("#!/usr/bin/env python3\nimport sys, time\n" + body, encoding="utf-8")
-    path.chmod(0o755)
-    return path
 
 
 PROGRESS = (
@@ -75,11 +68,11 @@ def test_noodstop_blijft_bewaard_na_herstart(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_lopende_encode_bevriest_en_hervat_zonder_vastloperfout(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        tmp_path: Path, programmamap: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     database, _configured, ids = _planner_case(tmp_path)
     _fast(monkeypatch, stall=1.0)
-    fake = _fake_ffmpeg(
-        tmp_path, PROGRESS + "for i in range(40):\n    p(i)\n    time.sleep(0.05)\n")
+    fake = maak_ffmpeg(
+        programmamap, PROGRESS + "for i in range(40):\n    p(i)\n    time.sleep(0.05)\n")
     task = asyncio.create_task(uitvoerder._run_process(
         database, ids[0], [str(fake), "-progress", "pipe:1"], tmp_path / "log.txt", 10.0))
     await asyncio.sleep(0.5)
@@ -145,10 +138,10 @@ def test_cpu_plekken_krijgen_eigen_kernen() -> None:
 
 @pytest.mark.asyncio
 async def test_rekenend_proces_zonder_uitvoer_krijgt_extra_tijd(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        tmp_path: Path, programmamap: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     database, _configured, ids = _planner_case(tmp_path)
     _fast(monkeypatch, stall=1.0)
-    fake = _fake_ffmpeg(tmp_path, PROGRESS + (
+    fake = maak_ffmpeg(programmamap, PROGRESS + (
         "p(1)\n"
         "end = time.time() + 1.6\n"
         "while time.time() < end:\n    pass\n"
@@ -161,11 +154,11 @@ async def test_rekenend_proces_zonder_uitvoer_krijgt_extra_tijd(
 
 
 @pytest.mark.asyncio
-async def test_echte_vastloper_met_diagnose(tmp_path: Path,
-                                            monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_echte_vastloper_met_diagnose(
+        tmp_path: Path, programmamap: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     database, _configured, ids = _planner_case(tmp_path)
     _fast(monkeypatch, stall=1.0)
-    fake = _fake_ffmpeg(tmp_path, PROGRESS + (
+    fake = maak_ffmpeg(programmamap, PROGRESS + (
         "print('Stream #0:0: Video: hevc', flush=True)\np(1)\ntime.sleep(30)\n"))
     with pytest.raises(uitvoerder.EncodeStalled) as caught:
         await uitvoerder._run_process(database, ids[0], [str(fake), "-progress", "pipe:1"],
