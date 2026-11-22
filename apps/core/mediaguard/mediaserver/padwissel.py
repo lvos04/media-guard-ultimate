@@ -130,8 +130,8 @@ def _attempts(ctx: AppContext, txn_id: int) -> list[dict[str, Any]]:
 
 
 def _enabled() -> bool:
-    """Padwissel aan (versie 2). Uit: geen nacontrole en geen vrijgave-uitstel, ook niet
-    voor een vastlegging uit een eerdere build (R-HARDE-EIS-11): gedrag van vóór 676."""
+    """Padwissel aan (versie 2). Uit: geen nacontrole, ook niet voor een vastlegging uit een
+    eerdere build (R-HARDE-EIS-11)."""
     from mediaguard.recovery import executor
 
     return executor.PADWISSEL_MET_PROVIDER_ID
@@ -139,11 +139,16 @@ def _enabled() -> bool:
 
 def release_state(ctx: AppContext, txn_id: int) -> tuple[str, str] | None:
     """None zonder padwissel; anders ("passed"|"pending"|"failed", uitleg)."""
-    if not _enabled() or snapshot(ctx, txn_id) is None:
+    if snapshot(ctx, txn_id) is None:
         return None
     rows = _attempts(ctx, txn_id)
     if any(r["phase"] == "done" for r in rows):
         return "passed", "kijkgegevens na de padwissel gelijk op elke mediaserver"
+    if not _enabled():
+        # HARDE EIS, fail-closed: onbevestigde kijkgegevens uit een eerdere build houden het
+        # origineel vast; 'pending' voert niets uit ('failed' zou automatisch terugzetten)
+        return "pending", ("padwissel staat uit: kijkgegevens uit een eerdere build zijn niet "
+                           "bevestigd, het origineel blijft bewaard")
     if len(rows) < NOTIFY_AFTER:
         return "pending", "kijkgegevens na de padwissel nog niet gecontroleerd"
     return "failed", str(loads(rows[-1]["detail_json"], {}).get("message") or "")

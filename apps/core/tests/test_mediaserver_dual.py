@@ -1554,8 +1554,11 @@ def test_sleutelwissel_via_beheerroute_houdt_oude_uitvoer_gemaskeerd(client, ctx
 @pytest.mark.parametrize("soort", ["emby", "jellyfin"])
 def test_uitgeschakelde_padwissel_controleert_een_oude_vastlegging_niet(ctx, net, soort):
     """Herreview R-HARDE-EIS-11 (S-P3-676): met de padwissel uit maakt een vastlegging uit
-    een eerdere build geen nacontrole aan en zet zij de vrijgave niet op 'pending'."""
+    een eerdere build geen nacontrole aan, maar houdt zij het origineel wel vast (fail-closed),
+    ook bij een 'passed' die een eerdere build al opsloeg."""
     from mediaguard.mediaserver import padwissel
+    from mediaguard.recovery import api as recovery_api
+    from mediaguard.recovery import release_check
 
     _proefserver(ctx, net, soort)
     assert executor.PADWISSEL_MET_PROVIDER_ID is False
@@ -1565,7 +1568,18 @@ def test_uitgeschakelde_padwissel_controleert_een_oude_vastlegging_niet(ctx, net
     for _ in range(3):
         tick(ctx, sessions=False)
     assert padwissel._attempts(ctx, txn) == []
-    assert padwissel.release_state(ctx, txn) is None
+    assert padwissel.release_state(ctx, txn)[0] == "pending"
+    item = ctx.db.execute_insert(
+        "INSERT INTO quarantine_items(transaction_id,original_path,quarantine_path,method,"
+        "status,created_at,size) VALUES (?,?,?,'link','restorable','x',1)",
+        (txn, f"{MG_ROOT}/oud.mp4", f"{MG_ROOT}/q/oud.mp4"))
+    assert release_check.run_check(ctx, item)["status"] == "pending"
+    ctx.db.execute("INSERT INTO quarantine_release_checks(item_id,status,checks_json,"
+                   "checked_at) VALUES (?,'passed','[]','x')", (item,))
+    assert release_check.check_status(ctx, item)["status"] == "pending"
+    row = dict(ctx.db.fetch_one("SELECT * FROM quarantine_items WHERE id=?", (item,)))
+    assert recovery_api._only_original(ctx, row) is not None
+    assert padwissel._attempts(ctx, txn) == []
 
 
 def test_emby_houdt_een_overdracht_open_tot_de_volgende_volledige_scan(ctx, net, monkeypatch):

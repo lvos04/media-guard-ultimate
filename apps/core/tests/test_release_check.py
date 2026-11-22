@@ -318,6 +318,31 @@ def test_force_unverified_verwijdert_nooit_de_enige_kopie(client, ctx, tmp_path,
     assert r.status_code == 200 and r.json()["job_id"]
 
 
+@pytest.mark.parametrize("soort", ["symlink", "mapverwijzing", "hardlink", "kopie"])
+def test_alleen_een_zelfstandige_naam_telt_als_kopie(ctx, tmp_path, soort):
+    """Herreview R-HARDE-EIS-6 (S-P3-676): een symbolische verwijzing (ook via een map) naar
+    het quarantainebestand is geen kopie; een harde koppeling of echte kopie wel."""
+    item, kopie = _enige_kopie(ctx, tmp_path, controle="failed")
+    ander = tmp_path / "ep.mkv"
+    if soort == "symlink":
+        ander.symlink_to(kopie)
+    elif soort == "mapverwijzing":
+        (tmp_path / "qlink").symlink_to(kopie.parent)
+        ander = tmp_path / "qlink" / kopie.name
+        ctx.db.execute("UPDATE quarantine_items SET original_path=? WHERE id=?",
+                       (str(ander), item))
+    elif soort == "hardlink":
+        ander.hardlink_to(kopie)
+    else:
+        shutil.copyfile(kopie, ander)
+    row = dict(ctx.db.fetch_one("SELECT * FROM quarantine_items WHERE id=?", (item,)))
+    zelfstandig = soort in ("hardlink", "kopie")
+    assert (api._only_original(ctx, row) is None) is zelfstandig
+    assert (api._delete_item_file(ctx, row, "proef") is None) is zelfstandig
+    assert kopie.exists() is not zelfstandig
+    assert ander.read_bytes() == b"enige kopie van het origineel"
+
+
 def _herstelketen(ctx, tmp_path: Path):  # type: ignore[no-untyped-def]
     import hashlib
 

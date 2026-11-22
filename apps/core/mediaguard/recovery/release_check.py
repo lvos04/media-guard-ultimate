@@ -207,7 +207,8 @@ def run_check(ctx: AppContext, item_id: int) -> dict[str, Any]:
     watch = release_state(ctx, int(item["transaction_id"])) if txn is not None else None
     if watch is not None and watch[0] == "pending":
         # padwissel: eerst moeten de kijkgegevens op elke mediaserver bevestigd zijn
-        return {"item_id": item_id, "status": "pending", "checks": [], "skipped": True}
+        return {"item_id": item_id, "status": "pending", "skipped": True,
+                "checks": [{"name": "kijkgegevens", "passed": False, "detail": watch[1]}]}
     if watch is not None:
         checks.append({"name": "kijkgegevens", "passed": watch[0] == "passed",
                        "detail": watch[1]})
@@ -312,6 +313,15 @@ def check_status(ctx: AppContext, item_id: int) -> dict[str, Any] | None:
         return None
     data = dict(row)
     data["checks"] = loads(data.pop("checks_json"), [])
+    if data["status"] == "passed":
+        # een 'passed' uit een eerdere build geeft een onbevestigde padwissel niet vrij
+        from mediaguard.mediaserver.padwissel import release_state
+
+        item = ctx.db.fetch_one("SELECT transaction_id FROM quarantine_items WHERE id=?",
+                                (item_id,))
+        if item is not None and item[0] is not None and \
+                (watch := release_state(ctx, int(item[0]))) is not None and watch[0] == "pending":
+            data["status"] = "pending"
     return data
 
 

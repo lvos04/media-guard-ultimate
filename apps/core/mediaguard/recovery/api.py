@@ -418,10 +418,13 @@ def _only_original(ctx: AppContext, item: dict[str, Any]) -> str | None:
         "SELECT quarantine_path FROM quarantine_items WHERE id<>? AND status<>'purged' AND "
         "(sha256=? OR original_path=?)", (item["id"], digest, item["original_path"]))}
     paths.discard(str(qpath))
+    real = os.path.realpath(qpath)
     for other in paths:
         try:
-            ost = os.stat(other)
-            if not stat_mod.S_ISREG(ost.st_mode):
+            # alleen een naam die de inhoud zelfstandig behoudt telt (R-HARDE-EIS-6): geen
+            # symbolische verwijzing, en geen pad dat via een verwijzing hierop uitkomt
+            ost = os.lstat(other)
+            if not stat_mod.S_ISREG(ost.st_mode) or os.path.realpath(other) == real:
                 continue
             if (ost.st_ino, ost.st_dev) == (qst.st_ino, qst.st_dev):
                 return None  # hardlink: de inhoud blijft op het andere pad
