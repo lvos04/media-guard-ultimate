@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import stat as stat_mod
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from mediaguard.audit import audit
 from mediaguard.auth import Principal, require_admin, require_operator, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import loads, utcnow
-from mediaguard.recovery import executor, orphans, probe, release_check, service, zfs
+from mediaguard.recovery import executor, fsops, orphans, probe, release_check, service, zfs
 from mediaguard.recovery.service import purge_paused_reason
 from mediaguard.settings_registry import REGISTRY
 
@@ -175,7 +176,9 @@ async def _purge_round(jc: jobs.JobContext) -> dict[str, Any]:
             if paused := purge_paused_reason(jc.app):
                 jc.log(f"Opruimen gepauzeerd: {paused}", "warning")
                 return {"purged": purged, "paused": True, "reason": paused}
-            _delete_item_file(jc.app, item, reason)
+            if (kept := _delete_item_file(jc.app, item, reason)) is not None:
+                jc.log(f"Item {item['id']} niet opgeruimd: {kept}", "warning")
+                continue
         purged += 1
     return {"purged": purged}
 
@@ -355,15 +358,16 @@ async def _job_delete(jc: jobs.JobContext) -> dict[str, Any]:
                                   (int(jc.payload["item_id"]),))
         if row is None or row["status"] in ("held", "pending", "purged"):
             return {"deleted": False}
-        if (kept := _only_original(jc.app, dict(row))) is not None:
-            # ook een taak van vóór deze controle of uit een oudere versie: nooit de enige
-            # kopie van het origineel verwijderen
-            jc.log(kept, "warning")
-            return {"deleted": False, "kept_nl": kept}
         if paused := pool_cleanup_pause_reason(jc.app):
             jc.log(f"{paused} Bevestig het verwijderen opnieuw na een gezonde meting.", "warning")
             raise jobs.JobCancelled
-        _delete_item_file(jc.app, dict(row), jc.payload.get("reason") or "handmatig verwijderd")
+        # ook een taak van vóór deze controle of uit een oudere versie: de bewaker in
+        # _delete_item_file telt de kopieën van het origineel op dit moment
+        kept = _delete_item_file(jc.app, dict(row),
+                                 jc.payload.get("reason") or "handmatig verwijderd")
+    if kept is not None:
+        jc.log(kept, "warning")
+        return {"deleted": False, "kept_nl": kept}
     return {"deleted": True}
 
 
@@ -388,19 +392,52 @@ def rejected_av1_reason(ctx: AppContext, item: dict[str, Any]) -> str:
 
 def _only_original(ctx: AppContext, item: dict[str, Any]) -> str | None:
     """Reden om niet te verwijderen, of None. HARDE EIS: zolang de vrijgavecontrole niet
-    geslaagd is (open of failed), is dit de enige geverifieerde kopie van het origineel,
-    tenzij het origineel aantoonbaar terug in de bibliotheek staat (teruggezet) of dit item
-    de weggezette AV1-versie is. Ook 'force_unverified' verandert dat niet."""
+    geslaagd is (open of failed), gaat een bestand alleen weg als het aantoonbaar geen
+    origineel is (de inhoud is een AV1-uitvoer van MediaGuard) of als er nog een andere kopie
+    met dezelfde SHA-256 op schijf staat. Status 'restored' of de reden 'Herstel van restore'
+    volstaan niet (R-HARDE-EIS-6). Ook 'force_unverified' verandert dat niet.
+    shortcut: hasht synchroon (ook in de routes) en alleen bij een even groot kandidaat-
+    bestand; naar een achtergrondtaak als grote groepsverwijderingen te traag worden."""
     check = release_check.check_status(ctx, int(item["id"]))
-    if (check is not None and check["status"] == "passed") or item["status"] == "restored" \
-            or is_rejected_av1(item):
+    if check is not None and check["status"] == "passed":
         return None
+    qpath = Path(str(item["quarantine_path"]))
     stand = "afgekeurd" if check is not None and check["status"] == "failed" else "nog open"
-    return (f"Origineel blijft bewaard: de vrijgavecontrole is {stand} en dit is de enige "
+    kept = (f"Origineel blijft bewaard: de vrijgavecontrole is {stand} en dit is de laatste "
             "kopie van het origineel. Zet het terug of wacht tot de controle slaagt.")
+    try:
+        qst = os.stat(qpath)
+        digest = fsops.sha256_file(qpath)
+    except OSError:
+        return kept  # onleesbaar of (tijdelijk) weg: bij twijfel bewaren
+    if ctx.db.fetch_one(
+            "SELECT 1 FROM replacement_transactions WHERE kind='replace' AND staged_sha256=? "
+            "LIMIT 1", (digest,)) is not None:
+        return None  # AV1-uitvoer van MediaGuard, geen origineel
+    paths = {str(item["original_path"])} | {str(r["quarantine_path"]) for r in ctx.db.fetch_all(
+        "SELECT quarantine_path FROM quarantine_items WHERE id<>? AND status<>'purged' AND "
+        "(sha256=? OR original_path=?)", (item["id"], digest, item["original_path"]))}
+    paths.discard(str(qpath))
+    for other in paths:
+        try:
+            ost = os.stat(other)
+            if not stat_mod.S_ISREG(ost.st_mode):
+                continue
+            if (ost.st_ino, ost.st_dev) == (qst.st_ino, qst.st_dev):
+                return None  # hardlink: de inhoud blijft op het andere pad
+            if ost.st_size == qst.st_size and fsops.sha256_file(Path(other)) == digest:
+                return None
+        except OSError:
+            continue
+    return kept
 
 
-def _delete_item_file(ctx: AppContext, item: dict[str, Any], reason: str) -> None:
+def _delete_item_file(ctx: AppContext, item: dict[str, Any], reason: str) -> str | None:
+    """Verwijder het quarantainebestand. Geeft de reden terug als het bewaard blijft: deze
+    ene bewaker geldt voor elke route, de groepsroute, wachtende taken en het opruimen."""
+    if (kept := _only_original(ctx, item)) is not None:
+        LOGGER.warning("Quarantaine-item %s blijft bewaard: %s", item["id"], kept)
+        return kept
     path = Path(item["quarantine_path"])
     with contextlib.suppress(FileNotFoundError):
         os.unlink(path)
@@ -410,10 +447,11 @@ def _delete_item_file(ctx: AppContext, item: dict[str, Any], reason: str) -> Non
         "UPDATE quarantine_items SET status='purged', purged_at=? WHERE id=? AND "
         "status<>'purged'", (utcnow(), item["id"]))
     if not changed:
-        return  # al opgeruimd door een gelijktijdige ronde: één auditregel per bestand (R11)
+        return None  # al opgeruimd door een gelijktijdige ronde: één auditregel per bestand (R11)
     audit(ctx.db, actor="svc:recovery", action="quarantine.purged",
           target_type="quarantine", target_id=item["id"], instance_id=item["instance_id"],
           reason=reason, old_value={"path": item["quarantine_path"]})
+    return None
 
 
 # ── API ───────────────────────────────────────────────────────────────────────
@@ -675,7 +713,8 @@ def quarantine_bulk_delete(body: BulkDeleteBody, principal: Principal = Depends(
     unverified = [r["id"] for r in rows if r["id"] not in blocked and (
         (c := release_check.check_status(ctx, int(r["id"]))) is None or c["status"] != "passed")]
     # enige kopie van het origineel: nooit verwijderbaar, ook niet met 'force_unverified'
-    kept = [r["id"] for r in rows if r["id"] in unverified and _only_original(ctx, r)]
+    kept = [r["id"] for r in rows
+            if r["id"] in unverified and _only_original(ctx, r)]
     unverified = [i for i in unverified if i not in kept]
     deletable = [r for r in rows if r["id"] not in blocked and r["id"] not in kept and
                  (body.force_unverified or r["id"] not in unverified)]

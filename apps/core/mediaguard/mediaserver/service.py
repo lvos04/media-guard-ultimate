@@ -75,6 +75,8 @@ def mask(ctx: AppContext, value: Any) -> Any:
     keys = [k for r in ctx.db.fetch_all(
         "SELECT name FROM secrets WHERE name=? OR name LIKE 'mediaserver.server.%.api_key'",
         (M.LEGACY_SECRET,)) if (k := ctx.secrets.get(r["name"])) and len(k) >= 4]
+    # ook sleutels van vóór een wissel: oude meldingen en taakstatussen blijven gemaskeerd
+    keys += [k for k in json.loads(ctx.secrets.get(M.PREVIOUS_SECRET) or "[]") if len(k) >= 4]
     keys.sort(key=len, reverse=True)
 
     def clean(v: Any) -> Any:

@@ -57,6 +57,9 @@ nacontrole is uitgesteld naar versie 2). De transactie stopt vóór het veiligst
 over zes uur). Terugzetten vanuit de quarantaine dat het pad wijzigt (bijvoorbeeld `.mkv` terug
 naar `.mp4`) wordt op dezelfde manier uitgesteld: het actuele bestand blijft staan en het
 origineel blijft in quarantaine. Zonder bekende mediaserver geldt deze beperking niet.
+Een kijkgegevensvastlegging uit een eerdere ontwikkelbuild met padwissel krijgt in versie 1 geen
+nacontrole en houdt de vrijgavecontrole niet op 'nog open': die werkt dan zoals vóór de
+padwissel.
 
 Een padwissel uit een oudere versie of een terugzetting geeft één melding met het bronpad en het
 nieuwe pad; MediaGuard slaat dan de automatische Jellyfin-verversing en afspeeltest voor dat item
@@ -177,10 +180,19 @@ zie §4.1 stap 5.
 - Handmatig verwijderen vraagt beheerdersrol en expliciete bevestiging; de purge-API
   toont eerst een dry-run (aantal + bytes).
 - Zolang de vrijgavecontrole niet geslaagd is (nog open of afgekeurd), verwijdert MediaGuard
-  een origineel nooit, ook niet met `force_unverified`: het is dan de enige kopie. Beide
+  een origineel nooit, ook niet met `force_unverified`, als het de laatste kopie is. Beide
   verwijderroutes antwoorden met 409 (de groepsroute noemt het item onder
-  `kept_only_original`) en de verwijdertaak controleert het opnieuw. Alleen een weggezette
-  AV1-versie of een al teruggezet origineel mag met `force_unverified` weg.
+  `kept_only_original`) en de verwijdertaak telt het opnieuw vlak vóór verwijderen (ook een
+  taak van een oudere versie). De telling gaat op inhoud (SHA-256): het bestand mag alleen
+  weg als het een AV1-uitvoer van MediaGuard is of als dezelfde inhoud nog op het
+  bibliotheekpad of in een ander quarantaine-item staat. De status 'teruggezet' of de reden
+  'Herstel van restore' telt niet als bewijs.
+- Hersteljournalen van een oudere versie (zonder de stap `interrupted`) worden bij opstarten
+  ook hervat: bij een herstel na een herstart blijft de encode wachten en de stagingkopie
+  staan in plaats van een afwijzing.
+- Een mediaserversleutel die via de beheerroute wordt vervangen of gewist, blijft bewaard in
+  de maskeerlijst (`mediaserver.previous_api_keys`, versleuteld bij de andere geheimen).
+  Oude meldingen en afgeronde taken blijven zo gemaskeerd.
 - Herstellen is zelf een transactie: de huidige (AV1-)versie gaat eerst naar
   quarantaine en blijft ook herstelbaar.
 

@@ -24,6 +24,7 @@ bewaarregel en er komt geen incident.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -81,6 +82,24 @@ class ServerConf:
 
 def secret_name(server_id: int) -> str:
     return LEGACY_SECRET if server_id == LEGACY_ID else f"mediaserver.server.{server_id}.api_key"
+
+
+#: vervangen of gewiste mediaserversleutels; alleen voor de maskering (R-HARDE-EIS-2)
+PREVIOUS_SECRET = "mediaserver.previous_api_keys"
+
+
+def store_key(ctx: AppContext, name: str, key: str | None, actor: str | None) -> None:
+    """Een mediaserversleutel opslaan (``key``) of wissen (None). De vorige waarde blijft in
+    de maskeerlijst, zodat meldingen en taakstatussen van vóór de wissel gemaskeerd blijven."""
+    old = ctx.secrets.get(name)
+    if old and old != key:
+        previous = json.loads(ctx.secrets.get(PREVIOUS_SECRET) or "[]")
+        if old not in previous:
+            ctx.secrets.set(PREVIOUS_SECRET, json.dumps([*previous, old]), actor)
+    if key is None:
+        ctx.secrets.delete(name)
+    else:
+        ctx.secrets.set(name, key, actor)
 
 
 def state_key(server: ServerConf | int, name: str) -> str:
@@ -256,7 +275,7 @@ def remove(ctx: AppContext, server_id: int) -> None:
     (binnen de bewaarregel); open taken voor deze server vervallen ('skipped')."""
     _not_legacy(server_id)
     ctx.db.execute("DELETE FROM mediaserver_servers WHERE id=?", (server_id,))
-    ctx.secrets.delete(secret_name(server_id))
+    store_key(ctx, secret_name(server_id), None, None)
     ctx.db.execute("DELETE FROM system_state WHERE key LIKE ?", (f"mediaserver:{server_id}:%",))
     drop_open_work(ctx, server_id, "server verwijderd")
 

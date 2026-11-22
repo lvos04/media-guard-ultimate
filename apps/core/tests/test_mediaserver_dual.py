@@ -1515,6 +1515,59 @@ def test_afgeronde_taak_blijft_gemaskeerd_na_sleutelwissel(client, ctx, net, soo
                             (rijen["open"],))[0] == f"{MG_ROOT}/{sleutel}/open.mkv"
 
 
+@pytest.mark.parametrize("soort", ["emby", "jellyfin"])
+def test_sleutelwissel_via_beheerroute_houdt_oude_uitvoer_gemaskeerd(client, ctx, net,
+                                                                    monkeypatch, soort):
+    """Herreview R-HARDE-EIS-2 (S-P3-675): een melding en een afgeronde taak die een vorige
+    versie onbewerkt opsloeg, blijven na wissel én wissen van de sleutel gemaskeerd."""
+    from test_notify import _ntfy
+
+    from mediaguard.notify import service as N
+
+    sid, sleutel = _proefserver(ctx, net, soort)
+    kanaal = _ntfy(ctx)
+    pad = f"{MG_ROOT}/{sleutel}/oud.mkv"
+    txn = _txn(ctx, pad, job=None)
+    ctx.db.execute("INSERT INTO mediaserver_pending(transaction_id,path,kind,result,"
+                   "test_after,done_at,created_at) VALUES (?,?,?,?,?,?,?)",
+                   (txn, pad, "replace", "ok", utcnow(), utcnow(), utcnow()))
+    ontvangen: list[Any] = []
+
+    async def ontvanger(context, channel, bericht, link):  # type: ignore[no-untyped-def]
+        ontvangen.append(bericht)
+
+    monkeypatch.setattr(N.ch, "send", ontvanger)
+    for wijziging in ({"api_key": sleutel[::-1]}, {"clear_key": True}):
+        ctx.db.execute("INSERT INTO notify_outbox(channel_id,category,title,body,"
+                       "next_attempt_at,created_at) VALUES (?,?,?,?,?,?)",
+                       (kanaal["id"], "waiting", f"Afspeeltest mislukt: {sleutel}.mkv",
+                        f"Bestand {pad}", utcnow(), utcnow()))
+        r = client.post("/api/v1/mediaserver/config", json={"server_id": sid, **wijziging})
+        assert r.status_code == 200
+        assert asyncio.run(N.dispatch(ctx))["sent"] == 1
+        bericht = ontvangen.pop()
+        assert sleutel not in bericht.title + bericht.body
+        rij, = client.get("/api/v1/mediaserver/status").json()["tests"]
+        assert rij["path"] == f"{MG_ROOT}/***/oud.mkv"
+
+
+@pytest.mark.parametrize("soort", ["emby", "jellyfin"])
+def test_uitgeschakelde_padwissel_controleert_een_oude_vastlegging_niet(ctx, net, soort):
+    """Herreview R-HARDE-EIS-11 (S-P3-676): met de padwissel uit maakt een vastlegging uit
+    een eerdere build geen nacontrole aan en zet zij de vrijgave niet op 'pending'."""
+    from mediaguard.mediaserver import padwissel
+
+    _proefserver(ctx, net, soort)
+    assert executor.PADWISSEL_MET_PROVIDER_ID is False
+    txn = _txn(ctx, f"{MG_ROOT}/oud.mkv", job=None)
+    executor.journal(ctx, txn, padwissel.SNAPSHOT_STEP, "done", source=f"{MG_ROOT}/oud.mp4",
+                     target=f"{MG_ROOT}/oud.mkv", servers=[])
+    for _ in range(3):
+        tick(ctx, sessions=False)
+    assert padwissel._attempts(ctx, txn) == []
+    assert padwissel.release_state(ctx, txn) is None
+
+
 def test_emby_houdt_een_overdracht_open_tot_de_volgende_volledige_scan(ctx, net, monkeypatch):
     emby, _ = net
     nu = datetime.now(UTC)
@@ -1860,13 +1913,14 @@ async def test_terugzetten_met_padwissel_zonder_provider_id_blijft_uitgesteld(ct
     assert _quarantaine(ctx, txn)["status"] == "restorable"
 
 
-@pytest.mark.parametrize("onderbrekingen", [1, 2])
+@pytest.mark.parametrize("onderbrekingen", [1, 2, "oud-journaal"])
 @pytest.mark.parametrize("soort", ["emby", "jellyfin"])
 def test_onderbroken_herpoging_houdt_de_geverifieerde_encode(ctx, client, net, tmp_path,
                                                              monkeypatch, soort, onderbrekingen):
     """R-HARDE-EIS-5: een herstart midden in een herpoging is geen afwijzing van de encode.
     Bij 2 valt de stroom opnieuw weg tijdens het herstel, na de eindtoestand en vóór
-    INTERRUPTED (S-P3-676 R-HARDE-EIS-5)."""
+    INTERRUPTED (S-P3-676 R-HARDE-EIS-5). Bij 'oud-journaal' gebeurt dat met het journaal
+    van de versie zonder write-ahead-stap 'interrupted' (herreview R-HARDE-EIS-5)."""
     import hashlib
 
     from test_encoding import SRC, job_body
@@ -1911,10 +1965,12 @@ def test_onderbroken_herpoging_houdt_de_geverifieerde_encode(ctx, client, net, t
         return nieuw
 
     nieuw = herstart(ctx)
-    if onderbrekingen == 2:
+    if onderbrekingen != 1:
         schrijf = executor.journal
 
         def stroom_weg(c, nummer, stap, fase, **detail):
+            if stap == "interrupted" and onderbrekingen == "oud-journaal":
+                return  # de basisversie schreef deze stap niet
             if stap == "abort" and detail.get("code") == "INTERRUPTED":
                 raise executor.SimulatedCrash("stroom weg tijdens herstel")
             schrijf(c, nummer, stap, fase, **detail)

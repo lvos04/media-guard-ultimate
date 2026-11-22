@@ -316,3 +316,87 @@ def test_force_unverified_verwijdert_nooit_de_enige_kopie(client, ctx, tmp_path,
     r = client.request("DELETE", f"/api/v1/quarantine/{av1}",
                        json={"confirm": True, "force_unverified": True})
     assert r.status_code == 200 and r.json()["job_id"]
+
+
+def _herstelketen(ctx, tmp_path: Path):  # type: ignore[no-untyped-def]
+    import hashlib
+
+    from test_encoding_support import FakeInstance, FakeRegistry
+    from test_recovery import Env
+
+    from mediaguard.recovery import executor
+
+    env = Env(ctx, tmp_path)
+    ctx.services["instance_registry"] = FakeRegistry(FakeInstance("sonarr-series"))
+    object.__setattr__(ctx.settings, "role", "all")
+
+    def sha(p: Path) -> str:
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+
+    voor = sha(env.lib)
+
+    def originelen() -> int:
+        return sum(p.is_file() and sha(p) == voor for wortel in
+                   (env.dir, ctx.settings.quarantine_dir, ctx.settings.staging_dir)
+                   for p in wortel.rglob("*"))
+
+    def run(txn: int) -> dict:  # type: ignore[type-arg]
+        uit = asyncio.run(executor.run_transaction(ctx, txn))
+        assert uit["state"] == "committed"
+        return uit
+
+    return env, sha, voor, originelen, run
+
+
+def _wis(client, item: int, route: str) -> None:  # type: ignore[no-untyped-def]
+    data = {"confirm": True, "force_unverified": True}
+    if route == "enkel":
+        client.request("DELETE", f"/api/v1/quarantine/{item}", json=data)
+    else:
+        client.post("/api/v1/quarantine/bulk-delete", json={**data, "item_ids": [item]})
+
+
+@pytest.mark.parametrize("route", ["enkel", "groep", "wachtende-taak"])
+def test_laatste_kopie_na_terugzetten_en_verdwenen_bibliotheekbestand(client, ctx, tmp_path,
+                                                                      route):
+    """Herreview R-HARDE-EIS-6 (S-P3-676): status 'restored' bewijst geen tweede kopie; de
+    bewaker telt bij uitvoering de kopieën van het origineel (SHA-256)."""
+    env, sha, voor, originelen, run = _herstelketen(ctx, tmp_path)
+    eerste = run(env.txn())
+    item = eerste["quarantine_item_id"]
+    run(service.create_restore(ctx, item, "test")[0])
+    env.lib.unlink()  # het teruggezette bestand verdwijnt buiten MediaGuard om
+    assert originelen() == 1 and release_check.check_status(ctx, item) is None
+    if route == "wachtende-taak":
+        jobs.enqueue(ctx.db, "quarantine.delete", {"item_id": item, "reason": "test"})
+    else:
+        _wis(client, item, route)
+    asyncio.run(jobs.JobRunner(ctx, concurrency=1).run_until_idle())
+    assert originelen() == 1 and Path(eerste["quarantine_path"]).is_file()
+    assert ctx.db.fetch_one("SELECT status FROM quarantine_items WHERE id=?",
+                            (item,))[0] != "purged"
+
+
+def test_tweemaal_terugzetten_bewaart_het_origineel(client, ctx, tmp_path):
+    """Herreview R-HARDE-EIS-6: na de tweede terugzetting staat het origineel als 'Herstel van
+    restore' in quarantaine; die reden maakt het geen afgekeurde AV1-versie."""
+    env, sha, voor, originelen, run = _herstelketen(ctx, tmp_path)
+    eerste = run(env.txn())
+    tweede = run(service.create_restore(ctx, eerste["quarantine_item_id"], "test")[0])
+    assert sha(env.lib) == voor
+    # het origineel staat ook in de bibliotheek: deze kopie mag weg
+    _wis(client, eerste["quarantine_item_id"], "enkel")
+    asyncio.run(jobs.JobRunner(ctx, concurrency=1).run_until_idle())
+    assert not Path(eerste["quarantine_path"]).exists() and originelen() == 1
+    derde = run(service.create_restore(ctx, tweede["quarantine_item_id"], "test")[0])
+    assert sha(env.lib) != voor and originelen() == 1
+    for route in ("enkel", "groep"):
+        _wis(client, derde["quarantine_item_id"], route)
+    jobs.enqueue(ctx.db, "quarantine.delete", {"item_id": derde["quarantine_item_id"]})
+    asyncio.run(jobs.JobRunner(ctx, concurrency=1).run_until_idle())
+    assert originelen() == 1 and sha(Path(derde["quarantine_path"])) == voor
+    # de weggezette AV1-versie (tweede item) is aantoonbaar MediaGuard-uitvoer en mag weg
+    assert Path(tweede["quarantine_path"]).is_file()
+    _wis(client, tweede["quarantine_item_id"], "enkel")
+    asyncio.run(jobs.JobRunner(ctx, concurrency=1).run_until_idle())
+    assert not Path(tweede["quarantine_path"]).exists()

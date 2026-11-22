@@ -649,10 +649,18 @@ def reconcile(ctx: AppContext, txn_id: int, *, failure: str | None = None,
 
 
 def _interrupted_open(ctx: AppContext, txn_id: int) -> bool:
+    """Onderbroken herstel zonder oordeel. Ook het journaal van vóór de write-ahead-stap
+    (R-HARDE-EIS-5): een herstel bij opstarten ('reconcile' met reden 'Onderbroken
+    (herstart…') zonder enige 'interrupted'-regel. Bij twijfel open: dan wacht de encode."""
     row = ctx.db.fetch_one(
-        "SELECT SUM(phase='begin') AS b, SUM(phase='done') AS d FROM replacement_journal "
-        "WHERE transaction_id=? AND step='interrupted'", (txn_id,))
-    return bool(row and row["b"] and not row["d"])
+        "SELECT SUM(step='interrupted' AND phase='begin') AS b, "
+        "SUM(step='interrupted' AND phase='done') AS d, SUM(step='interrupted') AS i, "
+        "SUM(step='reconcile' AND json_valid(detail_json) AND "
+        "json_extract(detail_json,'$.failure') LIKE 'Onderbroken (herstart%') AS oud "
+        "FROM replacement_journal WHERE transaction_id=?", (txn_id,))
+    if row is None or row["d"]:
+        return False
+    return bool(row["b"] or (not row["i"] and row["oud"]))
 
 
 def finish_interrupted(ctx: AppContext, txn_id: int, failure: str | None = None) -> None:
@@ -848,8 +856,9 @@ def recover_pending(ctx: AppContext) -> list[dict[str, Any]]:
         out.append({"id": int(row["id"]), "from": row["state"], "to": state})
     for row in ctx.db.fetch_all(
             "SELECT DISTINCT t.id, t.state FROM replacement_transactions t JOIN "
-            "replacement_journal j ON j.transaction_id=t.id AND j.step='interrupted' "
-            "WHERE t.state IN ('rolled_back','aborted') ORDER BY t.id"):
+            "replacement_journal j ON j.transaction_id=t.id AND j.step IN "
+            "('interrupted','reconcile') WHERE t.state IN ('rolled_back','aborted') "
+            "ORDER BY t.id"):
         if _interrupted_open(ctx, int(row["id"])):
             finish_interrupted(ctx, int(row["id"]), "Onderbroken (herstart/stroomstoring)")
             out.append({"id": int(row["id"]), "from": row["state"], "to": row["state"]})

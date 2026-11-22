@@ -309,9 +309,9 @@ def _legacy_config(ctx: AppContext, body: ServerConfig, actor: str) -> bool:
         _set(ctx, "mediaserver.url", url, actor)
         ctx.state_set("mediaserver_path_map", {})
     if body.clear_key:
-        ctx.secrets.delete(S.SECRET_KEY)
+        M.store_key(ctx, S.SECRET_KEY, None, actor)
     elif key:
-        ctx.secrets.set(S.SECRET_KEY, key, actor)
+        M.store_key(ctx, S.SECRET_KEY, key, actor)
     return bool(key or body.url is not None or kind)
 
 
@@ -332,7 +332,7 @@ def _extra_config(ctx: AppContext, body: ServerConfig, actor: str) -> tuple[int 
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         if key:
-            ctx.secrets.set(M.secret_name(sid), key, actor)
+            M.store_key(ctx, M.secret_name(sid), key, actor)
         return sid, True
     sid = int(body.server_id or 0)
     if not M.exists(ctx, sid):
@@ -348,9 +348,9 @@ def _extra_config(ctx: AppContext, body: ServerConfig, actor: str) -> tuple[int 
     if body.enabled is False:
         M.drop_open_work(ctx, sid, "losgemaakt")
     if body.clear_key:
-        ctx.secrets.delete(M.secret_name(sid))
+        M.store_key(ctx, M.secret_name(sid), None, actor)
     elif key:
-        ctx.secrets.set(M.secret_name(sid), key, actor)
+        M.store_key(ctx, M.secret_name(sid), key, actor)
     return sid, bool(key or body.url is not None or body.kind or body.enabled)
 
 

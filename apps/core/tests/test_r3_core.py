@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 
 from mediaguard.db import utcnow
@@ -76,6 +77,12 @@ def test_rejected_av1_purge_label_and_single_audit(ctx, tmp_path):
 
     f = tmp_path / "x.mkv"
     f.write_bytes(b"x")
+    # de weggezette inhoud is aantoonbaar een AV1-uitvoer van MediaGuard (R-HARDE-EIS-6)
+    ctx.db.execute_insert(
+        "INSERT INTO replacement_transactions(kind,state,library_path,final_path,staged_path,"
+        "staged_sha256,source_snapshot_json,created_at,updated_at) VALUES ('replace',"
+        "'committed','/m/x.mkv','/m/x.mkv','/s/x.mkv',?,'{}',?,?)",
+        (hashlib.sha256(b"x").hexdigest(), utcnow(), utcnow()))
     txn = ctx.db.execute_insert(
         "INSERT INTO replacement_transactions(kind,state,library_path,final_path,staged_path,"
         "source_snapshot_json,created_at,updated_at) VALUES ('restore','committed','/m/x.mkv',"

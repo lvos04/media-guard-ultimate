@@ -129,9 +129,17 @@ def _attempts(ctx: AppContext, txn_id: int) -> list[dict[str, Any]]:
                               "transaction_id=? AND step=? ORDER BY id", (txn_id, CHECK_STEP))
 
 
+def _enabled() -> bool:
+    """Padwissel aan (versie 2). Uit: geen nacontrole en geen vrijgave-uitstel, ook niet
+    voor een vastlegging uit een eerdere build (R-HARDE-EIS-11): gedrag van vóór 676."""
+    from mediaguard.recovery import executor
+
+    return executor.PADWISSEL_MET_PROVIDER_ID
+
+
 def release_state(ctx: AppContext, txn_id: int) -> tuple[str, str] | None:
     """None zonder padwissel; anders ("passed"|"pending"|"failed", uitleg)."""
-    if snapshot(ctx, txn_id) is None:
+    if not _enabled() or snapshot(ctx, txn_id) is None:
         return None
     rows = _attempts(ctx, txn_id)
     if any(r["phase"] == "done" for r in rows):
@@ -176,6 +184,8 @@ def _due(rows: list[dict[str, Any]], now: datetime) -> bool:
 
 async def verify(ctx: AppContext) -> int:
     """Open padwissels controleren; geeft het aantal geslaagde controles."""
+    if not _enabled():
+        return 0
     from mediaguard.api.system import notify
     from mediaguard.mediaserver import service as S
     from mediaguard.recovery.executor import journal
