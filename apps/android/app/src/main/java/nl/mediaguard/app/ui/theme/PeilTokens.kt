@@ -1,4 +1,4 @@
-// Peil 1.1.1 · design/ontwerptaal/tokens.json sha256:cc03fcd019b43d9ee52509c7812eff38a726de80a6cf4041b82593c52e88fb0e
+// Peil 1.1.1 · design/ontwerptaal/tokens.json sha256:cc03fcd019b43d9ee52509c7812eff38a726de80a6cf4041b82593c52e88fb0e · gitleaks:allow SHA-256 van het openbare Peil-tokenbestand
 // Gegenereerd door apps/android/tools/peil_tokens.py — niet met de hand wijzigen;
 // PeilTokensTest vergelijkt elke waarde met tokens.json (docs/ontwerp/PEIL_MIGRATIE.md §10.1).
 package nl.mediaguard.app.ui.theme
@@ -252,7 +252,7 @@ object PeilTokens {
     const val VERSIE = "1.1.1"
 
     /** sha256 van design/ontwerptaal/tokens.json waaruit dit bestand is gemaakt. */
-    const val TOKENS_SHA256 = "cc03fcd019b43d9ee52509c7812eff38a726de80a6cf4041b82593c52e88fb0e"
+    const val TOKENS_SHA256 = "cc03fcd019b43d9ee52509c7812eff38a726de80a6cf4041b82593c52e88fb0e" // gitleaks:allow SHA-256 van het openbare Peil-tokenbestand
 
     /** `maat.radius` in dp (kaart, knop, veld). */
     const val RADIUS_DP = 8f

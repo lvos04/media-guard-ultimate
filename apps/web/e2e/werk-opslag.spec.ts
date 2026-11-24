@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /** Activiteit → Opslag & downloads: wat kwam erbij en waar ging de ruimte heen. */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 const GB = 1024 ** 3;
 
 const LEDGER = {

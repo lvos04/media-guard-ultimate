@@ -1,10 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /**
  * Mediaservers (Emby en Jelly Leon/Jellyfin naast elkaar; Δ-MG-DUAL, ADR-0022) en ondertitels: alles in te stellen in
  * de app (rapport 5, M3/M8).
  */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 // Een kijker en een operator: zij zien de reden waarom iets uit staat (RolMelding), nooit het beheerformulier.
 const KIJKER = { username: "e2e-ms-kijker", password: `${ADMIN.password}-kijker`, role: "viewer" };
 const OPERATOR = { username: "e2e-ms-operator", password: `${ADMIN.password}-operator`, role: "operator" };

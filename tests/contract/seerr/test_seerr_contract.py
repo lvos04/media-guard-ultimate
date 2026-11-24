@@ -812,7 +812,8 @@ def test_17_core_cutover_and_rollback_against_real_seerr(core):
     Radarr; core's cutover must re-point it via Seerr's API (preview -> confirm) and rollback
     must restore the old values exactly."""
     orig = seerr_server("radarr", "radarr-animefilms")
-    old_values = {"hostname": "radarr-old", "port": 7878, "apiKey": "0123456789abcdef0123456789abcdef"}
+    old_values = {"hostname": "radarr-old", "port": 7878,
+                  "apiKey": "0123456789abcdef0123456789abcdef"}  # gitleaks:allow eigen sleutel van de terugvalfixture
     seerr_update("radarr", orig, **old_values)
     preview = core.ok("POST", "/api/v1/seerr/cutover", {"instance_id": "radarr-animefilms",
                                                         "server_id": orig["id"]})

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /**
  * "Inrichten" against the real core. The e2e core has no Sonarr/Radarr forks and no API keys
@@ -6,7 +7,6 @@ import { expect, test, type Page } from "@playwright/test";
  */
 test.describe.configure({ mode: "serial" });
 
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 test.beforeAll(async ({ request }) => {
   const status = await (await request.get("/api/v1/auth/setup-status")).json() as { needs_setup: boolean };

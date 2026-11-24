@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /** Laatste open punten: één plek per functie, techniek tonen, ontbrekend-redenen, mapnaam-typfouten. */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 const json = (body: unknown) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
 
 test.beforeAll(async ({ request }) => {

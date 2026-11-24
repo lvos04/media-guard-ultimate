@@ -21,8 +21,8 @@ def test_backup_path_traversal_rejected(client):
     assert client.get("/api/v1/backups/..%2Fsecret.key/download").status_code in (404, 422)
 
 
-def test_support_bundle_has_no_secrets(client, ctx):
-    ctx.secrets.set("ai:openai:apikey", "sk-proj-ditmagnooitlekken123")
+def test_support_bundle_has_no_secrets(client, plaats_supportsleutel):
+    plaats_supportsleutel("ditmagnooitlekken123")
     r = client.get("/api/v1/admin/support-bundle")
     assert r.status_code == 200
     zf = zipfile.ZipFile(io.BytesIO(r.content))

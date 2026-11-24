@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /** Testrapport 2: langlopende verbindingen, tellers, Release Lab-kolommen, meervouden. */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 async function login(page: Page) {
   await page.goto("/login");

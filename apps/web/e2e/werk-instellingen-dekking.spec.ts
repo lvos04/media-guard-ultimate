@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /**
  * Dekking: elke instelling uit het register (GET /settings/schema) staat ergens op Instellingen.
@@ -6,7 +7,6 @@ import { expect, test, type Page } from "@playwright/test";
  * serie/instantie/bestand gelden onder 'Per serie of instantie' (?view=all). Een nieuwe instelling
  * zonder plek laat deze test falen.
  */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 test.beforeAll(async ({ request }) => {
   const status = await (await request.get("/api/v1/auth/setup-status")).json() as { needs_setup: boolean };

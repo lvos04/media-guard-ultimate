@@ -2,13 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /**
  * Nieuwe opzet (november 2026): elke route uit de functie-inventaris opent zonder 404 of
  * foutstatus, elke oude deep link komt op de juiste plek uit, en het hoofdmenu heeft precies
  * de vijf onderdelen + Instellingen. Bron: docs/design/ia-map.json (scripts/gen-feature-inventory.py).
  */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 const MAP = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../docs/design/ia-map.json"), "utf8")) as {
   routes: Record<string, { area: string; where: string; behaviour: string }>;
   deep_links: Array<{ from: string; to: string }>;

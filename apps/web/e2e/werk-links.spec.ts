@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 import { seedLinkWorld, seedQuarantine } from "./seed";
 
@@ -7,7 +8,6 @@ import { seedLinkWorld, seedQuarantine } from "./seed";
  * Activiteit) moet naar een bestaande pagina leiden zonder foutmelding, en een link naar een
  * serie/film moet ook bij díe serie/film uitkomen.
  */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 const START = [
   "/", "/activiteit", "/activiteit?tab=problemen", "/activiteit?tab=geschiedenis", "/bibliotheek",
   "/ontbrekend", "/kalender", "/av1", "/av1/wachtrij", "/av1/kwaliteit", "/av1/instellingen",

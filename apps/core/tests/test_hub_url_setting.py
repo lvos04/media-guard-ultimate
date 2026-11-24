@@ -126,14 +126,9 @@ def test_patch_stores_normalised_and_refuses_invalid_with_422(client) -> None:
     assert client.get("/api/v1/settings/effective?keys=system.hub_url").json()[0]["value"] == ""
 
 
-def test_viewer_can_read_hub_address(client) -> None:
-    client.post("/api/v1/auth/users", json={"username": "kijker", "password": "kijkwachtwoord1",
-                                             "role": "viewer"})
-    from fastapi.testclient import TestClient
-    with TestClient(client.app) as other:
-        other.post("/api/v1/auth/login", json={"username": "kijker", "password": "kijkwachtwoord1"})
-        r = other.get("/api/v1/settings/effective?keys=system.hub_url")
-        assert r.status_code == 200 and r.json()[0]["key"] == "system.hub_url"
+def test_viewer_can_read_hub_address(viewer_client) -> None:
+    r = viewer_client.get("/api/v1/settings/effective?keys=system.hub_url")
+    assert r.status_code == 200 and r.json()[0]["key"] == "system.hub_url"
 
 
 def test_ui_theme_default_is_system(client) -> None:

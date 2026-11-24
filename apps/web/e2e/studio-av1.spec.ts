@@ -1,11 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /**
  * AV1 Studio against a mocked engine (HTTP via page.route, live channel via routeWebSocket):
  * every worker of every lane gets its own progress bar, bars never move backwards within a
  * phase, a phase without a percentage shows a "working" bar, and the job drawer opens.
  */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 test.beforeAll(async ({ request }) => {
   const status = await (await request.get("/api/v1/auth/setup-status")).json() as { needs_setup: boolean };

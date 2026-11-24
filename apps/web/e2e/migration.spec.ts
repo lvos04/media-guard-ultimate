@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 import { makeBackupZips } from "./seed";
 
@@ -10,7 +11,6 @@ import { makeBackupZips } from "./seed";
  */
 test.describe.configure({ mode: "serial" });
 
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 // standalone runs: create the admin if mediaguard.spec.ts did not run first
 test.beforeAll(async ({ request }) => {

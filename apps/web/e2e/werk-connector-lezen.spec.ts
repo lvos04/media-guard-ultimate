@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 import { request as httpRequest } from "node:http";
 
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" }; // gitleaks:allow openbare e2e-testfixture, zelfde aanmelding als werk-apikeys-ontwerpreview.spec.ts; geen echt account.
 
 test("connector en minimale healthroutes zijn bereikbaar via de ene webpoort", async ({ request }, testInfo) => {
   const setup = await (await request.get("/api/v1/auth/setup-status")).json();

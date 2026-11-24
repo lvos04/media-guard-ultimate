@@ -1,11 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /**
  * Alleen voor ontwerpwerk: schermafbeeldingen van de hoofdpagina's (1440 en 390, donker en licht).
  * Draait alleen met MG_SHOTS_DIR=<map>; in de gewone E2E-run wordt hij overgeslagen.
  */
 const DIR = process.env.MG_SHOTS_DIR;
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 const PAGES: Array<[string, string]> = [
   ["overzicht", "/"], ["activiteit", "/activiteit"], ["bibliotheek", "/bibliotheek"], ["ontbrekend", "/ontbrekend"],
   ["ruimte", "/av1"], ["wachtrij", "/av1/wachtrij"], ["terugzetten", "/quarantaine"], ["av1-instellingen", "/av1/instellingen"],

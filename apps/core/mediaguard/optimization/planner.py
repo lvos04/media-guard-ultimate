@@ -178,9 +178,9 @@ def classify(ctx: AppContext, item: LibraryItem) -> Classified:  # noqa: C901 - 
     if item.bitrate_kbps is not None and item.bitrate_kbps <= threshold:
         return Classified(item, "keep", 6, f"{item.bitrate_kbps} kbps onder drempel "
                           f"{threshold}: hercoderen levert te weinig op")
-    pct_key = "optimization.estimated_av1_saving_percent_hevc" if codec in (
+    saving_setting = "optimization.estimated_av1_saving_percent_hevc" if codec in (
         "hevc", "x265", "h265") else "optimization.estimated_av1_saving_percent"
-    pct = int(ctx.config.value(pct_key))
+    pct = int(ctx.config.value(saving_setting))
     saving = int((item.size or 0) * pct / 100)
     note = "" if item.bitrate_kbps is not None else " (bitrate onbekend; plan controleert)"
     return Classified(item, "av1", 5, f"AV1-kandidaat {codec or 'onbekend'} {cls}p, "

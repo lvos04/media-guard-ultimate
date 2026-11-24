@@ -759,21 +759,22 @@ def test_admin_password_reset_logs_out_other_sessions(app, client, ctx):  # type
 
 
 def test_change_own_password(app, client, ctx):  # type: ignore[no-untyped-def]
+    nieuw = PASSWORD + "-gewijzigd"
     with TestClient(app) as phone:
         phone.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD})
         r = client.post("/api/v1/auth/me/password",
-                        json={"current_password": "fout", "new_password": "nieuw-wachtwoord-1"})
+                        json={"current_password": "fout", "new_password": nieuw})
         assert r.status_code == 401
         assert phone.get("/api/v1/auth/me").status_code == 200
         r = client.post("/api/v1/auth/me/password", json={
-            "current_password": PASSWORD, "new_password": "nieuw-wachtwoord-1"})
+            "current_password": PASSWORD, "new_password": nieuw})
         assert r.status_code == 200 and r.json()["sessions_ended"] == 1
         assert "uitgelogd" in r.json()["message_nl"]
         assert phone.get("/api/v1/auth/me").status_code == 401
     assert client.get("/api/v1/auth/me").status_code == 200
     with TestClient(app) as again:
         assert again.post("/api/v1/auth/login", json={
-            "username": "admin", "password": "nieuw-wachtwoord-1"}).status_code == 200
+            "username": "admin", "password": nieuw}).status_code == 200
     audit = ctx.db.fetch_one("SELECT 1 FROM audit_events WHERE action='auth.password_changed'")
     assert audit is not None
 

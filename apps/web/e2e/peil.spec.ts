@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /**
  * Peil-testmatrix (ONTWERPTAAL §12, docs/ontwerp/PEIL_MIGRATIE.md §11.3) tegen de echte core (playwright.config.ts):
@@ -17,7 +18,6 @@ import { expect, test, type Page } from "@playwright/test";
  *    regels als docs/screenshots/peil/review/review.mjs); prefers-reduced-motion = geen beweging; forced colors houdt
  *    de stippelrand van Onbekend
  */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 
 const MAIN: Array<{ route: string; slug: string }> = [

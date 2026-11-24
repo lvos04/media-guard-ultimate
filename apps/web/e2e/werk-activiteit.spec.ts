@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /** Activiteit: alle secties zichtbaar (gemockte /api/v1/activity), geen horizontale scroll op 412 px. */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 test.beforeAll(async ({ request }) => {
   const status = await (await request.get("/api/v1/auth/setup-status")).json() as { needs_setup: boolean };

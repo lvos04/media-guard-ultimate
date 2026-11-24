@@ -1,9 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 const GB = 1024 ** 3; // de app rekent in GiB (1 GB = 1024³)
 
 /** Rapport 7 (v1.0.0): één quarantainegetal, weescontrole zichtbaar, downloads uit de clients, DV-routes. */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 test.beforeAll(async ({ request }) => {
   const status = await (await request.get("/api/v1/auth/setup-status")).json() as { needs_setup: boolean };

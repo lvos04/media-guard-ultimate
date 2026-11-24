@@ -14,8 +14,6 @@ from test_provisioning_fakes import FakeProwlarr, wire_all
 
 from mediaguard.provisioning import templates as T
 
-SECRETS = ("sab-secret-xyz", "geek-secret-123", "nyaa-secret-456", "prowlarr-key-123",
-           "seerr-key-123456")
 CFG: dict[str, Any] = {
     "indexer_mode": "direct",
     "download_clients": [{"name": "SAB", "implementation": "Sabnzbd", "host": "sabnzbd",
@@ -25,7 +23,7 @@ CFG: dict[str, Any] = {
          "api_key": "geek-secret-123"},
         {"name": "Nyaa", "implementation": "Torznab",
          "base_url": "http://jackett:9117/api/v2.0/indexers/nyaasi/results/torznab",
-         "api_key": "nyaa-secret-456"}],
+         "api_key": "nyaa-secret-456"}],  # gitleaks:allow merkteken van de nagebootste indexer
 }
 CATS = {"sonarr-series": "tv", "sonarr-anime": "tv-anime", "radarr-films": "movies",
         "radarr-animefilms": "movies-anime"}
@@ -200,7 +198,7 @@ def test_drift_detected_and_repaired_user_items_untouched(env):
 
 def test_secrets_never_returned(env):
     c = env.client
-    cfg = {**CFG, "prowlarr": {"url": "http://prowlarr:9696", "api_key": "prowlarr-key-123"}}
+    cfg = {**CFG, "prowlarr": {"url": "http://prowlarr:9696", "api_key": env.prowlarr.api_key}}
     out = put_cfg(c, cfg)
     assert out["download_clients"][0]["api_key_set"] is True
     assert out["prowlarr"]["api_key_set"] is True and "api_key" not in out["prowlarr"]
@@ -216,8 +214,10 @@ def test_secrets_never_returned(env):
         if f["name"] == "apiKey":
             f["value"] = "ander-geheim-999"
     texts.append(c.post("/api/v1/provisioning/plan", json={}).text)
+    sleutels = [item["api_key"] for item in (*cfg["download_clients"], *cfg["indexers"])]
     for t in texts:
-        for s in (*SECRETS, "ander-geheim-999", "key-sonarr-series-0001"):
+        for s in (*sleutels, env.prowlarr.api_key, env.seerr.api_key,
+                  "ander-geheim-999", "key-sonarr-series-0001"):
             assert s not in t
     rows = env.ctx.db.fetch_all("SELECT old_value, new_value FROM audit_events")
     for r in rows:
@@ -275,7 +275,7 @@ def test_prowlarr_applications_registered(env):
             "tags": []}}
     put_cfg(c, {"indexer_mode": "prowlarr",
                 "download_clients": CFG["download_clients"],
-                "prowlarr": {"url": "http://prowlarr:9696", "api_key": "prowlarr-key-123"}})
+                "prowlarr": {"url": "http://prowlarr:9696", "api_key": prow.api_key}})
     t = c.post("/api/v1/provisioning/prowlarr/test", json={}).json()
     assert t["ok"] and t["indexers"][1]["suggested_scope"] == "anime"
     res = apply(c)

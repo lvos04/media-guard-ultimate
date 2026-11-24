@@ -27,16 +27,10 @@ def test_csrf_required_for_mutations(client):
     client.headers.update(headers)
 
 
-def test_viewer_cannot_mutate(client):
-    client.post("/api/v1/auth/users", json={"username": "kijker", "password": "kijkwachtwoord1",
-                                             "role": "viewer"})
-    from fastapi.testclient import TestClient
-    with TestClient(client.app) as other:
-        r = other.post("/api/v1/auth/login", json={"username": "kijker",
-                                                   "password": "kijkwachtwoord1"})
-        other.headers["X-CSRF-Token"] = r.json()["csrf_token"]
-        assert other.get("/api/v1/status").status_code == 200
-        assert other.post("/api/v1/system/emergency-stop", json={"active": True}).status_code == 403
+def test_viewer_cannot_mutate(viewer_client):
+    assert viewer_client.get("/api/v1/status").status_code == 200
+    antwoord = viewer_client.post("/api/v1/system/emergency-stop", json={"active": True})
+    assert antwoord.status_code == 403
 
 
 def test_settings_schema_effective_and_inheritance(client):

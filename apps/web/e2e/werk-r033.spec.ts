@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /** Testrapport 3: opgevolgde pogingen, joblinks met MediaGuard-nummer, prognose in weken, audit, quarantaine-bevestiging. */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 test.beforeAll(async ({ request }) => {
   const status = await (await request.get("/api/v1/auth/setup-status")).json() as { needs_setup: boolean };

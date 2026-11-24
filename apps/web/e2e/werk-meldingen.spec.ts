@@ -1,9 +1,9 @@
 import { createHmac } from "node:crypto";
 
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /** Rapport 5: meldingen buiten de browser (M1), 'Wat is er gebeurd' (M2), bundel buiten de NAS (M11), 2FA/sessies (M12). */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 test.describe.configure({ mode: "serial" });
 

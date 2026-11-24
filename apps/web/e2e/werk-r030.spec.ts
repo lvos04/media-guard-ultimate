@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /** Verbeterronde na het Cowork-testrapport (4 nov): crash, foutgrenzen, 404, gedeelde SSE, menu's. */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 async function login(page: Page) {
   await page.goto("/login");

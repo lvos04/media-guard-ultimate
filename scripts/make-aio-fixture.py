@@ -85,8 +85,9 @@ def build(target_dir: Path) -> dict[str, Any]:
         r = c.post("/api/v1/auth/setup", json={"username": USER, "password": PASSWORD})
         r.raise_for_status()
         c.headers["X-CSRF-Token"] = r.json()["csrf_token"]
-        c.post("/api/v1/auth/users", json={"username": "kijker", "password": "kijker-wachtwoord-1",
-                                      "role": "viewer"}).raise_for_status()
+        kijker = {"username": "kijker", "role": "viewer",
+                  "password": "kijker-wachtwoord-1"}  # gitleaks:allow lokale upgradefixture
+        c.post("/api/v1/auth/users", json=kijker).raise_for_status()
         c.post("/api/v1/auth/api-keys", json={"name": "rooktest-app", "role": "viewer"}
                ).raise_for_status()
     for key, value in SETTINGS.items():

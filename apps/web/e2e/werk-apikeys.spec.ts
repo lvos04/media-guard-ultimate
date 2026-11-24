@@ -3,9 +3,9 @@ import path from "node:path";
 
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /** API-sleutels: aanmaken → één keer tonen → werkt tegen de echte core → intrekken → 401. */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 test.beforeAll(async ({ request }) => {
   const status = await (await request.get("/api/v1/auth/setup-status")).json() as { needs_setup: boolean };

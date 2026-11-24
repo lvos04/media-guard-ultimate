@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from mediaguard.security import totp
 
 # RFC 6238 bijlage B: secret "12345678901234567890" (ASCII), SHA-1, 8 cijfers
-RFC_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+RFC_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"  # gitleaks:allow openbare RFC 6238-testvector
 
 
 def test_rfc6238_vectors():  # type: ignore[no-untyped-def]

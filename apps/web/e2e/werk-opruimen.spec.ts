@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /** Downloads opruimen: kaart onder Systeem → Opslag tegen de echte core (nog niets gedraaid). */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 test.beforeAll(async ({ request }) => {
   const status = await (await request.get("/api/v1/auth/setup-status")).json() as { needs_setup: boolean };

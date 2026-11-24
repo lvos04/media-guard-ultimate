@@ -4,10 +4,10 @@ import path from "node:path";
 
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 // S-P3-600: echte web-app en kern, uitsluitend de eigen e2e-database.
 // Het voorvoegsel werk- houdt de eenmalige installatie in mediaguard.spec.ts als eerste.
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" }; // gitleaks:allow openbare e2e-testfixture, zelfde waarde als in werk-apikeys.spec.ts; geen echt account.
 const SCOPE = "emergency_stop:on";
 const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 const ROLE_ERROR = "Rechten (scopes) kunnen alleen op een sleutel met rol kijker. Kies rol kijker of laat de rechten leeg.";

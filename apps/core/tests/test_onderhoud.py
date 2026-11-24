@@ -392,7 +392,7 @@ def clean_root_logger():
 
 
 def test_info_lines_are_kept_and_level_setting_works(ctx, client, tmp_path, monkeypatch,
-                                                      clean_root_logger):
+                                                      clean_root_logger, plaats_supportsleutel):
     from mediaguard import logs
 
     folder = tmp_path / "logs"
@@ -408,8 +408,8 @@ def test_info_lines_are_kept_and_level_setting_works(ctx, client, tmp_path, monk
     logging.getLogger("mediaguard.test").info("deze niet")
     assert "deze niet" not in path.read_text()
     # supportbundel bevat de logs (geredigeerd) en de supervisorstatus
-    ctx.secrets.set("ai:openai:apikey", "sk-proj-lekniet123456")
-    (folder / "encoder.log").write_text("encoder start\napi_key sk-proj-lekniet123456\n")
+    sleutel = plaats_supportsleutel("lekniet123456")
+    (folder / "encoder.log").write_text(f"encoder start\napi_key {sleutel}\n")
     zf = zipfile.ZipFile(io.BytesIO(client.get("/api/v1/admin/support-bundle").content))
     names = zf.namelist()
     assert "logs/core.log" in names and "logs/encoder.log" in names

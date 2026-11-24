@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /**
  * Verbeterlijst 24, 25, 26 en 39 tegen de echte core:
@@ -11,7 +12,6 @@ import { expect, test, type Page } from "@playwright/test";
  *  26 — Aanvragen: leverstatus bovenaan met looptijd, pogingen, titel-link en 'Nu zoeken';
  *  39 — noodstop: Overzicht zegt 'gepauzeerd' in plaats van 'bezig'.
  */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 const PHONE = { width: 390, height: 844 };
 
 test.beforeAll(async ({ request }) => {

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ADMIN } from "./fixtures/admin";
 
 /** 0.2.9: Seerr/Downloads onder Koppelingen, instellingen op één plek, Release Lab vooraf ingevuld. */
-const ADMIN = { username: "beheerder", password: "e2e-wachtwoord-123" };
 
 async function login(page: Page) {
   await page.goto("/login");

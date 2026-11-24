@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import secrets
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -61,6 +62,28 @@ def client(app) -> Iterator[TestClient]:  # type: ignore[no-untyped-def]
         assert r.status_code == 200, r.text
         c.headers["X-CSRF-Token"] = r.json()["csrf_token"]
         yield c
+
+
+@pytest.fixture
+def viewer_client(client) -> Iterator[TestClient]:  # type: ignore[no-untyped-def]
+    login = {"username": "kijker", "password": secrets.token_urlsafe(24)}
+    client.post("/api/v1/auth/users", json={**login, "role": "viewer"}).raise_for_status()
+    with TestClient(client.app) as kijker:
+        antwoord = kijker.post("/api/v1/auth/login", json=login)
+        antwoord.raise_for_status()
+        kijker.headers["X-CSRF-Token"] = antwoord.json()["csrf_token"]
+        yield kijker
+
+
+@pytest.fixture
+def plaats_supportsleutel(ctx):  # type: ignore[no-untyped-def]
+    """Zet een herkenbaar merkteken in de testkluis voor de supportbundel."""
+    def plaats(merkteken: str) -> str:
+        sleutel = f"sk-proj-{merkteken}"
+        ctx.secrets.set("ai:openai:apikey", sleutel)
+        return sleutel
+
+    return plaats
 
 
 @pytest.fixture

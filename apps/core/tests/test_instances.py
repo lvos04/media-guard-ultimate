@@ -6,7 +6,6 @@ import json
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 from test_arr_fakes import (
     FakeArr,
     download_client,
@@ -66,7 +65,7 @@ def test_create_instance_verifies_connection(client, ctx):
     fake = FakeArr("sonarr", api_key="new-key-12345")
     ctx.services.setdefault("arr_transports", {})["sonarr-4k"] = fake.transport()
     body = {"id": "sonarr-4k", "app": "sonarr", "media_type": "tv", "name": "Sonarr 4K",
-            "url": "http://sonarr-4k:8989", "api_key": "wrong-key-123"}
+            "url": "http://sonarr-4k:8989", "api_key": fake.api_key + "-fout"}
     r = client.post("/api/v1/instances", json=body)
     assert r.status_code == 422 and get_instance(ctx, "sonarr-4k") is None
     r = client.post("/api/v1/instances", json={**body, "app": "radarr", "media_type": "movie",
@@ -201,7 +200,7 @@ def test_webhook_registration(client, ctx, fakes):
     assert listed[0]["fields"][3]["value"] == "********"
 
 
-def test_patch_archive_and_rbac(client, ctx, fakes):
+def test_patch_archive_and_rbac(client, ctx, fakes, viewer_client):
     r = client.patch("/api/v1/instances/sonarr-anime", json={"name": "Anime!",
                                                              "default_monitor_new_items": "all"})
     assert r.status_code == 200 and r.json()["name"] == "Anime!"
@@ -214,16 +213,10 @@ def test_patch_archive_and_rbac(client, ctx, fakes):
     assert client.post("/api/v1/instances/sonarr-anime/suspend").status_code == 409
     # media blijft ongemoeid: geen enkele DELETE naar de fork
     assert fakes["sonarr-anime"].calls_to("DELETE", "/api/v3") == []
-    client.post("/api/v1/auth/users", json={"username": "kijker", "password": "kijkwachtwoord1",
-                                             "role": "viewer"})
-    with TestClient(client.app) as other:
-        tok = other.post("/api/v1/auth/login", json={"username": "kijker",
-                                                     "password": "kijkwachtwoord1"})
-        other.headers["X-CSRF-Token"] = tok.json()["csrf_token"]
-        assert other.get("/api/v1/instances").status_code == 200
-        assert other.post("/api/v1/instances/sonarr-series/suspend").status_code == 403
-        assert other.post("/api/v1/instances/sonarr-series/series", json={
-            "tvdb_id": 1}).status_code == 403
+    assert viewer_client.get("/api/v1/instances").status_code == 200
+    assert viewer_client.post("/api/v1/instances/sonarr-series/suspend").status_code == 403
+    assert viewer_client.post("/api/v1/instances/sonarr-series/series", json={
+        "tvdb_id": 1}).status_code == 403
 
 
 def test_series_management_same_title_two_instances_no_cross_mutation(client, ctx, fakes):

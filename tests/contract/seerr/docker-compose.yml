@@ -27,7 +27,7 @@ services:
     image: ${FAKES_IMAGE:-mirror.gcr.io/library/python:3.12-slim-bookworm}
     user: "1000:1000"
     command: ["python", "-u", "/fakes/stub_mediaguard.py", "--port", "8100",
-              "--keys", "sonarr-series=key-sonarr-series,sonarr-anime=key-sonarr-anime,radarr-films=key-radarr-films,radarr-animefilms=key-radarr-animefilms"]
+              "--keys", "sonarr-series=key-sonarr-series,sonarr-anime=key-sonarr-anime,radarr-films=key-radarr-films,radarr-animefilms=key-radarr-animefilms"]  # gitleaks:allow vaste sleutels van de vier lokale testforks
     volumes: ["../../integration/fakes:/fakes:ro"]
     networks: [mgnet]
 
