@@ -9,11 +9,14 @@ een nagebootste bron dat elke soort drift wordt gezien (negatieve gevallen)."""
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -119,6 +122,50 @@ def test_lokale_bron_op_de_gepinde_commit_is_gelijk(soort: str, commit: str) -> 
 
 
 # -- nagebootste bron: elke soort drift wordt gezien ---------------------------------------------
+@pytest.mark.parametrize("via_ci", [False, True])
+def test_online_leest_beide_pins_en_de_branch_op_forgejo(tmp_path, monkeypatch, via_ci):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "forgejo").mkdir()
+    (tmp_path / "forgejo/token").write_text("lokaal\n", encoding="utf-8")
+    if via_ci:
+        monkeypatch.setenv("BRON_LEESTOKEN", "runner")
+    else:
+        monkeypatch.delenv("BRON_LEESTOKEN", raising=False)
+    bron = _bron(ROOT)
+    gelezen = set()
+
+    def open_bron(verzoek, timeout):
+        url = urlsplit(verzoek.full_url)
+        assert (url.scheme, url.netloc) == ("https", "git.medialeon.nl")
+        voorvoegsel = "/api/v1/repos/leon/ai-server-manager/raw/"
+        assert url.path.startswith(voorvoegsel)
+        (ref,) = parse_qs(url.query)["ref"]
+        sleutel = (ref, url.path.removeprefix(voorvoegsel))
+        gelezen.add(sleutel)
+        assert verzoek.get_header("User-agent") == "mediaguard-herkomst/1"
+        assert verzoek.get_header("Authorization") == ("token runner" if via_ci else "token lokaal")
+        assert "Authorization" not in verzoek.headers  # niet meesturen bij doorverwijzen
+        return io.BytesIO(bron[sleutel])
+
+    monkeypatch.setattr(kh.urllib.request, "urlopen", open_bron)
+    assert kh.main(["vergelijk", "--online"]) == 0
+    assert gelezen == set(bron)
+
+
+def test_online_zonder_leestoegang_keurt_pin_af(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("BRON_LEESTOKEN", raising=False)
+
+    def geweigerd(verzoek, timeout):
+        assert verzoek.get_header("Authorization") is None
+        raise HTTPError(verzoek.full_url, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(kh.urllib.request, "urlopen", geweigerd)
+    assert kh.main(["vergelijk", "--online"]) == 1
+    fout = capsys.readouterr().err
+    assert "HTTP 403" in fout and CONTRACT_BRON_COMMIT[:7] in fout and PEIL_BRON_COMMIT[:7] in fout
+
+
 def _kopie_van_repo(tmp: Path) -> Path:
     root = tmp / "repo"
     for soort, rel in kh.SETS.items():

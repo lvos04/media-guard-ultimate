@@ -114,7 +114,9 @@ jobs:
           token: ${{ secrets.BRON_LEESTOKEN }}
           persist-credentials: false
       - name: Vergelijk gepinde bestanden en de huidige bronbranch
-        run: python3 scripts/kopie-herkomst.py vergelijk --bron .herkomst
+        env:
+          BRON_LEESTOKEN: ${{ secrets.BRON_LEESTOKEN }}
+        run: python3 scripts/kopie-herkomst.py vergelijk --bron .herkomst --online
 
   manifest:
     name: Custom App-manifest (gepinde validator)

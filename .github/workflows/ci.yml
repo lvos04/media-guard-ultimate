@@ -121,7 +121,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: offline (koppen, sha256, HERKOMST.json)
         run: python3 scripts/kopie-herkomst.py controleer
-      - name: tegen lvos04/ai-server-manager op GitHub (gepinde commit + werkbranch)
+      - name: Vergelijk gepinde bestanden en de huidige bronbranch op Forgejo
+        env:
+          BRON_LEESTOKEN: ${{ secrets.BRON_LEESTOKEN }}
         run: python3 scripts/kopie-herkomst.py vergelijk --online
 
   manifest:

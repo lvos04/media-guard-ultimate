@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Byte-gelijke kopieën uit ``lvos04/ai-server-manager`` bewaken: contract en ontwerptaal Peil.
+"""Bewaak de kopieën van contract en Peil uit ``leon/ai-server-manager`` op Forgejo.
 
 Twee sets, elk met een eigen ``HERKOMST.json`` die versie, bronrepo, **bron-commit** (40 hex) en
 per kopie de sha256 van het bronbestand pint:
@@ -22,7 +22,8 @@ Opdrachten (alleen de standaardbibliotheek):
 ``controleer``
     offline: HERKOMST.json, koppen en sha256 (CI en unit-tests)
 ``vergelijk --bron <map>`` en/of ``--online``
-    tegen een checkout van de bron (``git show``) of GitHub (raw, publieke repo)
+    tegen een checkout van de bron (``git show``) of de raw-API van Forgejo
+    (``BRON_LEESTOKEN`` of het lokale configuratiebestand ``forgejo/token``)
 ``bijwerken --set <contract|peil> --bron <map> --commit <40 hex> [--ref <branch>]``
     kopieën en HERKOMST.json opnieuw schrijven vanuit die commit
 
@@ -40,14 +41,15 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BRON_REPO = "lvos04/ai-server-manager"
-RAW = "https://raw.githubusercontent.com/{repo}/{ref}/{pad}"
+BRON_REPO = "lvos04/ai-server-manager"  # herkomstnaam in de bestaande gepinde kopieën
+FORGEJO_RAW = "https://git.medialeon.nl/api/v1/repos/leon/ai-server-manager/raw"
 SETS = {
     "contract": Path("docs/platform-v2/HERKOMST.json"),
     "peil": Path("design/ontwerptaal/HERKOMST.json"),
@@ -206,22 +208,32 @@ def haler_lokaal(bron: Path) -> Haler:
 
 
 def haler_online(wachttijden: tuple[int, ...] = (0, 2, 4, 8, 16)) -> Haler:
-    """Publieke bron via raw.githubusercontent.com, zonder token.
-
-    Bij netwerkfouten 4× opnieuw na 2/4/8/16 s."""
+    """Lees de opgegeven commit of branch via Forgejo. Herhaal tijdelijke netwerkfouten."""
+    token = os.environ.get("BRON_LEESTOKEN", "").strip()
+    if not token:
+        config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        try:
+            token = (config / "forgejo" / "token").read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            pass
 
     def haal(ref: str, pad: str) -> bytes:
-        url = RAW.format(repo=BRON_REPO, ref=ref, pad=pad)
+        url = f"{FORGEJO_RAW}/{urllib.parse.quote(pad)}?{urllib.parse.urlencode({'ref': ref})}"
+        verzoek = urllib.request.Request(url, headers={"User-Agent": "mediaguard-herkomst/1"})
+        if token:
+            verzoek.add_unredirected_header("Authorization", f"token {token}")
         laatste: Exception | None = None
         for wacht in wachttijden:
             if wacht:
                 time.sleep(wacht)
             try:
-                with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - vaste https-URL
+                with urllib.request.urlopen(verzoek, timeout=30) as resp:  # noqa: S310 - vaste bron
                     return bytes(resp.read())
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
                     raise FileNotFoundError(f"{url}: 404") from exc
+                if exc.code in (401, 403):
+                    raise PermissionError(f"Forgejo weigert leestoegang (HTTP {exc.code})") from exc
                 laatste = exc
             except (urllib.error.URLError, TimeoutError) as exc:
                 laatste = exc
@@ -398,10 +410,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="opdracht", required=True)
     c = sub.add_parser("controleer", help="offline: HERKOMST.json, koppen en sha256")
     c.add_argument("--set", choices=sorted(SETS), action="append")
-    v = sub.add_parser("vergelijk", help="tegen de bron (lokale checkout en/of GitHub)")
+    v = sub.add_parser("vergelijk", help="tegen de bron (lokale checkout en/of Forgejo)")
     v.add_argument("--set", choices=sorted(SETS), action="append")
     v.add_argument("--bron", type=Path, help="checkout van ai-server-manager (git show)")
-    v.add_argument("--online", action="store_true", help="tegen GitHub (raw, publieke repo)")
+    v.add_argument("--online", action="store_true", help="tegen de gepinde bron op Forgejo")
     v.add_argument(
         "--ref", help="huidige bron: branch of commit (standaard bron_ref uit HERKOMST.json)"
     )
