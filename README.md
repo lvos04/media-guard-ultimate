@@ -436,7 +436,8 @@ oude installaties uitzet:
 
 | Document | Inhoud |
 |---|---|
-| [`MEDIAGUARD_GOAL.md`](MEDIAGUARD_GOAL.md) | Het volledige masterplan |
+| [`deploy/truenas/CUSTOM_APP.md`](deploy/truenas/CUSTOM_APP.md#formulier) | Installeren en bijwerken via het standaard TrueNAS Custom App-formulier met de alles-in-één-image |
+| [`MEDIAGUARD_GOAL.md`](MEDIAGUARD_GOAL.md) | Bouwplan en acceptatiecriteria voor MediaGuard |
 | [`docs/INSTALL_TRUENAS.md`](docs/INSTALL_TRUENAS.md) | Technische installatiereferentie |
 | [`docs/MIGRATION_AND_CUTOVER.md`](docs/MIGRATION_AND_CUTOVER.md) | Migratie, no-go, overstap, terugdraaien |
 | [`docs/SEERR_INSTELLEN.md`](docs/SEERR_INSTELLEN.md), [`docs/SEERR_COMPATIBILITY.md`](docs/SEERR_COMPATIBILITY.md) | Seerr |

@@ -30,7 +30,7 @@ Je bent de lead architect, senior full-stack engineer, .NET-forkmaintainer, medi
 9. **Laat de huidige productie-Sonarr en -Radarr onaangeroerd totdat een gecontroleerde cutover is goedgekeurd en gevalideerd.** Verwijder of schakel de oude installaties niet zelfstandig uit.
 10. Gebruik geen claim '100% juiste episode' of 'Dolby Vision altijd behouden' zonder daadwerkelijk aantoonbare verificatie. Onbekende gevallen krijgen een expliciete onzekerheidsstatus en veilige fallback.
 11. Respecteer de GPL-3.0-licenties van Sonarr/Radarr, upstream-notices en broncodeverplichtingen voor verspreide aangepaste binaries. Controleer ook licenties van alle overige componenten.
-12. Lever productiegerichte handleidingen, migratie/rollback-instructies, Docker-images/buildrecepten, Compose-installatie, migratie- en compatibility-tests op. Sluit af met concrete bewijsstukken en eventuele werkelijke blokkades.
+12. Lever productiegerichte handleidingen, migratie/rollback-instructies, het buildrecept voor de alles-in-één-image, de formulierhandleiding, migratie- en compatibility-tests op. Sluit af met concrete bewijsstukken en eventuele werkelijke blokkades.
 
 ## A2. Ononderhandelbaar einddoel
 
@@ -60,7 +60,7 @@ De gebruiker moet zijn bestaande bibliotheek en configuratie veilig kunnen impor
 
 ## B1. Packaging: één app, meerdere geïsoleerde processen
 
-Maak één TrueNAS Custom App / Docker Compose-bundel, één installatiewizard, één login/hoofddashboard, één releaseversie. Intern minimaal:
+Installeer MediaGuard als één standaard TrueNAS Custom App met de gepubliceerde alles-in-één-image. Volg het [Custom App-formulier](deploy/truenas/CUSTOM_APP.md#formulier) en rond de configuratie af in de MediaGuard-wizard. De app heeft één releaseversie, één login en één dashboard. De bouwdoelen hieronder zijn per intern proces beschreven.
 
 - `mediaguard-gateway`: API gateway en centrale authenticatie, proxy voor compatibele externe endpoints.
 - `mediaguard-web`: nieuwe Nederlandstalige frontend.
@@ -69,8 +69,8 @@ Maak één TrueNAS Custom App / Docker Compose-bundel, één installatiewizard, 
 - `mediaguard-recovery`: zeer beperkt bevoegde bestands-/quarantaine-worker.
 - `mediaguard-db`: eigen PostgreSQL voor MediaGuard-domeindata, jobs, historie en audit.
 - `mediaguard-redis`: queue, locks/notificaties waar passend (kritieke status óók persistent in PostgreSQL).
-- `mediaguard-sonarr-series` en `mediaguard-sonarr-anime`: **dezelfde eigen Sonarr-forkimage**, maar verschillende geïsoleerde applicatie-DB’s, configuraties, poorten/routes en mediaroots.
-- `mediaguard-radarr-films` en `mediaguard-radarr-animefilms`: **dezelfde eigen Radarr-forkimage**, maar verschillende geïsoleerde applicatie-DB’s, configuraties, poorten/routes en mediaroots.
+- `mediaguard-sonarr-series` en `mediaguard-sonarr-anime`: **dezelfde ingebouwde Sonarr-fork**, maar verschillende geïsoleerde applicatie-DB’s, configuraties, poorten/routes en mediaroots.
+- `mediaguard-radarr-films` en `mediaguard-radarr-animefilms`: **dezelfde ingebouwde Radarr-fork**, maar verschillende geïsoleerde applicatie-DB’s, configuraties, poorten/routes en mediaroots.
 - `mediaguard-encode`: vanuit `lvos04/av1` overgenomen encode-/verificatie-engine met gecontroleerde TrueNAS-port, als aparte worker binnen dezelfde bundel. Geen tweede encoder opnieuw uitvinden.
 - Optioneel: geïsoleerde taalherkenning-, Shoko- en videoanalyseservices.
 - `mediaguard-ai-advisor` (optionele worker): router naar OpenAI of Anthropic Claude API, uitsluitend gestructureerde suggesties; geen mediabestandstoegang of uitvoeringsbevoegdheid. Bij geen API-key draait MediaGuard volledig door.
@@ -479,12 +479,10 @@ Structured logs, metrics (Prometheus/OpenTelemetry), health/ready endpoints, job
 
 ## K1. Installatie
 
-- Target: TrueNAS SCALE met Docker-gebaseerde apps en `Install via YAML` / Custom App; verifieer actuele stabiele TrueNAS-versie en exacte Compose-beperkingen.
-- Lever `deploy/truenas/compose.yaml`, `env.example` zonder echte secrets, dataset/ACL-plan, startup healthchecks, imageversies, resources, port-/path-/GPU mapping en restore-instructies.
-- Eén Compose app bevat alle normale diensten; intern opgesplitst voor security en upgradebaarheid.
-- Voor GPU detectie: `/dev/dri` minimaal noodzakelijk en alleen indien aanwezig; geen `privileged: true`.
-- Voor de eerste import alleen **read-only media mounts**. Write-mounts pas in cutover/automatische herstelmodus en alleen op minimale paden.
-- Datasetstructuur (configureerbaar): `<pool>/media/...`, `<pool>/apps/mediaguard/{db,config,logs}`, `<pool>/mediaguard-work/{staging,quarantine,recovery}`.
+- Open **Apps → Discover Apps → Custom App**. Vul de velden voor de gepubliceerde alles-in-één-image, poorten, opslag en eventuele GPU in volgens de [formulierhandleiding](deploy/truenas/CUSTOM_APP.md#formulier). Controleer de exacte tag en registerdigest en volg bij een upgrade de back-up- en terugvalstappen in die gids.
+- Gebruik de [lokale Compose-ontwikkelproef](README.md#9-lokaal-starten-ontwikkeling) uitsluitend met testmappen voor ontwikkeling, CI en integratietests.
+- Laat **Privileged** uit. Schakel GPU-doorgifte onder **Resources Configuration** alleen in als de benodigde hardware is bevestigd.
+- Koppel onder **Storage Configuration** de appdata aan `/config`, de werkdataset aan `/work` en de bestaande mediadataset aan `/data`. Behoud de bestaande mediapaden. Bescherm de media bij de eerste import met alleen-lezenrechten op de dataset. Geef bij een bevestigde overstap of herstelactie alleen de benodigde mappen schrijfrechten.
 - Maak een read-only `preflight` / permissiechecker. Geen massale `chown -R` over de mediabibliotheek zonder toestemming.
 - Ondersteun meerdere root folders en pools; detecteer cross-dataset transacties, hardlinks en snapshots.
 - Setup wizard met Sonarr, Radarr, Seerr, indexers/downloadclients, mediapaden, database en GPU-benchmark, hardware limitations, eerste dry run.
@@ -554,7 +552,7 @@ Alle kernfunctionaliteit on-prem; externe metadata-/indexerverbindingen explicie
 - Bronbibliotheek verandert tijdens shadow import of dry-run.
 - Migratie van monitored flags of episode mappings is aantoonbaar onjuist.
 - Geen werkende rollback van cutover / recovery.
-- E2E-app kan niet via TrueNAS Compose starten.
+- De alles-in-één-image start niet met de waarden uit het standaard Custom App-formulier.
 
 KPI's voor benchmark: report scan rates, kwaliteitspaspercentages, zoek-/import-succes, missing op dag 0 en na testen, indexer request rate, disk savings, VMAF/andere metrics waar toepasselijk, CPU/GPU-usage en queue latency. Geen universele reductie van ontbrekende downloads of nauwkeurigheidspercentage beloven zonder echte meetdata.
 
@@ -569,7 +567,7 @@ KPI's voor benchmark: report scan rates, kwaliteitspaspercentages, zoek-/import-
 **Gate:** compileerbare upstream clones / lokale forks en minimaal één geslaagde service-to-service test.
 
 ## Fase 1 — Werkende forks als bundel
-- Build/launch gepinde forks, interne router, devcontainer/Compose, CI, healthchecks, secrets.
+- Build/launch gepinde forks, interne router, devcontainer en lokale Compose-ontwikkelproef, CI, healthchecks, secrets.
 - Sonarr/Radarr API's extern bereikbaar voor Seerr via stabiele URLs.
 **Gate:** Seerr contracttest kan media/request lezen en toevoegen in testomgeving.
 
@@ -598,7 +596,7 @@ KPI's voor benchmark: report scan rates, kwaliteitspaspercentages, zoek-/import-
 **Gate:** browser-E2E desktop/mobile en toegankelijkheidstests slagen.
 
 ## Fase 8 — Cutover & productierijp maken
-- TrueNAS Compose install, productie-hardening, backup/restore, upgraderules, performance, installatiehandleiding, cutoverwizard.
+- Installatie via het standaard TrueNAS Custom App-formulier, productie-hardening, backup/restore, upgraderules, performance, installatiehandleiding, cutoverwizard.
 - **Cutover alleen met expliciete gebruikersactie wanneer echte host en Seerr beschikbaar zijn.**
 **Gate:** volledige echte testomgeving toont dat nieuwe forks zelfstandig werken voordat oorspronkelijke Sonarr/Radarr uitgaan.
 
@@ -682,7 +680,7 @@ Verplicht opleveren: reproduceerbare builds, image build-pipeline, één TrueNAS
 
 1. Lees dit gehele bestand en schrijf een compacte **implementation matrix** waarin ieder requirement een ID, fase, eigenaar/component, test en status krijgt. Maak P0-fasen 0–4 en de migratie/cutover-safety-gates zichtbaar.
 2. Controleer upstream git repositories, huidige stable releases, licenties, architectuur, Seerr API en TrueNAS actuele mogelijkheden. Pin commits en onderbouw keuzes.
-3. Maak de repository, pin `lvos04/av1` en fork-upstreams, bouw reproduceerbare Sonarr/Radarr forks, porteer de bestaande AV1 FastAPI/Next.js/encoder naar een minimale TrueNAS Compose setup, en lever de eerste volledig werkende E2E-test.
+3. Maak de repository, pin `lvos04/av1` en fork-upstreams, bouw reproduceerbare Sonarr/Radarr forks, porteer de bestaande AV1 FastAPI/Next.js/encoder naar de alles-in-één-image voor het standaard TrueNAS Custom App-formulier, en lever de eerste volledig werkende E2E-test.
 4. Implementeer dan prioriteit **AV1-baseline audit & TrueNAS-port → bibliotheekimport → toekomstmonitoring en missing backfill → independent episode/audio verification → content-aware AV1 quality → safe full auto optimization**, zonder de gebruikersbibliotheek aan te raken voor cutover.
 5. Werk autonoom door alle fasen heen. Stop alleen als werkelijke externe toegangsgegevens ontbreken, destructive access toestemming nodig is, of een aantoonbare externe blokkade bestaat. Lever dan bruikbare, getest werkende onderdelen en een exact unblock-plan.
 6. Beschrijf aan het eind expliciet welke tests zijn uitgevoerd, welke echt zijn geslaagd en wat nog niet fysiek is getest; geen claims over niet-uitgevoerde integraties.
@@ -951,7 +949,7 @@ De gebruiker heeft gemeld dat Dolby Vision-afspelen met de bestaande AV1-app al 
 - Maak alle acties en fouten zichtbaar in een audit-tijdlijn met `waarom`, `wanneer`, `door wie`, `oude waarde`, `nieuwe waarde`, `undo/herstel` waar mogelijk.
 - Opslagveranderingen en mountrechten moeten **niet** worden opgelost door container root/privileged mode te vragen; gebruik waar mogelijk vooraf ingerichte TrueNAS-datasets, gecontroleerde host-path-mappings en een bevoegde beperkte helper.
 - Responsive desktop/tablet/mobiel en volledig Nederlandstalige UI, Engels selecteerbaar; geen verwijzing naar een aparte Sonarr/Radarr-webinterface als verplichte beheerroute. De originele fork-UI kan als diagnostische fallback blijven bestaan.
-- `MediaGuard` blijft één login, één consistente navigatie, één dashboard en één TrueNAS App entry, hoewel er intern meerdere containers bestaan.
+- `MediaGuard` blijft één login, één consistente navigatie, één dashboard en één TrueNAS App entry, met meerdere interne processen in de alles-in-één-image.
 
 ### Q2.3 UI-first architectuurcontract
 
@@ -1243,7 +1241,7 @@ Database minimaal: `ai_provider_configs`, `ai_cases`, `ai_proposals`, `ai_policy
 
 **Dit deel is leidend boven Q5 en eerdere startopdrachten.**
 
-> `/goal Bouw MediaGuard Ultimate volledig volgens MEDIAGUARD_GOAL.md. DEEL R en DEEL S zijn leidend. Gebruik de bestaande code uit https://github.com/lvos04/av1 en onderhoud Sonarr/Radarr als twee gepinde forks met vier runtime-instanties: Sonarr Series, Sonarr Anime, Radarr Films en Radarr Animefilms. Maak één Nederlandse UI waarin echt alle normale settings en acties werken. Migreer de vier bestaande broninstanties met behoud van future-season monitoring, indexers, Seerr-routes, bibliotheek, missing-episode backfill en quality profiles. Gebruik slimme AV1-conversie met gebruikersgestuurde Dolby Vision-toggle en onveranderlijke metadata-/recoverycontroles. Integreer een optionele, budgetbegrensde AI Decision Advisor met Claude API en OpenAI API voor alleen ambiguë cases; nooit als autoriteit over destructieve acties. Implementeer en test het hele systeem in werkende verticale stappen, inclusief TrueNAS Compose, Seerr-contracttests, browser-E2E en rollback. Schakel geen enkele oude productie-instantie uit vóór expliciete cutover.`
+> `/goal Bouw MediaGuard Ultimate volledig volgens MEDIAGUARD_GOAL.md. DEEL R en DEEL S zijn leidend. Gebruik de bestaande code uit https://github.com/lvos04/av1 en onderhoud Sonarr/Radarr als twee gepinde forks met vier runtime-instanties: Sonarr Series, Sonarr Anime, Radarr Films en Radarr Animefilms. Maak één Nederlandse UI waarin echt alle normale settings en acties werken. Migreer de vier bestaande broninstanties met behoud van future-season monitoring, indexers, Seerr-routes, bibliotheek, missing-episode backfill en quality profiles. Gebruik slimme AV1-conversie met gebruikersgestuurde Dolby Vision-toggle en onveranderlijke metadata-/recoverycontroles. Integreer een optionele, budgetbegrensde AI Decision Advisor via de API’s van Anthropic en OpenAI voor alleen ambiguë cases; nooit als autoriteit over destructieve acties. Implementeer en test het hele systeem in werkende verticale stappen, inclusief de formulierinstallatie als standaard TrueNAS Custom App, Seerr-contracttests, browser-E2E en rollback. Schakel geen enkele oude productie-instantie uit vóór expliciete cutover.`
 
 **Releasecriteria v4:** alle vier de instantiemigraties bewezen, toekomstige afleveringen en backfill werken, Seerr kan elke bedoelde instantie aanspreken, het AV1/HDR/DV-pad heeft echte conversie- en metadataregressietests, **alle normale beheeropties werken via UI**, de AI-advisor is optioneel en veilig en Full Auto kan niet zonder herstelverificatie massaal destructief handelen.
 

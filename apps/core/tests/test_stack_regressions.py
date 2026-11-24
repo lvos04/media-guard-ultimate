@@ -223,6 +223,21 @@ def test_force_duplicate_add_is_excluded_from_anime_routing(client, ctx):
     assert not _excluded(ctx, "sonarr-series", "series", 81189)
 
 
+def test_bouwplan_en_readme_verwijzen_naar_het_custom_app_formulier():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    plan = (root / "MEDIAGUARD_GOAL.md").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    gids = "deploy/truenas/CUSTOM_APP.md"
+    assert "## Formulier\n" in (root / gids).read_text(encoding="utf-8")
+    for tekst, kop in ((plan, "B1."), (plan, "K1."), (readme, "13.")):
+        sectie = tekst.split(f"\n## {kop} ", 1)[1].split("\n## ", 1)[0]
+        assert f"({gids}#formulier)" in sectie
+    assert "TrueNAS Compose" not in plan and "Install via YAML" not in plan
+    assert "docker compose" in readme.split("\n## 9. ", 1)[1].split("\n## ", 1)[0]
+
+
 def test_provisioning_root_defaults_match_truenas_compose():
     """Compose (TRaSH-indeling) en de standaard-rootmappen van provisioning moeten gelijk zijn:
     forks, core, encoder en recovery zien ${MG_DATA_ROOT} allemaal als /data, en
