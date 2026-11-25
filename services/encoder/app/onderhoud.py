@@ -21,7 +21,6 @@ from app.mediaguard.holds import (
     LANES,
     lane_reasons,
     pause_reason,
-    set_hold,
     set_reason,
 )
 
@@ -233,27 +232,29 @@ def pause_overview(database: Database, settings: Settings) -> dict[str, Any]:
 
 
 def storage_guard(database: Database, settings: Settings) -> dict[str, int | str]:
-    try:
-        free = shutil.disk_usage(settings.cache_root).free
-    except OSError as exc:
-        set_hold(database, "opslag", f"automatisch: opslag niet bereikbaar: {exc}")
-        return {"vrij_bytes": 0, "status": f"automatisch gepauzeerd: {exc}"}
-    # Een API-verzoek kan de bodem wijzigen tijdens de schijfmeting. Lees de
-    # grenzen en pas de baanstatus toe in dezelfde korte transactie.
+    # Meet pas na het krijgen van het schrijfslot. Anders kan een wachtende
+    # onderhoudsronde een nieuwere opslagpauze of een herstel terugdraaien.
     with database.connection() as conn, conn:
-        limits = _cache_limits(conn, settings)
-        effective_pause = limits["cache_min_free_gb"]
-        if free < effective_pause * 1024**3:
-            status = "automatisch gepauzeerd: opslag onder veilige vrije-ruimtebodem"
-            reason = (
-                f"automatisch: cache heeft nog {free / 1024**3:.1f} GB vrij, onder de "
-                f"pauzebodem van {effective_pause} GB; encoderen gepauzeerd tot er weer "
-                "ruimte is"
-            )
+        try:
+            free = shutil.disk_usage(settings.cache_root).free
+        except OSError as exc:
+            free = 0
+            status = f"automatisch gepauzeerd: {exc}"
+            reason: str | None = f"automatisch: opslag niet bereikbaar: {exc}"
         else:
-            status = ("waarschuwing: cache onder waarschuwingsgrens"
-                      if free < limits["cache_warning_gb"] * 1024**3 else "voldoende")
-            reason = None
+            limits = _cache_limits(conn, settings)
+            effective_pause = limits["cache_min_free_gb"]
+            if free < effective_pause * 1024**3:
+                status = "automatisch gepauzeerd: opslag onder veilige vrije-ruimtebodem"
+                reason = (
+                    f"automatisch: cache heeft nog {free / 1024**3:.1f} GB vrij, onder de "
+                    f"pauzebodem van {effective_pause} GB; encoderen gepauzeerd tot er weer "
+                    "ruimte is"
+                )
+            else:
+                status = ("waarschuwing: cache onder waarschuwingsgrens"
+                          if free < limits["cache_warning_gb"] * 1024**3 else "voldoende")
+                reason = None
         for lane in LANES:
             set_reason(conn, lane, "opslag", reason)
     return {"vrij_bytes": free, "status": status}

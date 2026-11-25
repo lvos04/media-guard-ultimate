@@ -14,7 +14,9 @@ import pytest
 
 from app.config import Settings, settings
 from app.db import Database
+from app.mediaguard.holds import apply_playback_hold
 from app.onderhoud import (
+    lane_pause_state,
     record_failure,
     rotate_logs,
     storage_guard,
@@ -248,6 +250,42 @@ def test_opslagbewaking_gebruikt_grenzen_van_de_schrijftransactie(tmp_path, monk
     storage_guard(db, configured)
     assert ingesteld
     assert db.fetch_one("SELECT gepauzeerd FROM worker_config WHERE baan='cpu'")[0] == 1
+
+
+@pytest.mark.usefixtures("ruime_cache")
+@pytest.mark.parametrize("herstel", [False, True], ids=["uitval", "herstel"])
+def test_wachtende_opslagcontrole_behoudt_actuele_pauzes(tmp_path, monkeypatch, herstel):
+    db, configured, _ = _case(tmp_path)
+    tweede = Database(configured)
+    cache = configured.cache_root
+    apart = cache.with_name("ontkoppeld")
+    apply_playback_hold(db, True, ["cpu"], "iemand kijkt")
+    if herstel:
+        cache.rename(apart)
+        storage_guard(db, configured)
+
+    # Laat een tweede controle als eerste schrijven terwijl de eerste nog op
+    # haar schrijftransactie wacht. De opslag verandert tussen de twee aanroepen.
+    tussendoor = []
+
+    def trace(sql):
+        if sql == "BEGIN IMMEDIATE" and not tussendoor:
+            if herstel:
+                apart.rename(cache)
+            else:
+                cache.rename(apart)
+            tussendoor.append(storage_guard(tweede, configured))
+
+    _trace_sql(db, monkeypatch, trace)
+    resultaat = storage_guard(db, configured)
+    assert tussendoor == [resultaat]
+    banen = lane_pause_state(db)
+    assert all(baan["storage_pause"] == (not herstel) for baan in banen.values())
+    if herstel:
+        assert banen["cpu"]["reason"] == "Kijken: iemand kijkt"
+        assert not banen["gpu"]["paused"]
+    else:
+        assert all(baan["reason"].startswith("automatisch: opslag") for baan in banen.values())
 
 
 @pytest.mark.parametrize("wijziging", ["onbekend", "teruggezet"])
