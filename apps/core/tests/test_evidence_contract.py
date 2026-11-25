@@ -169,3 +169,9 @@ def test_nooit_gereed_of_geslaagd_ook_niet_in_tekst_als_status() -> None:
     for item in _items():
         tekst = item["opmerking"]
         assert not re.search(r"\bstatus\b[^.;]*\b(Gereed|Geslaagd)\b", tekst), item["id"]
+
+
+def test_contractreview_vermeldt_alle_open_praktijkproeven() -> None:
+    review = next(r for r in _items() if r["id"] == "REVIEW-media-guard-ultimate-contract-1.3")
+    verwacht = {f"NIET GEVALIDEERD ({soort})" for soort in ("echte NAS", "hardware", "account")}
+    assert verwacht <= set(review["validatie"].split("; "))
