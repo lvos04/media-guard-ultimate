@@ -260,6 +260,9 @@ def test_release_publishes_nothing_without_tests_and_smoke():
         assert "docker push" not in script and "--push" not in script
         assert jobs[name].get("permissions", {}).get("packages") != "write"
     assert '"docker://$IMAGE@$digest"' in _scripts(jobs["aio-image"])
+    # oci: verwijdert Docker-velden zoals HEALTHCHECK uit de config (fout bij v1.3.0).
+    assert 'bron="dir:' in _scripts(jobs["aio-image"]) and "oci:" not in _scripts(jobs["aio-image"])
+    assert ".config.Healthcheck" in _scripts(jobs["aio-image"])
     for name in ("aio-smoke", "upgradebewijs", "release-bewijs", "publish"):
         assert "needs.aio-image.outputs.digest" in json.dumps(jobs[name])
     assert 'scripts/aio-smoke.py --image "$IMAGE@$DIGEST"' in _scripts(jobs["aio-smoke"])

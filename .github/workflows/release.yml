@@ -155,8 +155,11 @@ jobs:
         id: kandidaat
         run: |
           if ! command -v skopeo >/dev/null; then sudo apt-get update && sudo apt-get install -y skopeo; fi
-          bron="oci:$RUNNER_TEMP/aio:kandidaat"
+          # dir: houdt het Docker-formaat; omzetten naar het OCI-formaat liet HEALTHCHECK weg (release v1.3.0).
+          bron="dir:$RUNNER_TEMP/aio-kandidaat"
           skopeo copy docker-daemon:mediaguard/aio:bouw "$bron"
+          skopeo inspect --config --raw "$bron" | jq -e '.config.Healthcheck.Test | length > 0' >/dev/null \
+            || { echo "::error::De kandidaat mist HEALTHCHECK."; exit 1; }
           digest="sha256:$(skopeo inspect --raw "$bron" | sha256sum | cut -d' ' -f1)"
           skopeo copy --preserve-digests "$bron" "docker://$IMAGE@$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
