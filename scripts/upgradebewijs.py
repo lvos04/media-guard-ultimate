@@ -52,6 +52,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -525,8 +526,28 @@ def _uitzondering(uitz: dict[str, Any], db: str) -> dict[str, Any]:
     return {}
 
 
-def vergelijk(voor: dict[str, Any], na: dict[str, Any],
-              uitz: dict[str, Any] | None = None) -> tuple[list[str], list[str], list[str]]:
+def versieovergang(oud: dict[str, Any], nieuw: dict[str, Any], van: str, naar: str) -> bool:
+    """Controleer precies de twee JSON-records die notices.version_info bijwerkt."""
+    def lees(tabel: dict[str, Any], naam: str) -> Any:
+        rij = tabel["per_sleutel"][json.dumps([naam])]
+        return json.loads(rij[tabel["kolommen"].index("value_json")])
+
+    try:
+        eerder = lees(oud, "app.version")
+        stap = lees(nieuw, "app.version")
+        tijd = stap["first_seen"]
+        historie = lees(oud, "app.version_history")
+        verwacht = {"version": naar, "previous": van, "fresh_install": False, "first_seen": tijd}
+        verwachte_historie = (historie + [{"version": naar, "at": tijd}])[-30:]
+        return (eerder["version"] == van and datetime.fromisoformat(tijd).tzinfo is not None
+                and stap == verwacht and stap["fresh_install"] is False
+                and lees(nieuw, "app.version_history") == verwachte_historie)
+    except (KeyError, ValueError, TypeError, IndexError):
+        return False
+
+
+def vergelijk(voor: dict[str, Any], na: dict[str, Any], uitz: dict[str, Any] | None = None,
+              *, versies: tuple[str, str] | None = None) -> tuple[list[str], list[str], list[str]]:
     """(fouten, toegepaste uitzonderingen, overzichtsregels). Alleen de kolommen van vóór tellen."""
     uitz = uitz or {}
     fouten: list[str] = []
@@ -568,6 +589,13 @@ def vergelijk(voor: dict[str, Any], na: dict[str, Any],
             verloren: list[str] = []
             gewijzigd: list[str] = []
             per_rij = regel.get("rijen", [])
+            versievelden = set()
+            if (versies and versies[0] != versies[1] and db == "core/mediaguard.db"
+                    and tabel == "system_state"):
+                if versieovergang(t_voor, t_na, *versies):
+                    versievelden = {"app.version", "app.version_history"}
+                else:
+                    fouten.append("system_state: versiestap of bestaande versiegeschiedenis wijkt af")
             if t_voor["sleutel"] and t_voor["sleutel"] == t_na["sleutel"]:
                 for sleutel, rij in t_voor["per_sleutel"].items():
                     rij_na = t_na["per_sleutel"].get(sleutel)
@@ -576,6 +604,8 @@ def vergelijk(voor: dict[str, Any], na: dict[str, Any],
                         continue
                     kol = [t_voor["kolommen"][i] for i, j in idx if rij[i] != rij_na[j]]
                     eerste = str(json.loads(sleutel)[0])
+                    if eerste in versievelden:
+                        kol = [k for k in kol if k != "value_json"]
                     vrij = {k for r in per_rij if fnmatch.fnmatch(eerste, r.get("sleutel", ""))
                             for k in r.get("kolommen", [])}
                     if vrij & set(kol):
@@ -663,6 +693,64 @@ def _http(url: str, body: dict[str, Any] | None = None,
         return status, raw.decode(errors="replace"), cookies
 
 
+# Alleen synthetische bestanden, aangemaakt vóór de eerste start. Beide origineelpaden
+# worden echt in het journaal en de quarantaine van de oude installatie geregistreerd.
+ORIGINELEN = ("work/quarantine/bewijs-centraal.mkv", "data/.mediaguard-quarantine/bewijs-lokaal.mkv")
+WERKBESTAND = "work/staging/bewijs-fragment"
+TITEL = "data/media/bewijs-titel.mkv"
+BESTANDEN = (*ORIGINELEN, WERKBESTAND, TITEL)
+
+
+def maak_bestandsproef(werk: Path, db: Path) -> None:
+    for naam in BESTANDEN:
+        pad = werk / naam
+        pad.parent.mkdir(parents=True, exist_ok=True)
+        pad.write_bytes(f"Synthetische inhoud voor {naam}\n".encode())
+    with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+        for naam in ORIGINELEN:
+            inhoud = (werk / naam).read_bytes()
+            pin = hashlib.sha256(inhoud).hexdigest()
+            transactie = conn.execute(
+                "INSERT INTO replacement_transactions(kind,library_path,final_path,staged_path,"
+                "source_snapshot_json,quarantine_path,original_sha256,state,created_at,updated_at) "
+                "VALUES ('replace',?,?,?,'{}',?,?,'committed',?,?)",
+                ("/" + TITEL, "/" + TITEL, "/" + WERKBESTAND, "/" + naam, pin, NU, NU),
+            ).lastrowid
+            item = conn.execute(
+                "INSERT INTO quarantine_items(transaction_id,original_path,quarantine_path,"
+                "size,sha256,method,status,created_at,pinned) VALUES (?,?,?,?,?,'copy','restorable',?,1)",
+                (transactie, "/" + TITEL, "/" + naam, len(inhoud), pin, NU),
+            ).lastrowid
+            conn.execute("UPDATE replacement_transactions SET quarantine_item_id=? WHERE id=?",
+                         (item, transactie))
+            conn.execute("INSERT INTO replacement_journal(transaction_id,ts,step,phase) "
+                         "VALUES (?,?,'quarantaine','done')", (transactie, NU))
+
+
+def tel_voortgang(voor: dict[str, Any], na: dict[str, Any]) -> list[str]:
+    fouten = []
+    for db, namen in (("core/mediaguard.db", ("jobs", "encoding_jobs", "replacement_transactions",
+                                              "replacement_journal", "quarantine_items")),
+                      ("encode/app.db", ("job",))):
+        for tabel in namen:
+            oud = voor["databases"].get(db, {}).get("tabellen", {}).get(tabel, {}).get("rijen")
+            nieuw = na["databases"].get(db, {}).get("tabellen", {}).get(tabel, {}).get("rijen")
+            if not oud or oud != nieuw:
+                fouten.append(f"{db} {tabel}: verwacht identieke aantallen, vóór {oud}, na {nieuw}")
+    return fouten
+
+
+def controleer_bestanden(werk: Path, suffix: str) -> list[str]:
+    fouten = []
+    for naam in BESTANDEN:
+        root, rest = naam.split("/", 1)
+        pad = werk / (root + suffix) / rest
+        verwacht = hashlib.sha256(f"Synthetische inhoud voor {naam}\n".encode()).digest()
+        if not pad.is_file() or hashlib.sha256(pad.read_bytes()).digest() != verwacht:
+            fouten.append(f"bestandsproef: {naam} ontbreekt of heeft een andere SHA-256")
+    return fouten
+
+
 class Poort:
     """De Docker-stappen. Alle bestanden onder ``werk`` zijn van 568 (zoals op TrueNAS); lezen en
     schrijven doet een hulpcontainer van de vorige image, zodat de host geen root nodig heeft."""
@@ -732,11 +820,27 @@ finally:
     ctx.db.close()
 """, als=str(APP_UID))
 
+    def bestanden(self, suffix: str) -> list[str]:
+        resultaat = self.hulp(
+            "-c", """import json
+import sys
+from pathlib import Path
+sys.path.insert(0, "/s")
+from upgradebewijs import controleer_bestanden
+print(json.dumps(controleer_bestanden(Path("/mnt"), sys.argv[1])))
+""",
+            suffix, als=str(APP_UID),
+        )
+        return json.loads(resultaat)
+
     def start(self, image: str, config: str = "config") -> None:
-        _docker("run", "-d", "--name", self.naam, "-p", f"127.0.0.1:{self.a.poort}:30080",
+        suffix = config.removeprefix("config")
+        testnet = os.environ.get("MG_TEST_NETWORK")
+        netwerk = ["--network", testnet] if testnet else []
+        _docker("run", "-d", "--name", self.naam, *netwerk, "-p", f"127.0.0.1:{self.a.poort}:30080",
                 "-e", "TZ=UTC", "-e", "MG_HOST=127.0.0.1",
-                "-v", f"{self.werk / config}:/config", "-v", f"{self.werk / 'work'}:/work",
-                "-v", f"{self.werk / 'data'}:/data", image)
+                "-v", f"{self.werk / config}:/config", "-v", f"{self.werk / ('work' + suffix)}:/work",
+                "-v", f"{self.werk / ('data' + suffix)}:/data", image)
         deadline = time.monotonic() + self.a.timeout
         laatste = ""
         while time.monotonic() < deadline:
@@ -798,6 +902,23 @@ finally:
             ontbreekt = [m for m in merktekens if m not in tekst]
             if code != 200 or ontbreekt:
                 problemen.append(f"readback {route}: {code}, ontbreekt {ontbreekt[:3]}")
+        code, transacties, _ = _http(f"{self.basis}/api/v1/recovery/transactions", headers=kop)
+        verwacht = {"/" + naam for naam in ORIGINELEN}
+        gevonden = set()
+        if code == 200 and isinstance(transacties, list):
+            for tx in transacties:
+                pad = tx.get("quarantine_path")
+                if pad not in verwacht:
+                    continue
+                route = f"{self.basis}/api/v1/recovery/transactions/{tx['id']}"
+                code, detail, _ = _http(route, headers=kop)
+                if code != 200 or not isinstance(detail, dict):
+                    continue
+                stappen = [(r["step"], r["phase"]) for r in detail.get("journal", [])]
+                if stappen == [("quarantaine", "done")]:
+                    gevonden.add(pad)
+        if gevonden != verwacht:
+            problemen.append("hersteljournaal van de twee proeforiginelen niet volledig teruggelezen")
         return problemen
 
     def meet(self, config: str, uit: str, *, intern: bool = False) -> dict[str, Any]:
@@ -941,7 +1062,9 @@ finally:
             raise RuntimeError(f"werkmap {self.werk} is niet leeg")
         for d in ("config/core", "work", "data/media", "data/downloads"):
             (self.werk / d).mkdir(parents=True, exist_ok=True)
-        herstel(fixture_sql, self.werk / "config" / "core" / "mediaguard.db")
+        kern = self.werk / "config" / "core" / "mediaguard.db"
+        herstel(fixture_sql, kern)
+        maak_bestandsproef(self.werk, kern)
         self.shell(f"chown -R {APP_UID}:{APP_UID} /mnt/config /mnt/work /mnt/data")
         fouten: list[str] = []
         verwacht_open = fixture.get("open_overdrachten")
@@ -974,19 +1097,22 @@ finally:
         self.stop()
         voor = self.meet("config", "meting-voor.json")
         # Zonder volledige nulmeting valt er niets te bewijzen.
+        fouten += self.bestanden("")
         fouten += dekking(voor, fixture)
         fouten += encoder_dekking(voor, kandidaat=False)
         if fouten:
             return fouten, rapport("Nulmeting upgradebewijs", fouten, [], [])
         # zoals een ZFS-snapshot vóór de update (terugzetten = vorige image + deze snapshot)
-        self.shell("cp -a /mnt/config /mnt/config-snapshot")
+        self.shell("mkdir /mnt/herstelpunt && cp -a /mnt/config /mnt/work /mnt/data /mnt/herstelpunt/")
         # 3. nieuwe release op dezelfde mappen
         self.stap(f"nieuwe release starten: {self.a.nieuw}")
         self.start(self.a.nieuw)
         fouten += [f"nieuwe release: {p}" for p in self.readback(fixture, self.a.versie)]
         self.stop()
         na = self.meet("config", "meting-na.json")
-        f_upg, toegepast, overzicht = vergelijk(voor, na, uitz)
+        versies = (self.a.vorige_versie, self.a.versie)
+        f_upg, toegepast, overzicht = vergelijk(voor, na, uitz, versies=versies)
+        f_upg += self.bestanden("") + tel_voortgang(voor, na)
         f_upg += encoder_dekking(na, kandidaat=True)
         regel_upg, open_upg = open_werk_regel(voor, na)
         f_upg += open_upg
@@ -995,6 +1121,8 @@ finally:
                         overzicht, [regel_upg])
         # 4. terugzetten = vorige image + snapshot van vóór de update (contract §2.3 regel 7a)
         self.stap("terugzetten: vorige release op de snapshot van vóór de update")
+        self.shell("set -e; for d in config work data; do "
+                   'cp -a "/mnt/herstelpunt/$d" "/mnt/$d-snapshot"; done')
         self.start(self.a.vorige, config="config-snapshot")
         fouten += [f"terugzetten: {p}" for p in self.readback(fixture, None)]
         self.stop()
@@ -1002,6 +1130,7 @@ finally:
         # dezelfde vergelijking per tabel als bij de upgrade, en ook zo in het rapport (S-P2-610:
         # het overzicht en de toegepaste uitzonderingen werden hier eerder weggegooid)
         f_terug, t_terug, o_terug = vergelijk(voor, terug, uitz)
+        f_terug += self.bestanden("-snapshot") + tel_voortgang(voor, terug)
         regel_terug, open_terug = open_werk_regel(voor, terug)
         f_terug += open_terug
         fouten += [f"terugzetten: {f}" for f in f_terug]
@@ -1011,6 +1140,9 @@ finally:
                              "|| true")
         sets = backups or "geen (niets te migreren)"
         tekst += f"\nBack-upsets van vóór de update in core: {sets}\n"
+        if not f_upg and not f_terug:
+            tekst += ("\nTwee geregistreerde originelen, werkbestand en mediatitel: "
+                      "4/4 SHA-256 gelijk na update en op de drie terugvalklonen.\n")
         if not f_upg:
             tekst += "\nUpgrade: niets verloren\n"
         if not f_terug:
@@ -1026,7 +1158,8 @@ finally:
         if not self.a.bewaar and self.werk.exists():
             with contextlib.suppress(RuntimeError, subprocess.TimeoutExpired):
                 self.shell("rm -rf /mnt/config /mnt/config-snapshot /mnt/work /mnt/data "
-                           "/mnt/config-schemaproef /mnt/work-schemaproef /mnt/data-schemaproef "
+                           "/mnt/herstelpunt /mnt/work-snapshot /mnt/data-snapshot /mnt/config-schemaproef "
+                           "/mnt/work-schemaproef /mnt/data-schemaproef "
                            "/mnt/meting-*.json")
             shutil.rmtree(self.werk, ignore_errors=True)
 

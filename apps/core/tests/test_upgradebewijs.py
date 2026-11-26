@@ -113,13 +113,23 @@ def test_upgrade_van_de_vorige_release_verliest_niets(tmp_path: Path, monkeypatc
     finally:
         app.state.ctx.db.close()
     na = ub.meet(config)
-    fouten, toegepast, overzicht = ub.vergelijk(voor, na, UITZ)
+    from mediaguard import __version__
+
+    versies = (meta["version"], __version__)
+    fouten, toegepast, overzicht = ub.vergelijk(voor, na, UITZ, versies=versies)
     assert fouten == [], "\n".join(fouten)
     # elke gevulde tabel staat in het overzicht (niets stil overgeslagen)
     gevuld = {t for t, n in meta["rows_per_table"].items() if n}
     assert gevuld <= {regel.split("|")[2].strip() for regel in overzicht}
     rapport = ub.rapport("test", fouten, toegepast, overzicht)
     assert "✅ niets verloren" in rapport
+
+    # Ook bij een geldige nieuwe versie moet elke historische vermelding intact zijn.
+    historie = _tabel(na, "system_state")
+    rij = historie["per_sleutel"][json.dumps(["app.version_history"])]
+    rij[historie["kolommen"].index("value_json")] = "[]"
+    assert ub.vergelijk(voor, na, UITZ, versies=versies)[0]
+
 
 
 def test_vul_vult_een_lege_database_inert(tmp_path: Path) -> None:
@@ -632,7 +642,7 @@ def test_ci_draait_het_upgradebewijs_op_elke_push() -> None:
     assert "--build-context encoder=services/encoder/app" in stappen
     assert "deploy/upgradebewijs/Dockerfile.kandidaat" in stappen
     assert "scripts/upgradebewijs.py poort" in stappen
-    assert "kopieen" in jobs and "kopie-herkomst.py vergelijk --online" in json.dumps(
+    assert "kopieen" in jobs and "kopie-herkomst.py vergelijk --bron .herkomst" in json.dumps(
         jobs["kopieen"]["steps"])
 
 
@@ -722,8 +732,23 @@ class _NepPoort(ub.Poort):
         self.wijzig = wijzig or {}
         self.mediaserver_ingesteld = False
 
+    def bestanden(self, suffix: str) -> list[str]:
+        return ub.controleer_bestanden(self.werk, suffix)
+
     def start(self, image: str, config: str = "config") -> None:
         self.stap(f"(nep) start {image} op {config}")
+        if image == self.a.nieuw:
+            # Simuleer de twee records die de echte kern schrijft bij een versiewissel.
+            with closing(sqlite3.connect(self.werk / config / "core/mediaguard.db")) as conn, conn:
+                rows = dict(conn.execute("SELECT key,value_json FROM system_state"))
+                vroeger = json.loads(rows["app.version"])["version"]
+                historie = json.loads(rows["app.version_history"])
+                nieuw = {"version": self.a.versie, "previous": vroeger,
+                         "first_seen": ub.NU, "fresh_install": False}
+                historie.append({"version": self.a.versie, "at": ub.NU})
+                conn.executemany("UPDATE system_state SET value_json=? WHERE key=?",
+                                 [(json.dumps(nieuw), "app.version"),
+                                  (json.dumps(historie[-30:]), "app.version_history")])
         if self.wijzig.get("mediaserver_achtergrondronde") and not self.mediaserver_ingesteld:
             db = self.werk / config / "core" / "mediaguard.db"
             with closing(sqlite3.connect(db)) as conn, conn:
@@ -751,8 +776,12 @@ class _NepPoort(ub.Poort):
     def shell(self, script: str) -> str:
         import shutil
 
-        if "cp -a /mnt/config /mnt/config-snapshot" in script:
-            shutil.copytree(self.werk / "config", self.werk / "config-snapshot")
+        if "mkdir /mnt/herstelpunt" in script:
+            for root in ("config", "work", "data"):
+                shutil.copytree(self.werk / root, self.werk / "herstelpunt" / root)
+        if 'cp -a "/mnt/herstelpunt/$d"' in script:
+            for root in ("config", "work", "data"):
+                shutil.copytree(self.werk / "herstelpunt" / root, self.werk / (root + "-snapshot"))
         if "ls -1" in script:
             return "voor-update-proef"
         return ""
@@ -786,6 +815,25 @@ def _nep_poort(tmp_path: Path, wijzig: dict[str, Any] | None = None) -> tuple[li
         bewaar=False)
     # geen opruimen(): dat roept docker aan; de werkmap staat in tmp_path
     return _NepPoort(args, wijzig).run()
+
+
+@pytest.mark.parametrize("richting", ["", "-snapshot"])
+def test_poort_weigert_afwijkend_origineel_op_werk_en_kloon(tmp_path, monkeypatch, richting):
+    meten = _NepPoort.bestanden
+    gemeten = 0
+
+    def beschadig(self, suffix):
+        nonlocal gemeten
+        if suffix == richting:
+            gemeten += 1
+            if suffix or gemeten == 2:
+                pad = self.werk / ("work" + suffix) / "quarantine/bewijs-centraal.mkv"
+                pad.write_bytes(b"gewijzigd")
+        return meten(self, suffix)
+
+    monkeypatch.setattr(_NepPoort, "bestanden", beschadig)
+    fouten, _ = _nep_poort(tmp_path)
+    assert any("work/quarantine/bewijs-centraal.mkv" in f and "andere SHA-256" in f for f in fouten)
 
 
 def test_radarr_naamgeving_alleen_voor_de_nulmeting(tmp_path: Path, monkeypatch) -> None:

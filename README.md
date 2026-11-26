@@ -123,9 +123,10 @@ Details, ACL-plan en GPU: [`docs/INSTALL_TRUENAS.md`](docs/INSTALL_TRUENAS.md).
 ### 3.2 Installeren als standaard Custom App
 
 Gebruik het [Custom App-formulier](deploy/truenas/CUSTOM_APP.md#formulier) voor de
-alles-in-één-image `ghcr.io/lvos04/mediaguard-core:1.2.2-aio`. De gids beschrijft ook de
-imagecontrole, eerste start, back-up vóór migratie en terugval. Controle van het formulier
-op een echte NAS staat open.
+alles-in-één-image `ghcr.io/lvos04/mediaguard-core`. Voor `1.3.0-aio` komen tag en
+registerdigest uit de releasebijlage `digests.json`. Voor een draaiende MediaGuard
+volg je [Een bestaande installatie bijwerken](deploy/truenas/BIJWERKEN.md).
+Het formulier en de bestaande NAS-installatie zijn **NIET GEVALIDEERD (echte NAS)**.
 
 ### 3.3 Losse containers
 
@@ -376,10 +377,8 @@ update van de MediaGuard-voortgang en kijkgegevens.
 
 ### 10.2 Terugdraaien na een mislukte update
 
-Volg [Terugzetten na een mislukte upgrade](deploy/truenas/CUSTOM_APP.md#terugzetten-na-een-mislukte-upgrade).
-Bewaar de actuele gegevens, herstel de bijpassende appdata-snapshot en zo nodig de
-originelen uit de bijpassende werk- en mediakopieën. Kies de vorige imageversie en
-digest in het Custom App-formulier, start MediaGuard en controleer de voortgang en kijkgegevens.
+Bewaar de actuele gegevens. Start de vorige image met haar bijpassende snapshotklonen en
+controleer het journaal, de originelen en de kijkgegevens. [Terugweg na een mislukte upgrade](deploy/truenas/BIJWERKEN.md#5-terug-via-de-vorige-image-en-snapshotklonen)
 
 Herstel na stroomuitval, half geïmporteerde bestanden en mislukte encodes:
 [`docs/DATA_RECOVERY.md`](docs/DATA_RECOVERY.md).

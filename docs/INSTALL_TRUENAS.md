@@ -12,29 +12,15 @@ geheimen aan in de appdata-map.
 
 De bouw- en publicatiestappen hieronder zijn voor releasebeheerders. TrueNAS haalt voor de standaard Custom App uitsluitend de AIO-image op.
 
-1. Maak op GitHub een release-tag `v1.0.0` (de versie moet gelijk zijn aan
-   `deploy/release-manifest.json`).
-2. De workflow `.github/workflows/release.yml` draait eerst de tests (core op Python 3.12 en
-   3.14, encoder, web), bouwt dan alles, start het alles-in-één-image één keer op een gevulde
-   database van een eerdere versie (`scripts/aio-smoke.py`), draait het upgradebewijs vanaf de
-   direct vorige release (`scripts/upgradebewijs.py`, HARDE EIS) en publiceert pas daarna
-   (linux/amd64). Een tag die al bestaat wordt nooit overschreven; een fork-tag die al bestaat
-   wordt hergebruikt. Mislukt het publiceren halverwege, kies dan in GitHub *Re-run failed jobs*:
-   tags die al op het geteste image staan worden overgeslagen (`scripts/promote-image.sh`).
-
-   | image | tag |
-   |---|---|
-   | `ghcr.io/lvos04/mediaguard-core` | `1.0.0` (ook gebruikt voor recovery en init) |
-   | `ghcr.io/lvos04/mediaguard-web` | `1.0.0` |
-   | `ghcr.io/lvos04/mediaguard-encode` | `1.0.0` |
-   | `ghcr.io/lvos04/mediaguard-sonarr-fork` | `4.0.20.3014-mg2` (en `bc54afb-mg2`) |
-   | `ghcr.io/lvos04/mediaguard-radarr-fork` | `6.4.4.10685-mg1` (en `a96bf7c-mg1`) |
-
-3. Nieuwe GHCR-packages zijn privé. Maak ze publiek (GitHub → je profiel → **Packages** →
-   package → **Package settings** → **Change visibility** → Public), **of** voeg in TrueNAS
-   een registry-credential toe (Apps → **Configuration** → **Manage Container Image
-   Registries**: registry `ghcr.io`, gebruiker = GitHub-gebruiker, wachtwoord = personal access
-   token met `read:packages`).
+De releasebeheerder zet op GitHub de tag `v<VERSION>` op de getoetste broncommit. De
+workflow `release` bouwt voor Linux/amd64 de webinterface, encoder en beide forks als
+tijdelijke bouwonderdelen. De laatste bouwstap voegt de kern toe en bundelt de vier
+onderdelen met `deploy/aio/Dockerfile`. De rooktest, de migratie vanaf de gepinde
+vorige release en de terugweg toetsen dezelfde AIO-digest. Na deze controles krijgt
+alleen `ghcr.io/lvos04/mediaguard-core:<VERSION>-aio` een installatietag. De vorige
+tag blijft beschikbaar. Onder de GitHub-release staan `digests.json`, `aio.spdx.json`
+en `upgradebewijs.md`. Controleer dat de image publiek op digest leesbaar is en
+vul de gemeten digest in het installatiemanifest in.
 
 ## 2. Datasets en rechten
 
@@ -43,8 +29,8 @@ Drie datasets (namen vrij; de compose heeft **geen standaardpad**, de drie varia
 | Compose-volume | Variabele | Voorbeeldpad (`<pool>` = jouw pool) | Inhoud | Snapshots/back-up |
 |---|---|---|---|---|
 | `mg_appdata` | `MG_APPDATA` | `/mnt/<pool>/apps/mediaguard` | configuratie, databases, **gegenereerde sleutels** | **ja, altijd** (klein) |
-| `mg_work` | `MG_WORK` | `/mnt/<pool>/mediaguard-work` | AV1-cache/staging en quarantaine | optioneel (quarantaine bevat herstelbare originelen) |
-| `mg_data` | `MG_DATA_ROOT` | `/mnt/<pool>/data` | `media/` en `downloads/` (TRaSH-indeling) | volgens je eigen mediabeleid |
+| `mg_work` | `MG_WORK` | `/mnt/<pool>/mediaguard-work` | AV1-cache/staging en quarantaine | altijd bij een update, inclusief quarantaine |
+| `mg_data` | `MG_DATA_ROOT` | `/mnt/<pool>/data` | `media/` en `downloads/` (TRaSH-indeling) | altijd bij een update, inclusief onderliggende datasets |
 
 Indeling die de containers gebruiken (ontbrekende mappen maakt `mediaguard-init` aan;
 bestaande mappen en bestanden raakt hij niet aan):
@@ -188,9 +174,8 @@ wachtwoorden.
 ### 8.1 Alles-in-één (Custom App)
 
 Volg [Terugzetten na een mislukte upgrade](../deploy/truenas/CUSTOM_APP.md#terugzetten-na-een-mislukte-upgrade).
-Bewaar de toestand van na de update. Herstel de bijpassende appdata-snapshot en
-ontbrekende originelen gericht uit de werk- en mediakopieën. Kies de vorige image
-met digest in het formulier, start MediaGuard en controleer de herstelde gegevens.
+Bewaar de toestand van na de update. Gebruik de bijpassende klonen van appdata, werk en
+media voor de vorige image met digest. Laat Emby op de actuele bibliotheek.
 
 Als de kern of de AV1-engine in de huidige bronstand een onbekende schemaversie vindt,
 meldt de web-URL dat een bijpassende versie of herstelset nodig is. MediaGuard

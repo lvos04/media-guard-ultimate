@@ -40,7 +40,7 @@ RUN --mount=type=secret,id=ca_bundle,required=false \
     test -x /app/sonarr/bin/Sonarr && test -x /app/radarr/bin/Radarr; \
     mkdir -p /config /work /data /media; \
     install -d -m 0755 -o 568 -g 568 /run/mediaguard
-COPY --from=release / /usr/share/mediaguard/
+COPY --from=release /release-manifest.json /usr/share/mediaguard/release-manifest.json
 COPY --from=core --chmod=0755 /mediaguard/aio_healthcheck.py /usr/local/bin/mg-aio-healthcheck
 
 ENV MG_AIO_CONFIG=/config MG_AIO_WORK=/work MG_AIO_DATA=/data \

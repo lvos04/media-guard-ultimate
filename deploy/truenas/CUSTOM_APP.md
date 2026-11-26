@@ -19,12 +19,11 @@ STAPPEN_P6.md, onderdeel N-P6-05.
   pad afspeelt. Hardlinks vereisen media en downloads op hetzelfde bestandssysteem.
   Laat de bestaande indeling intact als dat anders is en controleer de padkoppelingen
   voordat je overgaat. Houd cache en staging op dezelfde werkdataset.
-- Leg bij een upgrade de bestaande app, imageversie en digest, formulierwaarden en
-  datasets vast (D07). Volg vóór het wijzigen van het formulier de back-upstappen hieronder.
-- De gepubliceerde verwijzing is `ghcr.io/lvos04/mediaguard-core:1.2.2-aio`. Die image
+- Voor een draaiende installatie volg je eerst [Een bestaande MediaGuard bijwerken](BIJWERKEN.md).
+  Dat draaiboek bevat de inventaris, nulmeting, beslissing per installatiewijze en terugweg.
+- De vorige gepubliceerde verwijzing is `ghcr.io/lvos04/mediaguard-core:1.2.2-aio`. Die image
   start met `tini` als eerste proces en gebruikt de oude shell-healthcheck, die het
-  statusbestand van de bewaker controleert. De [manifestbron](../manifest/mediaguard.manifest.yaml) beschrijft de nog niet
-  gepubliceerde bronstand met de nieuwe healthcheck. Gebruik die manifestbron pas voor
+  statusbestand van de bewaker controleert. De [manifestbron](../manifest/mediaguard.manifest.yaml) beschrijft de voorbereide `1.3.0-aio` met de nieuwe healthcheck. Gebruik die manifestbron pas voor
   installatie als de release, bijbehorende tag, registerdigest en het upgradebewijs
   beschikbaar zijn. Laat de bevestiging van RPO en RTO (D16) open tot de beheerder de
   hersteldoelen heeft vastgesteld.
@@ -140,80 +139,8 @@ dezelfde containerpoort voor web en de aangepaste portal.
 
 ## Back-up en upgrade
 
-1. Lees de releaseopmerkingen en het upgradebewijs vanaf de vorige release. Stop bij
-   ontbrekend bewijs, een onbevestigde digest of een onbekende opslag- of schemaversie.
-2. Leg de MediaGuard-voortgang vóór de update vast, waaronder open en afgeronde overdrachten,
-   wachtrijen en herstelbare originelen. Leg per gebruiker de kijkgegevens vast via de
-   bestaande mediaserver of een ondersteunde export. Neem gezien-status, hervatpunten,
-   favorieten, beoordelingen, spoorkeuzes, gebruikers en rechten mee. Emby blijft actief en
-   beschikbaar als terugval; een overstap van mediaserver is een afzonderlijke handeling
-   die een vóór/na-rapport en uitdrukkelijk akkoord van de gebruiker vereist. De oude
-   installatie blijft als terugval beschikbaar.
-3. Pauzeer nieuwe MediaGuard-taken en wacht tot lopende encodes, imports en
-   hersteltransacties zijn afgerond. Stem ook schrijvende taken van gekoppelde
-   diensten af zodat de betrokken gegevens tijdens de snapshots stabiel blijven.
-   Laat Emby tijdens de hele procedure doordraaien.
-   Controleer de bestaande stoptijd. Waar het formulier **Stop Grace Period**
-   aanbiedt, gebruik je minimaal 60 seconden en dezelfde waarde voor
-   `MG_STOP_TIMEOUT`. Pas die formulierwaarden zo nodig aan nadat de herstelset
-   is geverifieerd. ix-app 1.4.8 biedt dat veld niet. Bij de standaard
-   Docker-stoptijd heeft de app 10 seconden.
-   Stop **alleen MediaGuard** via **Apps → mediaguard → Stop**. Wacht op **Stopped**
-   en controleer in het log en de stopstatus dat de diensten netjes zijn afgesloten
-   en de container zonder geforceerde beëindiging is gestopt. Stel de upgrade uit
-   als die controle faalt of de nette stop niet kan worden vastgesteld.
-4. Maak in **Datasets → Data Protection → Create Snapshot** één samenhangende
-   herstelset van alle datasets met werkelijk gebruikte gegevens. Neem bij elk
-   pad ook de gebruikte onderliggende datasets mee:
-   - `/config`: de volledige appdata met databases, sleutels, voortgang,
-     hersteljournaal, gebruikers en fork-configuraties.
-   - `/work`: werkgegevens, staging en de centrale quarantaine `/work/quarantine`
-     bij `central`.
-   - `/data`: bestaande media en downloads en de standaardquarantaine
-     `/data/.mediaguard-quarantine` bij `library_root` (onder iedere betrokken
-     bibliotheekroot bij een afwijkende indeling).
-
-   Bewaar ook originelen uit een eerder gebruikte quarantaine-instelling zolang
-   het journaal ernaar verwijst. Verifieer de set op een afgeschermde kopie. Maak
-   vóór de eerste echte wijziging per dienst waarvan MediaGuard of de forks
-   gegevens of instellingen kunnen wijzigen een herstelpunt via die dienst.
-   Neem bijvoorbeeld Seerr, Prowlarr en downloadclients mee als die schrijfbaar
-   gekoppeld zijn. Leg per dienst de versie, herstelhandeling en vóór-waarden vast
-   en verifieer het terugzetten op een afgeschermde kopie. Bewaar de herstelpunten
-   afgeschermd en stel de wijziging uit zolang een vereist herstelpunt ontbreekt.
-5. Selecteer via **Apps → mediaguard → Edit** de nieuwe, vrijgegeven imageversie. Behoud
-   dezelfde mounts en bestaande formulierwaarden. Sla op en kies
-   **Apps → mediaguard → Start**. Wacht op **Running**. De applicatiemigraties lopen
-   bij die start. Een interne databaseback-up is aanvullend en dekt
-   de core- en encoderdatabases. De datasetsnapshot bevat ook de overige appdata.
-6. Controleer digest, appstatus, componenten, inloggen en de bestaande koppelingen vóór
-   hervatting van het gebruik. Vergelijk de vóór-waarden voor MediaGuard-voortgang en
-   de kijkgegevens van elke gebruiker met de na-waarden. Stop bij ontbrekende gegevens of een onverklaard verschil en
-   behoud de bestaande mediaserver en herstelpunten.
+Volg voor een bestaande installatie de [nulmeting en herstelset](BIJWERKEN.md#2-leg-de-nulmeting-en-de-herstelset-vast) en kies daarna het updatepad voor het bestaande app-type. De vorige repository, tag en opslagindeling bepalen welke wijziging veilig is.
 
 ## Terugzetten na een mislukte upgrade
 
-1. Rond lopende taken af en stop MediaGuard zoals bij de upgrade. Bewaar de actuele
-   datasets voor `/config`, `/work` en `/data` in aparte herstelpunten, evenals de
-   actuele instellingen van betrokken diensten. Laat de bestaande mediaserver
-   doordraaien.
-2. Kies in de TrueNAS-webinterface **Datasets → Data Protection → Manage Snapshots**
-   de bij de vorige imageversie horende snapshots voor `/config`, inclusief gebruikte
-   onderliggende datasets, en kies **Rollback**.
-   Bewaar eventuele nieuwere snapshots eerst apart als TrueNAS vraagt ze te verwijderen.
-   Vergelijk het teruggezette hersteljournaal met de originelen. Herstel ontbrekende
-   of afwijkende quarantainebestanden gericht uit de bijpassende kopieën van
-   `/data` en `/work` en verifieer hun inhoud. Bewaar bij een padconflict ook de
-   nieuwere versie apart. Laat de huidige bibliotheek en downloads op hun paden
-   staan en behoud nieuwere media. Herstel waar nodig de gewijzigde instellingen
-   per betrokken dienst met zijn vooraf geverifieerde herstelpunt.
-3. Herstel vervolgens in het **Custom App**-formulier de vorige imageversie met digest
-   en de vorige formulierwaarden. Sla op, kies **Apps → mediaguard → Start** en
-   wacht op **Running**. Controleer de digest, de oude schema- en appversie,
-   inloggen, de componenten, de koppelingen en de vastgelegde voortgang en
-   kijkgegevens. Controleer ook de bestaande mediaservertitel op hetzelfde pad.
-   De vorige image en de bijbehorende snapshot vormen samen één herstelpunt.
-4. Ontbreekt een passend herstelpunt of is het hersteljournaal nog inconsistent,
-   laat MediaGuard gestopt en bewaar de huidige data.
-   Laat de beheerder eerst een volledig herstelplan verifiëren. De interne back-up
-   bevat bijvoorbeeld de fork-configuraties niet.
+Bewaar het nieuwere werk en selecteer de vorige repository én tag. Gebruik na een migratie de bijpassende snapshotklonen voor de oude app en houd Emby op de actuele bibliotheek. [Terugweg met controle van voortgang en originelen](BIJWERKEN.md#5-terug-via-de-vorige-image-en-snapshotklonen)

@@ -237,40 +237,47 @@ def test_release_publishes_nothing_without_tests_and_smoke():
     assert "release-bewijs" in needs("publish") and "aio-image" in needs("release-bewijs")
     assert "scripts/release-bewijs.py" in _scripts(jobs["release-bewijs"])
     assert "release/digests.json" in _scripts(jobs["publish"])
-    assert "publish" in needs("summary") and "publish" in needs("tag")
-    # alleen 'publish' zet echte tags; de bouwjobs pushen uitsluitend kandidaat-tags
-    for name, job in jobs.items():
-        script = _scripts(job)
-        if name != "publish":
-            assert "imagetools create" not in script, name
-            assert "promote-image.sh" not in script, name
-        for tag in re.findall(r'-t "([^"]+)"', script) + re.findall(r'docker push "([^"]+)"',
-                                                                       script):
-            if name != "publish":
-                assert "CANDIDATE" in tag, f"{name} pusht {tag} zonder kandidaat-tag"
-    # de AIO-rooktest draait echt het gebouwde image
-    assert "scripts/aio-smoke.py" in _scripts(jobs["aio-smoke"])
-    assert "${VERSION}-aio-${CANDIDATE}" in _scripts(jobs["aio-smoke"])
-    # de AIO-tag als laatste, na core/web/encode
+    assert _wf("release.yml")["on"] == {"push": {"tags": ["v*.*.*"]}}
+    assert "workflow_dispatch" not in _wf("release.yml")["on"]
+    assert "refs/tags/v$VERSION" in _scripts(jobs["meta"])
+    # De bouwonderdelen blijven lokale artefacten. De kandidaat krijgt alleen een
+    # digest. Beide proeven en het SBOM moeten precies die digest gebruiken.
+    assert jobs["app-images"]["strategy"]["matrix"]["name"] == ["web", "encode"]
+    assert jobs["fork-images"]["strategy"]["matrix"]["app"] == ["sonarr", "radarr"]
+    for name in ("app-images", "fork-images"):
+        script = _scripts(jobs[name])
+        assert "docker save" in script
+        assert "docker push" not in script and "--push" not in script
+        assert jobs[name].get("permissions", {}).get("packages") != "write"
+    assert '"docker://$IMAGE@$digest"' in _scripts(jobs["aio-image"])
+    for name in ("aio-smoke", "upgradebewijs", "release-bewijs", "publish"):
+        assert "needs.aio-image.outputs.digest" in json.dumps(jobs[name])
+    assert 'scripts/aio-smoke.py --image "$IMAGE@$DIGEST"' in _scripts(jobs["aio-smoke"])
+    assert '--nieuw "$IMAGE@$DIGEST"' in _scripts(jobs["upgradebewijs"])
     pub = _scripts(jobs["publish"])
-    assert pub.rindex("${VERSION}-aio") > pub.index("for n in core web encode")
+    assert 'ref="$IMAGE:$VERSION-aio"' in pub
+    assert 'scripts/promote-image.sh "$IMAGE@$DIGEST" "$ref"' in pub
+    assert pub.index("scripts/promote-image.sh") < pub.index("gh release create")
+    assert "release/digests.json release/aio.spdx.json release/upgradebewijs.md" in pub
 
 
 def test_release_never_overwrites_an_existing_tag():
     jobs = _wf("release.yml")["jobs"]
     meta = _scripts(jobs["meta"])
+    assert 'scripts/image-tag-exists.sh "$IMAGE:$VERSION-aio"' in meta and "exit 1" in meta
+    assert "cat VERSION" in meta and "scripts/upgradebewijs.py volgorde" in meta
+    pub = _scripts(jobs["publish"])
+    assert "imagetools create" not in pub and pub.count("scripts/promote-image.sh") == 1
+    # De Forgejo-release voor de losse onderdelen houdt zijn eigen onveranderlijke tags.
+    forge = _wf("release.yml", ROOT / ".forgejo" / "workflows")["jobs"]
     for ref in ("mediaguard-core:$VERSION", "mediaguard-web:$VERSION",
                 "mediaguard-encode:$VERSION", "mediaguard-core:$VERSION-aio"):
-        assert ref in meta
-    assert "scripts/image-tag-exists.sh" in meta and "exit 1" in meta
-    pub = _scripts(jobs["publish"])
-    # elke echte tag via scripts/promote-image.sh (weigert een bestaande tag met een ander image)
-    assert "imagetools create" not in pub
-    assert pub.count("scripts/promote-image.sh") >= 3
+        assert ref in _scripts(forge["meta"])
+    assert _scripts(forge["publish"]).count("scripts/promote-image.sh") >= 3
     promote = (ROOT / "scripts" / "promote-image.sh").read_text("utf-8")
     assert '"$here/image-tag-exists.sh" "$t"' in promote and "niets overschreven" in promote
     # een bestaande fork-tag wordt alleen hergebruikt bij gelijke patches/Dockerfile
-    fork = _scripts(jobs["fork-images"])
+    fork = _scripts(forge["fork-images"])
     assert "io.mediaguard.patches.sha256" in fork and "io.mediaguard.dockerfile.sha256" in fork
     assert "Verhoog MG_PATCH_REV" in fork
     for app in ("sonarr", "radarr"):
@@ -364,6 +371,32 @@ def test_release_bewijs_dekt_alle_images_en_gebruikt_hun_digest(tmp_path, monkey
     with pytest.raises(RuntimeError, match="scanner geweigerd"):
         bewijs.verzamel(manifest, candidate, mislukt, "syft")
     assert not (mislukt / "digests.json").exists()
+
+
+def test_custom_app_bijlage_verbindt_alleen_de_geteste_aio_met_het_manifest(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("bewijs", ROOT / "scripts/release-bewijs.py")
+    assert spec and spec.loader
+    bewijs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bewijs)
+    manifest = _manifest()
+    versie = (ROOT / "VERSION").read_text().strip()
+    installatie = yaml.safe_load((ROOT / "deploy/manifest/mediaguard.manifest.yaml").read_text())
+    assert versie == manifest["version"] == installatie["version"]
+    aio = manifest["images"]["aio"]
+    assert installatie["image"]["repository"] == aio["image"]
+    assert installatie["image"]["tag"] == aio["tag"] == f"{versie}-aio"
+    pin = "sha256:" + "7" * 64
+    (tmp_path / "aio.spdx.json").write_text('{"spdxVersion":"SPDX-2.3"}')
+    juiste_ref = aio["image"] + "@" + pin
+    monkeypatch.setattr(bewijs, "digest", lambda ref: pin if ref == juiste_ref else "")
+    with pytest.raises(ValueError, match="digest"):
+        bewijs.bewijs_custom_app(manifest, "sha256:" + "8" * 64, tmp_path)
+    assert not (tmp_path / "digests.json").exists()
+    bewijs.bewijs_custom_app(manifest, pin, tmp_path)
+    gegevens = json.loads((tmp_path / "digests.json").read_text())
+    assert (gegevens["image"], gegevens["tag"], gegevens["digest"]) == (
+        aio["image"], aio["tag"], pin)
+    assert list(gegevens["images"]) == ["aio"]
 
 
 # -- manifest -------------------------------------------------------------------------------
@@ -729,7 +762,8 @@ def test_fixture_database_migrates_and_stays_usable(tmp_path, monkeypatch):
         app.state.ctx.db.close()
     assert smoke.verify_db(data / "mediaguard.db", fixture, expected) == []
     # … en na de migratie en de start: per tabel niets verloren (zelfde regels als de poort)
-    verloren, rapport = smoke.compare(tmp_path / "config", voor, UITZONDERINGEN, "Per tabel")
+    verloren, rapport = smoke.compare(tmp_path / "config", voor, UITZONDERINGEN, "Per tabel",
+                                      (fixture["version"], current))
     assert verloren == [], verloren
     assert "✅ niets verloren" in rapport and "| core/mediaguard.db | encoding_jobs |" in rapport
     for domein in ("jobs", "quarantine_items", "replacement_transactions", "wanted_items",

@@ -59,15 +59,35 @@ def verzamel(manifest, candidate, output, syft, registry_prefix=None):
     (output / "digests.json").write_text(json.dumps(resultaat, indent=2) + "\n", encoding="utf-8")
 
 
+def bewijs_custom_app(manifest, pin, output):
+    """Koppel het SBOM en de TrueNAS-velden aan de geteste registerdigest."""
+    aio = manifest["images"]["aio"]
+    pakket, tag = aio["image"], aio["tag"]
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", pin) or digest(f"{pakket}@{pin}") != pin:
+        raise ValueError("De geteste digest kon niet in het register worden bevestigd.")
+    sbom = "aio.spdx.json"
+    if not json.loads((output / sbom).read_text(encoding="utf-8")).get("spdxVersion"):
+        raise ValueError("Het SPDX-bewijs van de Custom App ontbreekt.")
+    bewijs = {"app_id": "mediaguard", "version": manifest["version"], "platform": PLATFORM,
+              "image": pakket, "tag": tag, "digest": pin,
+              "images": {"aio": {"image": f"{pakket}:{tag}", "digest": pin, "sbom": sbom}}}
+    (output / "digests.json").write_text(json.dumps(bewijs, indent=2) + "\n", encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--candidate", required=True)
+    bron = parser.add_mutually_exclusive_group(required=True)
+    bron.add_argument("--candidate")
+    bron.add_argument("--aio-digest", help="Geteste registerdigest van de Custom App")
     parser.add_argument("--output", type=Path, default=Path("release"))
     parser.add_argument("--syft", default="syft")
     parser.add_argument("--registry-prefix", help="Publicatieregister met eigenaar voor deze run")
     args = parser.parse_args()
     manifest = json.loads((ROOT / "deploy/release-manifest.json").read_text(encoding="utf-8"))
-    verzamel(manifest, args.candidate, args.output, args.syft, args.registry_prefix)
+    if args.aio_digest:
+        bewijs_custom_app(manifest, args.aio_digest, args.output)
+    else:
+        verzamel(manifest, args.candidate, args.output, args.syft, args.registry_prefix)
 
 
 if __name__ == "__main__":

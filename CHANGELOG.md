@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 (releasevoorbereiding)
+
+De standaard Custom App bundelt de kern, webinterface, encoder en beide forks in
+`ghcr.io/lvos04/mediaguard-core:1.3.0-aio`. De releasebijlage `digests.json` koppelt
+de installatietag aan de geteste digest. Voor de bestaande installatie beschrijft
+het [updatedraaiboek](deploy/truenas/BIJWERKEN.md) hoe je taken, journaal, werkbestanden
+en originelen controleert en bij een migratie terugkeert via snapshotklonen.
 
 De MediaGuard-connector leest met viewer-rechten open ontbrekende media, status,
 downloads, AV1-banen en incidenten (S-P3-615). De pagina's bieden een cursor,

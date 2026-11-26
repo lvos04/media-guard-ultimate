@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: python3 scripts/check-dockerfile-digests.py
 
   # 3.12 = het losse core-image (apps/core/Dockerfile); 3.14 = het alles-in-één-image, waar
@@ -73,8 +73,8 @@ jobs:
       matrix:
         python: ["3.12", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -98,10 +98,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
@@ -118,13 +118,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: offline (koppen, sha256, HERKOMST.json)
         run: python3 scripts/kopie-herkomst.py controleer
-      - name: Vergelijk gepinde bestanden en de huidige bronbranch op Forgejo
-        env:
-          BRON_LEESTOKEN: ${{ secrets.BRON_LEESTOKEN }}
-        run: python3 scripts/kopie-herkomst.py vergelijk --online
+      - name: Publieke bron voor contract en Peil ophalen
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lvos04/ai-server-manager
+          ref: ccr-c133d7a0-kuz1cv
+          fetch-depth: 0
+          path: .herkomst
+          persist-credentials: false
+      - name: Vergelijk gepinde bestanden en de huidige bronbranch
+        run: python3 scripts/kopie-herkomst.py vergelijk --bron .herkomst
 
   manifest:
     name: Custom App-manifest (gepinde validator)
@@ -133,14 +139,14 @@ jobs:
     env:
       ASF_COMMIT: a994c2a51f45b81b2c48c6533b0ccf51ba857f5a
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: lvos04/appstore-en-fork
           ref: ${{ env.ASF_COMMIT }}
           path: .appstore-validator
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Installeer de gepinde manifestvalidator
@@ -165,8 +171,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # vorige-release.json = de laatst gepubliceerde release (tag en digest in GHCR); na een release
       # is dit rood tot vorige-release.json en de fixture van die release zijn bijgewerkt
       - name: vorige release is de laatst gepubliceerde (GHCR-tag en digest)
@@ -188,7 +194,7 @@ jobs:
           --werkmap "$RUNNER_TEMP/upgradebewijs" --rapport "$RUNNER_TEMP/upgradebewijs.md"
       - name: controleer gegevensbehoud in het upgraderapport
         run: python3 tests/upgradehistorie/controleer_rapport.py "$RUNNER_TEMP/upgradebewijs.md"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: upgradebewijs-rapport
@@ -201,8 +207,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           # zelfde Python als het encode- en alles-in-één-image (Ubuntu 26.04)
           python-version: "3.14"
@@ -251,7 +257,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: bepalen welke encoderproef nodig is
@@ -274,7 +280,7 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == schedule || "$HEAVY" == true ]]; then suite=true; fi
           if [[ "$BEWIJS" == true ]]; then bewijs=true; fi
           { echo "bewijs=$bewijs"; echo "suite=$suite"; } >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         if: steps.proef.outputs.bewijs == 'true' || steps.proef.outputs.suite == 'true'
       - name: FFmpeg-bron (gepinde sha256)
         if: steps.proef.outputs.bewijs == 'true' || steps.proef.outputs.suite == 'true'
@@ -310,7 +316,7 @@ jobs:
             exit 1
           fi
           echo "FFmpeg-versie, bouwconfiguratie en encoders zijn gelijk."
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && steps.proef.outputs.bewijs == 'true'
         with:
           name: ffmpeg-basisdigest
@@ -333,13 +339,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: core voor e2e (echte core, geen mocks)
@@ -368,7 +374,7 @@ jobs:
         env:
           MG_E2E_PYTHON: /tmp/corevenv/bin/python
         run: npm run e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: playwright-results
@@ -387,7 +393,7 @@ jobs:
       matrix:
         app: [sonarr, radarr]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: build runtime-image uit gepinde upstream-SHA + patches
         run: forks/${{ matrix.app }}/build.sh
       - name: unit tests (MediaGuard + decision/import engines)
@@ -404,13 +410,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: apps/core/pyproject.toml
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: ffmpeg (twee kleine testfilms)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       # de encoder-client (app.integraties) vraagt niets buiten wat core al meebrengt (httpx, cryptography)
@@ -428,7 +434,7 @@ jobs:
             tail -n 30 "$RUNNER_TEMP/mediaservers-bewijs/pytest.log" 2>/dev/null || echo 'geen pytest.log'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: mediaservers-bewijs
@@ -445,13 +451,13 @@ jobs:
       matrix:
         app: [sonarr, radarr]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: sync-upstream.sh (rapportmodus, wijzigt niets)
         run: forks/${{ matrix.app }}/sync-upstream.sh --out "$RUNNER_TEMP/sync-${{ matrix.app }}"
       - name: rapport in job-samenvatting
         if: always()
         run: cat "$RUNNER_TEMP/sync-${{ matrix.app }}/REPORT.md" >> "$GITHUB_STEP_SUMMARY" || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: upstream-sync-${{ matrix.app }}

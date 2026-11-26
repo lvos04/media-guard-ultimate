@@ -79,11 +79,11 @@ def measure(config: Path, fixture: dict[str, Any]) -> tuple[dict[str, Any], list
 
 
 def compare(config: Path, voor: dict[str, Any], exceptions: Path,
-            title: str) -> tuple[list[str], str]:
+            title: str, versies: tuple[str, str] | None = None) -> tuple[list[str], str]:
     """Meting na de stop tegen de meting van vóór: (problemen, rapport per tabel)."""
     ub = upgradebewijs()
     uitz = json.loads(exceptions.read_text("utf-8")) if exceptions.is_file() else {}
-    fouten, toegepast, overzicht = ub.vergelijk(voor, ub.meet(config), uitz)
+    fouten, toegepast, overzicht = ub.vergelijk(voor, ub.meet(config), uitz, versies=versies)
     return [f"per tabel: {f}" for f in fouten], ub.rapport(title, fouten, toegepast, overzicht)
 
 
@@ -365,6 +365,8 @@ def run(args: argparse.Namespace, root_start: bool) -> tuple[list[str], str]:
     name = f"mg-aio-smoke-{os.getpid()}-{'root' if root_start else 'apps'}"
     loopback = socket.inet_ntoa(socket.INADDR_LOOPBACK.to_bytes(4, "big"))
     base = f"http://{loopback}:{args.port}"
+    testnet = os.environ.get("MG_TEST_NETWORK")
+    netwerk = ["--network", testnet] if testnet else []
     user = [] if root_start else ["--user", f"{APP_UID}:{APP_GID}"]
     snapshot_text, log_text = "", ""
     container_id = None
@@ -372,7 +374,7 @@ def run(args: argparse.Namespace, root_start: bool) -> tuple[list[str], str]:
     try:
         set_fixture_owner(args.image, testdata, APP_UID, APP_GID)
         try:
-            docker("run", "-d", "--name", name, "--cidfile", str(cidfile), *user,
+            docker("run", "-d", "--name", name, "--cidfile", str(cidfile), *user, *netwerk,
                    "-p", f"{loopback}:{args.port}:30080", "-e", "TZ=UTC", "-e", f"MG_HOST={loopback}",
                    "-v", f"{config}:/config", "-v", f"{work}:/work", "-v", f"{data}:/data", args.image)
         finally:
@@ -414,7 +416,8 @@ def run(args: argparse.Namespace, root_start: bool) -> tuple[list[str], str]:
     problems += verify_db(config / "core" / "mediaguard.db", fixture, expected)
     try:
         lost, report = compare(config, voor, Path(args.exceptions),
-                               f"Per tabel: fixture {fixture['version']} → {args.version}")
+                               f"Per tabel: fixture {fixture['version']} → {args.version}",
+                               (fixture["version"], args.version))
     except (OSError, sqlite3.DatabaseError, KeyError) as exc:
         lost, report = [f"per tabel: meting na de stop mislukt ({exc})"], ""
     problems += lost

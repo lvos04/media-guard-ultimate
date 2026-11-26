@@ -2,15 +2,7 @@ name: release
 
 on:
   push:
-    tags: ["v*"]
-    # alternatief voor een tag-push: een branch release/v<versie> (de workflow maakt dan zelf
-    # de tag v<versie> aan zodra alle images gepubliceerd zijn)
-    branches: ["release/v*"]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Versie zonder v (bv. 0.1.0); moet gelijk zijn aan deploy/release-manifest.json"
-        required: true
+    tags: ["v*.*.*"]
 
 permissions:
   contents: read
@@ -37,16 +29,11 @@ jobs:
     steps:
       - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - id: v
-        env:
-          HANDMATIGE_VERSIE: ${{ inputs.version }}
         run: |
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then V="$HANDMATIGE_VERSIE"
-          elif [[ "$GITHUB_REF" == refs/heads/* ]]; then V="${GITHUB_REF_NAME#release/v}"
-          else V="${GITHUB_REF_NAME#v}"; fi
-          M="$(python3 -c 'import json;print(json.load(open("deploy/release-manifest.json"))["version"])')"
-          if [ "$V" != "$M" ]; then
-            echo "::error::versie $V wijkt af van deploy/release-manifest.json ($M)"; exit 1
-          fi
+          V="$(cat VERSION)"
+          [[ "$V" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$GITHUB_REF" = "refs/tags/v$V"
+          test "$V" = "$(jq -er .version deploy/release-manifest.json)"
           {
             echo "version=$V"
             echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -473,26 +460,3 @@ jobs:
             echo
             echo "Android: start de handmatige ondertekening op de bijbehorende versietag."
           } >> "$GITHUB_STEP_SUMMARY"
-
-  # Bij een release/v*-branch: tag v<versie> aanmaken nadat alle images gepubliceerd zijn.
-  tag:
-    name: tag v${{ needs.meta.outputs.version }}
-    if: startsWith(github.ref, 'refs/heads/')
-    needs: [meta, publish]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - run: |
-          git config user.name "Forgejo Actions"
-          git config user.email "actions@git.medialeon.nl"
-          T="v${{ needs.meta.outputs.version }}"
-          if git ls-remote --exit-code --tags origin "refs/tags/$T" >/dev/null; then
-            git fetch --no-tags origin "refs/tags/$T"
-            test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
-            echo "Tag $T hoort al bij deze commit."
-            exit 0
-          fi
-          git tag -a "$T" -m "MediaGuard Ultimate ${{ needs.meta.outputs.version }}"
-          git push origin "$T"
