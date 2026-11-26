@@ -8,6 +8,10 @@ def vulling(pad: Path) -> dict:
     tekst = pad.read_text()
     for uitkomst in ("Upgrade: niets verloren", "terugzetten: niets verloren"):
         assert tekst.splitlines().count(uitkomst) == 1
+    bestandsproef = "4/4 SHA-256 gelijk na update en op de drie terugvalklonen." in tekst
+    if not bestandsproef:
+        # Het bestaande historische rapport van 1.2.2 gebruikte alleen de vier fixturetaken.
+        assert "## Upgradebewijs 1.2.2 → 1.2.2" in tekst
     delen = tekst.split("## Terugzetten (vorige image + snapshot)")
     assert len(delen) == 2
     standen = []
@@ -30,11 +34,16 @@ def vulling(pad: Path) -> dict:
         )
         for tabel, aantal in (
             ("users", 4),
-            ("jobs", 4),
+            # Met twee geregistreerde originelen plant de oude release zelf twee vrijgavecontroles.
+            ("jobs", 6 if bestandsproef else 4),
             ("outbox_events", 2),
             ("mediaserver_pending", 3),
         ):
             assert gevuld["core/mediaguard.db", tabel] == (aantal, aantal)
+        if bestandsproef:
+            for tabel, aantal in (("encoding_jobs", 2), ("replacement_transactions", 5),
+                                 ("replacement_journal", 4), ("quarantine_items", 4)):
+                assert gevuld["core/mediaguard.db", tabel] == (aantal, aantal)
         assert gevuld["encode/app.db", "job"] == (2, 2)
         standen.append({naam: aantal[0] for naam, aantal in gevuld.items()})
     assert standen[0] == standen[1]

@@ -47,7 +47,7 @@ ffmpeg_src() {
   if [[ -z "$dir" ]]; then
     dir="${TMPDIR:-/tmp}/mediaguard-ffmpeg-src"; mkdir -p "$dir"
     if [[ ! -s "$dir/ffmpeg-$FF_VER.tar.xz" ]]; then
-      curl -fsSL --retry 5 -o "$dir/ffmpeg-$FF_VER.tar.xz" "https://ffmpeg.org/releases/ffmpeg-$FF_VER.tar.xz"
+      curl -fsSL --retry 5 --retry-all-errors -o "$dir/ffmpeg-$FF_VER.tar.xz" "https://ffmpeg.org/releases/ffmpeg-$FF_VER.tar.xz"
     fi
   fi
   echo "$FF_SHA  $dir/ffmpeg-$FF_VER.tar.xz" | sha256sum -c - >&2

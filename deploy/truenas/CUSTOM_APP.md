@@ -36,8 +36,9 @@ instellingen. Als die app **Host Network** gebruikt, behoud je die keuze en laat
 poortkoppelingen leeg. Een netwerkwijziging vraagt een aparte controle van alle koppelingen.
 
 Draait MediaGuard nog als losse containers, oefen de overstap en terugval eerst op
-[afgeschermde datasetkopieën](#afgeschermde-proefkopie). Bewaar de bestaande installatie
-als terugval en gebruik voor elke installatie eigen appdata.
+[afgeschermde datasetkopieën](#afgeschermde-proefkopie). Gebruik voor de proef eigen klonen. Volg bij de echte overstap het
+[pad voor een bestaande installatie](BIJWERKEN.md#3-kies-het-pad-voor-de-gevonden-installatie).
+De oude app blijft als terugval gestopt zodra de vervangende app de datasets gebruikt.
 
 | Sectie | Veld | Waarde |
 |---|---|---|

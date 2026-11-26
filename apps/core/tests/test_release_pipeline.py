@@ -240,6 +240,16 @@ def test_release_publishes_nothing_without_tests_and_smoke():
     assert _wf("release.yml")["on"] == {"push": {"tags": ["v*.*.*"]}}
     assert "workflow_dispatch" not in _wf("release.yml")["on"]
     assert "refs/tags/v$VERSION" in _scripts(jobs["meta"])
+    for name, job in jobs.items():
+        script = _scripts(job)
+        if name != "publish":
+            assert "imagetools create" not in script and "promote-image.sh" not in script
+            assert "gh release " not in script
+        if name not in {"publish", "aio-image"}:
+            assert job.get("permissions", {}).get("packages") != "write"
+    for workflow in ("release.yml", "ci.yml", "android.yml"):
+        uses = re.findall(r"^\s*(?:- )?uses: (\S+)", (WF / workflow).read_text(), re.M)
+        assert all(u.startswith("./") or re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", u) for u in uses)
     # De bouwonderdelen blijven lokale artefacten. De kandidaat krijgt alleen een
     # digest. Beide proeven en het SBOM moeten precies die digest gebruiken.
     assert jobs["app-images"]["strategy"]["matrix"]["name"] == ["web", "encode"]
@@ -273,7 +283,16 @@ def test_release_never_overwrites_an_existing_tag():
     for ref in ("mediaguard-core:$VERSION", "mediaguard-web:$VERSION",
                 "mediaguard-encode:$VERSION", "mediaguard-core:$VERSION-aio"):
         assert ref in _scripts(forge["meta"])
-    assert _scripts(forge["publish"]).count("scripts/promote-image.sh") >= 3
+    publicatie = _scripts(forge["publish"])
+    assert publicatie.count("scripts/promote-image.sh") >= 3
+    assert publicatie.rindex("${VERSION}-aio") > publicatie.index("for n in core web encode")
+    assert "publish" in forge["summary"]["needs"]
+    for naam, job in forge.items():
+        if naam != "publish":
+            script = _scripts(job)
+            assert "imagetools create" not in script and "promote-image.sh" not in script
+            tags = re.findall(r'-t "([^"]+)"|docker push "([^"]+)"', script)
+            assert all("CANDIDATE" in (a or b) for a, b in tags)
     promote = (ROOT / "scripts" / "promote-image.sh").read_text("utf-8")
     assert '"$here/image-tag-exists.sh" "$t"' in promote and "niets overschreven" in promote
     # een bestaande fork-tag wordt alleen hergebruikt bij gelijke patches/Dockerfile

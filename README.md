@@ -9,7 +9,9 @@ ondertitels) en je bibliotheek veilig naar AV1 omzet met behoud van HDR10, HDR10
 Dolby Vision. Alles bedien je vanuit de web-UI; je hoeft Sonarr/Radarr zelf niet meer te
 openen.
 
-> **Status 1.2.2** — gebouwd en getest in containers (zie [Testresultaten](#8-testen)) én in zes
+> **Releasevoorbereiding 1.3.0.** Voor een bestaande installatie staan de keuze van de image, opslag en terugweg in [Een bestaande MediaGuard bijwerken](deploy/truenas/BIJWERKEN.md).
+
+> **Eerdere release 1.2.2** — gebouwd en getest in containers (zie [Testresultaten](#8-testen)) én in zes
 > testrondes op een echte TrueNAS SCALE-installatie met Intel Arc A310, Emby en Sonarr/Radarr
 > (die rapporten bevatten gegevens van een echte installatie en staan daarom niet in deze
 > repo). De overstap van je huidige Sonarr/Radarr (migratie → overschakelen) gebeurt alleen na
@@ -361,7 +363,7 @@ nooit automatisch uitrollen) — [`docs/FORK_UPSTREAM_SYNC.md`](docs/FORK_UPSTRE
 - **Neem de appdata-dataset mee in je TrueNAS-snapshots/replicatie** (bevat `secrets/` en
   `core/secret.key`; zonder die bestanden zijn opgeslagen sleutels en wachtwoorden niet meer
   leesbaar).
-- **Nieuwe versie**: MediaGuard 1.2.2 controleert dagelijks het openbare releasekanaal en meldt een nieuwe versie
+- **Nieuwe versie**: MediaGuard controleert dagelijks het openbare releasekanaal en meldt een nieuwe versie
   (melding + punt in *Wacht op jou*). Er wordt nooit vanzelf bijgewerkt. Uitzetten:
   *Instellingen › Systeem & back-ups → Updates*.
 - **Terug naar je oude Sonarr/Radarr**: *Instellingen › Migratie → Terugdraaien* per instantie

@@ -174,7 +174,7 @@ def http(url: str, body: dict[str, Any] | None = None,
     req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET",
                                  headers={"Content-Type": "application/json", **(headers or {})})
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 - eigen container
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=10) as resp:
             raw = resp.read()
             cookies = resp.headers.get_all("Set-Cookie") or []
             status = resp.status
@@ -366,7 +366,7 @@ def run(args: argparse.Namespace, root_start: bool) -> tuple[list[str], str]:
     loopback = socket.inet_ntoa(socket.INADDR_LOOPBACK.to_bytes(4, "big"))
     base = f"http://{loopback}:{args.port}"
     testnet = os.environ.get("MG_TEST_NETWORK")
-    netwerk = ["--network", testnet] if testnet else []
+    netwerk = ["--network", testnet] if testnet else ["-p", f"{loopback}:{args.port}:30080"]
     user = [] if root_start else ["--user", f"{APP_UID}:{APP_GID}"]
     snapshot_text, log_text = "", ""
     container_id = None
@@ -375,7 +375,7 @@ def run(args: argparse.Namespace, root_start: bool) -> tuple[list[str], str]:
         set_fixture_owner(args.image, testdata, APP_UID, APP_GID)
         try:
             docker("run", "-d", "--name", name, "--cidfile", str(cidfile), *user, *netwerk,
-                   "-p", f"{loopback}:{args.port}:30080", "-e", "TZ=UTC", "-e", f"MG_HOST={loopback}",
+                   "-e", "TZ=UTC", "-e", f"MG_HOST={loopback}",
                    "-v", f"{config}:/config", "-v", f"{work}:/work", "-v", f"{data}:/data", args.image)
         finally:
             # Docker schrijft de ID bij aanmaak, ook als de daaropvolgende start mislukt.
@@ -385,6 +385,8 @@ def run(args: argparse.Namespace, root_start: bool) -> tuple[list[str], str]:
                     container_id = created
         if container_id is None:
             raise RuntimeError("docker run gaf geen geldige container-ID")
+        if testnet:
+            base = upgradebewijs().testnet_url(container_id, testnet)
         health, snapshot = wait_until_ready(container_id, base, args.timeout)
         processes = json.loads(docker("exec", container_id, "/opt/venv/bin/python", "-c",
                                       PROC_SNAPSHOT))

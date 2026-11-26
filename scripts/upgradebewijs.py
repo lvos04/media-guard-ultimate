@@ -40,6 +40,7 @@ import argparse
 import contextlib
 import fnmatch
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -676,13 +677,23 @@ def _docker(*args: str, check: bool = True, timeout: float | None = None) -> str
     return out.stdout.strip()
 
 
+def testnet_url(container: str, netwerk: str) -> str:
+    """Docker publiceert geen hostpoort op een intern brugnetwerk. Lees de eigen webpoort daar."""
+    netwerken = json.loads(_docker("inspect", "-f", "{{json .NetworkSettings.Networks}}", container))
+    for naam, info in netwerken.items():
+        if netwerk in (naam, info["NetworkID"]):
+            adres = ipaddress.IPv4Address(info["IPAddress"])
+            return f"http://{adres}:30080"
+    raise RuntimeError("Eigen container is niet verbonden met het opgegeven proefnetwerk")
+
+
 def _http(url: str, body: dict[str, Any] | None = None,
           headers: dict[str, str] | None = None) -> tuple[int, Any, list[str]]:
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET",
                                  headers={"Content-Type": "application/json", **(headers or {})})
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 - eigen container
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=15) as resp:
             raw, status = resp.read(), resp.status
             cookies = resp.headers.get_all("Set-Cookie") or []
     except urllib.error.HTTPError as exc:
@@ -836,11 +847,13 @@ print(json.dumps(controleer_bestanden(Path("/mnt"), sys.argv[1])))
     def start(self, image: str, config: str = "config") -> None:
         suffix = config.removeprefix("config")
         testnet = os.environ.get("MG_TEST_NETWORK")
-        netwerk = ["--network", testnet] if testnet else []
-        _docker("run", "-d", "--name", self.naam, *netwerk, "-p", f"127.0.0.1:{self.a.poort}:30080",
+        netwerk = ["--network", testnet] if testnet else ["-p", f"127.0.0.1:{self.a.poort}:30080"]
+        _docker("run", "-d", "--name", self.naam, *netwerk,
                 "-e", "TZ=UTC", "-e", "MG_HOST=127.0.0.1",
                 "-v", f"{self.werk / config}:/config", "-v", f"{self.werk / ('work' + suffix)}:/work",
                 "-v", f"{self.werk / ('data' + suffix)}:/data", image)
+        if testnet:
+            self.basis = testnet_url(self.naam, testnet)
         deadline = time.monotonic() + self.a.timeout
         laatste = ""
         while time.monotonic() < deadline:
@@ -1093,7 +1106,7 @@ print(json.dumps(controleer_bestanden(Path("/mnt"), sys.argv[1])))
         # 2. vorige release opnieuw: accepteert de gevulde databases en vindt alles terug
         self.start(self.a.vorige)
         self.lees_radarr_naamgeving()
-        fouten += [f"vorige release: {p}" for p in self.readback(fixture, None)]
+        fouten += [f"vorige release: {p}" for p in self.readback(fixture, self.a.vorige_versie)]
         self.stop()
         voor = self.meet("config", "meting-voor.json")
         # Zonder volledige nulmeting valt er niets te bewijzen.
@@ -1124,7 +1137,7 @@ print(json.dumps(controleer_bestanden(Path("/mnt"), sys.argv[1])))
         self.shell("set -e; for d in config work data; do "
                    'cp -a "/mnt/herstelpunt/$d" "/mnt/$d-snapshot"; done')
         self.start(self.a.vorige, config="config-snapshot")
-        fouten += [f"terugzetten: {p}" for p in self.readback(fixture, None)]
+        fouten += [f"terugzetten: {p}" for p in self.readback(fixture, self.a.vorige_versie)]
         self.stop()
         terug = self.meet("config-snapshot", "meting-terug.json")
         # dezelfde vergelijking per tabel als bij de upgrade, en ook zo in het rapport (S-P2-610:

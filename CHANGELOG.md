@@ -33,7 +33,7 @@ downloadvoortgang na herstart beschikbaar.
 
 Rechten (scopes) op API-sleutels (S-P3-600; contract 1.3 §2.3 regels 2 en 3, C1.3-MGU-05). Eén migratie
 (`005_api_key_scopes`, voegt alleen een kolom toe); sleutels zonder rechten (MSO, de Android-app) werken precies als
-voorheen. Geen release.
+voorheen.
 - **Kijker-sleutel met het recht `emergency_stop:on`** (bedoeld voor de Hub): mag lezen zoals een kijker en de
   noodstop aanzetten, nooit opheffen (403, ook via de app-bediening `POST /api/v1/app/control`). Staat de noodstop al
   aan, dan wijzigt zo'n sleutel niets (200 met de bestaande toestand; reden, door en sinds blijven staan; alleen de
@@ -52,7 +52,7 @@ voorheen. Geen release.
 
 Meerdere mediaservers tegelijk en aanmelden per server (Δ-MG-DUAL, Δ-MG-AUTH; contract 1.3 §2.3 regel 2,
 C1.3-MGU-04). Besluiten: ADR-0022 en ADR-0023. Eén migratie (`150_mediaserver_servers`, voegt alleen toe); de
-status-API krijgt er velden bij, geen veld verdwijnt. Geen release.
+status-API krijgt er velden bij, geen veld verdwijnt.
 - **Emby én Jelly Leon/Jellyfin tegelijk:** MediaGuard volgt elke gekoppelde mediaserver. De koppeling van 1.2.2
   (bijvoorbeeld Emby) is na het bijwerken zonder één handeling server 1: adres, sleutel en gekoppelde mappen blijven
   waar ze stonden ("nul-migratie"), dus de Emby-koppeling valt op geen moment weg. Extra servers (hoogstens 8) staan
