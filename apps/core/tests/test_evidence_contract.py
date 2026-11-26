@@ -175,3 +175,32 @@ def test_contractreview_vermeldt_alle_open_praktijkproeven() -> None:
     review = next(r for r in _items() if r["id"] == "REVIEW-media-guard-ultimate-contract-1.3")
     verwacht = {f"NIET GEVALIDEERD ({soort})" for soort in ("echte NAS", "hardware", "account")}
     assert verwacht <= set(review["validatie"].split("; "))
+
+
+@pytest.mark.parametrize(("rij_id", "soorten"), [
+    ("B04-001", ("echte NAS", "hardware", "account")),
+    ("B04-002", ("echte NAS", "account")),
+    ("B04-003", ("echte NAS", "hardware", "account")),
+    ("B04-004", ("echte NAS", "account")),
+    ("B04-005", ("echte NAS", "hardware", "account")),
+    ("B04-006", ("echte NAS", "account")),
+    ("B04-007", ("echte NAS", "hardware", "account")),
+    ("B04-008", ("echte NAS", "hardware", "account")),
+    ("B04-009", ("echte NAS", "account")),
+    ("B04-010", ("echte NAS", "hardware", "account")),
+    ("C1.3-MGU-03", ("echte NAS", "account")),
+    ("C1.3-MGU-04", ("echte NAS", "hardware", "account")),
+    ("C1.3-MGU-05", ("echte NAS", "hardware", "account")),
+    ("C1.3-MGU-06", ("echte NAS", "account")),
+    ("C1.3-MGU-09", ("echte NAS", "hardware", "account")),
+    ("C1.3-ALG-05", ("echte NAS", "hardware", "account")),
+    ("B03-014", ("echte NAS", "hardware", "account")),
+    ("B03-015", ("echte NAS", "hardware", "account")),
+    ("JLT-73", ("echte NAS", "hardware", "account")),
+    ("JLT-74", ("echte NAS", "hardware", "account")),
+])
+def test_praktijkproef_vermeldt_vereiste_markeringen(rij_id: str, soorten: tuple[str, ...]) -> None:
+    """Ook in gewone taal beschreven afhankelijkheden uit de acceptatiestap tellen mee voor G-19."""
+    per_id = {rij["id"]: rij["validatie"] for rij in _items()}
+    verwacht = {f"NIET GEVALIDEERD ({soort})" for soort in soorten}
+    assert verwacht <= set(per_id[rij_id].split("; "))
