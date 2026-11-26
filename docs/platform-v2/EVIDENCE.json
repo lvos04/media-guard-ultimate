@@ -162,7 +162,7 @@
  {
   "id": "C1.3-ALG-04",
   "status": "Bezig",
-  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS); NIET GEVALIDEERD (hardware)",
+  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS); NIET GEVALIDEERD (hardware); NIET GEVALIDEERD (account)",
   "bewijs": "S-P3-650, deel MediaGuard: apps/core/tests/test_aio.py en apps/core/tests/test_release_pipeline.py. De AIO-rooktest meet de rechten van de volledige procesboom bij rootstart en Custom User 568. Een lokale proef bevestigt de aparte web-UID, webherstart, nette stop en behoud van een gesimuleerde rendergroep (RAPPORT-A-BOUW.md). De regressieproeven toetsen geweigerde eigenaarswijzigingen bij gekoppelde logpaden, overname van geldige bestaande logs en opruiming via de container-ID na succesvolle aanmaak.",
   "blokkade": "Praktijkproef met de standaard Custom App op de NAS, inclusief GPU (N-P6-05).",
   "opmerking": "De bewaker is PID 1. De rooktest controleert de procesboom en de afzonderlijke healthcheck bij beide startwijzen. ADR-0024 legt de uitzondering voor de web-UID vast. Voor de procesrechten bij installatie als Custom App met GPU geldt ‘alleen NAS-test nodig’ (N-P6-05).",
@@ -172,7 +172,7 @@
  {
   "id": "C1.3-MGU-07",
   "status": "Bezig",
-  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS)",
+  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS); NIET GEVALIDEERD (account)",
   "bewijs": "S-P3-650: apps/core/tests/test_aio.py en apps/core/tests/test_release_pipeline.py. De lokale AIO-rooktest controleert de healthcheckdiagnose bij beide startwijzen en wordt rood zonder rechtenwissel. Ontbrekend SETPCAP, een oude bewakerstatus en HTTP 503 worden geweigerd (RAPPORT-A-BOUW.md). De regressieproeven toetsen dat de bewaker en healthcheck ongeldige PUID en PGID weigeren en dat de webbewaker na afwijzing van een ongeldig bericht verder leest.",
   "blokkade": "Praktijkproef met de standaard Custom App op de NAS (N-P6-05).",
   "opmerking": "Bij een rootstart leegt de healthcheck zijn bounding set en wisselt naar de app-gebruiker. Voor de healthcheck van de geïnstalleerde Custom App geldt ‘alleen NAS-test nodig’ (N-P6-05).",
@@ -182,7 +182,7 @@
  {
   "id": "C1.3-MGU-08",
   "status": "Bezig",
-  "validatie": "Unit-getest; Sim-getest",
+  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (account)",
   "bewijs": "commit 3a6d137; apps/core/mediaguard/hub_url.py, apps/web/lib/hub.ts; apps/core/tests/test_hub_url_setting.py::test_contract_13_non_canonical_or_rewritable_hosts_are_refused, ::test_contract_13_bad_value_via_api_gives_422_and_keeps_old_value; apps/web/tests/unit/hub.test.ts (zelfde lijsten); Playwright apps/web/e2e/peil.spec.ts ('Terug naar de Hub' alleen bij een geldig adres) groen; GitHub CI-run 42777986137 (commit 032b936) success: kopieen, core 3.12 en 3.14, encoder-unit, web (lint, typecheck, unit, build, e2e) en upgradebewijs (1.2.2-aio → core-kandidaat: niets verloren, terugzetten groen); QA-review (commit 0b023a5): differentiële test core (hub_url.py) tegen web (lib/hub.ts) op 5545 adressen: één verschil op de grens van link-lokale IPv6-adressen hersteld, daarna 0 verschillen; grensgevallen in apps/core/tests/test_hub_url_setting.py en apps/web/tests/unit/hub.test.ts; GitHub CI-run 42785073396 (commit ce8c9cf) success: kopieen, core 3.12 en 3.14, encoder-unit, web (lint, typecheck, unit, build, e2e) en upgradebewijs (nieuwe stap 'volgorde' tegen GHCR in orde; upgrade en terugzetten 'niets verloren'); S-P3-655 (Unit-getest): apps/web/tests/unit/return-path.test.ts toetst de grenswaarden, weigert verboden of onleesbare codering en sluit genormaliseerde in- en uitlogpaden uit. apps/web/tests/unit/login-return-path.test.ts bewaakt navigatiepogingen en behoud van query en fragment bij inloggen met wachtwoord en tweestapsverificatie. Rode en groene regressieproef en CI: RAPPORT-A-HERSTEL.md.",
   "blokkade": "",
   "opmerking": "NU-deel gedaan: system.hub_url volgens de adresregels van §3.2 (ongeldig → 422 bij opslaan, geen link in de UI; ook geen %-codering of IDN, ADR-0021 punt 5). S-P3-655: terugkeerpad na inloggen volgens §4.1. webdeel; Android-terugkeerpad volgt in een eigen stap.",
