@@ -17,6 +17,50 @@ async function login(page: Page) {
   await expect(page.getByRole("heading", { name: "Overzicht", level: 1 })).toBeVisible();
 }
 
+test("Pooltoken blijft gebonden aan het Hub-adres uit het open formulier", async ({ page }) => {
+  await login(page);
+  const me = await (await page.request.get("/api/v1/auth/me")).json();
+  const key = "system.pool_hub_url";
+  const secret = "hub:poolstatus";
+  const kiesAdres = async (value?: string) => {
+    const change = value ? { key, value } : { key, reset: true };
+    const res = await page.request.patch("/api/v1/settings/scoped", {
+      data: { changes: [change] }, headers: { "X-CSRF-Token": me.csrf_token },
+    });
+    expect(res.status()).toBe(200);
+  };
+  const dialog = page.getByRole("dialog");
+  const open = async (origin: string) => {
+    await page.getByRole("button", { name: "Geheim instellen" }).click();
+    await expect(dialog.getByText(/Gebruik hub:poolstatus/)).toBeVisible();
+    await dialog.getByLabel("Naam", { exact: true }).fill(secret);
+    await expect(dialog.getByText(origin, { exact: false })).toBeVisible();
+    await expect(dialog.getByLabel("Waarde")).toHaveValue("");
+  };
+  const opslaan = async (status: number) => {
+    await dialog.getByLabel("Waarde").fill("proefwaarde");
+    const antwoord = page.waitForResponse((r) =>
+      r.request().method() === "PUT" && decodeURIComponent(r.url()).endsWith("/secrets/" + secret));
+    await dialog.getByRole("button", { name: "Opslaan" }).click();
+    expect((await antwoord).status()).toBe(status);
+  };
+  const eerste = "https://hub.example.test";
+  const tweede = "https://andere-hub.example.test";
+  try {
+    await kiesAdres(eerste);
+    await page.goto("/instellingen/geheimen");
+    await open(eerste);
+    await kiesAdres(tweede);
+    await opslaan(409);
+    await expect(page.getByText(/Het gekozen Hub-adres is gewijzigd/)).toBeVisible();
+    await open(tweede);
+    await opslaan(200);
+    await expect(page.getByRole("row").filter({ hasText: secret })).toBeVisible();
+  } finally {
+    await kiesAdres();
+  }
+});
+
 test("Instellingen: eenvoudige weergave met Systeem & prestaties", async ({ page }) => {
   await page.setViewportSize({ width: 412, height: 900 });
   await page.route("**/api/v1/encoding/resources", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({

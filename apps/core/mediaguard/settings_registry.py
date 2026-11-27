@@ -193,11 +193,19 @@ class SettingsService:
         return value
 
     def reset(self, scope_type: str, scope_id: str, key: str) -> None:
+        from mediaguard import hub_pool
+
         self.registry.get_def(key)
-        self.db.execute(
-            "DELETE FROM settings_values WHERE scope_type=? AND scope_id=? AND key=?",
-            (scope_type, scope_id or "", key),
-        )
+        if key == hub_pool.URL_KEY and scope_type == "global" and not scope_id:
+            # Expliciet ontkoppelen verwijdert ook de ongebruikte pooladressen
+            # die oudere versies onder een afwijkend globaal scope-ID opsloegen.
+            self.db.execute(
+                "DELETE FROM settings_values WHERE scope_type='global' AND key=?", (key,))
+        else:
+            self.db.execute(
+                "DELETE FROM settings_values WHERE scope_type=? AND scope_id=? AND key=?",
+                (scope_type, scope_id or "", key),
+            )
         self.invalidate()
 
     def raw(self, scope_type: str, scope_id: str, key: str) -> Any | None:

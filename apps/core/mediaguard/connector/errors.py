@@ -115,6 +115,11 @@ def install(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation(request: Request, exc: RequestValidationError):
+        from mediaguard.api.settings import secret_put
+
+        if request.scope.get("endpoint") is secret_put:
+            return JSONResponse({"detail": [{"loc": err["loc"], "type": err["type"]}
+                                            for err in exc.errors()]}, status_code=422)
         if not is_connector(request.url.path):
             return await request_validation_exception_handler(request, exc)
         return failure(

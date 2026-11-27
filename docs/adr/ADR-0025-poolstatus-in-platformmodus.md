@@ -17,6 +17,15 @@ ontkoppelt de bron door het pooladres te wissen. Een ander pooladres vereist
 een nieuw ingevoerd token. MediaGuard bewaart het token uitsluitend in de
 beheerde, versleutelde geheimenopslag.
 
+Bij het invoeren toont *Geheimen* het gekozen adres. Opslaan vereist de revisie
+die bij dat adres werd getoond. De kluis controleert die revisie binnen de
+schrijftransactie. Na een adreswissel opent de beheerder het formulier opnieuw,
+ook als het oorspronkelijke adres opnieuw gekozen is.
+
+Een globaal pooladres heeft een leeg scope-ID. Staat een adres uit een oudere
+versie uitsluitend onder een afwijkend scope-ID, dan pauzeert MediaGuard het
+opruimen tot de beheerder het globale adres kiest of de instelling herstelt.
+
 ## Voorrang en geldigheid
 
 De eigen TrueNAS-lezing heeft voorrang. Een leesfout, een verouderde meting of

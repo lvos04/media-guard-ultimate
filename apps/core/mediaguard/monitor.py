@@ -314,9 +314,9 @@ def pool_item(ctx: AppContext) -> list[dict[str, Any]]:
 
     state = ctx.state_get(POOL_STATE, {}) or {}
     if not ctx.secrets.exists("truenas:apikey"):
-        if hub_pool.origin(ctx):
+        if hub_pool.configured(ctx):
             if (state.get("source") != "hub" or state.get("reachable") is not True
-                    or not ctx.secrets.has(hub_pool.SECRET)
+                    or not hub_pool.origin(ctx) or not ctx.secrets.has(hub_pool.SECRET)
                     or not state.get("request_id")
                     or state["request_id"] != ctx.state_get(POOL_REQUEST)
                     or not hub_pool.fresh(state.get("observed_at"), state.get("geldig_tot"))):

@@ -4010,6 +4010,24 @@
         "title": "PolicyPatch",
         "type": "object"
       },
+      "PoolBinding": {
+        "properties": {
+          "origin": {
+            "title": "Origin",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "origin",
+          "revision"
+        ],
+        "title": "PoolBinding",
+        "type": "object"
+      },
       "PostAuditBody": {
         "properties": {
           "hours": {
@@ -4852,6 +4870,18 @@
       },
       "SecretBody": {
         "properties": {
+          "pool_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Adresrevisie, vereist voor hub:poolstatus.",
+            "title": "Pool Revision"
+          },
           "value": {
             "maxLength": 8192,
             "minLength": 1,
@@ -25262,6 +25292,36 @@
           }
         },
         "summary": "Overrides",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/v1/settings/pool-hub-binding": {
+      "get": {
+        "description": "Gekozen adres en revisie voor het invoeren van een pooltoken.",
+        "operationId": "pool_hub_binding_api_v1_settings_pool_hub_binding_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PoolBinding"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Pool Hub Binding Api V1 Settings Pool Hub Binding Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pool Hub Binding",
         "tags": [
           "settings"
         ]

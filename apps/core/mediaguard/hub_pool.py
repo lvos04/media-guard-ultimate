@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
 
 from mediaguard.context import AppContext
 from mediaguard.db import loads
@@ -19,6 +20,11 @@ SECRET = "hub:poolstatus"
 PATH = "/api/v1/inventory/pools"
 MAX_AGE = timedelta(seconds=900)
 UNKNOWN = "De poolstatus van de Hub is onbekend. Een geldige poolmeting ontbreekt."
+
+
+class PoolBinding(BaseModel):
+    origin: str
+    revision: str
 
 
 def validate_url(value: str) -> str:
@@ -40,6 +46,27 @@ def origin(ctx: AppContext) -> str:
     if not isinstance(value, str):
         raise ValueError("Ongeldige instelling voor de Hub-poolbron.")
     return value
+
+
+def binding(ctx: AppContext) -> PoolBinding | None:
+    # Lees adres en revisie uit dezelfde SQLite-momentopname, ook bij twee beheerders.
+    row = ctx.db.fetch_one(
+        "SELECT s.value_json, r.revision FROM settings_values s CROSS JOIN hub_pool_revision r "
+        "WHERE s.scope_type='global' AND s.scope_id='' AND s.key=? AND r.id=1", (URL_KEY,))
+    if row is None or not (address := loads(row["value_json"])):
+        return None
+    return PoolBinding(origin=address, revision=row["revision"])
+
+
+def configured(ctx: AppContext) -> bool:
+    # Een oudere versie accepteerde globale pooladressen met een scope-ID. Pauzeer
+    # ook dan, maar gebruik uitsluitend het echte globale adres voor netwerkverkeer.
+    row = ctx.db.fetch_one(
+        "SELECT COALESCE((SELECT value_json <> '\"\"' FROM settings_values "
+        "WHERE scope_type='global' AND scope_id='' AND key=?), "
+        "EXISTS (SELECT 1 FROM settings_values WHERE scope_type='global' AND scope_id>'' "
+        "AND key=? AND value_json <> '\"\"'))", (URL_KEY, URL_KEY))
+    return bool(row[0])
 
 
 def fresh(observed_at: Any, valid_until: Any) -> bool:
@@ -100,7 +127,7 @@ async def read(ctx: AppContext) -> dict[str, Any] | None:
     with ctx.db.transaction():
         base = origin(ctx)
         if not base:
-            return None
+            return unknown() if configured(ctx) else None
         token = ctx.secrets.get(SECRET)
     if not token:
         return unknown()

@@ -152,6 +152,8 @@ def patch_scoped(body: ScopedPatch, principal: Principal = Depends(require_opera
         check_change(principal.role, change.key, d.label_nl)
         if change.scope_type not in d.scopes:
             raise HTTPException(422, f"{change.key} kan niet op scope '{change.scope_type}'")
+        if change.scope_type == "global" and change.scope_id:
+            raise HTTPException(422, "Laat het scope-ID leeg bij een globale instelling.")
         if not change.reset:
             try:
                 d.validate(change.value)
@@ -222,7 +224,17 @@ def search(q: str = Query(min_length=1), _: Principal = Depends(require_viewer),
 
 
 class SecretBody(BaseModel):
-    value: str = Field(min_length=1, max_length=8192)
+    value: str = Field(min_length=1, max_length=8192, repr=False)
+    pool_revision: str | None = Field(
+        None, description="Adresrevisie, vereist voor hub:poolstatus.")
+
+
+@router.get("/pool-hub-binding")
+def pool_hub_binding(response: Response, _: Principal = Depends(require_admin),
+                     ctx: AppContext = Depends(get_app_context)) -> hub_pool.PoolBinding | None:
+    """Gekozen adres en revisie voor het invoeren van een pooltoken."""
+    response.headers["Cache-Control"] = "no-store"
+    return hub_pool.binding(ctx)
 
 
 ALLOWED_SECRET_PREFIXES = ("instance:", "source:", "seerr:", "ai:", "truenas:", "notify:",
@@ -261,8 +273,12 @@ def secret_put(name: str, body: SecretBody, principal: Principal = Depends(requi
     if name != hub_pool.SECRET and not name.startswith(ALLOWED_SECRET_PREFIXES):
         raise HTTPException(422, "Onbekende geheimnaam")
     with ctx.db.transaction():
-        if name == hub_pool.SECRET and not hub_pool.origin(ctx):
-            raise HTTPException(422, "Kies eerst het HTTPS-adres voor de poolstatus.")
+        if name == hub_pool.SECRET:
+            binding = hub_pool.binding(ctx)
+            if binding is None and body.pool_revision is None:
+                raise HTTPException(422, "Kies eerst het HTTPS-adres voor de poolstatus.")
+            if binding is None or body.pool_revision != binding.revision:
+                raise HTTPException(409, "Open het formulier opnieuw en controleer het Hub-adres.")
         ctx.secrets.set(name, body.value, principal.actor)
     audit(ctx.db, actor=principal.actor, action="secret.set", target_type="secret",
           target_id=name)

@@ -350,7 +350,7 @@ def _start_pool_request(ctx: AppContext, *, skip_unconfigured: bool = False) -> 
     _revoke_pool_request(ctx)
     try:
         if (skip_unconfigured and not ctx.secrets.exists("truenas:apikey")
-                and not hub_pool.origin(ctx) and not ctx.state_get(POOL_STATE)):
+                and not hub_pool.configured(ctx) and not ctx.state_get(POOL_STATE)):
             vote = ctx.services.get(pool_workers.SERVICE)
             if _DISCONNECTED in ctx.services or (vote is not None and vote.ready is None):
                 with ctx.db.startup_lock():
@@ -406,7 +406,7 @@ async def _measure_pool(ctx: AppContext) -> tuple[dict[str, Any] | None, dict[st
         if health is None:
             if not ctx.secrets.exists("truenas:apikey"):
                 health = await hub_pool.read(ctx)
-            elif hub_pool.origin(ctx):
+            elif hub_pool.configured(ctx):
                 health = {"ok": False, "pools": [],
                           "error_nl": "De directe poolstatus is onbekend."}
     except BaseException:  # ook bij annulering vervalt deze meetopdracht
@@ -490,7 +490,7 @@ def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> s
         if vote is not None and vote.unregistered:
             return unknown_worker
         direct = ctx.secrets.exists("truenas:apikey")
-        via_hub = not direct and bool(hub_pool.origin(ctx))
+        via_hub = not direct and hub_pool.configured(ctx)
         if via_hub:
             unknown = hub_pool.UNKNOWN
         if not direct and not via_hub:
@@ -510,7 +510,7 @@ def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> s
             config = SettingsService(ctx.db, ctx.registry)
             available = ctx.secrets.get("truenas:apikey") and config.value("recovery.truenas_url")
         else:
-            available = ctx.secrets.has(hub_pool.SECRET)
+            available = hub_pool.origin(ctx) and ctx.secrets.has(hub_pool.SECRET)
         if not available:
             _revoke_pool_request(ctx)
             return unknown
@@ -562,7 +562,7 @@ async def storage_forecast(_: Principal = Depends(require_viewer),
         health = None
         if ctx.secrets.exists("truenas:apikey"):
             health = {"ok": False, "pools": [], "error_nl": "Geen geldige poolmeting beschikbaar"}
-        elif hub_pool.origin(ctx):
+        elif hub_pool.configured(ctx):
             health = hub_pool.unknown()
     data = forecast(ctx)
     data["truenas"] = health

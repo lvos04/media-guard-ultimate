@@ -1,17 +1,20 @@
 "use client";
 
 import { KeyRound, Lock, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { DangerDialog } from "@/components/mg/domain";
 import { Button, Card, Field, InlineState, Modal, StatusChip } from "@/components/mg/primitives";
 import { ResourceView, StateView } from "@/components/mg/states";
 import { useToast } from "@/components/mg/toast";
-import { api } from "@/lib/api/client";
+import { api, ApiError } from "@/lib/api/client";
 import type { SecretRow } from "@/lib/api/contracts";
 import { useResource } from "@/lib/api/hooks";
 import { useI18n } from "@/lib/i18n";
 import { useSession } from "@/lib/session";
+
+const POOL_SECRET = "hub:poolstatus";
+type PoolBinding = { origin: string; revision: string };
 
 export default function SecretsPage() {
   const { t, dateTime } = useI18n();
@@ -24,22 +27,58 @@ export default function SecretsPage() {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [binding, setBinding] = useState<PoolBinding | null>();
+  const target = editing?.fixed ? editing.name : name.trim();
+  const isPool = editing !== null && target === POOL_SECRET;
+
+  useEffect(() => {
+    if (!isPool) return;
+    const controller = new AbortController();
+    // Houd de getoonde keuze vast zolang de beheerder deze waarde invoert.
+    api.get<PoolBinding | null>("/settings/pool-hub-binding", undefined, controller.signal)
+      .then((chosen) => { if (!controller.signal.aborted) setBinding(chosen); })
+      .catch((e: unknown) => {
+        if (!controller.signal.aborted) setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => controller.abort();
+  }, [isPool]);
 
   if (!can("admin")) return <InlineState tone="warning">{t("users.adminOnly")}</InlineState>;
 
+  const closeEditor = () => {
+    setEditing(null);
+    setName("");
+    setValue("");
+    setBinding(undefined);
+    setError(null);
+  };
+
+  const rename = (next: string) => {
+    if ((next.trim() === POOL_SECRET) !== isPool) {
+      setValue("");
+      setBinding(undefined);
+      setError(null);
+    }
+    setName(next);
+  };
+
   const save = async () => {
-    const target = editing?.fixed ? editing.name : name.trim();
+    if (isPool && !binding) return;
     setPending(true);
     setError(null);
     try {
-      await api.put(`/settings/secrets/${encodeURIComponent(target)}`, { value });
+      const body = isPool && binding ? { value, pool_revision: binding.revision } : { value };
+      await api.put(`/settings/secrets/${encodeURIComponent(target)}`, body);
       toast.push("success", t("secrets.saved", { name: target }));
-      setEditing(null);
-      setValue("");
-      setName("");
+      closeEditor();
       await secrets.reload();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (isPool && e instanceof ApiError && e.status === 409) {
+        closeEditor();
+        toast.push("danger", t("secrets.poolChanged"));
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       setPending(false);
     }
@@ -97,12 +136,15 @@ export default function SecretsPage() {
         )}
       </ResourceView>
 
-      <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={editing?.fixed ? `${t("secrets.replace")} · ${editing.name}` : t("secrets.add")}
-        footer={<><Button onClick={() => setEditing(null)}>{t("action.cancel")}</Button><Button variant="primary" pending={pending} disabled={!value || (!editing?.fixed && !name.trim())} onClick={() => void save()}>{t("action.save")}</Button></>}>
+      <Modal open={Boolean(editing)} onClose={() => { if (!pending) closeEditor(); }} title={editing?.fixed ? `${t("secrets.replace")} · ${editing.name}` : t("secrets.add")}
+        footer={<><Button disabled={pending} onClick={closeEditor}>{t("action.cancel")}</Button><Button variant="primary" pending={pending} disabled={!value || !target || (isPool && !binding)} onClick={() => void save()}>{t("action.save")}</Button></>}>
         <div className="stack">
           {error ? <InlineState tone="danger" role="alert">{error}</InlineState> : null}
-          {!editing?.fixed ? <Field label={t("secrets.name")} htmlFor="secret-name" hint={t("secrets.nameHint")}><input id="secret-name" className="input mono" value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" placeholder="seerr:api_key" /></Field> : null}
-          <Field label={t("secrets.value")} htmlFor="secret-value"><input id="secret-value" type="password" className="input" value={value} onChange={(e) => setValue(e.target.value)} autoComplete="off" /></Field>
+          {!editing?.fixed ? <Field label={t("secrets.name")} htmlFor="secret-name" hint={t("secrets.nameHint")}><input id="secret-name" className="input mono" value={name} onChange={(e) => rename(e.target.value)} autoComplete="off" placeholder="seerr:api_key" /></Field> : null}
+          {isPool && !error ? <InlineState tone={binding === null ? "warning" : "info"}>
+            {binding ? t("secrets.poolTarget", { origin: binding.origin }) : binding === null ? t("secrets.poolMissing") : t("state.loading")}
+          </InlineState> : null}
+          <Field label={t("secrets.value")} htmlFor="secret-value"><input id="secret-value" type="password" className="input" disabled={isPool && !binding} value={value} onChange={(e) => setValue(e.target.value)} autoComplete="off" /></Field>
         </div>
       </Modal>
 

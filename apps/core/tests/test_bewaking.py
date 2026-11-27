@@ -695,6 +695,147 @@ def test_poolhub_ontbrekend_recht_en_directe_bron(ctx, poolhub):
     assert "onbekend" in storage.pool_cleanup_pause_reason(ctx) and poolhub["calls"] == 0
 
 
+@pytest.mark.parametrize("revisie", [None, "vervallen"])
+def test_poolhub_weigert_opslaan_zonder_actuele_revisie(client, ctx, revisie):
+    from mediaguard import hub_pool
+
+    ctx.config.set("global", "", hub_pool.URL_KEY, "https://hub.example.test", "test")
+    ctx.secrets.set(hub_pool.SECRET, "proefwaarde", "test")
+    ctx.config.set("global", "", hub_pool.URL_KEY, "https://andere-hub.example.test", "test")
+    assert not ctx.secrets.exists(hub_pool.SECRET)
+    body = {"value": "proefwaarde"}
+    if revisie is not None:
+        body["pool_revision"] = revisie
+    answer = client.put("/api/v1/settings/secrets/" + hub_pool.SECRET, json=body)
+    assert answer.status_code == 409
+    assert not ctx.secrets.exists(hub_pool.SECRET)
+
+
+@pytest.mark.parametrize("invoer,soort", [("lijst", "string_type"), ("lang", "string_too_long")])
+def test_poolhub_validatiefout_schermt_geheim_af(client, ctx, caplog, invoer, soort):
+    from mediaguard import hub_pool
+
+    caplog.set_level("DEBUG")
+    marker = "proefwaarde"
+    value = [marker] if invoer == "lijst" else marker * 1000
+    answer = client.put("/api/v1/settings/secrets/" + hub_pool.SECRET, json={"value": value})
+    assert answer.status_code == 422
+    assert marker not in answer.text and marker not in caplog.text
+    assert answer.json() == {"detail": [{"loc": ["body", "value"], "type": soort}]}
+    assert not ctx.secrets.exists(hub_pool.SECRET)
+
+
+@pytest.mark.parametrize("reset", [False, True])
+def test_poolhub_globale_scope_weigert_nevenrij_voor_opslag(client, ctx, reset):
+    from mediaguard import hub_pool
+    from mediaguard.storage_forecast import pool_cleanup_pause_reason
+
+    url = "https://hub.example.test"
+    geldig = {"key": hub_pool.URL_KEY, "value": url}
+    ongeldig = {**geldig, "scope_type": "global", "scope_id": "ander", "reset": reset}
+    pad = "/api/v1/settings/scoped"
+    assert client.patch(pad, json={"changes": [geldig, ongeldig]}).status_code == 422
+    assert ctx.config.raw("global", "ander", hub_pool.URL_KEY) is None
+    assert hub_pool.origin(ctx) == ""
+    assert client.patch(pad, json={"changes": [geldig]}).status_code == 200
+    assert hub_pool.origin(ctx) == url
+    for quarantaine in (False, True):
+        assert pool_cleanup_pause_reason(ctx, quarantine=quarantaine) == hub_pool.UNKNOWN
+
+
+def test_poolhub_oude_nevenrij_pauzeert_tot_adreskeuze(client, ctx, monkeypatch):
+    from mediaguard import hub_pool
+    from mediaguard import storage_forecast as storage
+
+    def geen_netwerk(*args):
+        pytest.fail("Een oud scope-ID mag geen netwerkbestemming kiezen")
+
+    monkeypatch.setattr(hub_pool, "_address", geen_netwerk)
+    ctx.config.set("global", "ander", hub_pool.URL_KEY, "https://hub.example.test", "test")
+    assert not hub_pool.origin(ctx)
+    assert storage.pool_cleanup_pause_reason(ctx) == hub_pool.UNKNOWN
+    assert storage.pool_cleanup_pause_reason(ctx, quarantine=True) == hub_pool.UNKNOWN
+    assert not asyncio.run(storage.refresh_pool(ctx))["reachable"]
+    assert monitor.pool_item(ctx)[0]["key"] == "storage.pool_unknown"
+    assert client.get("/api/v1/settings/pool-hub-binding").json() is None
+    client.patch("/api/v1/settings/scoped", json={"changes": [
+        {"key": hub_pool.URL_KEY, "reset": True}]}).raise_for_status()
+    assert storage.pool_cleanup_pause_reason(ctx) is None
+
+
+def test_poolhub_adreswisseling_trekt_open_formulier_in(client, ctx):
+    from mediaguard import hub_pool
+
+    adres = "https://hub.example.test"
+    ander = "https://andere-hub.example.test"
+    pad = "/api/v1/settings/secrets/" + hub_pool.SECRET
+
+    def kies(url):
+        change = {"key": hub_pool.URL_KEY, "value": url}
+        client.patch("/api/v1/settings/scoped", json={"changes": [change]}).raise_for_status()
+
+    def binding():
+        antwoord = client.get("/api/v1/settings/pool-hub-binding")
+        antwoord.raise_for_status()
+        return antwoord.json()
+
+    kies(adres)
+    gekozen = binding()
+    assert gekozen["origin"] == adres
+    verzoek = {"value": "proefwaarde", "pool_revision": gekozen["revision"]}
+    client.put(pad, json=verzoek).raise_for_status()
+    kies(adres)
+    assert binding() == gekozen and ctx.secrets.has(hub_pool.SECRET)
+
+    def controleer_vervallen(verwacht):
+        actueel = binding()
+        assert actueel["origin"] == verwacht and actueel["revision"] != gekozen["revision"]
+        assert client.put(pad, json=verzoek).status_code == 409
+        assert not ctx.secrets.exists(hub_pool.SECRET)
+
+    kies(ander)
+    controleer_vervallen(ander)
+    client.patch("/api/v1/settings/scoped", json={"changes": [
+        {"key": hub_pool.URL_KEY, "reset": True}]}).raise_for_status()
+    assert binding() is None
+    kies(adres)
+    controleer_vervallen(adres)
+    nieuw = {**verzoek, "pool_revision": binding()["revision"]}
+    assert client.put(pad, json=nieuw).status_code == 200
+    assert ctx.secrets.has(hub_pool.SECRET)
+
+
+def test_poolhub_upgrade_bewaart_bestaande_binding(settings, tmp_path, monkeypatch):
+    from mediaguard import db, hub_pool
+    from mediaguard.api.settings import register_settings
+    from mediaguard.app import build_context
+
+    oud_schema = tmp_path / "schema-tot-158"
+    oud_schema.mkdir()
+    for script in db.MIGRATIONS_DIR.glob("*.sql"):
+        if script.name < "159":
+            (oud_schema / script.name).symlink_to(script)
+    adres = "https://hub.example.test"
+    geheimrij = "SELECT * FROM secrets WHERE name=?"
+    with monkeypatch.context() as oud:
+        oud.setattr(db, "MIGRATIONS_DIR", oud_schema)
+        ctx = build_context(settings)
+        try:
+            register_settings()
+            ctx.config.set("global", "", hub_pool.URL_KEY, adres, "test")
+            ctx.secrets.set(hub_pool.SECRET, "proefwaarde", "test")
+            voor = tuple(ctx.db.fetch_one(geheimrij, (hub_pool.SECRET,)))
+        finally:
+            ctx.db.close()
+    nieuw = build_context(settings)
+    try:
+        assert hub_pool.binding(nieuw).origin == adres
+        assert tuple(nieuw.db.fetch_one(geheimrij, (hub_pool.SECRET,))) == voor
+        assert nieuw.secrets.get(hub_pool.SECRET) == "proefwaarde"
+    finally:
+        nieuw.db.close()
+
+
 def test_poolhub_beheer_via_bestaande_instellingen(client, viewer_client, anon_client, ctx):
     from mediaguard import hub_pool
 
@@ -714,7 +855,11 @@ def test_poolhub_beheer_via_bestaande_instellingen(client, viewer_client, anon_c
     assert set_url(anon_client, "https://hub.example.test").status_code == 403
     assert set_url(client, "https://hub.example.test").status_code == 200
     assert viewer_client.put(secret, json=value).status_code == 403
-    stored = client.put(secret, json=value)
+    binding_path = "/api/v1/settings/pool-hub-binding"
+    assert viewer_client.get(binding_path).status_code == 403
+    binding = client.get(binding_path)
+    assert binding.headers["Cache-Control"] == "no-store"
+    stored = client.put(secret, json={**value, "pool_revision": binding.json()["revision"]})
     assert stored.status_code == 200 and stored.json() == {"name": hub_pool.SECRET, "is_set": True}
     listing = client.get("/api/v1/settings/secrets")
     assert listing.status_code == 200 and value["value"] not in listing.text
