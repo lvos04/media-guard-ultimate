@@ -198,6 +198,7 @@ export default function QuarantinePage() {
 
   const bulkPreview = del?.kind === "bulk" ? del.preview : null;
   const bulkCount = bulkPreview ? (del?.force ? bulkPreview.count + bulkPreview.unverified.length : bulkPreview.count) : 0;
+  const nothingDeletable = bulkPreview?.count === 0 && bulkPreview.unverified.length === 0;
 
   return (
     <>
@@ -314,7 +315,13 @@ export default function QuarantinePage() {
         confirmWord={(restore?.length ?? 0) > 1 ? t("quarantine.confirmWord") : undefined}
         confirmLabel={t("quarantine.restoreConfirm", { count: num(restore?.length ?? 0) })} onConfirm={() => void doRestore()} />
 
-      <DangerDialog open={Boolean(del)} onClose={() => setDel(null)} icon={Trash2} pending={delPending}
+      <Modal open={nothingDeletable} onClose={() => setDel(null)} icon={ShieldCheck}
+        title={t("quarantine.noneDeletable")}
+        description={t(bulkPreview?.kept_only_original?.length ? "quarantine.onlyCopyKept" : "quarantine.selectionKept")}
+        footer={<Button data-autofocus onClick={() => setDel(null)}>{t("action.close")}</Button>}>
+        {bulkPreview?.blocked.length ? <p>{t("quarantine.blockedValue", { count: num(bulkPreview.blocked.length) })}</p> : null}
+      </Modal>
+      <DangerDialog open={Boolean(del) && !nothingDeletable} onClose={() => setDel(null)} icon={Trash2} pending={delPending}
         key={del ? `${del.kind}-${del.force}` : "none"}
         title={del?.kind === "single" ? t("quarantine.deleteTitle", { name: del.item.original_path.split("/").pop() ?? "" }) : t("quarantine.bulkDeleteTitle", { count: num(bulkCount) })}
         description={del?.force ? t("quarantine.deleteUnverifiedBody") : t("quarantine.deleteBody")}

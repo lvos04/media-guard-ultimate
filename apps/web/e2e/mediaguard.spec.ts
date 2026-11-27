@@ -478,6 +478,30 @@ test.describe("quarantaine (opslag schaars)", () => {
     await expect(page.locator('[data-setting="quarantine.retention_days"]').getByRole("textbox")).toBeEnabled();
   });
 
+  test("de enige kopie in quarantaine blijft bewaard bij een lege verwijderselectie", async ({ page }) => {
+    const { seedQuarantine } = await import("./seed");
+    const [, enigeKopie] = seedQuarantine();
+    await login(page);
+    await page.goto("/quarantaine");
+    await page.getByTestId(`q-item-${enigeKopie}`).getByRole("checkbox").check();
+    const bevestigingen: boolean[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/quarantine/bulk-delete") {
+        bevestigingen.push(request.postDataJSON().confirm);
+      }
+    });
+    await page.getByTestId("bulk-delete").click();
+    const uitleg = page.getByRole("dialog", { name: "Geen bestanden om te verwijderen" });
+    await expect(uitleg).toContainText("enige kopie");
+    await expect(uitleg.getByRole("textbox")).toHaveCount(0);
+    await expect(uitleg.getByRole("button")).toHaveCount(1);
+    await uitleg.screenshot({ path: test.info().outputPath("beschermd-origineel.png") });
+    await uitleg.getByRole("button", { name: "Sluiten" }).click();
+    await expect(uitleg).toHaveCount(0);
+    await expect(page.getByTestId(`q-item-${enigeKopie}`)).toBeVisible();
+    expect(bevestigingen).toEqual([false]);
+  });
+
   test("verwijderen: preview, getypte bevestiging, extra waarschuwing zonder geslaagde controle", async ({ page }) => {
     const { seedQuarantine } = await import("./seed");
     const [verified, unchecked] = seedQuarantine();
