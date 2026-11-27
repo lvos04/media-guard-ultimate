@@ -34,7 +34,7 @@ from mediaguard.auth import Principal, require_operator, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import loads, utcnow
 from mediaguard.read_observation import observation_read
-from mediaguard.settings_registry import REGISTRY, SettingDef
+from mediaguard.settings_registry import REGISTRY, SettingDef, SettingsService
 
 LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/monitor", tags=["monitor"])
@@ -307,33 +307,46 @@ def pool_item(ctx: AppContext) -> list[dict[str, Any]]:
     from mediaguard.storage_forecast import (
         POOL_REQUEST,
         POOL_STATE,
+        _fresh_for_cleanup,
         degraded_pools,
         pool_names_nl,
         pool_observed_at,
     )
 
     state = ctx.state_get(POOL_STATE, {}) or {}
-    if not ctx.secrets.exists("truenas:apikey"):
-        if hub_pool.configured(ctx):
-            if (state.get("source") != "hub" or state.get("reachable") is not True
-                    or not hub_pool.origin(ctx) or not ctx.secrets.has(hub_pool.SECRET)
-                    or not state.get("request_id")
-                    or state["request_id"] != ctx.state_get(POOL_REQUEST)
-                    or not hub_pool.fresh(state.get("observed_at"), state.get("geldig_tot"))
-                    or not pool_workers.measurement_visible(ctx, state["request_id"])):
-                item = _item("storage.pool_unknown", "warning", "Poolstatus van de Hub onbekend",
-                             "Opruimen is gepauzeerd. Controleer de meting en het poolleesrecht.",
-                             "/systeem#opslag", push=True)
-                if observation_read.get():
-                    item["observed_at"] = (pool_observed_at(state)
-                                           if state.get("source") == "hub" else None)
-                    item["source_reachable"] = False
-                return [item]
-        elif state.get("source") == "hub":
-            return []
+    direct = ctx.secrets.exists("truenas:apikey")
+    via_hub = not direct and hub_pool.configured(ctx)
+    warnings = []
+    if direct or via_hub:
+        matching = (state.get("source") == "hub") == via_hub
+        token = observation_read.set(True)
+        try:
+            address = (hub_pool.origin(ctx) if via_hub else
+                       SettingsService(ctx.db, ctx.registry).value("recovery.truenas_url"))
+            secret_name = hub_pool.SECRET if via_hub else "truenas:apikey"
+            available = address and ctx.secrets.has(secret_name)
+        finally:
+            observation_read.reset(token)
+        request_id = state.get("request_id")
+        if (not matching or state.get("reachable") is not True or not available
+                or not request_id or request_id != ctx.state_get(POOL_REQUEST)
+                or not _fresh_for_cleanup(state)
+                or not pool_workers.measurement_visible(ctx, request_id)):
+            title = "Poolstatus van de Hub onbekend" if via_hub else "Directe poolstatus onbekend"
+            item = _item("storage.pool_unknown", "warning", title,
+                         "Opruimen is gepauzeerd. Controleer de meting en het poolleesrecht.",
+                         "/systeem#opslag", push=True)
+            if observation_read.get():
+                item["observed_at"] = pool_observed_at(state) if matching else None
+                item["source_reachable"] = False
+            warnings.append(item)
+            if via_hub or not matching:
+                return warnings
+    elif state.get("source") == "hub":
+        return []
     degraded = degraded_pools(state)
     if not degraded:
-        return []
+        return warnings
     item = _item(
         "storage.pool_degraded", "error",
         "TrueNAS-pool niet gezond: " + pool_names_nl(degraded),
@@ -343,7 +356,7 @@ def pool_item(ctx: AppContext) -> list[dict[str, Any]]:
     if observation_read.get():
         item["observed_at"] = pool_observed_at(state)
         item["source_reachable"] = state.get("reachable") is True
-    return [item]
+    return [*warnings, item]
 
 
 def attention_items(ctx: AppContext) -> list[dict[str, Any]]:

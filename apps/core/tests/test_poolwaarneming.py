@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 import pytest
+from test_bewaking import _truenas
 
 from mediaguard import attention, hub_pool, monitor
 from mediaguard import storage_forecast as storage
@@ -40,6 +41,38 @@ def test_poolwaarschuwing_na_herstart_tot_nieuwe_meting(ctx, settings, poolhub):
         assert _bewaarstand(nieuw) == voor
         assert poolhub["calls"] == 2
         assert storage.pool_cleanup_pause_reason(nieuw) is None
+    finally:
+        asyncio.run(storage.shutdown(nieuw))
+        nieuw.db.close()
+
+
+def test_overgang_naar_directe_poolbron_gebruikt_eigen_meettoestemming(
+        client, ctx, settings, poolhub, monkeypatch):
+    async def bronnen(context):
+        return monitor.pool_item(context), True
+
+    monkeypatch.setattr(attention, "collect_observation", bronnen)
+    gezond = [{"name": "proef", "status": "ONLINE", "healthy": True, "scan": {}}]
+    url = "/connector/v1/items?type=incidents"
+    asyncio.run(storage.refresh_pool(ctx))
+    assert client.get(url).json()["status"] == "ok"
+    _truenas(ctx, gezond)
+    assert _waarschuwing(ctx)
+    assert client.get(url).json()["status"] == "unknown"
+    assert storage.pool_cleanup_pause_reason(ctx)
+    asyncio.run(storage.refresh_pool(ctx))
+    assert not _waarschuwing(ctx)
+    assert client.get(url).json()["status"] == "ok"
+    asyncio.run(storage.shutdown(ctx))
+    nieuw = create_app(settings).state.ctx
+    try:
+        asyncio.run(storage.startup(nieuw))
+        assert _waarschuwing(nieuw)
+        nieuw.services["truenas_transport"] = ctx.services["truenas_transport"]
+        asyncio.run(storage.refresh_pool(nieuw))
+        assert not _waarschuwing(nieuw)
+        assert storage.pool_cleanup_pause_reason(nieuw) is None
+        assert poolhub["calls"] == 1
     finally:
         asyncio.run(storage.shutdown(nieuw))
         nieuw.db.close()
