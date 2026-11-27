@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORM = "linux/amd64"
 PIN = re.compile(r"sha256:[a-f0-9]{64}")
+MAKER = re.compile(r"(?:Tool|Person|Organization):\s*\S.*")
 
 
 def tag_bestaat(ref):
@@ -47,9 +48,11 @@ def controleer_spdx(ref, output):
     sbom = json.loads(output.read_text(encoding="utf-8"))
     try:
         info = sbom["creationInfo"]
+        makers = info["creators"]
         if (sbom["spdxVersion"] != "SPDX-2.3" or sbom["SPDXID"] != "SPDXRef-DOCUMENT"
                 or sbom["dataLicense"] != "CC0-1.0" or not sbom["name"]
-                or not sbom["documentNamespace"] or not info["creators"]
+                or not sbom["documentNamespace"] or not isinstance(makers, list) or not makers
+                or not all(isinstance(m, str) and MAKER.fullmatch(m) for m in makers)
                 or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", info["created"])):
             raise fout
         packages = {p["SPDXID"]: p for p in sbom["packages"]}
@@ -74,10 +77,15 @@ def controleer_spdx(ref, output):
             raise fout
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(str(fout)) from exc
+    return sbom
 
+
+def normaliseer_spdx(ref, output):
+    sbom = controleer_spdx(ref, output)
     epoch = int(subprocess.check_output(["git", "show", "-s", "--format=%ct", "HEAD"],
                                         cwd=ROOT, text=True))
-    info["created"] = datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    created = datetime.fromtimestamp(epoch, UTC)
+    sbom["creationInfo"]["created"] = created.strftime("%Y-%m-%dT%H:%M:%SZ")
     del sbom["documentNamespace"]
     inhoud = json.dumps(sbom, sort_keys=True, separators=(",", ":")).encode()
     sbom["documentNamespace"] = "https://spdx.org/spdxdocs/mediaguard-" + hashlib.sha256(inhoud).hexdigest()
@@ -89,7 +97,7 @@ def maak_sbom(syft, ref, output):
         [syft, "scan", f"registry:{ref}", "--platform", PLATFORM, "-o", f"spdx-json={output}"],
         check=True,
     )
-    controleer_spdx(ref, output)
+    normaliseer_spdx(ref, output)
 
 
 def image_tag(image, registry_prefix):
@@ -114,6 +122,8 @@ def controleer_bouw(manifest, map_, aio, output, registry_prefix):
     bewijs = json.loads((output / "digests.json").read_text())
     if bewijs != {"version": manifest["version"], "platform": PLATFORM, "images": verwacht}:
         raise ValueError("Releasebewijs wijkt af van de bouwdigests.")
+    for image in verwacht.values():
+        controleer_spdx(f"{image['image']}@{image['digest']}", output / image["sbom"])
 
 
 def verzamel(manifest, candidate, output, syft, registry_prefix=None, *, pins=None):
@@ -143,7 +153,7 @@ def bewijs_custom_app(manifest, pin, output):
     if not PIN.fullmatch(pin) or digest(f"{pakket}@{pin}") != pin:
         raise ValueError("De geteste digest kon niet in het register worden bevestigd.")
     sbom = "aio.spdx.json"
-    controleer_spdx(f"{pakket}@{pin}", output / sbom)
+    normaliseer_spdx(f"{pakket}@{pin}", output / sbom)
     bewijs = {"app_id": "mediaguard", "version": manifest["version"], "platform": PLATFORM,
               "image": pakket, "tag": tag, "digest": pin,
               "images": {"aio": {"image": f"{pakket}:{tag}", "digest": pin, "sbom": sbom}}}

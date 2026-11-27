@@ -1758,23 +1758,24 @@ def _later_cycle(previous, current) -> bool:
             and current[2] != previous[2])
 
 
-def _alleen_herstelmelding(db: sqlite3.Connection, oud: dict, nieuw: dict, aanvraag: dict) -> bool:
+def _checkpoint_met_herstelmelding(db: sqlite3.Connection, oud: dict, nieuw: dict,
+                                  aanvraag: dict) -> bool:
     voor = oud["tabellen"].get("audit_events")
     na = nieuw["tabellen"].get("audit_events")
-    if not voor or not na or na["rijen"] != voor["rijen"] + 1:
+    if not voor or not na or na["rijen"] <= voor["rijen"]:
         return False
-    nummer = na["hoogste"]
-    if nummer is None or (voor["hoogste"] is not None and nummer <= voor["hoogste"]):
-        return False
+    # Alleen de ontvangst van deze aanvraag mag een nieuwe reeks auditregels beginnen.
+    # De hash van de hele database vóór die reeks bewijst ook de eerdere verwijderingen.
     # Eerdere versies schreven de ontvangstregel zonder correlatie. Toets daarbij ook de tijd.
     melding = db.execute(
-        "SELECT 1 FROM audit_events WHERE id=? AND action='backup.rollback_stage' "
+        "SELECT id FROM audit_events WHERE id=(SELECT min(id) FROM audit_events "
+        "WHERE ? IS NULL OR id>?) AND action='backup.rollback_stage' "
         "AND target_type='backup' AND target_id=? AND actor=? AND (correlation_id=? "
         "OR (correlation_id IS NULL AND julianday(ts)>=julianday(?)))",
-        (nummer, aanvraag.get("set"), aanvraag.get("by"), aanvraag.get("voorbereiding"),
-         aanvraag.get("requested_at")),
+        (voor["hoogste"], voor["hoogste"], aanvraag.get("set"), aanvraag.get("by"),
+         aanvraag.get("voorbereiding"), aanvraag.get("requested_at")),
     ).fetchone()
-    return bool(melding) and _logical_state(db, zonder_auditregel=nummer) == oud
+    return melding is not None and _logical_state(db, audit_vanaf_weglaten=melding[0]) == oud
 
 
 def _verify_successor(core: Path, work: Path, old: dict, new: dict,
@@ -1790,7 +1791,7 @@ def _verify_successor(core: Path, work: Path, old: dict, new: dict,
         if (aanvraag and old["wal_frames"] and not wal.frames
                 and old["bestand"] == f"{core.name}/mediaguard.db"
                 and old.get("hoofdbestand_id") == new["hoofdbestand_id"]
-                and _alleen_herstelmelding(current, old["stand"], new["stand"], aanvraag)):
+                and _checkpoint_met_herstelmelding(current, old["stand"], new["stand"], aanvraag)):
             return
         # Een oudere schrijver kan zijn laatste taakwijziging al in het hoofdbestand
         # hebben vastgelegd. Vergelijk dan elke taak op identiteit en eigen voortgang.
@@ -1927,7 +1928,7 @@ def _update_entries(core: Path, archive: Path) -> dict[str, tuple[Path, int, str
     return entries
 
 
-def _logical_state(conn: sqlite3.Connection, *, zonder_auditregel: int | None = None) -> dict:
+def _logical_state(conn: sqlite3.Connection, *, audit_vanaf_weglaten: int | None = None) -> dict:
     """Tel de rijen en hun hoogste rij-/eventnummer in dezelfde stand als de inhoudshash."""
     digest = hashlib.sha256()
     tables_state = {}
@@ -1954,8 +1955,9 @@ def _logical_state(conn: sqlite3.Connection, *, zonder_auditregel: int | None = 
                 raise SetError("de rij-identiteit van de oorspronkelijke database is onbewezen")
             fields = rowid + ",*"
             highest = f"MAX({rowid})"
-        filter_ = " WHERE id<>?" if name == "audit_events" and zonder_auditregel is not None else ""
-        waarden = (zonder_auditregel,) if filter_ else ()
+        filter_ = (" WHERE id<?" if name == "audit_events" and audit_vanaf_weglaten is not None
+                   else "")
+        waarden = (audit_vanaf_weglaten,) if filter_ else ()
         count, position = conn.execute(
             f"SELECT COUNT(*), {highest} FROM {quoted}{filter_}", waarden  # noqa: S608
         ).fetchone()

@@ -288,7 +288,9 @@ async def test_cancel_not_marked_when_encoder_unreachable(client, ctx, fx):
 
 
 @pytest.mark.parametrize("meting", [0.82, None])
-async def test_annulering_koppelt_percentage_aan_meettijd(client, ctx, fx, monkeypatch, meting):
+@pytest.mark.parametrize("antwoord", ["running", "cancelled", "na_opvragen"])
+async def test_annulering_koppelt_percentage_aan_meettijd(client, ctx, fx, monkeypatch,
+                                                         meting, antwoord):
     fake, src = fx
     fake.polls_until_done = 99
     job_id = client.post("/api/v1/encoding/jobs", json=job_body(src)).json()["id"]
@@ -299,12 +301,21 @@ async def test_annulering_koppelt_percentage_aan_meettijd(client, ctx, fx, monke
     monkeypatch.setattr(enc, "utcnow", lambda: later)
 
     async def annuleren(self, nummer):
-        return {"status": "running", "progress": meting}
+        if antwoord == "na_opvragen":
+            return {"status": "running"}
+        return {"status": antwoord, **({"progress": meting} if meting is not None else {})}
 
     monkeypatch.setattr(EncoderClient, "cancel_job", annuleren)
     assert client.post(f"/api/v1/encoding/jobs/{job_id}/cancel").is_success
+    if antwoord == "na_opvragen":
+        async def opvragen(self, nummer):
+            return {"status": "cancelled", **({"progress": meting} if meting is not None else {})}
+
+        monkeypatch.setattr(EncoderClient, "get_job", opvragen)
+        await enc.sync_job(ctx, job_id)
     fake.unavailable = True
     stand = await enc.sync_job(ctx, job_id)
+    assert stand["status"] == ("running" if antwoord == "running" else "cancelled")
     assert (stand["progress"], stand["updated_at"]) == (
         (0.5, eerder) if meting is None else (meting, later))
 

@@ -61,10 +61,17 @@ def eerder_geverifieerd(database: Database, cache: Path, job: int) -> bool:
     if not result.exists():
         return False
     _bestand(result)
-    return database.fetch_one(
-        "SELECT 1 FROM verificatie v JOIN job j ON j.id=v.job_id "
-        "WHERE v.job_id=? AND v.geslaagd=1 AND j.bron_inode IS NOT NULL", (job,)
-    ) is not None
+    metingen = database.fetch_all(
+        "SELECT v.geslaagd,p.poging,p.hervat_sha256 FROM verificatie v JOIN job j ON j.id=v.job_id "
+        "LEFT JOIN verificatie_poging p ON p.job_id=j.id "
+        "WHERE v.job_id=? AND j.bron_inode IS NOT NULL",
+        (job,),
+    )
+    hashes = {m["hervat_sha256"] for m in metingen if m["hervat_sha256"]}
+    if hashes:
+        return file_sha256(result) in hashes
+    # Schema 028 kende alleen de laatste controle. Elke hervatting toetst de bytes opnieuw.
+    return bool(metingen and metingen[0]["geslaagd"] and all(m["poging"] is None for m in metingen))
 
 
 def heeft_oud_deel(cache: Path, percent: float | None) -> bool:
@@ -499,16 +506,7 @@ def _mux(args: list[str], state: Hervatpunt) -> list[str]:
     ]
 
 
-async def encode(
-    args: list[str],
-    source: Path,
-    job_id: int,
-    duration: float,
-    run: Callable[[list[str]], Coroutine[Any, Any, bool]],
-    vastgelegd: Callable[[float], None],
-    gpu: GpuKeuze | None = None,
-) -> bool:
-    cache = Path(args[-1]).parent
+def planbinding(args: list[str], source: Path, job_id: int) -> str:
     stat = source.stat()
     # Het live CPU-budget mag na een herstart een ander aantal threads toekennen.
     # De media-instellingen (codec, kwaliteit, filters, sporen) blijven gebonden.
@@ -522,7 +520,20 @@ async def encode(
         stat.st_ctime_ns,
         _mediaplan(args),
     ]
-    binding = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+
+async def encode(
+    args: list[str],
+    source: Path,
+    job_id: int,
+    duration: float,
+    run: Callable[[list[str]], Coroutine[Any, Any, bool]],
+    vastgelegd: Callable[[float], None],
+    gpu: GpuKeuze | None = None,
+) -> bool:
+    cache = Path(args[-1]).parent
+    binding = planbinding(args, source, job_id)
     state = await asyncio.to_thread(Hervatpunt.lees, cache)
     if state is None:
         state = Hervatpunt(cache / MAP, binding, duration, [], gpu=gpu)

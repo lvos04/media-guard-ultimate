@@ -657,6 +657,7 @@ async def cancel(ctx: AppContext, job_id: int, actor: str) -> dict[str, Any]:
         raise LookupError("Encodeerjob niet gevonden")
     if job["status"] in ("handed_off",):
         raise GateError("HANDED_OFF", "Vervanging loopt al; annuleren via herstel")
+    progress = {}
     if job["encoder_job_id"] and job["status"] not in TERMINAL_ENCODER:
         try:
             enc = await get_encoder_client(ctx).cancel_job(job["encoder_job_id"])
@@ -666,9 +667,9 @@ async def cancel(ctx: AppContext, job_id: int, actor: str) -> dict[str, Any]:
                 raise GateError("ENCODER_UNAVAILABLE",
                                 f"Annuleren bij de encoder mislukt: {exc}") from exc
             enc = {"status": "cancelled"}
+        progress = _measured_progress(enc)
         if str(enc.get("status") or "") not in ("cancelled", "failed", "rejected",
                                                 "skipped"):
-            progress = _measured_progress(enc)
             _update(ctx, job_id, touch=bool(progress), **progress,
                     error="Annuleren gevraagd; de encoder stopt de lopende stap")
             audit(ctx.db, actor=actor, action="encoding.cancel_requested",
@@ -678,7 +679,7 @@ async def cancel(ctx: AppContext, job_id: int, actor: str) -> dict[str, Any]:
     from mediaguard.encoding.autopilot import USER_CANCEL
 
     reason = USER_CANCEL if not actor.startswith("svc:") else "geannuleerd door MediaGuard"
-    _update(ctx, job_id, status="cancelled", error=reason)
+    _update(ctx, job_id, touch=bool(progress), **progress, status="cancelled", error=reason)
     audit(ctx.db, actor=actor, action="encoding.cancel", target_type="encoding_job",
           target_id=job_id, instance_id=job["instance_id"])
     return get_job(ctx, job_id) or {}
@@ -783,27 +784,25 @@ async def sync_job(ctx: AppContext, job_id: int) -> dict[str, Any]:
         enc = await client.get_job(job["encoder_job_id"])
     except EncoderError as exc:
         if exc.status == 404:
-            _update(ctx, job_id, status="failed",
+            _update(ctx, job_id, touch=False, status="failed",
                     error="De encoder kent deze job niet meer (database opnieuw opgebouwd?)")
             return get_job(ctx, job_id) or {}
         LOGGER.info("encoderstatus niet op te halen: %s", exc)
         return job
     est = str(enc.get("status") or "")
     progress = _measured_progress(enc)
-    fields: dict[str, Any] = {
-        "encoder_status": est, **progress,
-        "source_snapshot_json": dumps(enc.get("source_snapshot")),
-        "staged_output_json": dumps(enc.get("staged_output")),
-        "verification_json": dumps(enc.get("verification")),
-        "error": enc.get("error"), "skip_reason": enc.get("skip_reason")}
+    fields: dict[str, Any] = {"encoder_status": est, **progress}
+    for key in ("source_snapshot", "staged_output", "verification"):
+        if key in enc:
+            fields[f"{key}_json"] = dumps(enc[key])
+    for key in ("error", "skip_reason"):
+        if key in enc:
+            fields[key] = enc[key]
     if enc.get("lane") in ("cpu", "gpu"):
         # baan uit de encoder; verandert bij een GPU→CPU-herkansing (verbeterpunt 6)
         fields["lane"] = enc["lane"]
-    if est in ("queued", "running", "verifying"):
+    if est in ("queued", "running", "verifying", "failed", "skipped", "cancelled", "rejected"):
         _update(ctx, job_id, touch=bool(progress), status=est, **fields)
-        return get_job(ctx, job_id) or {}
-    if est in ("failed", "skipped", "cancelled", "rejected"):
-        _update(ctx, job_id, status=est, **fields)
         return get_job(ctx, job_id) or {}
     if est != "awaiting_commit":
         _update(ctx, job_id, **fields)

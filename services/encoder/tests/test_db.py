@@ -36,12 +36,37 @@ def test_migraties_zijn_herhaalbaar(tmp_path: Path) -> None:
     # 023 = noodstop in de engine + vastloperstatistiek (rapport 6).
     # 027 = additieve termijn en reden voor de platformpauze.
     # 028 = opeenvolgende veiligheidsmetingen met behoud van de oorspronkelijke staatrij.
-    assert database.applied_versions() == set(range(1, 29))
+    # 029 = de structurele verificaties per poging, inclusief de historische meting.
+    assert database.applied_versions() == set(range(1, 30))
     assert database.fetch_one("PRAGMA journal_mode")[0] == "wal"
     assert database.fetch_one("SELECT COUNT(*) FROM functie")[0] == 13
     assert database.fetch_one(
         "SELECT max_gelijktijdige_encodes FROM instelling WHERE id=1"
     )[0] == 1
+
+
+def test_upgrade_bewaart_historische_verificatie_en_voortgang(tmp_path, monkeypatch):
+    import test_uitvoerder
+
+    oud_schema = tmp_path / "schema-028"
+    oud_schema.mkdir()
+    for versie, bron in Database(settings).migration_files():
+        if versie <= 28:
+            (oud_schema / bron.name).symlink_to(bron)
+    monkeypatch.setattr(test_uitvoerder, "Database", lambda cfg: Database(cfg, oud_schema))
+    oud, cfg, _, job = test_uitvoerder._case(tmp_path)
+    oud.execute("UPDATE job SET percent=99.9,pogingen=3 WHERE id=?", (job,))
+    oud.execute("INSERT INTO verificatie(job_id,hdr_bron,audio_resultaat,geslaagd,toelichting) "
+                "VALUES (?,1,2,1,'eerder gecontroleerd')", (job,))
+    controle = dict(oud.fetch_one("SELECT * FROM verificatie WHERE job_id=?", (job,)))
+    taak = dict(oud.fetch_one("SELECT * FROM job WHERE id=?", (job,)))
+    nieuw = Database(cfg)
+    nieuw.initialize()
+    nieuw.initialize()
+    assert dict(nieuw.fetch_one("SELECT * FROM job WHERE id=?", (job,))) == taak
+    assert dict(nieuw.fetch_one("SELECT * FROM verificatie WHERE job_id=?", (job,))) == controle
+    assert [dict(r) for r in nieuw.fetch_all("SELECT * FROM verificatie_poging")] == [
+        {**controle, "poging": None, "hervat_sha256": None}]
 
 
 def test_migratie_herleest_plan_na_terugzetten(tmp_path, monkeypatch):

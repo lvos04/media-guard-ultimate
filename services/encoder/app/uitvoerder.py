@@ -32,7 +32,7 @@ from app.media.probe import probe
 from app.mediaguard.handoff import stage_for_commit
 from app.onderhoud import append_job_log, record_failure
 from app.verificatie import VerificationResult, verify_result
-from app.vervanging import ReplacementError, atomic_replace
+from app.vervanging import ReplacementError, atomic_replace, file_sha256
 
 LOGGER = logging.getLogger(__name__)
 
@@ -386,7 +386,7 @@ def reroute_failed_gpu_quality_jobs(database: Database, limit: int = 200) -> int
         SELECT j.id,f.pad,b.payload FROM job j
         JOIN bestand f ON f.id=j.bestand_id JOIN besluit b ON b.id=j.besluit_id
         WHERE j.status='mislukt' AND j.baan='gpu' AND COALESCE(j.omgeleid,0)=0
-          AND j.mg_bron IS NOT NULL
+          AND j.mg_bron IS NOT NULL AND COALESCE(j.foutsoort,'')<>'Hervatfout'
           AND (j.fout LIKE 'Kwaliteit te laag%' OR j.fout LIKE '%VMAF%')
         ORDER BY j.id LIMIT ?
         """, (limit,))
@@ -1592,8 +1592,8 @@ async def run_job(
         raise ExecutionError("De jobcache is een symbolische koppeling")
     try:
         checkpoint = await asyncio.to_thread(hervatpunten.Hervatpunt.lees, cache_dir)
-        prior_result = checkpoint is None and hervatpunten.eerder_geverifieerd(
-            database, cache_dir, job_id)
+        prior_result = await asyncio.to_thread(hervatpunten.eerder_geverifieerd, database,
+                                               cache_dir, job_id)
         oud_deel = (not prior_result and not (checkpoint and checkpoint.delen)
                     and hervatpunten.heeft_oud_deel(cache_dir, row["percent"]))
         if oud_deel:
@@ -1606,7 +1606,7 @@ async def run_job(
         record_failure(database, job_id, str(exc), "Hervatfout")
         return False
     if prior_result:
-        HERVAT_PERCENT[job_id] = 99.9
+        HERVAT_PERCENT[job_id] = max(float(row["percent"] or 0), 99.9)
     elif oud_deel:
         HERVAT_PERCENT[job_id] = float(row["percent"] or 0)
     elif checkpoint is None:
@@ -1663,6 +1663,8 @@ async def run_job(
                          or (source_probe.get("hdr10plus") and not decision.hdr10plus_route)):
             raise hervatpunten.Hervatfout("De beeldroute van het oude deelbestand is onzeker")
         if bool(source_probe.get("hdr10plus")) and not decision.hdr10plus_route:
+            if prior_result:
+                raise hervatpunten.Hervatfout("De HDR10+-route voor dit resultaat ontbreekt")
             database.execute(
                 "UPDATE job SET status='overgeslagen',fout=?,klaar_op=? WHERE id=?",
                 ("HDR10+ wordt altijd overgeslagen", datetime.now(UTC).isoformat(), job_id),
@@ -1814,6 +1816,10 @@ async def run_job(
             # Een .deel-suffix is bewust niet als mediasuffix herkenbaar; geef
             # de muxer daarom expliciet op en hernoem pas na encode-succes.
             arguments = [*arguments[:-1], "-f", "matroska", arguments[-1]]
+        if prior_result and checkpoint and checkpoint.binding != hervatpunten.planbinding(
+                arguments, source, job_id):
+            raise hervatpunten.Hervatfout(
+                "Bron of encode-instellingen wijken af van het bewaarde resultaat")
         if oud_deel:
             hervatpunten.controleer_oud_plan(row["commando"], arguments)
         # Geen proefstuk voor libaom (0,03×: 60 s proef = ruim een half uur rekenwerk en
@@ -1947,29 +1953,38 @@ async def run_job(
         if verification_hook is not None:
             verification = verification_hook(verification)
         result_probe = verification.result_probe or {}
-        database.execute(
-            """
-            INSERT OR REPLACE INTO verificatie(
-                job_id,hdr_bron,hdr_resultaat,dv_bron,dv_resultaat,md_gelijk,
-                audio_bron,audio_resultaat,attachments_bron,attachments_resultaat,
-                geslaagd,toelichting
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                job_id,
-                int(bool(source_probe.get("is_hdr10"))),
-                int(bool(result_probe.get("is_hdr10"))),
-                int(source_probe.get("dv_profile") or 0),
-                int(result_probe.get("dv_profile") or 0),
-                int(verification.mastering_equal),
-                len(source_probe.get("audio") or []),
-                len(result_probe.get("audio") or []),
-                int(source_probe.get("attachments") or 0),
-                int(result_probe.get("attachments") or 0),
-                int(verification.passed),
-                verification.reason,
-            ),
-        )
+        # Eén transactie bewaart de volledige meting bij de poging en de actuele API-weergave.
+        # Na een afgekeurde hercontrole blijft ditzelfde bestand herkenbaar voor de volgende start.
+        hervat_sha256 = (await asyncio.to_thread(file_sha256, result_path)
+                        if verification.passed or prior_result else None)
+        with database.connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO verificatie(
+                    job_id,hdr_bron,hdr_resultaat,dv_bron,dv_resultaat,md_gelijk,
+                    audio_bron,audio_resultaat,attachments_bron,attachments_resultaat,
+                    geslaagd,toelichting
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    job_id,
+                    int(bool(source_probe.get("is_hdr10"))),
+                    int(bool(result_probe.get("is_hdr10"))),
+                    int(source_probe.get("dv_profile") or 0),
+                    int(result_probe.get("dv_profile") or 0),
+                    int(verification.mastering_equal),
+                    len(source_probe.get("audio") or []),
+                    len(result_probe.get("audio") or []),
+                    int(source_probe.get("attachments") or 0),
+                    int(result_probe.get("attachments") or 0),
+                    int(verification.passed),
+                    verification.reason,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO verificatie_poging SELECT v.*,?,? FROM verificatie v WHERE job_id=?",
+                (row["pogingen"], hervat_sha256, job_id),
+            )
         if prior_result and not verification.passed:
             raise hervatpunten.Hervatfout(
                 f"Hercontrole van het bewaarde resultaat: {verification.reason}")
@@ -2047,6 +2062,8 @@ async def run_job(
         floor_problem = _bitrate_floor_problem(source_probe, result_probe, decision)
         if floor_problem is not None:
             klasse, floor, message = floor_problem
+            if prior_result:
+                raise hervatpunten.Hervatfout(message)
             append_job_log(database, job_id, "waarschuwing", message)
             if not int(row["kwaliteit_herkansd"] or 0):
                 raise QualityFloorRetry(f"{klasse}|{floor}|{message}")
@@ -2093,6 +2110,8 @@ async def run_job(
         if rejection is not None:
             # Kwaliteitspoort (rapport 3 R9, rapport 5 M4): onder de grens nooit vervangen.
             append_job_log(database, job_id, "fout", rejection)
+            if prior_result:
+                raise hervatpunten.Hervatfout(rejection)
             if decision.encoder == "av1_qsv" and decision.actie == "hercoderen":
                 # Gebruikersrapport (anime): een GPU-afkeuring telt mee voor de reeks; was er
                 # al een herkansing met meer bits, dan via de CPU in plaats van 'mislukt'.
@@ -2362,6 +2381,9 @@ async def run_job(
     except ReplacementError as exc:
         # Direct-modus: vervangherstel (vervanging.py) beheert de cache zelf.
         # Handoff raakt de bron nooit aan; daar is de cache alleen nog afval.
+        if prior_result:
+            record_failure(database, job_id, str(exc), "Hervatfout")
+            return False
         if settings.replacement_mode == "handoff":
             shutil.rmtree(cache_dir, ignore_errors=True)
         record_failure(database, job_id, str(exc), type(exc).__name__)

@@ -15,7 +15,8 @@ def bewijs():
     return module
 
 
-@pytest.mark.parametrize("gebrek", ["leeg", "pakketten", "image", "relaties", "bron"])
+@pytest.mark.parametrize("gebrek", ["leeg", "pakketten", "image", "relaties", "bron",
+                                    "lege_maker", "naamloze_maker"])
 def test_gebrekkige_spdx_blokkeert_bewijs(tmp_path, monkeypatch, bewijs, gebrek):
     pin = "sha256:" + "1" * 64
     sbom = spdx(pin)
@@ -27,6 +28,8 @@ def test_gebrekkige_spdx_blokkeert_bewijs(tmp_path, monkeypatch, bewijs, gebrek)
         sbom["packages"][0]["checksums"][0]["checksumValue"] = "2" * 64
     elif gebrek == "relaties":
         sbom["relationships"].clear()
+    elif gebrek in {"lege_maker", "naamloze_maker"}:
+        sbom["creationInfo"]["creators"] = ["" if gebrek == "lege_maker" else "Tool:  "]
     else:
         del sbom["creationInfo"]
     (tmp_path / "aio.spdx.json").write_text(json.dumps(sbom))
@@ -58,7 +61,7 @@ def test_spdx_herhaalbaar_en_gebonden_aan_inhoud(tmp_path, monkeypatch, bewijs):
     assert namespaces[1] != namespaces[2]
 
 
-def test_publicatie_weigert_afwijkende_bouwdigest(tmp_path, bewijs):
+def test_publicatie_weigert_afwijkende_bouwdigest(tmp_path, bewijs, monkeypatch):
     manifest = _manifest()
     bouw = tmp_path / "bouw"
     bouw.mkdir()
@@ -66,12 +69,23 @@ def test_publicatie_weigert_afwijkende_bouwdigest(tmp_path, bewijs):
     for naam, pin in pins.items():
         if naam != "aio":
             (bouw / naam).write_text(pin)
+        (tmp_path / f"{naam}.spdx.json").write_text(json.dumps(spdx(pin)))
     images = {naam: {"image": f"{img['image']}:{img['tag']}", "digest": pins[naam],
                      "sbom": naam + ".spdx.json"} for naam, img in manifest["images"].items()}
     document = {"version": manifest["version"], "platform": bewijs.PLATFORM, "images": images}
     pad = tmp_path / "digests.json"
     pad.write_text(json.dumps(document))
     bewijs.controleer_bouw(manifest, bouw, pins["aio"], tmp_path, None)
+    monkeypatch.setattr(bewijs, "platform_digest", lambda ref: None)
+    for naam, pin in pins.items():
+        sbom = tmp_path / images[naam]["sbom"]
+        sbom.unlink()
+        with pytest.raises(FileNotFoundError):
+            bewijs.controleer_bouw(manifest, bouw, pins["aio"], tmp_path, None)
+        sbom.write_text(json.dumps(spdx("sha256:" + "f" * 64)))
+        with pytest.raises(ValueError, match="SPDX"):
+            bewijs.controleer_bouw(manifest, bouw, pins["aio"], tmp_path, None)
+        sbom.write_text(json.dumps(spdx(pin)))
     for naam in ("aio", "web"):
         images[naam]["digest"] = "sha256:" + "f" * 64
         pad.write_text(json.dumps(document))

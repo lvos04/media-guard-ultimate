@@ -254,16 +254,29 @@ def test_tijdafwijking_midden_in_deel_bewaart_alle_beelden(tmp_path):
     assert not stand.delen and (file_sha256(deel), file_sha256(bron)) == voor
 
 
-@pytest.mark.parametrize("gepland", [True, False], ids=["gepland", "onverwacht"])
-def test_eerder_geverifieerd_eindbestand_doorloopt_opnieuw_de_eindcontrole(tmp_path, gepland):
+@pytest.mark.parametrize(("gepland", "afkeuring", "fragmenten"), [
+    (True, "structuur", False), (False, "structuur", False),
+    (False, "kwaliteit", False), (True, "kwaliteit", True),
+])
+def test_eerder_geverifieerd_eindbestand_doorloopt_opnieuw_de_eindcontrole(
+    tmp_path, gepland, afkeuring, fragmenten
+):
+    from contextlib import nullcontext
     from dataclasses import replace
 
+    from fastapi.testclient import TestClient
+
     from app import hervatpunten
+    from app.main import create_app
     from app.onderhoud import sweep_finished_job_cache
     from app.wachtrijherstel import recover_queue
 
     db, settings, source, job = _case(tmp_path)
     origineel = file_sha256(source)
+
+    def start(**opties):
+        return asyncio.run(uitvoerder.run_job(db, settings, job, storage_validator=lambda: None,
+                                              **opties))
 
     class Onderbreking(BaseException):
         pass
@@ -271,33 +284,62 @@ def test_eerder_geverifieerd_eindbestand_doorloopt_opnieuw_de_eindcontrole(tmp_p
     async def encode_uit_vorige_versie(args, source, job, duration, run, vastgelegd, gpu=None):
         return await run(args)
 
+    oude_encoder = patch.object(hervatpunten, "encode", encode_uit_vorige_versie)
     with (
-        patch.object(hervatpunten, "encode", encode_uit_vorige_versie),
+        nullcontext() if fragmenten else oude_encoder,
         patch.object(uitvoerder, "measure_quality", side_effect=Onderbreking),
         pytest.raises(Onderbreking),
     ):
-        asyncio.run(uitvoerder.run_job(db, settings, job, storage_validator=lambda: None))
-    assert db.fetch_one("SELECT geslaagd FROM verificatie WHERE job_id=?", (job,))[0] == 1
-    resultaat = settings.cache_root / str(job) / "resultaat.mkv"
+        start()
+    eerste = dict(db.fetch_one("SELECT * FROM verificatie WHERE job_id=?", (job,)))
+    assert eerste["geslaagd"] == 1
+    cache = settings.cache_root / str(job)
+    resultaat = cache / "resultaat.mkv"
     resultaat_hash = file_sha256(resultaat)
     if gepland:
         geplandestop.announce(settings)
     recover_orphaned_jobs(db, settings)
-    assert db.fetch_one("SELECT percent FROM job WHERE id=?", (job,))[0] > 0
-    with patch.object(hervatpunten, "encode", side_effect=AssertionError) as encoder:
-        assert not asyncio.run(uitvoerder.run_job(
-            db, settings, job, storage_validator=lambda: None,
-            verification_hook=lambda result: replace(result, passed=False, reason="proefafkeuring"),
-        ))
+    percent = db.fetch_one("SELECT percent FROM job WHERE id=?", (job,))[0]
+    assert percent > 0
+    opties = {}
+    if afkeuring == "structuur":
+        opties["verification_hook"] = lambda v: replace(v, passed=False, reason="proefafkeuring")
+    with (
+        patch.object(hervatpunten, "encode", side_effect=AssertionError) as encoder,
+        patch.object(uitvoerder, "measure_quality", return_value={"metric": "vmaf", "score": 50}),
+    ):
+        assert not start(**opties)
         encoder.assert_not_called()
-    assert db.fetch_one("SELECT geslaagd FROM verificatie WHERE job_id=?", (job,))[0] == 0
     assert db.fetch_one("SELECT 1 FROM vervang_transactie WHERE job_id=?", (job,)) is None
     assert file_sha256(source) == origineel
     sweep_finished_job_cache(db, settings)
     recover_queue(db, settings)
     assert file_sha256(resultaat) == resultaat_hash
-    fout = db.fetch_one("SELECT foutsoort,fout FROM job WHERE id=?", (job,))
-    assert fout["foutsoort"] == "Hervatfout" and "proefafkeuring" in fout["fout"]
+    assert hervatpunten.eerder_geverifieerd(db, cache, job)
+    fout = db.fetch_one("SELECT percent,foutsoort,fout FROM job WHERE id=?", (job,))
+    assert fout["percent"] == percent and fout["foutsoort"] == "Hervatfout"
+    reden = "proefafkeuring" if afkeuring == "structuur" else "VMAF"
+    assert reden in fout["fout"]
+    assert reden in db.fetch_one("SELECT fout FROM job_poging WHERE job_id=? AND poging=2",
+                                 (job,))[0]
+    laatste = db.fetch_one("SELECT geslaagd FROM verificatie WHERE job_id=?", (job,))[0]
+    assert laatste == (0 if afkeuring == "structuur" else 1)
+    historie = db.fetch_all("SELECT * FROM verificatie_poging WHERE job_id=? ORDER BY poging",
+                            (job,))
+    assert [(v["poging"], v["geslaagd"]) for v in historie] == [(1, 1), (2, laatste)]
+    assert {k: historie[0][k] for k in eerste} == eerste
+
+    app = create_app(settings, db, start_planner=False, validate_storage=False)
+    with TestClient(app) as client:
+        client.post(f"/api/jobs/{job}/opnieuw").raise_for_status()
+    with (
+        patch.object(hervatpunten, "encode", side_effect=AssertionError) as encoder,
+        patch.object(uitvoerder, "measure_quality", return_value={"metric": "vmaf", "score": 99}),
+    ):
+        assert start()
+        encoder.assert_not_called()
+    assert file_sha256(source) == resultaat_hash
+    assert db.fetch_one("SELECT count(*) FROM verificatie_poging WHERE job_id=?", (job,))[0] == 3
 
 
 def test_ingetrokken_toestemming_bewaart_hervatwerk_tot_herbevestiging(tmp_path: Path) -> None:

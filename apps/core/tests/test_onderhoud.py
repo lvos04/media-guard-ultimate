@@ -452,6 +452,14 @@ def test_supervisor_makes_set_with_encoder_db_only_when_migration_pending(tmp_pa
 
 
 def test_pre_update_backup_listed_staged_and_swapped(tmp_path, monkeypatch):
+    _controleer_terugzetting(tmp_path, monkeypatch, extra_audit=False)
+
+
+def test_checkpoint_met_extra_auditregel(tmp_path, monkeypatch):
+    _controleer_terugzetting(tmp_path, monkeypatch, extra_audit=True)
+
+
+def _controleer_terugzetting(tmp_path, monkeypatch, *, extra_audit):
     from fastapi.testclient import TestClient
 
     from mediaguard.app import create_app
@@ -485,6 +493,9 @@ def test_pre_update_backup_listed_staged_and_swapped(tmp_path, monkeypatch):
             assert bad.status_code == 422
             r = client.post(f"/api/v1/backups/{made.name}/restore", json={"confirm": made.name})
             assert r.status_code == 200 and r.json()["staged"] == made.name
+            if extra_audit:
+                maint.audit(ctx.db, actor="proef", action="proef.na_ontvangst",
+                            target_type="backup")
             assert "versie 1.2.0" in r.json()["message_nl"]
             # live database niet aangeraakt; kopieën staan klaar; zichtbaar in 'Wacht op jou'
             assert ctx.config.value("ui.theme") == "dark"
@@ -505,6 +516,10 @@ def test_pre_update_backup_listed_staged_and_swapped(tmp_path, monkeypatch):
     kept = Path(result["previous"])
     assert (kept / "core__mediaguard.db").is_file() and (kept / "core__mediaguard.db-wal").exists()
     with closing(sqlite3.connect(kept / "core__mediaguard.db")) as previous:
+        if extra_audit:
+            assert previous.execute(
+                "SELECT count(*) FROM audit_events WHERE action='proef.na_ontvangst'"
+            ).fetchone() == (1,)
         assert json.loads(previous.execute(
             "SELECT value_json FROM settings_values WHERE key='ui.theme'"
         ).fetchone()[0]) == "dark"

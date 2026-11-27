@@ -148,6 +148,11 @@ def test_eerder_afgekeurde_gpu_jobs_krijgen_cpu_kans(tmp_path: Path) -> None:
         "UPDATE besluit SET payload=? WHERE id=(SELECT besluit_id FROM job WHERE id=?)",
         (Besluit(actie="hercoderen", baan="gpu", encoder="av1_qsv",
                  reden="x").model_dump_json(), job))
+    database.execute("UPDATE job SET foutsoort='Hervatfout',percent=99.9 WHERE id=?", (job,))
+    assert uitvoerder.reroute_failed_gpu_quality_jobs(database) == 0
+    assert database.fetch_one("SELECT status,baan,percent FROM job WHERE id=?", (job,))[:] == (
+        "mislukt", "gpu", 99.9)
+    database.execute("UPDATE job SET foutsoort=NULL WHERE id=?", (job,))
     assert uitvoerder.reroute_failed_gpu_quality_jobs(database) == 1
     assert database.fetch_one("SELECT status,baan FROM job WHERE id=?", (job,))[:] == \
         ("wacht", "cpu")
