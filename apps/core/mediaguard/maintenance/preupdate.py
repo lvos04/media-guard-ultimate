@@ -1758,13 +1758,40 @@ def _later_cycle(previous, current) -> bool:
             and current[2] != previous[2])
 
 
-def _verify_successor(core: Path, work: Path, old: dict, new: dict) -> None:
+def _alleen_herstelmelding(db: sqlite3.Connection, oud: dict, nieuw: dict, aanvraag: dict) -> bool:
+    voor = oud["tabellen"].get("audit_events")
+    na = nieuw["tabellen"].get("audit_events")
+    if not voor or not na or na["rijen"] != voor["rijen"] + 1:
+        return False
+    nummer = na["hoogste"]
+    if nummer is None or (voor["hoogste"] is not None and nummer <= voor["hoogste"]):
+        return False
+    # Eerdere versies schreven de ontvangstregel zonder correlatie. Toets daarbij ook de tijd.
+    melding = db.execute(
+        "SELECT 1 FROM audit_events WHERE id=? AND action='backup.rollback_stage' "
+        "AND target_type='backup' AND target_id=? AND actor=? AND (correlation_id=? "
+        "OR (correlation_id IS NULL AND julianday(ts)>=julianday(?)))",
+        (nummer, aanvraag.get("set"), aanvraag.get("by"), aanvraag.get("voorbereiding"),
+         aanvraag.get("requested_at")),
+    ).fetchone()
+    return bool(melding) and _logical_state(db, zonder_auditregel=nummer) == oud
+
+
+def _verify_successor(core: Path, work: Path, old: dict, new: dict,
+                      aanvraag: dict | None = None) -> None:
     # Vergelijk de huidige commit en zijn mogelijke voorganger op precies dezelfde bytes.
     with copied_family(work, database_files(core.parent / old["bestand"])) as family, \
             checked_database(work, family) as (current, wal):
         if _logical_state(current) != new["stand"]:
             raise SetError("de gecommitteerde inhoud veranderde tijdens de controle")
         positions = old["stand"]["tabellen"]
+        # De kern schrijft haar ontvangstregel na het klaarzetten. Na een volledig checkpoint
+        # moet de hele gecommitteerde database, inclusief eerder verwijderde rijen, verklaard zijn.
+        if (aanvraag and old["wal_frames"] and not wal.frames
+                and old["bestand"] == f"{core.name}/mediaguard.db"
+                and old.get("hoofdbestand_id") == new["hoofdbestand_id"]
+                and _alleen_herstelmelding(current, old["stand"], new["stand"], aanvraag)):
+            return
         # Een oudere schrijver kan zijn laatste taakwijziging al in het hoofdbestand
         # hebben vastgelegd. Vergelijk dan elke taak op identiteit en eigen voortgang.
         main_only = (not old["wal_frames"] and not wal.frames
@@ -1793,7 +1820,7 @@ def _verify_successor(core: Path, work: Path, old: dict, new: dict) -> None:
 
 
 def _verify_progress(core: Path, previous: list[dict], databases: list[dict], *,
-                     work: Path | None = None) -> None:
+                     work: Path | None = None, aanvraag: dict | None = None) -> None:
     actual = {db["bestand"]: db for db in databases}
     for old in previous:
         new = actual.get(old["bestand"])
@@ -1810,7 +1837,7 @@ def _verify_progress(core: Path, previous: list[dict], databases: list[dict], *,
                     (position["hoogste"] is not None and
                      (now["hoogste"] is None or now["hoogste"] < position["hoogste"]))):
                 raise SetError("een eerder bewezen rij of event ontbreekt")
-        _verify_successor(core, work or core, old, new)
+        _verify_successor(core, work or core, old, new, aanvraag)
 
 
 def _check_preparation(core: Path, attempt: str | None, *, work: Path | None = None) -> dict:
@@ -1819,7 +1846,8 @@ def _check_preparation(core: Path, attempt: str | None, *, work: Path | None = N
         if not phase or phase.get("fase") != "klaarzetten" or phase["poging"] != attempt:
             raise SetError("de aanvraag mist haar vooraf vastgelegde stand")
         current = [_source_state(core, item["bestand"], work=work) for item in phase["databases"]]
-        _verify_progress(core, phase["databases"], current, work=work)
+        _verify_progress(core, phase["databases"], current, work=work,
+                         aanvraag=phase.get("aanvraag"))
         return {db["bestand"]: db["inhoud"] for db in current}
     except (SetError, OSError, sqlite3.Error) as exc:
         raise _PreviousDataError(f"de stand van vóór het klaarzetten is onbewezen: {exc}") from exc
@@ -1899,7 +1927,7 @@ def _update_entries(core: Path, archive: Path) -> dict[str, tuple[Path, int, str
     return entries
 
 
-def _logical_state(conn: sqlite3.Connection) -> dict:
+def _logical_state(conn: sqlite3.Connection, *, zonder_auditregel: int | None = None) -> dict:
     """Tel de rijen en hun hoogste rij-/eventnummer in dezelfde stand als de inhoudshash."""
     digest = hashlib.sha256()
     tables_state = {}
@@ -1926,12 +1954,15 @@ def _logical_state(conn: sqlite3.Connection) -> dict:
                 raise SetError("de rij-identiteit van de oorspronkelijke database is onbewezen")
             fields = rowid + ",*"
             highest = f"MAX({rowid})"
+        filter_ = " WHERE id<>?" if name == "audit_events" and zonder_auditregel is not None else ""
+        waarden = (zonder_auditregel,) if filter_ else ()
         count, position = conn.execute(
-            f"SELECT COUNT(*), {highest} FROM {quoted}"  # noqa: S608
+            f"SELECT COUNT(*), {highest} FROM {quoted}{filter_}", waarden  # noqa: S608
         ).fetchone()
         tables_state[name] = {"rijen": count, "hoogste": position}
         # Een tabelscan leest de B-boom op rowid of, bij WITHOUT ROWID, op primaire sleutel.
-        for row in conn.execute(f"SELECT {fields} FROM {quoted} NOT INDEXED"):  # noqa: S608
+        for row in conn.execute(
+                f"SELECT {fields} FROM {quoted} NOT INDEXED{filter_}", waarden):  # noqa: S608
             feed(row)
     state = {"tabellen": tables_state, "inhoud": digest.hexdigest()}
     if "sqlite_sequence" in tables_state:

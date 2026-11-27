@@ -542,7 +542,8 @@ def _stage_pre_update(ctx: AppContext, path: Path, principal: Principal) -> dict
     except preupdate.SetError as exc:
         raise HTTPException(507 if exc.disk else 409, f"Niet klaargezet: {exc}") from exc
     audit(ctx.db, actor=principal.actor, action="backup.rollback_stage", target_type="backup",
-          target_id=path.name, reason="Back-up van vóór de update terugzetten",
+          target_id=path.name, correlation_id=info["voorbereiding"],
+          reason="Back-up van vóór de update terugzetten",
           undo_hint="Annuleren onder Instellingen → Systeem → Back-ups")
     meta = next((r for r in preupdate.list_sets(path.parent) if r["name"] == path.name), {})
     old = meta.get("from_version")

@@ -509,6 +509,30 @@ def test_wal_opvolging_van_encoderwerk(tmp_path, installatie, situatie):
                                         else [(1, 92, None, None, None, None)])
 
 
+@pytest.mark.parametrize("geval", ["gekoppeld", "historisch", "andere_poging", "te_oud", "taak"])
+def test_checkpoint_met_ontvangstregel_verklaart_de_hele_database(geval):
+    tijd = "2026-01-02T12:00:00Z"
+    aanvraag = {"set": "proefset", "by": "beheerder", "voorbereiding": "poging",
+                "requested_at": tijd}
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.execute("CREATE TABLE audit_events(id INTEGER PRIMARY KEY, action, target_type, "
+                   "target_id, actor, correlation_id, ts)")
+        db.execute("CREATE TABLE job(id INTEGER PRIMARY KEY, percent)")
+        db.execute("INSERT INTO job VALUES(1, 92)")
+        oud = preupdate._logical_state(db)
+        correlatie = {"historisch": None, "te_oud": None, "andere_poging": "eerder"}.get(
+            geval, "poging")
+        db.execute("INSERT INTO audit_events VALUES(1,'backup.rollback_stage','backup',"
+                   "'proefset','beheerder',?,?)",
+                   (correlatie, "2026-01-01T12:00:00Z" if geval == "te_oud" else tijd))
+        if geval == "taak":
+            db.execute("INSERT INTO job VALUES(2, 0)")
+        nieuw = preupdate._logical_state(db)
+        assert preupdate._alleen_herstelmelding(db, oud, nieuw, aanvraag) == (
+            geval in {"gekoppeld", "historisch"})
+        assert preupdate._logical_state(db) == nieuw
+
+
 @pytest.mark.parametrize("volledig_checkpoint", [False, True])
 def test_oude_wal_mag_een_vastgelegde_taak_niet_terugdraaien(tmp_path, installatie,
                                                              volledig_checkpoint):
