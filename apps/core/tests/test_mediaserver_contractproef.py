@@ -92,6 +92,36 @@ def test_sessiepoll_vergelijkt_het_venster(monkeypatch: pytest.MonkeyPatch):
     assert emby_verzoeksoorten([{**poll, "query": {}}]) - referentie
 
 
+def test_b9_keurt_log_met_proefsleutel_af(monkeypatch: pytest.MonkeyPatch, capsys):
+    monkeypatch.syspath_prepend(str(CONTRACT))
+    monkeypatch.delenv("MGMS_VORIGE", raising=False)
+    import test_mediaserver_contract as contract
+
+    monkeypatch.setattr(contract, "METINGEN", {"controles": [], "feiten": {}})
+    marker = secrets.token_hex(16)
+    with pytest.raises(AssertionError, match="geen API-sleutel in de logs") as fout:
+        contract.controleer_loggeheimen({"proefsleutel": marker},
+                                        {"log kandidaat": f"proefregel {marker}"})
+    assert "log kandidaat" in str(fout.value)
+    uitvoer = capsys.readouterr()
+    assert marker not in (str(fout.value) + uitvoer.out + uitvoer.err + str(contract.METINGEN))
+
+
+@pytest.mark.parametrize(("voor", "na"), [
+    ({}, {}),
+    ({"jobs": 2, "job_logs": 0}, {"jobs": 2, "job_logs": 0}),
+    ({"jobs": 2, "job_logs": 2}, {"jobs": 2, "job_logs": 1}),
+])
+def test_voortgang_weigert_lege_of_gekrompen_telling(monkeypatch: pytest.MonkeyPatch, voor, na):
+    monkeypatch.syspath_prepend(str(CONTRACT))
+    monkeypatch.delenv("MGMS_VORIGE", raising=False)
+    import test_mediaserver_contract as contract
+
+    monkeypatch.setattr(contract, "METINGEN", {"controles": [], "feiten": {}})
+    with pytest.raises(AssertionError, match="jobgeschiedenis"):
+        contract.controleer_voortgang("losmaken", voor, na)
+
+
 @pytest.mark.parametrize("situatie", ["volledig", "doel_is_map", "bron_ontbreekt"])
 def test_bewaarfout_bepaalt_de_uitkomst_van_de_runner(tmp_path: Path, situatie: str):
     bewijs = tmp_path / "bewijs"

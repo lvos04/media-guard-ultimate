@@ -607,6 +607,10 @@ def h(sql):
     return hashlib.sha256(json.dumps(rijen).encode()).hexdigest()[:16] if rijen else None
 tabellen = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 print(json.dumps({
+    "voortgang": {
+        "jobs": c.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+        "job_logs": c.execute("SELECT COUNT(*) FROM job_logs").fetchone()[0],
+    },
     "geheim_server_1": h("SELECT name,ciphertext,updated_at,updated_by FROM secrets "
                          "WHERE name='mediaserver.api_key'"),
     "geheimen": [r[0] for r in c.execute("SELECT name FROM secrets ORDER BY name")],
@@ -807,6 +811,13 @@ def controleer_emby_kijkgeschiedenis(emby: dict[str, Any], fase: str) -> None:
     check(f"de kijkgeschiedenis bij Emby is {fase} gelijk aan de nulmeting", not verschil, verschil)
 
 
+def controleer_voortgang(fase: str, voor: dict[str, int], na: dict[str, int]) -> None:
+    aantallen = {"voor": voor, "na": na}
+    feit(f"voortgang_{fase}", aantallen)
+    check(f"jobs en jobgeschiedenis blijven behouden bij {fase}",
+          voor.keys() == {"jobs", "job_logs"} and min(voor.values()) > 0 and voor == na, aantallen)
+
+
 def test_b1_vorige_release_volgt_emby(servers: dict[str, Any]) -> None:
     emby = servers["emby"]
     mg.voorbereiden()
@@ -882,6 +893,7 @@ def test_b2_upgrade_emby_blijft_gevolgd_zonder_handeling(servers: dict[str, Any]
     check("de kijkpauze van vóór de upgrade staat er nog (er wordt nog gekeken)",
           st["hold"]["active"] and "Testfilm" in str(st["hold"]["reason"]), st["hold"])
     na = mg.db()
+    controleer_voortgang("upgrade", voor["voortgang"], na["voortgang"])
     controleer_emby_kijkgeschiedenis(emby, "na de upgrade")
     check("geheim en instellingen van de koppeling zijn byte-gelijk gebleven",
           na["geheim_server_1"] == voor["geheim_server_1"]
@@ -1074,8 +1086,8 @@ def test_b7_emby_losmaken_volgt_alleen_jellyfin(servers: dict[str, Any]) -> None
     # De synthetische Arr-instanties kunnen offline zijn. Hun melding verschijnt
     # pas na tien minuten. Meet vóór het losmaken nadat de bewaking is bijgelopen.
     # De vergelijking hieronder omvat nog steeds alle meldingen van de kern.
-    meldingen_voor = wacht_op(nulmeting, 13 * 60, 10,
-                              wat="nulmeting na de eerste Arr-gezondheidscontroles")["meldingen"]
+    voor = wacht_op(nulmeting, 13 * 60, 10, wat="nulmeting na de eerste Arr-gezondheidscontroles")
+    meldingen_voor = voor["meldingen"]
     n_emby = len(luik("emby"))
     feit("emby_verzoeken_tot_losmaken", n_emby)
     STATE["n_emby_losgemaakt"] = n_emby
@@ -1102,9 +1114,13 @@ def test_b7_emby_losmaken_volgt_alleen_jellyfin(servers: dict[str, Any]) -> None
         speler.stop()
     kijkpauze(False, 4 * RONDE)
     time.sleep(max(0.0, 2 * RONDE + 10 - (time.monotonic() - losgemaakt_op)))
+    na_losmaken = luik("emby")
+    feit("emby_verzoeken_na_losmaken", len(na_losmaken))
     check("na het losmaken gaat er geen enkel verzoek meer naar Emby",
-          len(luik("emby")) == n_emby, luik("emby")[n_emby:][:3])
+          len(na_losmaken) == n_emby, na_losmaken[n_emby:][:3])
     db = mg.db()
+    controleer_voortgang("losmaken", voor["voortgang"], db["voortgang"])
+    STATE["voortgang_losgemaakt"] = db["voortgang"]
     check("losmaken geeft geen melding of incident", db["meldingen"] == meldingen_voor,
           db["meldingen"][len(meldingen_voor):])
     check("het geheim van Emby is bewaard en ongewijzigd",
@@ -1116,6 +1132,10 @@ def test_b7_emby_losmaken_volgt_alleen_jellyfin(servers: dict[str, Any]) -> None
 
 def test_b8_emby_weer_koppelen_zonder_sleutel_opnieuw(servers: dict[str, Any]) -> None:
     emby = servers["emby"]
+    n = STATE["n_emby_losgemaakt"]
+    vlak_voor = len(luik("emby"))
+    feit("emby_verzoeken_tijdens_ontkoppeling", vlak_voor - n)
+    check("ook tot het herkoppelen blijft het Emby-proxylog stil", vlak_voor == n, (n, vlak_voor))
     uit = mg.config({"server_id": 1, "enabled": True})
     check("Emby weer gekoppeld in één handeling: test slaagt met de bewaarde sleutel",
           uit["test"] and uit["test"]["ok"], uit["test"])
@@ -1127,12 +1147,13 @@ def test_b8_emby_weer_koppelen_zonder_sleutel_opnieuw(servers: dict[str, Any]) -
     check("de velden van 1.2.2 beschrijven weer Emby",
           (st["kind"], st["setting_kind"], st["url"]) == ("emby", "emby", EMBY_INTERN),
           (st["kind"], st["setting_kind"], st["url"]))
-    n = STATE["n_emby_losgemaakt"]
     wacht_op(lambda: [r for r in sessiepolls(luik("emby")[n:], "/emby/Sessions")
                       if r["status"] == 200], 3 * RONDE, 3, wat="Emby wordt weer gevolgd")
     controleer_luik_emby(luik("emby")[n:], emby["sleutel"], "na weer koppelen")
+    db = mg.db()
     check("het geheim van Emby is nog steeds hetzelfde",
-          mg.db()["geheim_server_1"] == STATE["db_voor"]["geheim_server_1"])
+          db["geheim_server_1"] == STATE["db_voor"]["geheim_server_1"])
+    controleer_voortgang("herkoppelen", STATE["voortgang_losgemaakt"], db["voortgang"])
 
 
 def test_b8b_jellyfin_weigert_sleutel_emby_blijft_gevolgd(servers: dict[str, Any]) -> None:
@@ -1174,6 +1195,12 @@ def test_b8b_jellyfin_weigert_sleutel_emby_blijft_gevolgd(servers: dict[str, Any
     feit("jellyfin_verwachte_401", len(afwijzingen))
 
 
+def controleer_loggeheimen(geheimen: dict[str, str], teksten: dict[str, str]) -> None:
+    gelekt = [(wat, waar) for wat, sleutel in geheimen.items() for waar, tekst in teksten.items()
+              if sleutel in tekst]
+    check("geen API-sleutel in de logs van MediaGuard of in het doorgeefluik", not gelekt, gelekt)
+
+
 def test_b9_niets_gelekt_en_nette_stop(servers: dict[str, Any]) -> None:
     emby, jf = servers["emby"], servers["jellyfin"]
     code = mg.stop("kandidaat")
@@ -1188,9 +1215,7 @@ def test_b9_niets_gelekt_en_nette_stop(servers: dict[str, Any]) -> None:
     teksten = {f"log {fase}": tekst for fase, tekst in mg.logs.items()}
     for naam in ("emby", "jellyfin"):
         teksten[f"doorgeefluik {naam}"] = (RUN / "proxylog" / f"{naam}.jsonl").read_text("utf-8")
-    gelekt = [(wat, waar) for wat, sleutel in geheimen.items() for waar, tekst in teksten.items()
-              if sleutel in tekst]
-    check("geen API-sleutel in de logs van MediaGuard of in het doorgeefluik", not gelekt, gelekt)
+    controleer_loggeheimen(geheimen, teksten)
     feit("logregels_mediaguard", {fase: len(t.splitlines()) for fase, t in mg.logs.items()})
     # over de hele run: wat ging er werkelijk over de lijn?
     alle_emby, alle_jf = luik("emby"), luik("jellyfin")
