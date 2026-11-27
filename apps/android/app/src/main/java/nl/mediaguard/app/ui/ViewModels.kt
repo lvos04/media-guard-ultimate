@@ -41,6 +41,7 @@ import java.time.LocalDate
 import kotlin.time.AbstractLongTimeSource
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.DurationUnit
+import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
 /** Basis: laadt één waarde, houdt de vorige zichtbaar tijdens verversen. */
@@ -129,20 +130,28 @@ class StatusViewModel(
         stamp?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
             ?.takeIf { it <= now + Staleness.STATUS_INTERVAL_MS }
 
-    // Ook als het scherm tijdelijk geen meettijd heeft, behoudt de laatste meting haar vervaltijd.
-    private var lastStatusMeasurement = Freshness()
+    // Bewaar de vervaltijden binnen het geldigheidsvenster van de nieuwste servermeting.
+    // Alles op of vóór de grens blijft verlopen als de telefoonklok wordt teruggezet.
+    private var expiredStatusThrough = Long.MIN_VALUE
+    private val statusDeadlines = mutableMapOf<Long, TimeMark>()
 
     private fun statusFreshness(status: AppStatus): Freshness {
         val generatedAt = status.generatedAt ?: return Freshness()
         val received = elapsed.markNow()
         val now = clock()
         val stamp = measuredAt(generatedAt, now) ?: return Freshness()
-        if (lastStatusMeasurement.lastOkAt == stamp) return lastStatusMeasurement
-        val oldest = now - Staleness.MAX_AGE_MS
-        // Een oud rapport vervalt direct. Een serverklok die iets voorloopt geeft geen extra tijd.
-        val remainingMs = stamp.coerceIn(oldest, now) - oldest
-        lastStatusMeasurement = Freshness(stamp, expiresAt = received + remainingMs.milliseconds)
-        return lastStatusMeasurement
+        if (stamp <= expiredStatusThrough) return Freshness(stamp, expiresAt = received)
+        if (stamp > expiredStatusThrough + Staleness.MAX_AGE_MS) {
+            expiredStatusThrough = stamp - Staleness.MAX_AGE_MS
+            statusDeadlines.keys.removeAll { it <= expiredStatusThrough }
+        }
+        val expiresAt = statusDeadlines.getOrPut(stamp) {
+            val oldest = now - Staleness.MAX_AGE_MS
+            // Een serverklok die iets voorloopt geeft geen extra tijd.
+            val remainingMs = stamp.coerceIn(oldest, now) - oldest
+            received + remainingMs.milliseconds
+        }
+        return Freshness(stamp, expiresAt = expiresAt)
     }
 
     private val statusSource = OverviewSource(viewModelScope, repo::status, ::statusFreshness)

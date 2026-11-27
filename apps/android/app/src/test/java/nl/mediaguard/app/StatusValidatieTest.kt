@@ -17,6 +17,7 @@ import nl.mediaguard.app.data.Staleness
 import nl.mediaguard.app.ui.PeilStatus
 import nl.mediaguard.app.ui.StatusViewModel
 import nl.mediaguard.app.ui.UiState
+import nl.mediaguard.app.ui.currentValue
 import nl.mediaguard.app.ui.screens.panelStatus
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
@@ -172,6 +173,65 @@ class StatusValidatieTest {
         assertFalse(vm.retryJob(7))
         assertTrue(repo.actions.isEmpty())
         assertTrue(repo.controls.isEmpty())
+    }
+
+    @Test fun verlopenMetingGeeftNaEenVersTussenrapportGeenActiesVrij() {
+        var nu = begin
+        val eerste = rapport(begin, "/?job=7")
+        val tweede = rapport(begin + Staleness.MAX_AGE_MS, "/?job=8")
+        var antwoord = eerste
+        val repo = FakeRepo().apply { statusResult = { antwoord } }
+        val vm = StatusViewModel(repo, clock = { nu }, elapsed = elapsed)
+        vm.refresh()
+        assertEquals(eerste, vm.state.value.currentValue(nu))
+
+        nu += Staleness.MAX_AGE_MS
+        elapsed += Staleness.MAX_AGE_MS.milliseconds
+        assertEquals(begin, panelStatus(vm.state.value, nu).staleSince)
+        antwoord = tweede
+        vm.refresh()
+        assertEquals(tweede, vm.state.value.currentValue(nu))
+
+        elapsed += 1.milliseconds
+        nu = begin
+        antwoord = eerste
+        vm.refresh()
+        val bevestigd = vm.runAction(actie)
+        val herhaald = vm.retryJob(7)
+        assertEquals(0 to 0, repo.actions.size to repo.controls.size)
+        assertFalse(bevestigd)
+        assertFalse(herhaald)
+        assertEquals(begin, panelStatus(vm.state.value, nu).staleSince)
+
+        nu = begin + Staleness.MAX_AGE_MS
+        antwoord = tweede
+        vm.refresh()
+        assertTrue(vm.runAction(actie))
+        assertTrue(vm.retryJob(8))
+        assertEquals(listOf(actie.path), repo.actions)
+        assertEquals(listOf("retry_job" to mapOf("job_id" to JsonPrimitive(8L))), repo.controls)
+    }
+
+    @Test fun tussenrapportVerlengtDeResterendeGeldigheidNiet() {
+        var nu = begin + Staleness.MAX_AGE_MS - 10
+        val eerste = rapport(begin)
+        var antwoord = eerste
+        val repo = FakeRepo().apply { statusResult = { antwoord } }
+        val vm = StatusViewModel(repo, clock = { nu }, elapsed = elapsed)
+        vm.refresh()
+
+        elapsed += 5.milliseconds
+        nu += 5
+        antwoord = rapport(nu)
+        vm.refresh()
+        assertEquals(antwoord, vm.state.value.currentValue(nu))
+
+        nu = begin
+        antwoord = eerste
+        vm.refresh()
+        assertEquals(eerste, vm.state.value.currentValue(nu))
+        elapsed += 5.milliseconds
+        assertEquals(begin, panelStatus(vm.state.value, nu).staleSince)
     }
 
     @Test fun ontbrekendeNoodstopmetingIsOnbekend() {
