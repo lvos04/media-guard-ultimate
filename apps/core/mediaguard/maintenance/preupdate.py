@@ -1640,6 +1640,11 @@ def _source_state(core: Path, rel: str, *, strict_wal: bool = True, record_conte
                 proof = {}
                 if record_content:
                     proof["opvolging"] = content_proof(conn, stand["tabellen"])
+                    if rel == f"{core.name}/mediaguard.db" and conn.execute(
+                        "SELECT 1 FROM pragma_table_info('sessions') WHERE name='last_seen_at'"
+                    ).fetchone():
+                        proof["sessietijden"] = {str(nr): tijd for nr, tijd in conn.execute(
+                            "SELECT rowid,last_seen_at FROM sessions")}
                     if wal.frames and wal.cycle is not None:
                         proof["wal_cyclus"] = list(wal.cycle)
                 digest = _regular_digest(main)
@@ -1759,7 +1764,7 @@ def _later_cycle(previous, current) -> bool:
 
 
 def _checkpoint_met_herstelmelding(db: sqlite3.Connection, oud: dict, nieuw: dict,
-                                  aanvraag: dict) -> bool:
+                                  aanvraag: dict, sessietijden: dict | None = None) -> bool:
     voor = oud["tabellen"].get("audit_events")
     na = nieuw["tabellen"].get("audit_events")
     if not voor or not na or na["rijen"] <= voor["rijen"]:
@@ -1775,7 +1780,8 @@ def _checkpoint_met_herstelmelding(db: sqlite3.Connection, oud: dict, nieuw: dic
         (voor["hoogste"], voor["hoogste"], aanvraag.get("set"), aanvraag.get("by"),
          aanvraag.get("voorbereiding"), aanvraag.get("requested_at")),
     ).fetchone()
-    return melding is not None and _logical_state(db, audit_vanaf_weglaten=melding[0]) == oud
+    return melding is not None and _logical_state(
+        db, audit_vanaf_weglaten=melding[0], sessietijden=sessietijden) == oud
 
 
 def _verify_successor(core: Path, work: Path, old: dict, new: dict,
@@ -1791,7 +1797,8 @@ def _verify_successor(core: Path, work: Path, old: dict, new: dict,
         if (aanvraag and old["wal_frames"] and not wal.frames
                 and old["bestand"] == f"{core.name}/mediaguard.db"
                 and old.get("hoofdbestand_id") == new["hoofdbestand_id"]
-                and _checkpoint_met_herstelmelding(current, old["stand"], new["stand"], aanvraag)):
+                and _checkpoint_met_herstelmelding(current, old["stand"], new["stand"], aanvraag,
+                                                   old.get("sessietijden"))):
             return
         # Een oudere schrijver kan zijn laatste taakwijziging al in het hoofdbestand
         # hebben vastgelegd. Vergelijk dan elke taak op identiteit en eigen voortgang.
@@ -1928,7 +1935,26 @@ def _update_entries(core: Path, archive: Path) -> dict[str, tuple[Path, int, str
     return entries
 
 
-def _logical_state(conn: sqlite3.Connection, *, audit_vanaf_weglaten: int | None = None) -> dict:
+def _sessies_bij_aanvraag(rows: sqlite3.Cursor, tijden: dict) -> Iterator[tuple]:
+    # Een statusopvraag mag alleen de meettijd van dezelfde sessie vooruitzetten.
+    # Gebruik de oorspronkelijke tijd bij het hashen. Alle andere velden tellen ongewijzigd mee.
+    kolom = next(i for i, veld in enumerate(rows.description) if veld[0] == "last_seen_at")
+    for rij in rows:
+        nr, tijd = str(rij[0]), rij[kolom]
+        if nr in tijden and tijd != tijden[nr] and isinstance(tijd, str):
+            oud = tijden[nr]
+            try:
+                nieuw = datetime.fromisoformat(tijd)
+                if (nieuw.tzinfo is not None
+                        and (oud is None or nieuw > datetime.fromisoformat(oud))):
+                    rij = (*rij[:kolom], oud, *rij[kolom + 1:])
+            except (TypeError, ValueError):
+                pass  # Een afwijkende of onvergelijkbare meettijd blijft zichtbaar in de hash.
+        yield rij
+
+
+def _logical_state(conn: sqlite3.Connection, *, audit_vanaf_weglaten: int | None = None,
+                   sessietijden: dict | None = None) -> dict:
     """Tel de rijen en hun hoogste rij-/eventnummer in dezelfde stand als de inhoudshash."""
     digest = hashlib.sha256()
     tables_state = {}
@@ -1963,8 +1989,10 @@ def _logical_state(conn: sqlite3.Connection, *, audit_vanaf_weglaten: int | None
         ).fetchone()
         tables_state[name] = {"rijen": count, "hoogste": position}
         # Een tabelscan leest de B-boom op rowid of, bij WITHOUT ROWID, op primaire sleutel.
-        for row in conn.execute(
-                f"SELECT {fields} FROM {quoted} NOT INDEXED{filter_}", waarden):  # noqa: S608
+        rows = conn.execute(f"SELECT {fields} FROM {quoted} NOT INDEXED{filter_}",  # noqa: S608
+                            waarden)
+        for row in (_sessies_bij_aanvraag(rows, sessietijden)
+                    if name == "sessions" and sessietijden and "last_seen_at" in columns else rows):
             feed(row)
     state = {"tabellen": tables_state, "inhoud": digest.hexdigest()}
     if "sqlite_sequence" in tables_state:

@@ -462,12 +462,16 @@ def test_checkpoint_met_extra_auditregel(tmp_path, monkeypatch):
 def _controleer_terugzetting(tmp_path, monkeypatch, *, extra_audit):
     from fastapi.testclient import TestClient
 
+    from mediaguard import auth
     from mediaguard.app import create_app
     from mediaguard.config import load_settings
 
     config = tmp_path / "config"
     core_dir = config / "core"
     monkeypatch.setenv("MG_AIO_SUPERVISOR", "1")  # de AIO zet dit voor core
+    aanmelding = datetime.now(UTC).replace(second=0, microsecond=0)
+    latere_activiteit = (aanmelding + timedelta(minutes=1)).isoformat()
+    monkeypatch.setattr(auth, "utcnow", aanmelding.isoformat)
     settings = load_settings(data_dir=core_dir, staging_dir=tmp_path / "staging",
                              quarantine_dir=tmp_path / "q", start_background=False)
     app = create_app(settings)
@@ -496,6 +500,7 @@ def _controleer_terugzetting(tmp_path, monkeypatch, *, extra_audit):
             if extra_audit:
                 maint.audit(ctx.db, actor="proef", action="proef.na_ontvangst",
                             target_type="backup")
+                monkeypatch.setattr(auth, "utcnow", lambda: latere_activiteit)
             assert "versie 1.2.0" in r.json()["message_nl"]
             # live database niet aangeraakt; kopieën staan klaar; zichtbaar in 'Wacht op jou'
             assert ctx.config.value("ui.theme") == "dark"
@@ -520,6 +525,8 @@ def _controleer_terugzetting(tmp_path, monkeypatch, *, extra_audit):
             assert previous.execute(
                 "SELECT count(*) FROM audit_events WHERE action='proef.na_ontvangst'"
             ).fetchone() == (1,)
+            assert previous.execute("SELECT last_seen_at FROM sessions").fetchall() == [
+                (latere_activiteit,)]
         assert json.loads(previous.execute(
             "SELECT value_json FROM settings_values WHERE key='ui.theme'"
         ).fetchone()[0]) == "dark"

@@ -329,16 +329,22 @@ def behoud(werk):
         assert een.keys() == twee.keys() == {"singleton", "generation"}
         assert len(een["generation"]) == len(twee["generation"]) == 16
         assert een["generation"] != twee["generation"]
-        # Beide upgrades maken voor het eerst een eigen generatie voor het back-updoel.
-        assert "offsite_target_generation" not in voor
-        generaties = []
-        for meting in (na, weer):
-            (rij,) = meting.pop("offsite_target_generation").elements()
-            doel = dict(rij)
-            generatie = doel.pop("generation")
-            assert doel == {"id": 1} and re.fullmatch(r"[0-9a-f]{32}", generatie)
-            generaties.append(generatie)
-        assert generaties[0] != generaties[1]
+        # Beide onafhankelijke upgrades maken voor het eerst een eigen generatie per doel.
+        for tabel, veld in (("offsite_target_generation", "generation"),
+                            ("hub_pool_revision", "revision")):
+            assert tabel not in voor
+            generaties = []
+            for meting, installatie in ((na, conf), (weer, terug)):
+                (rij,) = meting.pop(tabel).elements()
+                doel = dict(rij)
+                generatie = doel.pop(veld)
+                assert doel == {"id": 1} and re.fullmatch(r"[0-9a-f]{32}", generatie)
+                with closing(sqlite3.connect(installatie.db_path.as_uri() + "?mode=ro",
+                                             uri=True)) as heropend:
+                    assert heropend.execute(f"SELECT {veld} FROM {tabel} WHERE id=1").fetchone() == (
+                        generatie,)
+                generaties.append(generatie)
+            assert generaties[0] != generaties[1]
         assert r1 == r2 and weer == na and all(m == "GET" for m, _ in kijk.verzoeken)
     print(
         f"{len(voor)} oorspronkelijke domeintabellen gelijk; {sum(bool(v) for v in voor.values())} gevuld"

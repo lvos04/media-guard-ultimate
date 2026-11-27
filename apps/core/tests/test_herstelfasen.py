@@ -510,7 +510,8 @@ def test_wal_opvolging_van_encoderwerk(tmp_path, installatie, situatie):
 
 
 @pytest.mark.parametrize("geval", ["gekoppeld", "historisch", "andere_poging", "te_oud", "taak",
-                                   "latere_audit", "oude_audit_gewijzigd"])
+                                   "latere_audit", "oude_audit_gewijzigd", "sessie_vooruit",
+                                   "sessie_terug", "sessie_gewijzigd"])
 def test_checkpoint_met_ontvangstregel_verklaart_de_hele_database(geval):
     tijd = "2026-01-02T12:00:00Z"
     aanvraag = {"set": "proefset", "by": "beheerder", "voorbereiding": "poging",
@@ -520,6 +521,8 @@ def test_checkpoint_met_ontvangstregel_verklaart_de_hele_database(geval):
                    "target_id, actor, correlation_id, ts)")
         db.execute("CREATE TABLE job(id INTEGER PRIMARY KEY, percent)")
         db.execute("INSERT INTO job VALUES(1, 92)")
+        db.execute("CREATE TABLE sessions(id INTEGER PRIMARY KEY, last_seen_at, user_id)")
+        db.execute("INSERT INTO sessions VALUES(1,?,1)", (tijd,))
         db.execute("INSERT INTO audit_events(id,action) VALUES(1,'bestaand')")
         oud = preupdate._logical_state(db)
         correlatie = {"historisch": None, "te_oud": None, "andere_poging": "eerder"}.get(
@@ -533,9 +536,14 @@ def test_checkpoint_met_ontvangstregel_verklaart_de_hele_database(geval):
             db.execute("INSERT INTO audit_events(id,action) VALUES(3,'eerste'),(4,'tweede')")
         if geval == "oude_audit_gewijzigd":
             db.execute("UPDATE audit_events SET action='gewijzigd' WHERE id=1")
+        if geval.startswith("sessie_"):
+            db.execute("UPDATE sessions SET last_seen_at=?", (
+                "2026-01-02T11:59:00Z" if geval == "sessie_terug" else "2026-01-02T12:01:00Z",))
+        if geval == "sessie_gewijzigd":
+            db.execute("UPDATE sessions SET user_id=2")
         nieuw = preupdate._logical_state(db)
-        assert preupdate._checkpoint_met_herstelmelding(db, oud, nieuw, aanvraag) == (
-            geval in {"gekoppeld", "historisch", "latere_audit"})
+        assert preupdate._checkpoint_met_herstelmelding(db, oud, nieuw, aanvraag, {"1": tijd}) == (
+            geval in {"gekoppeld", "historisch", "latere_audit", "sessie_vooruit"})
         assert preupdate._logical_state(db) == nieuw
 
 
