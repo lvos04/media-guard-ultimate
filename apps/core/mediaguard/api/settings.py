@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from mediaguard import hub_pool
 from mediaguard.audit import audit
 from mediaguard.auth import Principal, require_admin, require_operator, require_viewer
 from mediaguard.context import AppContext, get_app_context
@@ -21,6 +22,7 @@ def register_settings() -> None:
     from mediaguard.settings_registry import FORMAT_VALIDATORS, REGISTRY
 
     FORMAT_VALIDATORS[HUB_URL_KEY] = validate_hub_url
+    FORMAT_VALIDATORS[hub_pool.URL_KEY] = hub_pool.validate_url
     REGISTRY.register(
         SettingDef("ui.theme", "enum", "system", "Systeem", "Thema", "Theme",
                    choices=("dark", "light", "system"),
@@ -35,6 +37,12 @@ def register_settings() -> None:
                            "Leeg = geen link 'Terug naar de Hub'.",
                    help_en="Format: http(s)://<NAS address>:<port>. No localhost. "
                            "Empty = no 'Back to the Hub' link."),
+        SettingDef(hub_pool.URL_KEY, "string", "", "Systeem", "Hub-adres voor poolstatus",
+                   "Hub address for pool status",
+                   help_nl="Kies de HTTPS-Hub en sla het pooltoken op bij Geheimen als "
+                           "hub:poolstatus. Leegmaken ontkoppelt deze poolbron.",
+                   help_en="Choose the HTTPS Hub and store its pool token under Secrets as "
+                           "hub:poolstatus. Clear the address to disconnect this pool source."),
         # ui.default_locale ('Taal') is weg (punt 39): de taal kies je per gebruiker in het
         # profielmenu; de globale instelling deed niets.
         SettingDef("jobs.max_concurrency", "int", 4, "Wachtrij & workers",
@@ -250,9 +258,12 @@ def secrets_health(_: Principal = Depends(require_viewer),
 @router.put("/secrets/{name}")
 def secret_put(name: str, body: SecretBody, principal: Principal = Depends(require_admin),
                ctx: AppContext = Depends(get_app_context)) -> dict[str, Any]:
-    if not name.startswith(ALLOWED_SECRET_PREFIXES):
+    if name != hub_pool.SECRET and not name.startswith(ALLOWED_SECRET_PREFIXES):
         raise HTTPException(422, "Onbekende geheimnaam")
-    ctx.secrets.set(name, body.value, principal.actor)
+    with ctx.db.transaction():
+        if name == hub_pool.SECRET and not hub_pool.origin(ctx):
+            raise HTTPException(422, "Kies eerst het HTTPS-adres voor de poolstatus.")
+        ctx.secrets.set(name, body.value, principal.actor)
     audit(ctx.db, actor=principal.actor, action="secret.set", target_type="secret",
           target_id=name)
     return {"name": name, "is_set": True}

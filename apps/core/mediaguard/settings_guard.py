@@ -39,6 +39,7 @@ ADMIN_ONLY_KEYS: frozenset[str] = frozenset({
     # waar de link 'Terug naar de Hub' iedereen naartoe stuurt (Peil O-11): een operator of de
     # app-sleutel mag gebruikers niet naar een andere server laten klikken (ADR-0020)
     "system.hub_url",
+    "system.pool_hub_url",
     # hoe lang sporen bewaard blijven: een operator mag zijn eigen acties niet laten wissen
     "maintenance.retention_days_audit",
     "maintenance.retention_days_history",

@@ -256,8 +256,8 @@ INCIDENT_CODES = frozenset({
     "quarantine.full", "recovery.not_ready", "routing.review", "security.secret_key_mismatch",
     "security.tunnel_untrusted", "security.twofa_off", "seerr.repair_test_failed",
     "seerr.sync_failed", "settings.unsafe", "storage.full_soon", "storage.pool_degraded",
-    "storage.typo", "storage.write_probe", "system.emergency_stop", "system.update_available",
-    "tasks.stale",
+    "storage.pool_unknown", "storage.typo", "storage.write_probe", "system.emergency_stop",
+    "system.update_available", "tasks.stale",
 })
 
 
@@ -344,7 +344,8 @@ async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
                 reason = "bron_onbereikbaar"
             # Bij een gezonde pool ontbreekt een incidentrij. Ook een lege
             # incidentlijst kan alleen actueel zijn bij een recente bronmeting.
-            pool_rows = [r for r in visible if r["key"] == "storage.pool_degraded"]
+            pool_rows = [r for r in visible if r["key"] in {"storage.pool_degraded",
+                                                            "storage.pool_unknown"}]
             if pool_rows:
                 pool_at = instant(pool_rows[0].get("observed_at"))
                 reachable = pool_rows[0].get("source_reachable")

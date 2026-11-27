@@ -195,7 +195,8 @@
       "154_outbox_generation",
       "155_job_evidence_snapshot",
       "156_outbox_cursor_history",
-      "157_connector_evidence"
+      "157_connector_evidence",
+      "158_hub_poolbron"
     ],
     "encoder": [
       1,

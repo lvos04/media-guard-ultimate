@@ -303,7 +303,9 @@ def tasks_item(ctx: AppContext, now: datetime | None = None) -> list[dict[str, A
 
 
 def pool_item(ctx: AppContext) -> list[dict[str, Any]]:
+    from mediaguard import hub_pool
     from mediaguard.storage_forecast import (
+        POOL_REQUEST,
         POOL_STATE,
         degraded_pools,
         pool_names_nl,
@@ -311,6 +313,23 @@ def pool_item(ctx: AppContext) -> list[dict[str, Any]]:
     )
 
     state = ctx.state_get(POOL_STATE, {}) or {}
+    if not ctx.secrets.exists("truenas:apikey"):
+        if hub_pool.origin(ctx):
+            if (state.get("source") != "hub" or state.get("reachable") is not True
+                    or not ctx.secrets.has(hub_pool.SECRET)
+                    or not state.get("request_id")
+                    or state["request_id"] != ctx.state_get(POOL_REQUEST)
+                    or not hub_pool.fresh(state.get("observed_at"), state.get("geldig_tot"))):
+                item = _item("storage.pool_unknown", "warning", "Poolstatus van de Hub onbekend",
+                             "Opruimen is gepauzeerd. Controleer de meting en het poolleesrecht.",
+                             "/systeem#opslag", push=True)
+                if observation_read.get():
+                    item["observed_at"] = (pool_observed_at(state)
+                                           if state.get("source") == "hub" else None)
+                    item["source_reachable"] = False
+                return [item]
+        elif state.get("source") == "hub":
+            return []
     degraded = degraded_pools(state)
     if not degraded:
         return []

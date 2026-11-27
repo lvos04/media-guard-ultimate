@@ -408,7 +408,10 @@ def test_schema_155_zonder_herkenbare_lezer_blijft_intact(before_evidence, monke
             database.execute("UPDATE instances SET suspended=0 WHERE archived=0")
         else:
             database.initialize()
-            assert database.fetch_one("SELECT MAX(version) FROM schema_migrations")[0][:3] == "157"
+            versions = database.fetch_dicts(
+                "SELECT version FROM schema_migrations WHERE version >= '157' ORDER BY version")
+            assert [row["version"] for row in versions] == [
+                "157_connector_evidence", "158_hub_poolbron"]
             return
         before = database_contents(settings.db_path)
         with pytest.raises(RuntimeError, match="kernrevisie"):

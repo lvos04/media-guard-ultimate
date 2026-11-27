@@ -577,3 +577,221 @@ def test_pool_is_measured_even_with_monitoring_off(ctx):
     _truenas(ctx, [{"name": "voorbeeldpool", "status": "DEGRADED", "healthy": False, "scan": {}}])
     assert asyncio.run(monitor.run_once(ctx)) == {"skipped": "uit"}
     assert [p["name"] for p in storage_forecast.pool_degraded(ctx)] == ["voorbeeldpool"]
+
+
+def test_poolhub_bevestigt_brontijd_en_verval_bij_opruimen(ctx, poolhub):
+    from mediaguard import storage_forecast as storage
+    from mediaguard.recovery.service import purge_paused_reason
+
+    state = asyncio.run(storage.refresh_pool(ctx))
+    assert poolhub["calls"] == 1 and state["source"] == "hub" and state["reachable"]
+    assert storage.pool_observed_at(state) == poolhub["body"]["observed_at"]
+    assert purge_paused_reason(ctx) is None
+    assert storage.pool_observed_at(asyncio.run(storage.refresh_pool(ctx))) == state["observed_at"]
+    ctx.state_set(storage.POOL_STATE, {**ctx.state_get(storage.POOL_STATE), "geldig_tot": _ago()})
+    assert "onbekend" in purge_paused_reason(ctx)
+    assert monitor.pool_item(ctx)[0]["key"] == "storage.pool_unknown"
+
+
+@pytest.mark.parametrize("overrides", [
+    {"status": "unknown", "reason_code": "meting_ontbreekt", "items": [], "geldig_tot": None},
+    {"items": []}, {"kind": "datasets"}, {"observed_at": None}, {"geldig_tot": None},
+    {"observed_at": "zonder tijd"}, {"observed_at": "2026-01-01T00:00:00"},
+    {"next_cursor": "vervolg"}, {"items": [{"status": "ONLINE", "gezond": "true"}]},
+    {"items": [{"status": "ONLINE", "gezond": True}, {}]},
+])
+def test_poolhub_onvolledig_pauzeert(ctx, poolhub, overrides):
+    from mediaguard import storage_forecast as storage
+
+    poolhub["body"].update(overrides)
+    state = asyncio.run(storage.refresh_pool(ctx))
+    assert not state["reachable"]
+    assert "onbekend" in storage.pool_cleanup_pause_reason(ctx, quarantine=True)
+
+
+@pytest.mark.parametrize(("field", "age"), [
+    ("observed_at", 901), ("observed_at", -30), ("geldig_tot", 1),
+])
+def test_poolhub_te_oud_toekomst_of_verlopen(ctx, poolhub, field, age):
+    from mediaguard import storage_forecast as storage
+
+    poolhub["body"][field] = _ago(seconds=age)
+    assert not asyncio.run(storage.refresh_pool(ctx))["reachable"]
+    assert "onbekend" in storage.pool_cleanup_pause_reason(ctx)
+
+
+@pytest.mark.parametrize("code", [401, 403, 302, 503])
+def test_poolhub_weigering_na_gezond_pauzeert(client, ctx, poolhub, code, caplog):
+    from mediaguard import storage_forecast as storage
+
+    asyncio.run(storage.refresh_pool(ctx))
+    assert storage.pool_cleanup_pause_reason(ctx) is None
+    poolhub.update(code=code, body={"detail": ctx.secrets.get("hub:poolstatus")})
+    state = asyncio.run(storage.refresh_pool(ctx))
+    assert not state["reachable"] and "onbekend" in storage.pool_cleanup_pause_reason(ctx)
+    assert poolhub["calls"] == 2
+    geweigerd = client.post("/api/v1/quarantine/purge", json={"confirm": True})
+    assert geweigerd.status_code == 409 and "onbekend" in geweigerd.json()["detail"]
+    gelekt = ctx.secrets.get("hub:poolstatus") in (json.dumps(state) + caplog.text + geweigerd.text)
+    assert not gelekt
+
+
+def test_poolhub_alle_pools_bepalen_de_pauze(ctx, poolhub):
+    from mediaguard import storage_forecast as storage
+
+    poolhub["body"]["items"] *= 201
+    poolhub["body"]["items"].append({"status": "DEGRADED", "gezond": True})
+    asyncio.run(storage.refresh_pool(ctx))
+    reason = storage.pool_cleanup_pause_reason(ctx)
+    assert "DEGRADED" in reason and "202" in reason
+    poolhub["body"]["items"][-1] = {"status": "ONLINE", "gezond": False}
+    asyncio.run(storage.refresh_pool(ctx))
+    assert "niet gezond" in storage.pool_cleanup_pause_reason(ctx)
+
+
+def test_poolhub_sleutel_vervalt_bij_adreswisseling(ctx, poolhub):
+    from mediaguard import hub_pool
+    from mediaguard import storage_forecast as storage
+
+    asyncio.run(storage.refresh_pool(ctx))
+    ctx.config.set("global", "", hub_pool.URL_KEY, "https://andere-hub.example.test", "test")
+    assert not ctx.secrets.exists(hub_pool.SECRET)
+    assert "onbekend" in storage.pool_cleanup_pause_reason(ctx)
+    ctx.config.set("global", "", hub_pool.URL_KEY, "https://hub.example.test", "test")
+    assert not asyncio.run(storage.refresh_pool(ctx))["reachable"] and poolhub["calls"] == 1
+    ctx.config.reset("global", "", hub_pool.URL_KEY)
+    assert storage.pool_cleanup_pause_reason(ctx) is None
+
+
+def test_poolhub_vervangen_token_trekt_lopende_meting_in(ctx, poolhub):
+    from mediaguard import hub_pool
+    from mediaguard import storage_forecast as storage
+
+    original = ctx.services["hub_pool_transport"]
+
+    async def replace(request):
+        response = await original.handle_async_request(request)
+        ctx.secrets.set(hub_pool.SECRET, "vervangen", "test")
+        return response
+
+    ctx.services["hub_pool_transport"] = httpx.MockTransport(replace)
+    forecast = asyncio.run(storage.storage_forecast(None, ctx))
+    assert "onbekend" in forecast["truenas"]["error_nl"]
+    assert "onbekend" in storage.pool_cleanup_pause_reason(ctx)
+
+
+def test_poolhub_ontbrekend_recht_en_directe_bron(ctx, poolhub):
+    from mediaguard import hub_pool
+    from mediaguard import storage_forecast as storage
+
+    ctx.secrets.delete(hub_pool.SECRET)
+    assert not asyncio.run(storage.refresh_pool(ctx))["reachable"]
+    assert "onbekend" in storage.pool_cleanup_pause_reason(ctx) and poolhub["calls"] == 0
+    _truenas(ctx, [{"name": "voorbeeldpool", "status": "ONLINE", "healthy": True}])
+    asyncio.run(storage.refresh_pool(ctx))
+    assert storage.pool_cleanup_pause_reason(ctx) is None and poolhub["calls"] == 0
+    _truenas(ctx, None)
+    asyncio.run(storage.refresh_pool(ctx))
+    assert "onbekend" in storage.pool_cleanup_pause_reason(ctx) and poolhub["calls"] == 0
+
+
+def test_poolhub_beheer_via_bestaande_instellingen(client, viewer_client, anon_client, ctx):
+    from mediaguard import hub_pool
+
+    secret = "/api/v1/settings/secrets/" + hub_pool.SECRET
+
+    def set_url(actor, url):
+        return actor.patch("/api/v1/settings/scoped",
+                           json={"changes": [{"key": hub_pool.URL_KEY, "value": url}]})
+
+    value = {"value": "proefwaarde"}
+    assert client.put(secret, json=value).status_code == 422
+    assert set_url(client, "http://hub.example.test").status_code == 422
+    assert set_url(viewer_client, "https://hub.example.test").status_code == 403
+    operator = client.post("/api/v1/auth/api-keys", json={"name": "poolproef", "role": "operator"})
+    operator.raise_for_status()
+    anon_client.headers["X-Api-Key"] = operator.json()["key"]
+    assert set_url(anon_client, "https://hub.example.test").status_code == 403
+    assert set_url(client, "https://hub.example.test").status_code == 200
+    assert viewer_client.put(secret, json=value).status_code == 403
+    stored = client.put(secret, json=value)
+    assert stored.status_code == 200 and stored.json() == {"name": hub_pool.SECRET, "is_set": True}
+    listing = client.get("/api/v1/settings/secrets")
+    assert listing.status_code == 200 and value["value"] not in listing.text
+    assert client.delete(secret).status_code == 200
+    assert hub_pool.origin(ctx) and not ctx.secrets.has(hub_pool.SECRET)
+
+
+async def test_poolhub_geweigerd_dns_adres_krijgt_geen_token(ctx, monkeypatch):
+    import socket
+    import struct
+
+    from mediaguard import hub_pool
+    from mediaguard import storage_forecast as storage
+
+    ctx.config.set("global", "", hub_pool.URL_KEY, "https://hub.example.test", "test")
+    ctx.secrets.set(hub_pool.SECRET, "proefwaarde", "test")
+
+    async def resolve(*args, **kwargs):
+        loopback = socket.inet_ntoa(struct.pack("!I", socket.INADDR_LOOPBACK))
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (loopback, 443))]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", resolve)
+    ctx.services["hub_pool_transport"] = httpx.MockTransport(lambda _: pytest.fail("Hub benaderd"))
+    assert not (await storage.refresh_pool(ctx))["reachable"]
+
+
+@pytest.mark.parametrize("direct", [None, [{"name": "voorbeeldpool", "status": "DEGRADED",
+                                            "healthy": False}]])
+def test_poolhub_gezond_kan_directe_pauze_niet_opheffen(ctx, poolhub, direct):
+    from mediaguard import storage_forecast as storage
+
+    _truenas(ctx, direct)
+    asyncio.run(storage.refresh_pool(ctx))
+    assert poolhub["calls"] == 0
+    assert ("onbekend" if direct is None else "DEGRADED") in storage.pool_cleanup_pause_reason(ctx)
+
+
+def test_poolhub_na_herstart_zonder_token_blijft_gepauzeerd(ctx, settings, poolhub):
+    from mediaguard import hub_pool
+    from mediaguard import storage_forecast as storage
+    from mediaguard.app import create_app
+
+    asyncio.run(storage.refresh_pool(ctx))
+    ctx.secrets.delete(hub_pool.SECRET)
+    asyncio.run(storage.shutdown(ctx))
+    nieuw = create_app(settings).state.ctx
+    try:
+        asyncio.run(storage.startup(nieuw))
+        assert "onbekend" in storage.pool_cleanup_pause_reason(nieuw)
+        assert not asyncio.run(storage.refresh_pool(nieuw))["reachable"]
+    finally:
+        asyncio.run(storage.shutdown(nieuw))
+        nieuw.db.close()
+
+
+def test_alleen_teruglink_activeert_geen_poolbron(ctx):
+    from mediaguard import storage_forecast as storage
+
+    ctx.config.set("global", "", "system.hub_url", "https://hub.example.test", "test")
+    ctx.services["hub_pool_transport"] = httpx.MockTransport(lambda _: pytest.fail("Hub benaderd"))
+    assert asyncio.run(storage.refresh_pool(ctx)) == {}
+    assert storage.pool_cleanup_pause_reason(ctx, quarantine=True) is None
+
+
+def test_poolhub_grens_van_900_seconden_en_einde_geldigheid(monkeypatch):
+    from mediaguard import hub_pool
+
+    nu = datetime.now(UTC)
+
+    class Klok(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return nu
+
+    monkeypatch.setattr(hub_pool, "datetime", Klok)
+    grens = nu - timedelta(seconds=900)
+    einde = (nu + timedelta(seconds=1)).isoformat()
+    assert hub_pool.fresh(grens.isoformat(), einde)
+    assert not hub_pool.fresh((grens - timedelta(microseconds=1)).isoformat(), einde)
+    assert not hub_pool.fresh(grens.isoformat(), nu.isoformat())

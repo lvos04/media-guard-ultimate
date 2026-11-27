@@ -90,3 +90,46 @@ def plaats_supportsleutel(ctx):  # type: ignore[no-untyped-def]
 def anon_client(app) -> Iterator[TestClient]:  # type: ignore[no-untyped-def]
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def poolhub(ctx, monkeypatch):
+    """Lokale simulator van de dienstprojectie uit contract 1.4, met één bevestigd poolrecht."""
+    from datetime import UTC, datetime, timedelta
+
+    import httpx
+
+    from mediaguard import hub_pool
+
+    now = datetime.now(UTC)
+    token = secrets.token_urlsafe()
+    ctx.config.set("global", "", hub_pool.URL_KEY, "https://hub.example.test", "test")
+    ctx.secrets.set(hub_pool.SECRET, token, "test")
+    sim = {"code": 200, "calls": 0, "body": {
+        "kind": "pools", "status": "ok", "reason_code": None,
+        "observed_at": (now - timedelta(seconds=60)).isoformat(),
+        "geldig_tot": (now + timedelta(seconds=120)).isoformat(),
+        "items": [{"status": "ONLINE", "gezond": True}],
+    }}
+
+    async def address(url):
+        assert url.host == "hub.example.test"
+        return "peer.example.test"
+
+    def answer(request):
+        sim["calls"] += 1
+        assert request.method == "GET"
+        assert str(request.url) == "https://peer.example.test/api/v1/inventory/pools"
+        assert request.headers["Host"] == request.extensions["sni_hostname"] == "hub.example.test"
+        assert request.headers["Accept"] == "application/json"
+        assert not request.content and "Cookie" not in request.headers
+        assert "X-CSRF-Token" not in request.headers
+        if request.headers.get("Authorization") != f"Bearer {token}":
+            return httpx.Response(401)
+        if sim["code"] == 302:
+            return httpx.Response(302, headers={"Location": "https://andere-hub.example.test"})
+        return httpx.Response(sim["code"], json=sim["body"])
+
+    monkeypatch.setattr(hub_pool, "_address", address)
+    ctx.services["hub_pool_transport"] = httpx.MockTransport(answer)
+    return sim

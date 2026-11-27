@@ -27,7 +27,7 @@ from uuid import uuid4
 import httpx
 from fastapi import APIRouter, Depends
 
-from mediaguard import pool_workers
+from mediaguard import hub_pool, pool_workers
 from mediaguard.auth import Principal, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import utcnow
@@ -181,12 +181,14 @@ POOL_REQUEST = "truenas_pool_request_v1"
 _POOL_PIPE = "truenas_pool_pipe"
 _DISCONNECTED = "truenas_pool_disconnected"
 _REVOKED = b"!"  # komt nooit voor in een hexadecimale opdracht-ID
-POOL_MAX_AGE = timedelta(seconds=900)
+POOL_MAX_AGE = hub_pool.MAX_AGE
 
 
 def pool_observed_at(state: dict[str, Any]) -> str | None:
     """Tijd van de laatste geslaagde meting, ook na een latere mislukte controle."""
-    return state.get("checked_at") if state.get("reachable") is True else state.get("observed_at")
+    if state.get("source") == "hub" or state.get("reachable") is not True:
+        return state.get("observed_at")
+    return state.get("checked_at")
 
 
 def degraded_pools(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -347,8 +349,8 @@ def _current_request(ctx: AppContext, request_id: str) -> bool:
 def _start_pool_request(ctx: AppContext, *, skip_unconfigured: bool = False) -> str | None:
     _revoke_pool_request(ctx)
     try:
-        if skip_unconfigured and not ctx.secrets.exists("truenas:apikey") and not ctx.state_get(
-                POOL_STATE):
+        if (skip_unconfigured and not ctx.secrets.exists("truenas:apikey")
+                and not hub_pool.origin(ctx) and not ctx.state_get(POOL_STATE)):
             vote = ctx.services.get(pool_workers.SERVICE)
             if _DISCONNECTED in ctx.services or (vote is not None and vote.ready is None):
                 with ctx.db.startup_lock():
@@ -379,8 +381,16 @@ def record_pool(ctx: AppContext, health: dict[str, Any] | None, *,
         if (request_id is None or ctx.state_get(POOL_REQUEST) != request_id
                 or not _current_request(ctx, request_id)):
             return prev
-        state = {} if health is None else {
-            **_pool_state(prev, health, checked_at or utcnow()), "request_id": request_id}
+        state = {}
+        if health is not None:
+            same_source = health.get("source") == prev.get("source")
+            state = _pool_state(prev if same_source else {}, health, checked_at or utcnow())
+            state["request_id"] = request_id
+            if health.get("source") == "hub":
+                state["source"] = "hub"
+                if state["reachable"]:
+                    state["observed_at"] = health["observed_at"]
+                    state["geldig_tot"] = health["geldig_tot"]
         if state != prev:
             ctx.state_set(POOL_STATE, state)
         return state
@@ -393,6 +403,12 @@ async def _measure_pool(ctx: AppContext) -> tuple[dict[str, Any] | None, dict[st
     checked_at = utcnow()
     try:
         health = await truenas_health(ctx)
+        if health is None:
+            if not ctx.secrets.exists("truenas:apikey"):
+                health = await hub_pool.read(ctx)
+            elif hub_pool.origin(ctx):
+                health = {"ok": False, "pools": [],
+                          "error_nl": "De directe poolstatus is onbekend."}
     except BaseException:  # ook bij annulering vervalt deze meetopdracht
         _revoke_pool_request(ctx)
         raise
@@ -402,6 +418,10 @@ async def _measure_pool(ctx: AppContext) -> tuple[dict[str, Any] | None, dict[st
         _revoke_pool_request(ctx)
         LOGGER.exception("poolstatus bewaren mislukt")
         state = {}
+    if (health and health.get("source") == "hub" and
+            (state.get("request_id") != request_id or not _fresh_for_cleanup(state))):
+        # Een tijdens het bewaren ingetrokken of verlopen antwoord geeft geen groen op de prognose.
+        health = hub_pool.unknown()
     return health, state
 
 
@@ -446,6 +466,20 @@ def pool_degraded(ctx: AppContext, *, state: dict[str, Any] | None = None) -> li
     return degraded_pools(state) if isinstance(state, dict) else []
 
 
+def _fresh_for_cleanup(state: dict[str, Any]) -> bool:
+    if state.get("source") == "hub":
+        return hub_pool.fresh(state.get("observed_at"), state.get("geldig_tot"))
+    measured = pool_observed_at(state)
+    if not isinstance(measured, str):
+        return False
+    try:
+        instant = datetime.fromisoformat(measured)
+        return (instant.tzinfo is not None
+                and timedelta() <= datetime.now(UTC) - instant <= POOL_MAX_AGE)
+    except (ValueError, OverflowError):
+        return False
+
+
 def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> str | None:
     """Bij een ingestelde sleutel is alleen een verse, gezonde poolmeting voldoende."""
     unknown = "De TrueNAS-poolstatus is onbekend doordat een recente, geldige meting ontbreekt."
@@ -455,18 +489,29 @@ def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> s
     try:
         if vote is not None and vote.unregistered:
             return unknown_worker
-        if not ctx.secrets.exists("truenas:apikey"):
+        direct = ctx.secrets.exists("truenas:apikey")
+        via_hub = not direct and bool(hub_pool.origin(ctx))
+        if via_hub:
+            unknown = hub_pool.UNKNOWN
+        if not direct and not via_hub:
             with ctx.db.startup_lock():
                 if vote is not None and vote.ready is None:
                     _hold_request_pipe(ctx)
                 if not _workers_connected(ctx, new_measurement=True):
                     return unknown_worker
             # De quarantaine respecteerde een laatst bekende zieke pool ook na ontkoppeling.
-            if quarantine and (degraded := pool_degraded(ctx)):
-                return f"TrueNAS-pool {pool_names_nl(degraded)} is niet gezond."
+            if quarantine:
+                previous = ctx.state_get(POOL_STATE, {}) or {}
+                if (isinstance(previous, dict) and previous.get("source") != "hub"
+                        and (degraded := degraded_pools(previous))):
+                    return f"TrueNAS-pool {pool_names_nl(degraded)} is niet gezond."
             return None
-        config = SettingsService(ctx.db, ctx.registry)
-        if not ctx.secrets.get("truenas:apikey") or not config.value("recovery.truenas_url"):
+        if direct:
+            config = SettingsService(ctx.db, ctx.registry)
+            available = ctx.secrets.get("truenas:apikey") and config.value("recovery.truenas_url")
+        else:
+            available = ctx.secrets.has(hub_pool.SECRET)
+        if not available:
             _revoke_pool_request(ctx)
             return unknown
         state = ctx.state_get(POOL_STATE, {})
@@ -486,17 +531,10 @@ def pool_cleanup_pause_reason(ctx: AppContext, *, quarantine: bool = False) -> s
         LOGGER.exception("poolstatus voor opruimen lezen mislukt")
         return unknown_worker if vote is not None and vote.ready is None else unknown
     if (not isinstance(state, dict) or state.get("reachable") is not True
-            or not request_id
+            or (state.get("source") == "hub") != via_hub or not request_id
             or state.get("request_id") != request_id):
         return unknown
-    checked_at = pool_observed_at(state)
-    if not isinstance(checked_at, str):
-        return unknown
-    try:
-        measured = datetime.fromisoformat(checked_at)
-    except ValueError:
-        return unknown
-    if measured.tzinfo is None or not timedelta() <= datetime.now(UTC) - measured <= POOL_MAX_AGE:
+    if not _fresh_for_cleanup(state):
         return unknown
     if not isinstance(state.get("degraded"), list):
         return unknown
@@ -524,6 +562,8 @@ async def storage_forecast(_: Principal = Depends(require_viewer),
         health = None
         if ctx.secrets.exists("truenas:apikey"):
             health = {"ok": False, "pools": [], "error_nl": "Geen geldige poolmeting beschikbaar"}
+        elif hub_pool.origin(ctx):
+            health = hub_pool.unknown()
     data = forecast(ctx)
     data["truenas"] = health
     return data

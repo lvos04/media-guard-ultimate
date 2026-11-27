@@ -1,6 +1,6 @@
 # UI Control Coverage Matrix (Q2.3)
 
-Gegenereerd op 2026-11-09 met `scripts/gen-coverage-matrix.py` uit het instellingenregister van core (230 instellingen; scopes: global, media_type, instance, library, profile, series, movie, season, episode, file, job).
+Gegenereerd op 2026-11-27 met `scripts/gen-coverage-matrix.py` uit het instellingenregister van core (231 instellingen; scopes: global, media_type, instance, library, profile, series, movie, season, episode, file, job).
 
 **Mechanisme.** Elke geregistreerde instelling krijgt automatisch een UI-control: `apps/web/app/(app)/instellingen/page.tsx`
 rendert het volledige schema (`SettingField` in `apps/web/components/mg/setting-field.tsx`) met naam, key, uitleg, effect,
@@ -231,6 +231,7 @@ geheimen gaan via Instellingen › Geheimen (`PUT/DELETE /settings/secrets/{name
 | `seerr.url` | Seerr-URL | string | tekstveld | global | Instellingen › Seerr · /seerr | generiek: render+validatie via schema (E2E-pad gedekt door jobs.max_concurrency) |
 | `logging.level` | Logniveau | enum | keuzelijst | global | Instellingen › Systeem | generiek: render+validatie via schema (E2E-pad gedekt door jobs.max_concurrency) |
 | `system.hub_url` | Hub-adres | string | tekstveld | global | Instellingen › Systeem | generiek: render+validatie via schema (E2E-pad gedekt door jobs.max_concurrency) |
+| `system.pool_hub_url` | Hub-adres voor poolstatus | string | tekstveld | global | Instellingen › Systeem | generiek: render+validatie via schema (E2E-pad gedekt door jobs.max_concurrency) |
 | `system.timezone` | Tijdzone | string | tekstveld | global | Instellingen › Systeem | generiek: render+validatie via schema (E2E-pad gedekt door jobs.max_concurrency) |
 | `ui.theme` | Thema | enum | keuzelijst | global | Instellingen › Systeem | E2E: setup-wizard schrijft ui.theme; themawissel |
 | `resources.av1_cpu_percent` | Maximaal CPU-gebruik voor AV1 | int | getalveld | global | Instellingen › Systeem & prestaties | generiek: render+validatie via schema (E2E-pad gedekt door jobs.max_concurrency) |

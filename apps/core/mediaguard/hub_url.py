@@ -38,7 +38,7 @@ _OCTET = r"(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"
 _IPV4 = re.compile(rf"{_OCTET}(?:\.{_OCTET}){{3}}")
 
 
-def _blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+def blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
     if isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.IPv4Network("0.0.0.0/8"):
@@ -57,7 +57,7 @@ def _host(netloc: str) -> str | None:
             ip6 = ipaddress.IPv6Address(inner)
         except ValueError:
             return None
-        return None if _blocked_ip(ip6) else f"[{inner.lower()}]"
+        return None if blocked_ip(ip6) else f"[{inner.lower()}]"
     host = netloc.rsplit(":", 1)[0] if ":" in netloc else netloc
     host = host.lower()
     if host.endswith("."):
@@ -68,7 +68,7 @@ def _host(netloc: str) -> str | None:
     if _NUMERIC_LABEL.fullmatch(labels[-1]):
         if not _IPV4.fullmatch(host):
             return None
-        return None if _blocked_ip(ipaddress.IPv4Address(host)) else host
+        return None if blocked_ip(ipaddress.IPv4Address(host)) else host
     if not all(_LABEL.fullmatch(label) for label in labels):
         return None
     if host == "localhost" or host.endswith(".localhost"):

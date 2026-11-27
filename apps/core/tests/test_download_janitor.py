@@ -1946,3 +1946,21 @@ def test_name_known_to_client_is_never_orphan(ctx, layout):
     it = ClientItem("sab", "nzb", "Z", "Same.Name", "tv", "/onbekend/Same.Name", active=True)
     J.plan(ctx, _snap(layout, [it]), NOW)
     assert J.plan(ctx, _snap(layout, [it]), NOW + timedelta(days=5)).actions == []
+
+
+@pytest.mark.asyncio
+async def test_poolhub_geweigerd_behoudt_downloads_en_prullenbak(ctx, cleanup_round, request):
+    gatherer, source, trash, sab = cleanup_round
+    # De download en de oude prullenbakboeking bestaan vóór het koppelen van de poolbron.
+    poolhub = request.getfixturevalue("poolhub")
+    poolhub["code"] = 403
+    await storage.refresh_pool(ctx)
+    result = await J.run_once(ctx, gatherer=gatherer)
+    assert "onbekend" in result["summary_nl"]
+    assert result["trashed"] == result["purged"] == result["temp_removed"] == 0
+    assert (source / "video.mkv").is_file() and (trash / "video.mkv").is_file()
+    assert sab.deleted == []
+    poolhub["code"] = 200
+    await storage.refresh_pool(ctx)
+    result = await J.run_once(ctx, gatherer=gatherer)
+    assert result["trashed"] == result["purged"] == 1
