@@ -282,7 +282,12 @@ def list_backups(_: Principal = Depends(require_viewer),
                  ctx: AppContext = Depends(get_app_context)) -> list[dict[str, Any]]:
     """Gewone back-ups én de sets van vóór een update (nieuwste eerst)."""
     out = []
-    for meta in sorted(_backup_dir(ctx).glob("mediaguard-*.json"), reverse=True):
+    try:
+        metadata = sorted((p for p in ctx.settings.backup_dir.iterdir()
+                           if p.match("mediaguard-*.json")), reverse=True)
+    except FileNotFoundError:
+        return []
+    for meta in metadata:
         if ".encode-" in meta.name:
             continue
         try:
@@ -317,7 +322,8 @@ def _pre_update_rows(ctx: AppContext) -> list[dict[str, Any]]:
               if pending else False)
     aio = maint_status.under_supervisor(ctx)
     rows = []
-    for st in preupdate.list_sets(_backup_dir(ctx) / preupdate.FOLDER):
+    folder = ctx.settings.backup_dir / preupdate.FOLDER
+    for st in preupdate.list_sets(folder):
         name = st["name"]
         to_v, from_v = st.get("to_version"), st.get("from_version")
         if to_v:
@@ -328,7 +334,7 @@ def _pre_update_rows(ctx: AppContext) -> list[dict[str, Any]]:
         ok = False
         if st.get("integrity_ok") is True:
             try:
-                preupdate.trial_set(core, _backup_dir(ctx) / preupdate.FOLDER / name)
+                preupdate.trial_set(core, folder / name)
                 ok = True
             except (OSError, sqlite3.Error, RuntimeError, preupdate.SetError,
                     ValueError, TypeError):

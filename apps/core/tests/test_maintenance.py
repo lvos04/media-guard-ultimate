@@ -4,6 +4,17 @@ import io
 import zipfile
 
 
+def test_backuplijst_laat_een_ontbrekende_map_ongemoeid(client, ctx, tmp_path, monkeypatch):
+    map_pad = tmp_path / "nog-niet-aangemaakt" / "backups"
+    monkeypatch.setattr(type(ctx.settings), "backup_dir", property(lambda self: map_pad))
+
+    for _ in range(2):
+        antwoord = client.get("/api/v1/backups")
+        assert antwoord.status_code == 200
+        assert antwoord.json() == []
+        assert not map_pad.parent.exists()
+
+
 def test_backup_create_list_restore(client, ctx):
     ctx.config.set("global", "", "ui.theme", "light", "t")
     meta = client.post("/api/v1/backups").json()
