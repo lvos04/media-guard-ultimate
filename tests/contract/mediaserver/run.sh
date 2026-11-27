@@ -109,21 +109,40 @@ start=$(date +%s)
 set +e
 "$PY" -m pytest -v -rA -x --tb=short --assert=plain --durations=0 -p no:cacheprovider --basetemp "$RUN/pytest" --junitxml "$RUN/junit.xml" \
   "$HERE/test_mediaserver_contract.py" "$@" 2>&1 | tee "$RUN/pytest.log"
-rc=${PIPESTATUS[0]}
+codes=("${PIPESTATUS[@]}")
+rc=${codes[0]}
 set -e
 echo ">> pytest exitcode $rc na $(( $(date +%s) - start )) s"
+bewijs_rc=${codes[1]}  # ook een schrijffout van tee telt bij het bewaren van de proef
 for s in srv-emby srv-jellyfin emby jellyfin; do
-  "${COMPOSE[@]}" logs --no-color "$s" > "$RUN/logs-$s.txt" 2>&1 || true
+  "${COMPOSE[@]}" logs --no-color "$s" > "$RUN/logs-$s.txt" 2>&1 || bewijs_rc=1
 done
 # de test bewaart de logs van MediaGuard zelf per fase (logs-mediaguard-vorige.txt en -kandidaat.txt); draait de
 # container nog (test afgebroken), dan bewaren we wat er is
 if docker inspect "$MG_NAAM" >/dev/null 2>&1; then
-  docker logs "$MG_NAAM" > "$RUN/logs-mediaguard-afgebroken.txt" 2>&1 || true
+  docker logs "$MG_NAAM" > "$RUN/logs-mediaguard-afgebroken.txt" 2>&1 || bewijs_rc=1
 fi
 # bewaar het bewijs buiten .run als daarom gevraagd is (CI-artefact); .run zelf gaat weg
 if [[ -n "${MGMS_BEWIJS:-}" ]]; then
-  mkdir -p "$MGMS_BEWIJS"
-  cp -f "$RUN/pytest.log" "$RUN/junit.xml" "$RUN"/proxylog/*.jsonl "$RUN"/logs-*.txt "$MGMS_BEWIJS/" 2>/dev/null || true
-  cp -f "$RUN/metingen.json" "$RUN/images.txt" "$MGMS_BEWIJS/" 2>/dev/null || true
+  bestanden=("$RUN"/{pytest.log,junit.xml,metingen.json,images.txt} "$RUN"/proxylog/{emby,jellyfin}.jsonl
+             "$RUN"/logs-{srv-emby,srv-jellyfin,emby,jellyfin}.txt)
+  # In de volledige suite leveren beide fasen een log. Een deelproef bewaart de uitgevoerde fasen.
+  for fase in vorige kandidaat afgebroken; do
+    bron="$RUN/logs-mediaguard-$fase.txt"
+    if [[ -e "$bron" || ( "$fase" != afgebroken && $# == 0 && $rc == 0 ) ]]; then
+      bestanden+=("$bron")
+    fi
+  done
+  if mkdir -p -- "$MGMS_BEWIJS"; then
+    for bron in "${bestanden[@]}"; do
+      cp -fT -- "$bron" "$MGMS_BEWIJS/${bron##*/}" || bewijs_rc=1
+    done
+  else
+    bewijs_rc=1
+  fi
+  if (( bewijs_rc != 0 )); then
+    echo "Contractbewijs onvolledig" >&2
+    if (( rc == 0 )); then rc=$bewijs_rc; fi
+  fi
 fi
 exit "$rc"

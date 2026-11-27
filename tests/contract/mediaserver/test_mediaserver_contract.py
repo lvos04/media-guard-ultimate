@@ -376,22 +376,29 @@ def controleer_koppen(opnemer: Opnemer, soort: str, sleutel: str) -> str:
     """Elke verstuurde kop hoort bij de soort server; de sleutel staat nooit in een adres."""
     gezien: set[str] = set()
     for verzoek, _status in opnemer.verzoeken:
-        assert sleutel not in str(verzoek.url), f"sleutel in het adres: {verzoek.url.path}"
+        if sleutel in str(verzoek.url) or sleutel in verzoek.url.path:
+            raise AssertionError("sleutel in het adres")
         x_token = verzoek.headers.get("x-emby-token")
         auth = verzoek.headers.get("authorization", "")
-        assert "x-emby-authorization" not in verzoek.headers
+        if "x-emby-authorization" in verzoek.headers:
+            raise AssertionError("onverwachte X-Emby-Authorization")
         if verzoek.url.path.endswith("/System/Info/Public"):
-            assert not x_token and not auth, "openbare info gaat zonder sleutel"
+            if x_token or auth:
+                raise AssertionError("openbare info gaat zonder sleutel")
             continue
         if soort == "emby":
-            assert x_token == sleutel and not auth, "Emby kreeg een afwijkende aanmeldkop"
-            assert verzoek.url.path.startswith("/emby/"), verzoek.url.path
+            if x_token != sleutel or auth:
+                raise AssertionError("Emby kreeg een afwijkende aanmeldkop")
+            if not verzoek.url.path.startswith("/emby/"):
+                raise AssertionError("het Emby-pad mist het voorvoegsel /emby/")
             gezien.add("X-Emby-Token")
         else:
-            assert auth.startswith("MediaBrowser ") and f'Token="{sleutel}"' in auth, (
-                "Jellyfin kreeg een afwijkende aanmeldkop")
-            assert not x_token, "Jellyfin krijgt geen X-Emby-Token"
-            assert not verzoek.url.path.startswith("/emby"), verzoek.url.path
+            if not auth.startswith("MediaBrowser ") or f'Token="{sleutel}"' not in auth:
+                raise AssertionError("Jellyfin kreeg een afwijkende aanmeldkop")
+            if x_token:
+                raise AssertionError("Jellyfin krijgt geen X-Emby-Token")
+            if verzoek.url.path.startswith("/emby"):
+                raise AssertionError("het Jellyfin-pad heeft een Emby-voorvoegsel")
             gezien.add("Authorization: MediaBrowser")
     return ", ".join(sorted(gezien)) or "geen"
 
@@ -781,7 +788,16 @@ def emby_kijkgeschiedenis(emby: dict[str, Any], *, vullen: bool = False) -> dict
 def emby_verzoeksoorten(
     regels: list[dict[str, Any]],
 ) -> set[tuple[str, str, tuple[str, ...], tuple[str, ...]]]:
-    return {(r["method"], r["path"], tuple(r["auth"]), tuple(sorted(r["query"]))) for r in regels}
+    soorten = set()
+    for r in regels:
+        parameters = set(r["query"])
+        if (r["method"], r["path"]) == ("GET", "/emby/Sessions") and "ActiveWithinSeconds" in parameters:
+            parameters.remove("ActiveWithinSeconds")
+            # Het bewijs noemt alleen het bekende venster. Een onverwachte waarde blijft privé.
+            venster = "120" if r["query"]["ActiveWithinSeconds"] == vingerafdruk("120") else "afwijkend"
+            parameters.add(f"ActiveWithinSeconds={venster}")
+        soorten.add((r["method"], r["path"], tuple(r["auth"]), tuple(sorted(parameters))))
+    return soorten
 
 
 def controleer_emby_kijkgeschiedenis(emby: dict[str, Any], fase: str) -> None:
@@ -1186,10 +1202,14 @@ def test_b9_niets_gelekt_en_nette_stop(servers: dict[str, Any]) -> None:
           all(vingerafdruk(STATE["ongeldige_sleutel"]) not in r["query"].values()
               for r in alle_emby + alle_jf))
     kandidaat = emby_verzoeksoorten(alle_emby[STATE["n_emby_kandidaat"]:])
-    verschil = sorted(kandidaat - STATE["emby_referentie"])
-    feit("emby_referentie_verzoeksoorten", sorted(STATE["emby_referentie"]))
+    referentie = STATE["emby_referentie"]
+    afwijkende_polls = {s for s in referentie | kandidaat if s[:2] == ("GET", "/emby/Sessions")
+                        and "ActiveWithinSeconds=120" not in s[3]}
+    verschil = sorted((kandidaat - referentie) | afwijkende_polls)
+    feit("emby_referentie_verzoeksoorten", sorted(referentie))
     feit("emby_kandidaat_verzoeksoorten", sorted(kandidaat))
-    check("de hele kandidaatfase stuurde Emby uitsluitend eerder gemeten verzoeksoorten",
+    check("de hele kandidaatfase stuurde Emby uitsluitend eerder gemeten verzoeksoorten, "
+          "met een sessievenster van 120 seconden",
           bool(kandidaat) and not verschil, verschil)
     feit("emby_aanmeldvormen", sorted({",".join(r["auth"]) or "geen" for r in alle_emby}))
     feit("jellyfin_aanmeldvormen", sorted({",".join(r["auth"]) or "geen" for r in alle_jf}))
