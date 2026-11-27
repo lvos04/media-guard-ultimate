@@ -1,5 +1,23 @@
 # Contracttest mediaservers: uitkomst
 
+## S-P6-33 op 28 november 2026
+
+### Upgrade en terugzetten
+
+De registrycontrole bevestigde de gepinde vorige MediaGuard-release `1.3.0-aio` uit `deploy/upgradebewijs/vorige-release.json`. De kandidaat bevat de kern en de encoder van revisie `602c48b486c1` op de runtime van die release. Het manifest van de kandidaat vermeldt eveneens 1.3.0. De draaiende images zijn te onderscheiden aan hun image-ID.
+
+| Meting in de upgradeproef | Vóór | Na upgrade | Na terugzetten |
+|---|---:|---:|---:|
+| Jobs in de kern (`jobs`) | 6 | 6 | 6 |
+| Regels jobgeschiedenis (`job_logs`) | 2 | 2 | 2 |
+| Open overdrachten | 1 | 1 | 1 |
+
+De vergelijking omvatte 177 vooraf gevulde tabellen. In beide richtingen waren er nul verloren rijen en nul gewijzigde beschermde rijen volgens het uitzonderingenbestand in versiebeheer. De twee geregistreerde originelen, het werkbestand en de mediatitel behielden alle vier hun SHA-256 na de upgrade en op elk van de drie terugvalkopieën.
+
+### Webinterface voor S-P6-50 en S-P6-51
+
+Open als beheerder **Inrichten → Mediaservers & ondertitels** (`/inrichten?tab=mediaserver`). Kies **Mediaserver toevoegen** en **Toevoegen en testen** om Jelly Leon naast de bestaande Emby te koppelen. Voor de eerste server heet de bevestiging **Opslaan en testen**. Kies op de kaart van Emby **Ontkoppelen…** en bevestig met **Server ontkoppelen**. **Weer koppelen** gebruikt het bewaarde adres en de bewaarde sleutel. Deze teksten komen uit `apps/web/components/mediaserver/mediaserver-tab.tsx` en de Nederlandse vertaling in `apps/web/lib/i18n/messages/mediaserver.ts`.
+
 ## S-P40-20 op 27 november 2026
 
 De contractproef draaide eerst met stock Jellyfin 12.4 en daarna met de lokale Jelly Leon-image uit S-G1-16. Beide keren doorliep dezelfde MediaGuard-kandidaat alle 25 tests. De stockrun had 125 afzonderlijke controles in 861,053 s en de Jelly Leon-run 125 in 787,577 s. Beide runs eindigden met pytest-exitcode 0.
