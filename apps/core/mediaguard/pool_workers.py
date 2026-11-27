@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import fcntl
 import io
 import logging
@@ -9,7 +10,7 @@ import os
 import sqlite3
 import stat
 import struct
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from uuid import uuid4
 from weakref import finalize
@@ -371,6 +372,55 @@ def all_reported(ctx: AppContext, fd: int, *, new_measurement: bool) -> bool:
             ctx.state_set(_ADMISSIONS_STATE, stamp)
         path = ctx.db.path.with_suffix(".pool-aanmeldingen")
         return stamp == ctx.state_get(_ADMISSIONS_STATE) == _stamp(path.lstat(), generation)
+
+
+def measurement_visible(ctx: AppContext, request_id: str) -> bool:
+    """Lees dezelfde werkers, generatie en kernelopdracht zonder iets te bevestigen."""
+    vote = ctx.services.get(SERVICE)
+    if not vote or vote.unregistered or vote.ready is None:
+        return False
+    try:
+        if ctx.state_get(CLEANUP_REQUEST) != request_id:
+            return False
+        flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+        with ExitStack() as held:
+            def open_read(path: Path, extra: int = 0) -> int:
+                fd = os.open(path, flags | extra)
+                held.callback(os.close, fd)
+                return fd
+
+            guard = open_read(ctx.db.path.with_suffix(".pool-workers"))
+            if not stat.S_ISREG(os.fstat(guard).st_mode):
+                return False
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            directory = open_read(ctx.db.path.parent, os.O_DIRECTORY)
+            if record_lock(directory, 0, probe=True) != fcntl.F_UNLCK:
+                return False
+            ledger = held.enter_context(_admissions(ctx, readonly=True))
+            fcntl.flock(ledger, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            pending = _outstanding(ledger)
+            generation = pending.pop(0, None)
+            if not generation or pending:
+                return False
+            stamp = _stamp(os.fstat(ledger.fileno()), generation)
+            if stamp != _saved_stamp(ctx) or not _registered_reported(
+                    ctx, directory, False, set(), {vote.slot}, generation):
+                return False
+            channel = open_read(ctx.db.path.with_suffix(".pool-fifo"))
+            info = os.fstat(channel)
+            if not stat.S_ISFIFO(info.st_mode) or vote.channel != [info.st_dev, info.st_ino]:
+                return False
+            # Linux tee kopieert FIFO-bytes naar een eigen pijp. Een lezer neemt
+            # de opdracht of een gelijktijdige intrekking nooit uit de gedeelde FIFO.
+            reader, writer = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+            held.callback(os.close, reader)
+            held.callback(os.close, writer)
+            copied = ctypes.CDLL(None).tee(channel, writer, 33, os.SPLICE_F_NONBLOCK)
+            return (copied == 32 and os.read(reader, copied) == request_id.encode("ascii")
+                    and stamp == _stamp(ctx.db.path.with_suffix(".pool-aanmeldingen").lstat(),
+                                        generation))
+    except (AttributeError, OSError, sqlite3.Error, ValueError, TypeError, KeyError):
+        return False
 
 
 def _registered_reported(ctx: AppContext, fd: int, new_measurement: bool, exited: set[int],

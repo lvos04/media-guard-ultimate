@@ -303,7 +303,7 @@ def tasks_item(ctx: AppContext, now: datetime | None = None) -> list[dict[str, A
 
 
 def pool_item(ctx: AppContext) -> list[dict[str, Any]]:
-    from mediaguard import hub_pool
+    from mediaguard import hub_pool, pool_workers
     from mediaguard.storage_forecast import (
         POOL_REQUEST,
         POOL_STATE,
@@ -319,7 +319,8 @@ def pool_item(ctx: AppContext) -> list[dict[str, Any]]:
                     or not hub_pool.origin(ctx) or not ctx.secrets.has(hub_pool.SECRET)
                     or not state.get("request_id")
                     or state["request_id"] != ctx.state_get(POOL_REQUEST)
-                    or not hub_pool.fresh(state.get("observed_at"), state.get("geldig_tot"))):
+                    or not hub_pool.fresh(state.get("observed_at"), state.get("geldig_tot"))
+                    or not pool_workers.measurement_visible(ctx, state["request_id"])):
                 item = _item("storage.pool_unknown", "warning", "Poolstatus van de Hub onbekend",
                              "Opruimen is gepauzeerd. Controleer de meting en het poolleesrecht.",
                              "/systeem#opslag", push=True)
