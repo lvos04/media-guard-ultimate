@@ -224,7 +224,8 @@
       24,
       25,
       26,
-      27
+      27,
+      28
     ],
     "note": "core: bestandsnamen (zonder .sql) in schema_migrations; encoder: integerversies uit app/migrations/NNN_*.sql"
   },
