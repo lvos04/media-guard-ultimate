@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "node scripts/verpak-web.mjs",
     "start": "node server.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",

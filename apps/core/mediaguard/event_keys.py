@@ -75,7 +75,7 @@ def _read(directory: int, name: str, owner: tuple[int, int], *, repair: bool = F
 
 
 def _store(path: Path, owner: tuple[int, int], value: bytes | None = None,
-           *, create: bool = True) -> None:
+           *, create: bool = True) -> bytes:
     with _directory(path.parent, owner, repair=True) as directory:
         try:
             os.stat(path.name, dir_fd=directory, follow_symlinks=False)
@@ -102,10 +102,18 @@ def _store(path: Path, owner: tuple[int, int], value: bytes | None = None,
             stored = _read(directory, path.name, owner, repair=True)
         if value is not None and stored != value:
             raise ValueError("de bewaarde historische cursorsleutel komt niet overeen")
+        return stored
 
 
-def ensure_key(path: Path, owner: tuple[int, int] | None = None) -> None:
-    _store(path, owner or (os.geteuid(), os.getegid()))
+def ensure_key(path: Path, owner: tuple[int, int] | None = None) -> bytes:
+    return _store(path, owner or (os.geteuid(), os.getegid()))
+
+
+def read_existing_key(path: Path) -> bytes:
+    """Lees een installatiesleutel zonder bij herstel de map of het bestand te wijzigen."""
+    owner = (os.geteuid(), os.getegid())
+    with _directory(path.parent, owner, repair=False) as directory:
+        return _read(directory, path.name, owner)
 
 
 def prepare_for_start(core_db: Path, path: Path, owner: tuple[int, int] | None = None) -> None:
@@ -124,11 +132,8 @@ def prepare_for_start(core_db: Path, path: Path, owner: tuple[int, int] | None =
 def read_key(core_dir: Path, reference: object) -> bytes | None:
     if reference != KEY_REF:
         return None
-    path = key_path(core_dir)
-    owner = (os.geteuid(), os.getegid())
     try:
-        with _directory(path.parent, owner, repair=False) as directory:
-            return _read(directory, path.name, owner)
+        return read_existing_key(key_path(core_dir))
     except (OSError, ValueError):
         return None
 

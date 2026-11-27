@@ -16,6 +16,7 @@ Alleen drie mappen in de container zijn van belang: ``/config`` (appdata), ``/wo
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import os
@@ -32,7 +33,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mediaguard import bootstrap, schema
+from mediaguard import bootstrap, event_keys, schema
 from mediaguard.aio_healthcheck import CORE_PORT, HEALTH_FILE, app_identity, restrict_process
 from mediaguard.aio_web import WebLauncher, WebProcess
 
@@ -191,6 +192,19 @@ def fork_port(env: dict[str, str], instance: str, default: int) -> int:
 def web_identity(env: dict[str, str]) -> tuple[int, int]:
     uid = _env_int(env, "MG_WEB_UID", WEB_UID)
     return uid, _env_int(env, "MG_WEB_GID", uid)
+
+
+def web_key(config: Path, recovering: bool) -> str:
+    path = config / "secrets" / "web" / "server-actions.key"
+    if recovering:
+        # Een vorige release kan deze sleutel nog missen. Houd haar appdata alleen-lezen.
+        try:
+            key = event_keys.read_existing_key(path)
+        except FileNotFoundError:
+            key = os.urandom(32)
+    else:
+        key = event_keys.ensure_key(path)
+    return base64.b64encode(key).decode("ascii")
 
 
 def build_specs(env: dict[str, str]) -> list[Spec]:
@@ -597,8 +611,12 @@ class Supervisor:
             preexec = (_demote(spec.user[0], spec.user[1], []) if spec.user is not None
                        else _demote(self.uid, self.gid, self.groups))
         try:
+            if spec.name == "web" and self.config_dir is not None:
+                spec.env["NEXT_SERVER_ACTIONS_ENCRYPTION_KEY"] = web_key(
+                    self.config_dir, self.schema_recovery)
             if spec.name == "web" and self.web_launcher is not None:
-                spec.proc = self.web_launcher.start()
+                key = spec.env.get("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "")
+                spec.proc = self.web_launcher.start(key)
             else:
                 spec.proc = subprocess.Popen(  # noqa: S603 - vaste argv
                     spec.start_command(), env=spec.env, cwd=spec.cwd, preexec_fn=preexec,
@@ -606,7 +624,7 @@ class Supervisor:
                     start_new_session=True)
                 threading.Thread(target=self._pump, args=(spec, spec.proc.stdout),
                                  daemon=True).start()
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             self.log(f"{spec.name} kan niet starten: {exc}")
             spec.proc = None
             spec.next_start = time.monotonic() + 30

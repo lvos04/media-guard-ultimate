@@ -14,6 +14,12 @@ ARG SONARR_IMAGE=ghcr.io/lvos04/mediaguard-sonarr-fork:dev
 ARG RADARR_IMAGE=ghcr.io/lvos04/mediaguard-radarr-fork:dev
 
 FROM ${WEB_IMAGE} AS web
+# Weiger ook een oud web-image dat nog ingevulde manifesten onder /app meebrengt.
+RUN set -eu; cd /app/.next; test -s mediaguard-prerender.json; \
+    for manifest in prerender-manifest.json server/preview-props.json \
+        server/server-reference-manifest.json server/server-reference-manifest.js; do \
+        test -L "$manifest"; test ! -e "$manifest"; \
+    done
 FROM ${SONARR_IMAGE} AS sonarr
 FROM ${RADARR_IMAGE} AS radarr
 FROM scratch AS core

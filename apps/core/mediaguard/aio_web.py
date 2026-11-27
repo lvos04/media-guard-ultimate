@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -46,8 +47,8 @@ class WebLauncher:
         except ValueError as exc:
             raise OSError("ongeldig antwoord van de webbewaker") from exc
 
-    def start(self) -> WebProcess:
-        pid = self.request("start")
+    def start(self, key: str = "") -> WebProcess:
+        pid = self.request(f"start {key}" if key else "start")
         if pid is None or pid <= 1:
             raise OSError("webbewaker gaf geen proces-ID")
         return WebProcess(self, pid)
@@ -93,9 +94,14 @@ def run(channel: socket.socket, argv: list[str]) -> None:
             command, *args = words
             code = proc.poll() if proc is not None else 1
             pid = str(proc.pid).encode("ascii") if proc is not None else None
-            if command == b"start" and not args and code is not None:
+            if command == b"start" and code is not None and (
+                not args or (len(args) == 1 and re.fullmatch(rb"[A-Za-z0-9+/]{43}=", args[0]))
+            ):
+                env = os.environ.copy()
+                if args:
+                    env["NEXT_SERVER_ACTIONS_ENCRYPTION_KEY"] = args[0].decode("ascii")
                 try:
-                    proc = subprocess.Popen(argv, start_new_session=True)  # noqa: S603
+                    proc = subprocess.Popen(argv, env=env, start_new_session=True)  # noqa: S603
                 except OSError as exc:
                     print(f"web kan niet starten: {exc}", flush=True)
                     channel.sendall(b"error")

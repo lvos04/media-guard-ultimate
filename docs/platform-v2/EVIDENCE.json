@@ -210,6 +210,16 @@
   "bijgewerkt": "2026-11-27"
  },
  {
+  "id": "REVIEW-media-guard-ultimate-nextjs-buildsleutels",
+  "status": "Bezig",
+  "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS)",
+  "bewijs": "apps/web/tests/unit/webmanifesten.test.mjs en apps/core/tests/test_websleutels.py. De productiebuild telde nul Server Actions voor Node en Edge. Gitleaks vond drie treffers in de oorspronkelijke manifesten en nul in het verpakte .next. De lokale AIO-proef vergeleek de twee gevulde testdatabases byte voor byte en controleerde beide startwijzen van het webproces.",
+  "blokkade": "NIET GEVALIDEERD (echte NAS).",
+  "opmerking": "De aanmeldpagina van het verpakte webprogramma gaf drie keer HTTP 200. De vier runtimewaarden bleven gelijk bij de herstart en verschilden op de tweede installatie. De database uit de releasefixture 1.3.0 bleef bytegelijk.",
+  "repo": "media-guard-ultimate",
+  "bijgewerkt": "2026-11-27"
+ },
+ {
   "id": "REVIEW-media-guard-ultimate-contract-1.3",
   "status": "Bezig",
   "validatie": "Unit-getest; Sim-getest; NIET GEVALIDEERD (echte NAS); NIET GEVALIDEERD (hardware); NIET GEVALIDEERD (account)",

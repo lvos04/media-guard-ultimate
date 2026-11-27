@@ -191,6 +191,7 @@ Keten in de alles-in-één: browser → Cloudflare → cloudflared → web (`ser
 
 | Geheim | Waar | Bescherming |
 |---|---|---|
+| Next.js-websleutel | AIO `/config/secrets/web/server-actions.key`. Losse webcontainer `/var/lib/mediaguard-web/server-actions.key` in het persistente webvolume. | De eerste start genereert 32 willekeurige bytes. Volgende starts hergebruiken het bestand met modus 0600. De webserver zet `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` en maakt de preview- en actiemanifesten in een privémap bij de start. De alleen-lezen AIO-herstelweergave gebruikt een tijdelijke sleutel als de oude appdata nog geen websleutel heeft. |
 | Interne token, fork-API-sleutels, hook-sleutels | `${MG_APPDATA}/secrets/{internal/token, <instantie>/apikey, <instantie>/hookkey}` | automatisch gegenereerd door `mediaguard-init` (`secrets.token_hex`), bestand 0640, map 0750, eigenaar 568; nooit overschreven (idempotent). Elke container koppelt **alleen zijn eigen** submap read-only (bv. een fork ziet alleen `secrets/<zijn-instantie>`). De gebruiker typt geen sleutels. |
 | Indexer-/downloadclient-/AI-sleutels die je in de UI invult | core-DB, tabel `secrets` | Fernet (AES-128-CBC + HMAC-SHA256); sleutel `secret.key` op `/config` (0600). API-responses tonen alleen `is_set`/`readable`, nooit (een deel van) de waarde. |
 | Encoder-integratiesleutels (Jellyfin/Radarr/Sonarr in de oude encoder-UI) | encoder-DB | Fernet met eigen sleutelbestand op de encoder-`/config` |

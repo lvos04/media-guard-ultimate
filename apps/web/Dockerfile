@@ -1,6 +1,6 @@
 # mediaguard-web: Next.js UI + same-origin proxy (server.mjs) for /api/v1 (core) and /api/encoder.
 #   docker build [--secret id=ca_bundle,src=/pad/naar/ca.crt] -t mediaguard/web:dev apps/web
-# Runtime: non-root (568), read-only rootfs compatible (only /tmp needs to be writable), port 3000.
+# De webgebruiker schrijft alleen in de eigen sleutelopslag en de tijdelijke manifestmap.
 ARG NODE_IMAGE=mirror.gcr.io/library/node:22.23.5-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 
 FROM ${NODE_IMAGE} AS deps
@@ -16,13 +16,7 @@ WORKDIR /src
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /src/node_modules ./node_modules
 COPY . .
-RUN npm run build \
-    && cp server.mjs .next/standalone/ \
-    && cp -r public .next/standalone/public \
-    && cp -r .next/static .next/standalone/.next/static \
-    # tracing copies optional native image libs we never use (no next/image optimisation)
-    && rm -rf .next/standalone/node_modules/@img .next/standalone/node_modules/sharp \
-    && rm -rf .next/standalone/.next/cache
+RUN npm run build
 
 FROM ${NODE_IMAGE}
 ARG UID=568
@@ -30,10 +24,12 @@ ARG GID=568
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 MG_WEB_HOST=0.0.0.0 \
     MG_CORE_URL=http://mediaguard-core:8100 MG_ENCODER_URL=http://mediaguard-encoder:8000
 RUN groupadd -g ${GID} mediaguard && useradd -u ${UID} -g ${GID} -M -s /usr/sbin/nologin mediaguard \
+    && install -d -m 0700 -o ${UID} -g ${GID} /var/lib/mediaguard-web \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
        /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /opt/yarn-* /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app
 COPY --from=build --chown=root:root /src/.next/standalone ./
+VOLUME ["/var/lib/mediaguard-web"]
 USER ${UID}:${GID}
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
