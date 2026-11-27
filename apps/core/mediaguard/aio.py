@@ -49,6 +49,7 @@ WEB_UID = 65534
 # beperkte supervisorstatus (alleen core: staat, migratie, uitleg herstartlus) voor de
 # web-server, buiten /config in een map van de app-gebruiker die web alleen kan lezen
 WEB_STATE = "/run/mediaguard/core-status.json"
+WEB_KEY_FILE = Path("secrets/web/server-actions.key")
 
 # (instantie, soort, standaardpoort). Afwijkend van 8989/7878 zodat ze naast een bestaande
 # Sonarr/Radarr kunnen draaien, ook met 'Host Network'.
@@ -195,12 +196,12 @@ def web_identity(env: dict[str, str]) -> tuple[int, int]:
 
 
 def web_key(config: Path, recovering: bool) -> str:
-    path = config / "secrets" / "web" / "server-actions.key"
+    path = config / WEB_KEY_FILE
     if recovering:
-        # Een vorige release kan deze sleutel nog missen. Houd haar appdata alleen-lezen.
+        # De herstelpagina moet ook bij een ontbrekende of onleesbare sleutel beschikbaar zijn.
         try:
             key = event_keys.read_existing_key(path)
-        except FileNotFoundError:
+        except (OSError, ValueError):
             key = os.urandom(32)
     else:
         key = event_keys.ensure_key(path)
@@ -395,7 +396,9 @@ def prepare(env: dict[str, str]) -> list[str]:
         "MG_BOOTSTRAP_DATA": str(data),
     })
     try:
-        bootstrap.main()
+        if bootstrap.main() == 0:
+            # Op oudere appdata kan alleen de opstartgebruiker een nieuwe geheimenmap maken.
+            event_keys.ensure_key(config / WEB_KEY_FILE, bootstrap._uid_gid())
     except Exception as exc:  # noqa: BLE001 - nooit de hele app laten vallen
         warnings.append(f"mappen/sleutels aanmaken mislukt: {exc}. Geef gebruiker 'apps' "
                         "(568) schrijfrechten op de appdata- en werkmap.")
