@@ -109,8 +109,8 @@ def test_b9_keurt_log_met_proefsleutel_af(monkeypatch: pytest.MonkeyPatch, capsy
 
 @pytest.mark.parametrize(("voor", "na"), [
     ({}, {}),
-    ({"jobs": 2, "job_logs": 0}, {"jobs": 2, "job_logs": 0}),
-    ({"jobs": 2, "job_logs": 2}, {"jobs": 2, "job_logs": 1}),
+    ({"jobs": ["j"], "job_logs": []}, {"jobs": ["j"], "job_logs": []}),
+    ({"jobs": ["j"], "job_logs": ["a", "b"]}, {"jobs": ["j"], "job_logs": ["a"]}),
 ])
 def test_voortgang_weigert_lege_of_gekrompen_telling(monkeypatch: pytest.MonkeyPatch, voor, na):
     monkeypatch.syspath_prepend(str(CONTRACT))
@@ -120,6 +120,22 @@ def test_voortgang_weigert_lege_of_gekrompen_telling(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(contract, "METINGEN", {"controles": [], "feiten": {}})
     with pytest.raises(AssertionError, match="jobgeschiedenis"):
         contract.controleer_voortgang("losmaken", voor, na)
+
+
+def test_upgrade_laat_alleen_toegevoegde_rijen_toe(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.syspath_prepend(str(CONTRACT))
+    monkeypatch.delenv("MGMS_VORIGE", raising=False)
+    import test_mediaserver_contract as contract
+
+    monkeypatch.setattr(contract, "METINGEN", {"controles": [], "feiten": {}})
+    voor = {"jobs": ["bestaande job"], "job_logs": ["eerdere regel"]}
+    aangevuld = {**voor, "job_logs": ["eerdere regel", "nieuwe regel"]}
+    vervangen = {**voor, "job_logs": ["gewijzigde regel", "nieuwe regel"]}
+    contract.controleer_voortgang("upgrade", voor, aangevuld, nieuwe_rijen_toegestaan=True)
+    with pytest.raises(AssertionError, match="jobgeschiedenis"):
+        contract.controleer_voortgang("upgrade", voor, vervangen, nieuwe_rijen_toegestaan=True)
+    with pytest.raises(AssertionError, match="jobgeschiedenis"):
+        contract.controleer_voortgang("losmaken", voor, aangevuld)
 
 
 @pytest.mark.parametrize("situatie", ["volledig", "doel_is_map", "bron_ontbreekt"])

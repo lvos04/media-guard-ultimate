@@ -602,14 +602,18 @@ def test_a8_encoder_kiest_dezelfde_kop(servers: dict[str, Any], soort: str) -> N
 _DB_LEZEN = r"""
 import hashlib, json, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+c.execute("BEGIN")
 def h(sql):
     rijen = [[v.hex() if isinstance(v, bytes) else v for v in r] for r in c.execute(sql)]
     return hashlib.sha256(json.dumps(rijen).encode()).hexdigest()[:16] if rijen else None
+def rijkenmerken(sql):
+    return [hashlib.sha256(json.dumps(r).encode()).hexdigest() for r in c.execute(sql)]
 tabellen = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 print(json.dumps({
     "voortgang": {
-        "jobs": c.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
-        "job_logs": c.execute("SELECT COUNT(*) FROM job_logs").fetchone()[0],
+        "jobs": rijkenmerken("SELECT id,job_type,instance_id,target_type,target_id,created_at "
+                            "FROM jobs"),
+        "job_logs": rijkenmerken("SELECT id,job_id,ts,level,message FROM job_logs"),
     },
     "geheim_server_1": h("SELECT name,ciphertext,updated_at,updated_by FROM secrets "
                          "WHERE name='mediaserver.api_key'"),
@@ -811,11 +815,17 @@ def controleer_emby_kijkgeschiedenis(emby: dict[str, Any], fase: str) -> None:
     check(f"de kijkgeschiedenis bij Emby is {fase} gelijk aan de nulmeting", not verschil, verschil)
 
 
-def controleer_voortgang(fase: str, voor: dict[str, int], na: dict[str, int]) -> None:
-    aantallen = {"voor": voor, "na": na}
+def controleer_voortgang(fase: str, voor: dict[str, list[str]], na: dict[str, list[str]],
+                         *, nieuwe_rijen_toegestaan: bool = False) -> None:
+    aantallen = {"voor": {t: len(rijen) for t, rijen in voor.items()},
+                 "na": {t: len(rijen) for t, rijen in na.items()},
+                 "ontbrekend_of_gewijzigd": {
+                     t: len(set(rijen) - set(na.get(t, []))) for t, rijen in voor.items()}}
     feit(f"voortgang_{fase}", aantallen)
     check(f"jobs en jobgeschiedenis blijven behouden bij {fase}",
-          voor.keys() == {"jobs", "job_logs"} and min(voor.values()) > 0 and voor == na, aantallen)
+          voor.keys() == na.keys() == {"jobs", "job_logs"} and all(voor.values())
+          and not any(aantallen["ontbrekend_of_gewijzigd"].values())
+          and (nieuwe_rijen_toegestaan or aantallen["voor"] == aantallen["na"]), aantallen)
 
 
 def test_b1_vorige_release_volgt_emby(servers: dict[str, Any]) -> None:
@@ -893,7 +903,8 @@ def test_b2_upgrade_emby_blijft_gevolgd_zonder_handeling(servers: dict[str, Any]
     check("de kijkpauze van vóór de upgrade staat er nog (er wordt nog gekeken)",
           st["hold"]["active"] and "Testfilm" in str(st["hold"]["reason"]), st["hold"])
     na = mg.db()
-    controleer_voortgang("upgrade", voor["voortgang"], na["voortgang"])
+    # Bij een start kunnen de actieve werkers extra geschiedenis schrijven.
+    controleer_voortgang("upgrade", voor["voortgang"], na["voortgang"], nieuwe_rijen_toegestaan=True)
     controleer_emby_kijkgeschiedenis(emby, "na de upgrade")
     check("geheim en instellingen van de koppeling zijn byte-gelijk gebleven",
           na["geheim_server_1"] == voor["geheim_server_1"]
