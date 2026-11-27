@@ -23,12 +23,14 @@ import contextlib
 import hashlib
 import json
 import os
+import secrets
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +55,7 @@ MG_PORT = os.environ.get("MGMS_MG_PORT", "38098")
 MG = f"http://127.0.0.1:{MG_PORT}"
 MG_NAAM = os.environ.get("MGMS_MG_NAAM", "mgms-mediaguard")
 NETWERK = f"{os.environ.get('COMPOSE_PROJECT_NAME', 'mgms')}_mgnet"
+INTERN = os.environ.get("MGMS_INTERN") == "true"
 VORIGE = os.environ.get("MGMS_VORIGE", "")
 KANDIDAAT = os.environ.get("MGMS_KANDIDAAT", "")
 VORIGE_VERSIE = os.environ.get("MGMS_VORIGE_VERSIE", "")
@@ -128,6 +131,18 @@ def compose(*args: str) -> str:
     return uit.stdout.strip()
 
 
+def intern_serveradres(dienst: str) -> str:
+    from upgradebewijs import testnet_url
+
+    servernet = f"{os.environ['COMPOSE_PROJECT_NAME']}_servers"
+    basis = testnet_url(compose("ps", "-q", dienst), servernet)
+    return str(httpx.URL(basis).copy_with(port=8096))
+
+
+if INTERN and VORIGE:
+    EMBY, JELLYFIN = intern_serveradres("srv-emby"), intern_serveradres("srv-jellyfin")
+
+
 def luik(naam: str) -> list[dict[str, Any]]:
     """Wat MediaGuard naar deze server stuurde (regels van het doorgeefluik)."""
     pad = RUN / "proxylog" / f"{naam}.jsonl"
@@ -142,8 +157,7 @@ def sessiepolls(regels: list[dict[str, Any]], pad: str) -> list[dict[str, Any]]:
 
 def grootste_gat(regels: list[dict[str, Any]]) -> float:
     tijden = [datetime.fromisoformat(r["t"]) for r in regels if r["status"] == 200]
-    return max(((b - a).total_seconds() for a, b in zip(tijden, tijden[1:], strict=False)),
-               default=0.0)
+    return max(((b - a).total_seconds() for a, b in pairwise(tijden)), default=0.0)
 
 
 # -- de echte servers inrichten (rechtstreeks via de hostpoort, niet via het doorgeefluik) ------
@@ -313,7 +327,7 @@ def servers() -> Iterator[dict[str, dict[str, Any]]]:
     feit("jellyfin_openbaar", {k: beide["jellyfin"]["openbaar"].get(k)
                                for k in ("ServerName", "Version", "ProductName")})
     yield beide
-    for speler in list(SPELERS):
+    for speler in SPELERS.copy():
         with contextlib.suppress(httpx.HTTPError, AssertionError):
             speler.stop()
 
@@ -370,11 +384,12 @@ def controleer_koppen(opnemer: Opnemer, soort: str, sleutel: str) -> str:
             assert not x_token and not auth, "openbare info gaat zonder sleutel"
             continue
         if soort == "emby":
-            assert x_token == sleutel and not auth, f"Emby: {dict(verzoek.headers)}"
+            assert x_token == sleutel and not auth, "Emby kreeg een afwijkende aanmeldkop"
             assert verzoek.url.path.startswith("/emby/"), verzoek.url.path
             gezien.add("X-Emby-Token")
         else:
-            assert auth.startswith("MediaBrowser ") and f'Token="{sleutel}"' in auth, auth[:40]
+            assert auth.startswith("MediaBrowser ") and f'Token="{sleutel}"' in auth, (
+                "Jellyfin kreeg een afwijkende aanmeldkop")
             assert not x_token, "Jellyfin krijgt geen X-Emby-Token"
             assert not verzoek.url.path.startswith("/emby"), verzoek.url.path
             gezien.add("Authorization: MediaBrowser")
@@ -424,7 +439,7 @@ def test_a3_verkeerde_sleutel_geeft_een_duidelijke_fout(servers: dict[str, Any],
                                                         soort: str) -> None:
     from mediaguard.mediaserver.clients import MediaServerError
 
-    client, _ = maak_client(servers[soort], sleutel="0123456789abcdef0123456789abcdef")
+    client, _ = maak_client(servers[soort], sleutel=secrets.token_hex(16))
     with pytest.raises(MediaServerError) as fout:
         asyncio.run(client.check_key())
     check(f"{soort}: verkeerde sleutel → 401 'sleutel geweigerd'",
@@ -545,7 +560,11 @@ def test_a7_afspeeltest_en_nederlandse_ondertitels(servers: dict[str, Any], soor
 @pytest.mark.parametrize("soort", SOORTEN)
 def test_a8_encoder_kiest_dezelfde_kop(servers: dict[str, Any], soort: str) -> None:
     """De losse encoder-instelling "pauzeer bij kijken" (één adres, één sleutel)."""
-    from app.integraties import jellyfin_is_playing, mediaserver_headers, mediaserver_product
+    from app.integraties import (
+        jellyfin_is_playing,
+        mediaserver_headers,
+        mediaserver_product,
+    )
 
     srv = servers[soort]
 
@@ -618,8 +637,10 @@ class MediaGuard:
     def voorbereiden(self) -> None:
         import upgradebewijs
 
-        sql, fixture = upgradebewijs.kies_fixture(ROOT / "tests" / "fixtures" / "aio",
-                                                  VORIGE_VERSIE)
+        # Dit scenario begint met één bestaande Emby-koppeling. De recentere algemene
+        # upgradefixture bevat ook extra servers. Laat de gekozen release zelf de
+        # enkelvoudige fixture openen en controleer het werkelijke releaseschema in b2.
+        sql, fixture = upgradebewijs.kies_fixture(ROOT / "tests/fixtures/aio", "1.2.2")
         for d in ("config/core", "work", "data/media", "data/downloads"):
             (MGDIR / d).mkdir(parents=True, exist_ok=True)
         upgradebewijs.herstel(sql, MGDIR / "config" / "core" / "mediaguard.db")
@@ -629,10 +650,16 @@ class MediaGuard:
         STATE["fixture"] = fixture
 
     def start(self, image: str) -> None:
+        lokaal = httpx.URL(MG).host
+        publicatie = [] if INTERN else ["-p", f"{lokaal}:{MG_PORT}:30080"]
         docker("run", "-d", "--name", MG_NAAM, "--network", NETWERK,
-               "-p", f"127.0.0.1:{MG_PORT}:30080", "-e", "TZ=UTC", "-e", "MG_HOST=127.0.0.1",
+               *publicatie, "-e", "TZ=UTC", "-e", f"MG_HOST={lokaal}",
                "-v", f"{MGDIR / 'config'}:/config", "-v", f"{MGDIR / 'work'}:/work",
                "-v", f"{MGDIR / 'data'}:/data", image)
+        if INTERN:
+            from upgradebewijs import testnet_url
+
+            self.http.base_url = testnet_url(MG_NAAM, NETWERK)
         self.gestart = time.time()
 
         def gezond() -> bool:
@@ -735,18 +762,59 @@ def controleer_luik_jellyfin(regels: list[dict[str, Any]], sleutel: str, wat: st
           f"nooit in het adres ({len(met)} verzoeken met sleutel)", met and not fout, fout[:3])
 
 
+def emby_kijkgeschiedenis(emby: dict[str, Any], *, vullen: bool = False) -> dict[str, Any]:
+    """De tweede testfilm wordt tijdens geen enkele kijkpauze afgespeeld."""
+    user = emby["user_id"]
+    item = emby["items"][FILM_ZONDER]
+    with httpx.Client(base_url=EMBY + "/emby", headers=emby["gebruiker"], timeout=15) as http:
+        if vullen:
+            http.post(f"/Users/{user}/Items/{item}/UserData", json={
+                "Played": True, "PlayCount": 2, "LastPlayedDate": "2026-01-02T12:00:00.0000000Z",
+                "PlaybackPositionTicks": 50_000_007,
+            }).raise_for_status()
+            http.post(f"/Users/{user}/FavoriteItems/{item}").raise_for_status()
+        antwoord = http.get(f"/Users/{user}/Items/{item}")
+        antwoord.raise_for_status()
+        return antwoord.json()["UserData"]
+
+
+def emby_verzoeksoorten(
+    regels: list[dict[str, Any]],
+) -> set[tuple[str, str, tuple[str, ...], tuple[str, ...]]]:
+    return {(r["method"], r["path"], tuple(r["auth"]), tuple(sorted(r["query"]))) for r in regels}
+
+
+def controleer_emby_kijkgeschiedenis(emby: dict[str, Any], fase: str) -> None:
+    voor, na = STATE["emby_historie"], emby_kijkgeschiedenis(emby)
+    verschil = sorted(k for k in voor.keys() | na.keys()
+                      if k not in voor or k not in na or voor[k] != na[k])
+    check(f"de kijkgeschiedenis bij Emby is {fase} gelijk aan de nulmeting", not verschil, verschil)
+
+
 def test_b1_vorige_release_volgt_emby(servers: dict[str, Any]) -> None:
     emby = servers["emby"]
     mg.voorbereiden()
     mg.start(VORIGE)
+    feit("vorige_release_image_id", docker("inspect", "-f", "{{.Image}}", MG_NAAM))
     check(f"vorige release {VORIGE_VERSIE} draait op de gevulde fixture",
           mg.get("/api/v1/health").get("version") == VORIGE_VERSIE, mg.get("/api/v1/health"))
     uit = mg.config({"kind": "emby", "url": EMBY_INTERN, "api_key": emby["sleutel"]})
     check("vorige release: Emby gekoppeld via zijn eigen API",
           uit["test"] and uit["test"]["ok"], uit["test"])
     st = mg.status()
-    check("vorige release kent nog geen servers[] (één mediaserver)", "servers" not in st,
-          sorted(st))
+    if VORIGE_VERSIE == "1.2.2":
+        check("1.2.2 kent nog geen servers[] (één mediaserver)", "servers" not in st, sorted(st))
+    else:
+        check("de vorige release volgt precies de bestaande Emby-koppeling als server 1",
+              [(s["server_id"], s["kind"], s["url"], s["followed"]) for s in st["servers"]]
+              == [(1, "emby", EMBY_INTERN, True)])
+    historie = emby_kijkgeschiedenis(emby, vullen=True)
+    check("de Emby-proefgebruiker heeft kijkgeschiedenis, een hervatpunt en een favoriet",
+          historie["Played"] is True and historie["PlayCount"] == 2 and historie["LastPlayedDate"]
+          and historie["PlaybackPositionTicks"] == 50_000_007 and historie["IsFavorite"] is True)
+    STATE["emby_historie"] = historie
+    feit("emby_kijkgeschiedenis_voor", {k: historie[k] for k in
+                                        ("Played", "PlayCount", "PlaybackPositionTicks", "IsFavorite")})
     speler = Speler(emby)
     speler.speel()
     STATE["emby_speler"] = speler
@@ -760,6 +828,11 @@ def test_b1_vorige_release_volgt_emby(servers: dict[str, Any]) -> None:
     controleer_luik_emby(regels, emby["sleutel"], "vorige release")
     STATE["emby_paden_voor"] = sorted({(r["method"], r["path"]) for r in regels})
     feit("vorige_release_emby_verzoeken", STATE["emby_paden_voor"])
+    # B3 vraagt de kandidaat uitdrukkelijk te zoeken. Meet dezelfde handeling op de
+    # vorige release. B2 blijft de afzonderlijke nulmeting zonder zoekopdracht gebruiken.
+    gevonden = mg.post("/api/v1/mediaserver/discover")
+    check("de zoekopdracht op de vorige release vindt de lokale Emby",
+          any(s["kind"] == "emby" and s["url"] == EMBY_INTERN for s in gevonden["servers"]))
 
 
 def test_b2_upgrade_emby_blijft_gevolgd_zonder_handeling(servers: dict[str, Any]) -> None:
@@ -772,8 +845,10 @@ def test_b2_upgrade_emby_blijft_gevolgd_zonder_handeling(servers: dict[str, Any]
           voor["geheim_server_1"] and voor["instellingen"] == {
               "mediaserver.kind": "emby", "mediaserver.url": EMBY_INTERN}, voor)
     n_voor = len(luik("emby"))
+    STATE["emby_referentie"] = emby_verzoeksoorten(luik("emby")[:n_voor])
     laatste_voor = luik("emby")[-1]["t"]
     mg.start(KANDIDAAT)
+    feit("kandidaat_image_id", docker("inspect", "-f", "{{.Image}}", MG_NAAM))
     check(f"kandidaat {VERSIE} draait op dezelfde datamap",
           mg.get("/api/v1/health").get("version") == VERSIE, mg.get("/api/v1/health"))
     st = mg.status()
@@ -791,17 +866,26 @@ def test_b2_upgrade_emby_blijft_gevolgd_zonder_handeling(servers: dict[str, Any]
     check("de kijkpauze van vóór de upgrade staat er nog (er wordt nog gekeken)",
           st["hold"]["active"] and "Testfilm" in str(st["hold"]["reason"]), st["hold"])
     na = mg.db()
+    controleer_emby_kijkgeschiedenis(emby, "na de upgrade")
     check("geheim en instellingen van de koppeling zijn byte-gelijk gebleven",
           na["geheim_server_1"] == voor["geheim_server_1"]
           and na["instellingen"] == voor["instellingen"] and na["geheimen"] == voor["geheimen"],
           {"voor": voor, "na": na})
     verwacht = sorted(p.stem for p in (ROOT / "apps/core/mediaguard/migrations").glob("*.sql"))
     servermigratie = "150_mediaserver_servers"
+    releasefixture = ROOT / "tests/fixtures/aio" / f"core-{VORIGE_VERSIE}.json"
+    releaseschema = json.loads(releasefixture.read_text("utf-8"))["schema_versions"]
+    check("de nulmeting heeft exact de migraties van de gekozen release",
+          voor["migraties"] == sorted(releaseschema), voor["migraties"])
+    if VORIGE_VERSIE == "1.2.2":
+        check("migratie 150 is nieuw ten opzichte van 1.2.2", servermigratie not in voor["migraties"])
     check("alle kernmigraties inclusief 150 zijn toegepast en er is nog geen extra server",
-          servermigratie not in voor["migraties"] and servermigratie in na["migraties"]
-          and set(voor["migraties"]) < set(na["migraties"]) and na["migraties"] == verwacht
+          servermigratie in na["migraties"] and set(voor["migraties"]) <= set(na["migraties"])
+          and na["migraties"] == verwacht
           and na["extra_servers"] == [],
           {"migraties": (voor["migraties"], na["migraties"]), "extra": na["extra_servers"]})
+    feit("kernmigraties", {"voor": len(voor["migraties"]), "na": len(na["migraties"]),
+                           "toegevoegd": sorted(set(na["migraties"]) - set(voor["migraties"]))})
     # de eerste ronde van de achtergrondlus: Emby wordt gevolgd zonder dat iemand iets instelde
     nieuw = wacht_op(lambda: [r for r in sessiepolls(luik("emby")[n_voor:], "/emby/Sessions")
                               if r["status"] == 200], EERSTE_RONDE + 3 * RONDE, 3,
@@ -818,7 +902,7 @@ def test_b2_upgrade_emby_blijft_gevolgd_zonder_handeling(servers: dict[str, Any]
           st["hold"]["active"] and " op " not in str(st["hold"]["reason"]), st["hold"])
     regels = luik("emby")[n_voor:]
     controleer_luik_emby(regels, emby["sleutel"], "kandidaat")
-    check("de kandidaat vraagt Emby niets wat 1.2.2 niet vroeg",
+    check(f"de kandidaat vraagt Emby niets wat {VORIGE_VERSIE} niet vroeg",
           {(r["method"], r["path"]) for r in regels} <= set(map(tuple, STATE["emby_paden_voor"])),
           sorted({(r["method"], r["path"]) for r in regels}))
     check("Jellyfin heeft tot nu toe geen enkel verzoek met een sleutel gekregen",
@@ -953,8 +1037,11 @@ def test_b6_jellyfin_valt_weg_emby_blijft_gevolgd(servers: dict[str, Any]) -> No
           st["servers"][1]["connected"] is False and not wachtende_banen(),
           (st["servers"][1]["connected"], mg.banen()))
     compose("start", "srv-jellyfin", "jellyfin")
+    if INTERN:
+        servers["jellyfin"]["url"] = intern_serveradres("srv-jellyfin")
     http = httpx.Client(timeout=10)
-    wacht_op(lambda: "ProductName" in http.get(JELLYFIN + "/System/Info/Public").json(), 300,
+    wacht_op(lambda: "ProductName" in http.get(
+        servers["jellyfin"]["url"] + "/System/Info/Public").json(), 300,
              wat="Jellyfin weer gestart")
     wacht_op(lambda: mg.status()["servers"][1]["connected"], 4 * RONDE, 3,
              wat="Jellyfin weer verbonden")
@@ -1032,6 +1119,45 @@ def test_b8_emby_weer_koppelen_zonder_sleutel_opnieuw(servers: dict[str, Any]) -
           mg.db()["geheim_server_1"] == STATE["db_voor"]["geheim_server_1"])
 
 
+def test_b8b_jellyfin_weigert_sleutel_emby_blijft_gevolgd(servers: dict[str, Any]) -> None:
+    """Een gemeten 401 op server 2 mag server 1 en diens polls niet raken."""
+    verkeerd = secrets.token_hex(16)
+    start_jf, start_emby = len(luik("jellyfin")), len(luik("emby"))
+    try:
+        fout = mg.config({"server_id": 2, "api_key": verkeerd})
+        check("de kandidaat meldt dat de sleutel van Jellyfin geweigerd is",
+              fout["test"]["ok"] is False and "sleutel geweigerd" in fout["test"]["message_nl"])
+        wacht_op(lambda: any(r["status"] == 200 for r in
+                             sessiepolls(luik("emby")[start_emby:], "/emby/Sessions")),
+                 3 * RONDE, wat="geslaagde Emby-poll terwijl de Jellyfin-sleutel ongeldig is")
+        eerste, tweede = mg.status()["servers"]
+        check("server 2 toont een mislukt contact en staat niet als verbonden",
+              tweede["server_id"] == 2 and tweede["connected"] is False
+              and tweede["contact"]["ok"] is False)
+        check("Emby blijft als server 1 met zijn bestaande sleutel verbonden en gevolgd",
+              eerste["server_id"] == 1 and eerste["connected"] and eerste["contact"]["ok"]
+              and eerste["followed"] and eerste["url"] == EMBY_INTERN
+              and mg.db()["geheim_server_1"] == STATE["db_voor"]["geheim_server_1"])
+    finally:
+        herstel = mg.config({"server_id": 2, "api_key": servers["jellyfin"]["sleutel"]})
+    check("server 2 is met de eigen geldige sleutel weer verbonden",
+          herstel["test"]["ok"] and herstel["status"]["servers"][1]["connected"])
+
+    regels = luik("jellyfin")
+    vinger = vingerafdruk(verkeerd)
+    afwijzingen = {i for i in range(start_jf, len(regels)) if regels[i]["token"] == vinger}
+    check("Jellyfin weigerde de ongeldige sleutel op de beveiligde route met HTTP 401",
+          any(regels[i]["path"] == "/System/Info" for i in afwijzingen)
+          and all(regels[i]["method"] == "GET" and regels[i]["status"] == 401
+                  and regels[i]["auth"] == ["mediabrowser"]
+                  and not regels[i]["path"].startswith("/emby")
+                  and not ({"api_key", "apikey"} & {k.lower() for k in regels[i]["query"]})
+                  for i in afwijzingen))
+    STATE["jf_afwijzingen"] = afwijzingen
+    STATE["ongeldige_sleutel"] = verkeerd
+    feit("jellyfin_verwachte_401", len(afwijzingen))
+
+
 def test_b9_niets_gelekt_en_nette_stop(servers: dict[str, Any]) -> None:
     emby, jf = servers["emby"], servers["jellyfin"]
     code = mg.stop("kandidaat")
@@ -1040,7 +1166,9 @@ def test_b9_niets_gelekt_en_nette_stop(servers: dict[str, Any]) -> None:
     check("aan het eind: geheim van Emby byte-gelijk aan vóór de upgrade, soort en adres terug",
           na["geheim_server_1"] == STATE["db_voor"]["geheim_server_1"]
           and na["instellingen"] == STATE["db_voor"]["instellingen"], na)
-    geheimen = {"Emby-sleutel": emby["sleutel"], "Jellyfin-sleutel": jf["sleutel"]}
+    controleer_emby_kijkgeschiedenis(emby, "na uitval en herkoppelen")
+    geheimen = {"Emby-sleutel": emby["sleutel"], "Jellyfin-sleutel": jf["sleutel"],
+                "ongeldige sleutel": STATE["ongeldige_sleutel"]}
     teksten = {f"log {fase}": tekst for fase, tekst in mg.logs.items()}
     for naam in ("emby", "jellyfin"):
         teksten[f"doorgeefluik {naam}"] = (RUN / "proxylog" / f"{naam}.jsonl").read_text("utf-8")
@@ -1051,16 +1179,27 @@ def test_b9_niets_gelekt_en_nette_stop(servers: dict[str, Any]) -> None:
     # over de hele run: wat ging er werkelijk over de lijn?
     alle_emby, alle_jf = luik("emby"), luik("jellyfin")
     controleer_luik_emby(alle_emby, emby["sleutel"], "hele run")
-    controleer_luik_jellyfin(alle_jf, jf["sleutel"], "hele run")
+    # Alleen de in b8b afzonderlijk gemeten afwijzingen horen bij de verkeerde sleutel.
+    positief = [r for i, r in enumerate(alle_jf) if i not in STATE["jf_afwijzingen"]]
+    controleer_luik_jellyfin(positief, jf["sleutel"], "geldig verkeer")
+    check("de ongeldige sleutel stond nooit in een adres",
+          all(vingerafdruk(STATE["ongeldige_sleutel"]) not in r["query"].values()
+              for r in alle_emby + alle_jf))
+    kandidaat = emby_verzoeksoorten(alle_emby[STATE["n_emby_kandidaat"]:])
+    verschil = sorted(kandidaat - STATE["emby_referentie"])
+    feit("emby_referentie_verzoeksoorten", sorted(STATE["emby_referentie"]))
+    feit("emby_kandidaat_verzoeksoorten", sorted(kandidaat))
+    check("de hele kandidaatfase stuurde Emby uitsluitend eerder gemeten verzoeksoorten",
+          bool(kandidaat) and not verschil, verschil)
     feit("emby_aanmeldvormen", sorted({",".join(r["auth"]) or "geen" for r in alle_emby}))
     feit("jellyfin_aanmeldvormen", sorted({",".join(r["auth"]) or "geen" for r in alle_jf}))
     feit("emby_statussen", sorted({r["status"] for r in alle_emby}))
     feit("jellyfin_statussen", sorted({r["status"] for r in alle_jf}))
     check("Emby gaf op geen enkel verzoek van MediaGuard 401 of 403",
           not [r for r in alle_emby if r["status"] in (401, 403)])
-    check("Jellyfin gaf op geen enkel verzoek met sleutel 401 of 403",
-          not [r for r in alle_jf if r["auth"] and r["status"] in (401, 403)],
-          [r for r in alle_jf if r["auth"] and r["status"] in (401, 403)][:3])
+    check("Jellyfin gaf op geen enkel verzoek met de geldige sleutel 401 of 403",
+          not [r for r in positief if r["auth"] and r["status"] in (401, 403)],
+          [r for r in positief if r["auth"] and r["status"] in (401, 403)][:3])
     # de Emby-koppeling in de kandidaat, van de eerste ronde tot het losmaken
     gevolgd = sessiepolls(alle_emby[STATE["n_emby_kandidaat"]:STATE["n_emby_losgemaakt"]],
                           "/emby/Sessions")

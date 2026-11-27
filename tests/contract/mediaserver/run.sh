@@ -7,7 +7,7 @@
 # test_mediaserver_contract.py:
 #   deel A  de clients van core en de encoder tegen beide servers (aanmeldkop per server, sessies, verversen,
 #           afspeeltest, Nederlandse ondertitels);
-#   deel B  MediaGuard 1.2.2 met één Emby-koppeling, daarna de kandidaat op dezelfde datamap:
+#   deel B  de gekozen release met één Emby-koppeling, daarna de kandidaat op dezelfde datamap:
 #           Emby blijft gevolgd zonder één handeling, Jellyfin komt erbij, de kijkpauze werkt per server en blijft
 #           staan als de andere server wegvalt.
 # Daarna gaat alles weer weg (containers, volumes, netwerk en de werkmap .run).
@@ -19,6 +19,9 @@
 #   MGMS_KANDIDAAT   image van de kandidaat (alles-in-één). Standaard bouwt Dockerfile.kandidaat de kern en
 #                    encoder van deze werkmap op de gepinde runtime van de CI-job upgradebewijs.
 #   MG_CORE_PYTHON   python met de afhankelijkheden van core en pytest (standaard .venv/bin/python van de repo)
+#   MGMS_BASIS       enkelvoudig (standaard, 1.2.2 vóór migratie 150) of laatste (deploy/upgradebewijs)
+#   MGMS_BEWIJS      map buiten .run voor de meetgegevens
+#   MGMS_INTERN=true   uitsluitend het eigen interne brugnetwerk (Linux-host met toegang tot die brug)
 #   EMBY_IMAGE / JELLYFIN_IMAGE   andere serverimages (standaard de digests uit docker-compose.yml)
 #   MGMS_EMBY_PORT / MGMS_JELLYFIN_PORT / MGMS_MG_PORT   hostpoorten op 127.0.0.1 (38096 / 38097 / 38098)
 #   KEEP_RUNNING=1   laat alles staan na afloop (voor onderzoek)
@@ -31,11 +34,23 @@ PY="${MG_CORE_PYTHON:-$ROOT/.venv/bin/python}"
 COMPOSE=(docker compose -f docker-compose.yml)
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-mgms}"
 MG_NAAM="$COMPOSE_PROJECT_NAME-mediaguard"
+if [[ "${MGMS_INTERN:-false}" == "true" ]]; then
+  export MGMS_EMBY_PORT=0 MGMS_JELLYFIN_PORT=0
+fi
 
 lees() { python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(sys.argv[2].format(**d))' "$@"; }
-# Deel B bewijst migratie 150 vanaf de laatste release met één mediaserver.
-MGMS_VORIGE_VERSIE=1.2.2
-MGMS_VORIGE="ghcr.io/lvos04/mediaguard-core:${MGMS_VORIGE_VERSIE}-aio@sha256:14e540ba9cad0bb7fbda8295bca89496f58462a201361544916f3b16b3a52dc6"
+case "${MGMS_BASIS:-enkelvoudig}" in
+  enkelvoudig)
+    MGMS_VORIGE_VERSIE=1.2.2
+    MGMS_VORIGE="ghcr.io/lvos04/mediaguard-core:${MGMS_VORIGE_VERSIE}-aio@sha256:14e540ba9cad0bb7fbda8295bca89496f58462a201361544916f3b16b3a52dc6"
+    ;;
+  laatste)
+    bron="$ROOT/deploy/upgradebewijs/vorige-release.json"
+    MGMS_VORIGE_VERSIE="$(lees "$bron" '{versie}')"
+    MGMS_VORIGE="$(lees "$bron" '{image}@{digest}')"
+    ;;
+  *) echo "MGMS_BASIS moet enkelvoudig of laatste zijn" >&2; exit 2 ;;
+esac
 MGMS_VERSIE="$(lees "$ROOT/deploy/release-manifest.json" '{version}')"
 MGMS_UID="$(id -u)"
 MGMS_GID="$(id -g)"
@@ -56,6 +71,7 @@ docker image inspect "$MGMS_VORIGE" >/dev/null 2>&1 || {
 }
 opruimen
 rm -rf "$RUN"
+[[ "${KEEP_RUNNING:-0}" == "1" ]] || trap 'opruimen; rm -rf -- "$RUN"' EXIT
 mkdir -p "$RUN/media/Films/Testfilm (2024)" "$RUN/media/Films/Zonder Ondertitel (2023)" "$RUN/proxylog" "$RUN/mg"
 
 if [[ -z "${MGMS_KANDIDAAT:-}" ]]; then
@@ -78,13 +94,20 @@ printf '1\n00:00:01,000 --> 00:00:05,000\nDit is een Nederlandse ondertitel.\n\n
   > "$RUN/media/Films/Testfilm (2024)/Testfilm (2024).nl.srt"
 chmod -R a+rX "$RUN/media"
 
-echo ">> servers: $(grep -o 'emby/embyserver:[^}]*' docker-compose.yml | head -1) en $(grep -o 'jellyfin/jellyfin:[^}]*' docker-compose.yml | head -1)"
+echo ">> images van deze contractproef:"
+"${COMPOSE[@]}" config --images
 echo ">> MediaGuard: vorige release $MGMS_VORIGE_VERSIE ($MGMS_VORIGE), kandidaat $MGMS_VERSIE ($MGMS_KANDIDAAT)"
-[[ "${KEEP_RUNNING:-0}" == "1" ]] || trap opruimen EXIT
 "${COMPOSE[@]}" up -d
+{
+  for dienst in srv-emby srv-jellyfin; do
+    docker inspect --format "$dienst {{.Config.Image}} {{.Image}}" "$("${COMPOSE[@]}" ps -aq "$dienst")"
+  done
+  docker image inspect --format 'vorige {{.Id}}' "$MGMS_VORIGE"
+  docker image inspect --format 'kandidaat {{.Id}}' "$MGMS_KANDIDAAT"
+} | tee "$RUN/images.txt"
 start=$(date +%s)
 set +e
-"$PY" -m pytest -v -rA -x --durations=0 -p no:cacheprovider --basetemp "$RUN/pytest" --junitxml "$RUN/junit.xml" \
+"$PY" -m pytest -v -rA -x --tb=short --assert=plain --durations=0 -p no:cacheprovider --basetemp "$RUN/pytest" --junitxml "$RUN/junit.xml" \
   "$HERE/test_mediaserver_contract.py" "$@" 2>&1 | tee "$RUN/pytest.log"
 rc=${PIPESTATUS[0]}
 set -e
@@ -101,10 +124,6 @@ fi
 if [[ -n "${MGMS_BEWIJS:-}" ]]; then
   mkdir -p "$MGMS_BEWIJS"
   cp -f "$RUN/pytest.log" "$RUN/junit.xml" "$RUN"/proxylog/*.jsonl "$RUN"/logs-*.txt "$MGMS_BEWIJS/" 2>/dev/null || true
-  cp -f "$RUN/metingen.json" "$MGMS_BEWIJS/" 2>/dev/null || true
-fi
-if [[ "${KEEP_RUNNING:-0}" != "1" ]]; then
-  opruimen
-  rm -rf "$RUN"
+  cp -f "$RUN/metingen.json" "$RUN/images.txt" "$MGMS_BEWIJS/" 2>/dev/null || true
 fi
 exit "$rc"

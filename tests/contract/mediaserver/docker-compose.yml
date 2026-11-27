@@ -18,20 +18,28 @@ x-log: &log
   entrypoint: ["/opt/venv/bin/python", "-u", "/proxy/logproxy.py"]
   user: "${MGMS_UID:-1000}:${MGMS_GID:-1000}"
   healthcheck: {disable: true}
-  networks: [mgnet]
+  networks: [mgnet, servers]
   volumes: ["./logproxy.py:/proxy/logproxy.py:ro", "./.run/proxylog:/log"]
 
 services:
   srv-emby:
     image: ${EMBY_IMAGE:-emby/embyserver:4.10.2.0@sha256:7082c63b10a2fcb3805a7eaebba407d5723bc57c085c9f0b29b7d0a702765cc1}
-    networks: [mgnet]
+    networks: [servers]
     volumes: ["emby-config:/config", "./.run/media:/media:ro"]
     ports: ["127.0.0.1:${MGMS_EMBY_PORT:-38096}:8096"]
 
   srv-jellyfin:
     image: ${JELLYFIN_IMAGE:-jellyfin/jellyfin:12.4@sha256:fea863d0cd9ec445985d9c75fc6ed64e38a1d2766cf0c250a33d553f4fc1b771}
-    networks: [mgnet]
-    volumes: ["jellyfin-config:/config", "jellyfin-cache:/cache", "./.run/media:/media:ro"]
+    networks: [servers]
+    volumes:
+      - jellyfin-config:/config
+      # Een nieuw privévolume krijgt zijn eigen modus. De Jelly Leon-image
+      # gebruikt op /cache de modus 1777 voor een lege tmpfs.
+      - type: volume
+        source: jellyfin-cache
+        target: /cache
+        volume: {nocopy: true}
+      - ./.run/media:/media:ro
     ports: ["127.0.0.1:${MGMS_JELLYFIN_PORT:-38097}:8096"]
 
   emby:
@@ -49,3 +57,7 @@ volumes:
 
 networks:
   mgnet:
+    internal: ${MGMS_INTERN:-false}
+  # Ook automatische detectie van MediaGuard bereikt de servers alleen via hun doorgeefluik.
+  servers:
+    internal: ${MGMS_INTERN:-false}
