@@ -1,12 +1,14 @@
 """Poolmeldingen volgen de actuele toestemming, ook bij een uitsluitend lezend verzoek."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from threading import Event
 
 import pytest
 from test_bewaking import _truenas
 
-from mediaguard import attention, hub_pool, monitor
+from mediaguard import attention, hub_pool, monitor, pool_workers
 from mediaguard import storage_forecast as storage
 from mediaguard.app import create_app
 from mediaguard.connector import items
@@ -76,6 +78,36 @@ def test_overgang_naar_directe_poolbron_gebruikt_eigen_meettoestemming(
     finally:
         asyncio.run(storage.shutdown(nieuw))
         nieuw.db.close()
+
+
+def test_gelijktijdige_poolwaarschuwing_trekt_gezonde_opruimtoestemming_niet_in(
+        ctx, poolhub, monkeypatch):
+    asyncio.run(storage.refresh_pool(ctx))
+    leest, verder = Event(), Event()
+    controle = pool_workers._registered_reported
+
+    def pauze(*args):
+        geldig = controle(*args)
+        if not leest.is_set():
+            leest.set()
+            assert verder.wait(5)
+        return geldig
+
+    monkeypatch.setattr(pool_workers, "_registered_reported", pauze)
+    with ThreadPoolExecutor(max_workers=1) as uitvoerder:
+        lezing = uitvoerder.submit(_waarschuwing, ctx)
+        try:
+            assert leest.wait(5)
+            try:
+                with ctx.db.startup_lock(blocking=False):
+                    assert storage.pool_cleanup_pause_reason(ctx) is None
+            except BlockingIOError:
+                pass  # De lezer heeft voorrang en de gewone opruimer wacht op ditzelfde slot.
+        finally:
+            verder.set()
+        assert not lezing.result(timeout=5)
+    assert storage.pool_cleanup_pause_reason(ctx) is None
+    assert poolhub["calls"] == 1
 
 
 @pytest.mark.parametrize("inhoud", [b"!" * 32, b"0" * 32, None])

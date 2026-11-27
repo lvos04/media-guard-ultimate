@@ -380,10 +380,13 @@ def measurement_visible(ctx: AppContext, request_id: str) -> bool:
     if not vote or vote.unregistered or vote.ready is None:
         return False
     try:
-        if ctx.state_get(CLEANUP_REQUEST) != request_id:
-            return False
         flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
-        with ExitStack() as held:
+        # De opruimer houdt het datamapslot vóór hij het werkerslot probeert.
+        # Zo kan hij een lezende bewaker nooit voor een losgekoppelde werker aanzien.
+        with ctx.db.startup_lock(blocking=False), ExitStack() as held:
+            if ctx.state_get(CLEANUP_REQUEST) != request_id:
+                return False
+
             def open_read(path: Path, extra: int = 0) -> int:
                 fd = os.open(path, flags | extra)
                 held.callback(os.close, fd)
