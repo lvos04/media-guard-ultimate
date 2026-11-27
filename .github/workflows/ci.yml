@@ -233,6 +233,7 @@ jobs:
           tests/test_verificatie.py tests/test_systeem.py tests/test_playback_hold.py
           tests/test_encodehervatting.py
           tests/test_api.py::test_opnieuw_proberen_bewaart_onderbroken_beeldwerk
+          tests/test_api.py::test_tweede_bibliotheek_krijgt_bezet_en_kan_daarna_scannen
           tests/test_uitvoerder.py::test_hdr_wordt_pas_na_verificatie_atomisch_vervangen
           tests/test_planner.py::test_platformpauze_laat_voortgang_staan_en_hervat_wachtrij
           tests/test_planner.py::test_startfout_van_worker_bewaart_het_oude_deelbestand
@@ -273,7 +274,8 @@ jobs:
             if ! git cat-file -e "${VOOR}^{commit}" 2>/dev/null; then
               bewijs=true
             else
-              gewijzigd="$(git diff --name-only "$VOOR" HEAD -- services/encoder/Dockerfile)"
+              gewijzigd="$(git diff --name-only "$VOOR" HEAD -- services/encoder/Dockerfile \
+                scripts/vergelijk-ffmpeg.sh deploy/upgradebewijs/vorige-release.json)"
               [[ -z "$gewijzigd" ]] || bewijs=true
             fi
           fi

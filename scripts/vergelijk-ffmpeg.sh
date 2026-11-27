@@ -16,6 +16,10 @@ for optie in version buildconf encoders; do
     > "$bewijs/referentie-$optie.txt" 2>&1
   docker run --rm --network none --entrypoint /opt/ffmpeg/bin/ffmpeg "$kandidaat" "-$optie" \
     > "$bewijs/kandidaat-$optie.txt" 2>&1
-  diff -u "$bewijs/referentie-$optie.txt" "$bewijs/kandidaat-$optie.txt" || verschil=1
+  if diff -u "$bewijs/referentie-$optie.txt" "$bewijs/kandidaat-$optie.txt"; then
+    echo "FFmpeg -$optie is gelijk aan de vorige release."
+  else
+    verschil=1
+  fi
 done
 exit "$verschil"
