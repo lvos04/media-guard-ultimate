@@ -3,7 +3,7 @@
 **Rol:** Bestaande primaire download/bibliotheek/AV1-app.  
 **Aanpak:** Upgrade alleen na versiecontrole.  
 **Bron:** https://github.com/lvos04/media-guard-ultimate.  
-**Versiebeleid:** Release 1.2.2, image ghcr.io/lvos04/mediaguard-core:1.2.2-aio (controleer echte registry/tag).
+**Installatieversie** 1.3.0. Gebruik `ghcr.io/lvos04/mediaguard-core:1.3.0-aio@sha256:47e6f0373b6466563b5d2397ffa5a4d5c706446ad3249cb24fcfb96924a25f16`. [Custom App-formulier](../../../deploy/truenas/CUSTOM_APP.md)
 
 ## 1. Vooraf controleren
 MediaGuard draait mogelijk al; huidige tags, datasets, poorten, ACL en backup verifiëren.
@@ -17,7 +17,7 @@ MediaGuard draait mogelijk al; huidige tags, datasets, poorten, ACL en backup ve
 ## 2. Stappen in uitvoeringsvolgorde
 
 ### Stap 1. Release en huidige draaiende versie bepalen
-**Uitvoeren:** Compare TrueNAS installed tag/digest met GitHub v1.2.2 en CHANGELOG; update niet vanzelf.
+**Uitvoeren** Vergelijk de geïnstalleerde tag en digest met `digests.json` van release v1.3.0. Noteer de bestaande image voor terugval. [Releasebijlagen](https://github.com/lvos04/media-guard-ultimate/releases/tag/v1.3.0)
 **Verifiëren:** Installed en latest beide bekend, verschillen geregistreerd.
 **Bewijs:** noteer NAS-versie, appimage digest, datum, gemaskeerde output, eventuele screenshot en status in Excel (ID `I03-03-01`).
 **Als dit mislukt:** stop hier; maak oorzaak en rollbackpad inzichtelijk. Geen volgende stap starten zolang deze test of de back-upgate rood is.
@@ -34,8 +34,8 @@ MediaGuard draait mogelijk al; huidige tags, datasets, poorten, ACL en backup ve
 **Bewijs:** noteer NAS-versie, appimage digest, datum, gemaskeerde output, eventuele screenshot en status in Excel (ID `I03-03-03`).
 **Als dit mislukt:** stop hier; maak oorzaak en rollbackpad inzichtelijk. Geen volgende stap starten zolang deze test of de back-upgate rood is.
 
-### Stap 4. Veilige update naar 1.2.2
-**Uitvoeren:** Na green gate: Custom App pin `ghcr.io/lvos04/mediaguard-core:1.2.2-aio`; stop grace >=60s waar ondersteund; host network alleen als huidige architectuur dat gebruikt en veiligheid bekeken.
+### Stap 4. Veilige update naar 1.3.0
+**Uitvoeren** Gebruik na de controles en de back-up de image uit **Installatieversie**. Kies een stoptermijn van minstens 60 seconden waar ondersteund. Behoud een eerder geverifieerde hostnetwerkinstelling. [Bijwerken en terugzetten](../../../deploy/truenas/BIJWERKEN.md)
 **Verifiëren:** Core, web, recovery, encoder, forks healthy na migratie.
 **Bewijs:** noteer NAS-versie, appimage digest, datum, gemaskeerde output, eventuele screenshot en status in Excel (ID `I03-03-04`).
 **Als dit mislukt:** stop hier; maak oorzaak en rollbackpad inzichtelijk. Geen volgende stap starten zolang deze test of de back-upgate rood is.

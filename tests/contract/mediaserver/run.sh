@@ -7,7 +7,7 @@
 # test_mediaserver_contract.py:
 #   deel A  de clients van core en de encoder tegen beide servers (aanmeldkop per server, sessies, verversen,
 #           afspeeltest, Nederlandse ondertitels);
-#   deel B  de echte vorige release van MediaGuard met een Emby-koppeling, daarna de kandidaat op dezelfde datamap:
+#   deel B  MediaGuard 1.2.2 met één Emby-koppeling, daarna de kandidaat op dezelfde datamap:
 #           Emby blijft gevolgd zonder één handeling, Jellyfin komt erbij, de kijkpauze werkt per server en blijft
 #           staan als de andere server wegvalt.
 # Daarna gaat alles weer weg (containers, volumes, netwerk en de werkmap .run).
@@ -16,8 +16,8 @@
 #   flock <pad>/stack.lock tests/contract/mediaserver/run.sh
 #
 # Omgeving:
-#   MGMS_KANDIDAAT   image van de kandidaat (alles-in-één). Leeg: wordt gebouwd uit de vorige release + de core van
-#                    deze werkmap (deploy/upgradebewijs/Dockerfile.kandidaat), net als in de CI-job upgradebewijs.
+#   MGMS_KANDIDAAT   image van de kandidaat (alles-in-één). Standaard bouwt Dockerfile.kandidaat de kern en
+#                    encoder van deze werkmap op de gepinde runtime van de CI-job upgradebewijs.
 #   MG_CORE_PYTHON   python met de afhankelijkheden van core en pytest (standaard .venv/bin/python van de repo)
 #   EMBY_IMAGE / JELLYFIN_IMAGE   andere serverimages (standaard de digests uit docker-compose.yml)
 #   MGMS_EMBY_PORT / MGMS_JELLYFIN_PORT / MGMS_MG_PORT   hostpoorten op 127.0.0.1 (38096 / 38097 / 38098)
@@ -33,8 +33,9 @@ export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-mgms}"
 MG_NAAM="$COMPOSE_PROJECT_NAME-mediaguard"
 
 lees() { python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(sys.argv[2].format(**d))' "$@"; }
-MGMS_VORIGE="$(lees "$ROOT/deploy/upgradebewijs/vorige-release.json" '{image}@{digest}')"
-MGMS_VORIGE_VERSIE="$(lees "$ROOT/deploy/upgradebewijs/vorige-release.json" '{versie}')"
+# Deel B bewijst migratie 150 vanaf de laatste release met één mediaserver.
+MGMS_VORIGE_VERSIE=1.2.2
+MGMS_VORIGE="ghcr.io/lvos04/mediaguard-core:${MGMS_VORIGE_VERSIE}-aio@sha256:14e540ba9cad0bb7fbda8295bca89496f58462a201361544916f3b16b3a52dc6"
 MGMS_VERSIE="$(lees "$ROOT/deploy/release-manifest.json" '{version}')"
 MGMS_UID="$(id -u)"
 MGMS_GID="$(id -g)"
@@ -59,10 +60,10 @@ mkdir -p "$RUN/media/Films/Testfilm (2024)" "$RUN/media/Films/Zonder Ondertitel 
 
 if [[ -z "${MGMS_KANDIDAAT:-}" ]]; then
   MGMS_KANDIDAAT="${MGMS_BOUWTAG:-mediaguard/upgrade-kandidaat:contract}"
-  echo ">> kandidaat bouwen: runtime van $MGMS_VORIGE_VERSIE met kern en encoder uit deze werkmap"
+  echo ">> kandidaat bouwen met de gepinde runtime uit Dockerfile.kandidaat en de kern en encoder uit deze werkmap"
   docker buildx build --load -q -f "$ROOT/deploy/upgradebewijs/Dockerfile.kandidaat" \
     --build-context "encoder=$ROOT/services/encoder/app" --build-context "core=$ROOT/apps/core" --build-context "release=$ROOT/deploy" \
-    --build-arg "VORIGE=$MGMS_VORIGE" -t "$MGMS_KANDIDAAT" "$ROOT/deploy/upgradebewijs"
+    -t "$MGMS_KANDIDAAT" "$ROOT/deploy/upgradebewijs"
 fi
 export MGMS_KANDIDAAT
 

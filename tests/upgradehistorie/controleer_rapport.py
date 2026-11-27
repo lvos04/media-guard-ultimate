@@ -1,17 +1,27 @@
 """Controleer beide richtingen van één upgradebewijs of vergelijk het met het CI-artefact."""
 
+import re
 import sys
 from pathlib import Path
 
 
 def vulling(pad: Path) -> dict:
     tekst = pad.read_text()
+    assert "❌" not in tekst, "het upgradebewijs bevat een fout of een afgebroken proef"
+    (vorige,) = re.findall(r"^## Upgradebewijs (\S+) → \S+$", tekst, re.MULTILINE)
+    # De 1.3.0-fixture vult veertien extra kerntabellen en de scanbijdragen van de encoder.
+    aantal_tabellen = {"1.2.2": 162, "1.3.0": 177}[vorige]
     for uitkomst in ("Upgrade: niets verloren", "terugzetten: niets verloren"):
         assert tekst.splitlines().count(uitkomst) == 1
     bestandsproef = "4/4 SHA-256 gelijk na update en op de drie terugvalklonen." in tekst
     if not bestandsproef:
         # Het bestaande historische rapport van 1.2.2 gebruikte alleen de vier fixturetaken.
         assert "## Upgradebewijs 1.2.2 → 1.2.2" in tekst
+    if vorige == "1.3.0":
+        for schema in ("core", "encode"):
+            regel = (f"- {schema}: Docker unhealthy, herstarts 0, gezondheidsstatus down. "
+                     "Gewijzigde tabellen: geen.\n  SQLite-hulpbestanden gewijzigd: geen.")
+            assert tekst.count(regel) == 1, f"onvolledige schemaproef voor {schema}"
     delen = tekst.split("## Terugzetten (vorige image + snapshot)")
     assert len(delen) == 2
     standen = []
@@ -25,7 +35,7 @@ def vulling(pad: Path) -> dict:
                 naam = tuple(velden[:2])
                 assert naam not in gevuld
                 gevuld[naam] = (voor, na)
-        assert len(gevuld) == 162
+        assert len(gevuld) == aantal_tabellen, (vorige, len(gevuld), aantal_tabellen)
         for instantie in ("radarr-films", "radarr-animefilms"):
             assert gevuld[f"{instantie}/radarr.db", "NamingConfig"] == (1, 1)
         assert (

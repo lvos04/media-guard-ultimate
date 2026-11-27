@@ -49,6 +49,19 @@ def test_vorige_release_is_op_digest_gepind_en_heeft_een_fixture() -> None:
     assert VORIGE["fixture"] == f"tests/fixtures/aio/core-{VORIGE['versie']}"
 
 
+def test_sql_fixture_1_3_0_krijgt_per_proef_een_leesbare_cursorsleutel(tmp_path: Path) -> None:
+    from mediaguard import event_keys
+
+    sleutels = set()
+    for naam in ("eerste", "tweede"):
+        core = tmp_path / naam / "core"
+        ub.herstel(FIXTURES / "core-1.3.0.sql", core / "mediaguard.db")
+        sleutel = event_keys.read_key(core, event_keys.KEY_REF)
+        assert sleutel is not None
+        sleutels.add(sleutel)
+    assert len(sleutels) == 2
+
+
 def test_fixture_vult_elk_domein_van_de_voortgang() -> None:
     """B03_DELTAVERZOEKEN §1 punt 2: gevuld = alle domeinen. Elke tabel heeft rijen, behalve de
     bewust overgeslagen (geheimen, sessies, aanmeldcodes, vergrendelingen)."""

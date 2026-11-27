@@ -1,7 +1,7 @@
 # Installatie op TrueNAS SCALE — technische referentie
 
 > Gebruik voor TrueNAS uitsluitend het [standaard Custom App-formulier](../deploy/truenas/CUSTOM_APP.md)
-> met het alles-in-één-image `ghcr.io/lvos04/mediaguard-core:<versie>-aio`.
+> met het alles-in-één-image `ghcr.io/lvos04/mediaguard-core:1.3.0-aio@sha256:47e6f0373b6466563b5d2397ffa5a4d5c706446ad3249cb24fcfb96924a25f16`.
 > De gids bevat de stappen voor installatie, upgrade en terugzetten via de TrueNAS-webinterface.
 
 Deze pagina beschrijft de indeling en onderdelen van de afzonderlijke containers voor

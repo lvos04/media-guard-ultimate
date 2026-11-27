@@ -18,7 +18,7 @@ Bij de alles-in-één-image (AIO) verwacht MediaGuard onder **/config** de hele 
 
 **Herkenningsnamen uit de geschiedenis.** De publieke Git-geschiedenis begint bij `1.2.2`. De README vermeldt eerdere tags van `v0.1.0` tot en met `v1.2.2` in de privé-bronrepo `lvos04/media-guard-ultimate-archief`. De daaruit overgenomen releasegegevens noemen de volgende images.
 
-- `ghcr.io/lvos04/mediaguard-core:1.2.2-aio` is de vorige AIO. In dezelfde repository hoort `1.2.2` zonder `-aio` bij de losse core-, init- en recoveryrollen.
+- `ghcr.io/lvos04/mediaguard-core:1.2.2-aio@sha256:14e540ba9cad0bb7fbda8295bca89496f58462a201361544916f3b16b3a52dc6` is de AIO waarmee het upgradebewijs voor 1.3.0 begint. In dezelfde repository hoort `1.2.2` zonder `-aio` bij de losse core-, init- en recoveryrollen.
 - De losse opzet gebruikt ook `ghcr.io/lvos04/mediaguard-web`, `ghcr.io/lvos04/mediaguard-encode`, `ghcr.io/lvos04/mediaguard-sonarr-fork` en `ghcr.io/lvos04/mediaguard-radarr-fork`. De vorken hebben eigen versie- of commit-tags. De Forgejo-releaseconfiguratie gebruikt voor die vijf pakketnamen ook het voorvoegsel `git.medialeon.nl/leon/`.
 - Lokale bouwnamen zijn `mediaguard/aio`, `mediaguard/core`, `mediaguard/web`, `mediaguard/encode`, `mediaguard/sonarr-fork` en `mediaguard/radarr-fork`. `mediaguard/upgrade-kandidaat` en `mediaguard/encode-ci-…` zijn proefimages. De encoderbron noemt ook de voorganger `lvos04/av1-backend`. Een lokale bouwnaam of een naam van een encoder bewijst op zichzelf geen AIO-compatibiliteit.
 
@@ -35,7 +35,7 @@ Een andere naam kan bij een eigen kopie horen. **STOP** als de herkomst, vorige 
 
 ## 3. Kies het pad voor de gevonden installatie
 
-Gebruik de GitHub-release **v1.3.0** pas zodra de releasebijlagen beschikbaar zijn. Controleer in **digests.json** de velden `app_id` (`mediaguard`), `version` (`1.3.0`), `image`, `tag` en de volledige `digest`. De doelrepository is **ghcr.io/lvos04/mediaguard-core**. Het veld **Tag** wordt **1.3.0-aio@sha256:…** met de volledige registerdigest uit dat bestand. Controleer ook **upgradebewijs.md**. Weigert het formulier het digestdeel, vul dan de exacte tag **1.3.0-aio** in en vergelijk na het ophalen de getoonde digest met **digests.json** (zoals in CUSTOM_APP.md). Ontbreekt een bijlage of wijkt de opgehaalde digest af, stel de wijziging uit.
+Gebruik voor release **v1.3.0** de repository `ghcr.io/lvos04/mediaguard-core` en vul bij **Tag** `1.3.0-aio@sha256:47e6f0373b6466563b5d2397ffa5a4d5c706446ad3249cb24fcfb96924a25f16` in. Vergelijk deze waarden met `app_id` (`mediaguard`), `version` (`1.3.0`), `image`, `tag` en `digest` in **digests.json**. Lees ook **upgradebewijs.md**. Weigert het formulier het digestdeel, vul dan `1.3.0-aio` in en vergelijk na het ophalen de registerdigest met **digests.json**. Ontbreekt een bijlage of wijkt de digest af, stel de wijziging uit. [Release v1.3.0 met beide bijlagen](https://github.com/lvos04/media-guard-ultimate/releases/tag/v1.3.0)
 
 | Wat staat er nu? | Handeling in de TrueNAS-webinterface |
 |---|---|
@@ -68,4 +68,4 @@ Bij een verschil blijven de taken gepauzeerd. Bewaar beide metingen. Pas na een 
 4. Verbind in de oude appdefinitie of via **Edit** de **vorige Repository en Tag met digest** met de bijpassende klonen en dezelfde containerpaden. Houd de andere MediaGuard gestopt. Als je een catalogusapp of ixVolume niet aantoonbaar veilig naar de klonen kunt laten wijzen, **STOP**. Herstel betrokken externe diensten uitsluitend vanuit hun geverifieerde herstelpunt als dat nodig is.
 5. Start de vorige app op de klonen. Herhaal inloggen, de vóór-tellingen, journaal- en bestandscontroles. Controleer Emby op de actuele bibliotheek. Houd productie-automatisering gepauzeerd zolang de terugvalkopie en Emby's actuele bibliotheek uiteenlopen. Een gezonde oude image alleen bewijst geen veilig schema. De proef met `1.2.2` op een bijgewerkte wegwerpkopie demonstreert juist dat die versie nog kan schrijven.
 
-De lokale Dockerproef gebruikt synthetische gegevens en bestandssysteemkopieën. De eigen NAS, diens formulier, catalogusindeling, ZFS-klonen en echte Emby-kijkgegevens vallen onder **NIET GEVALIDEERD (echte NAS)**. [Lokaal meetrapport voor 1.3.0](../upgradebewijs/1.3.0.md) · [Pin van de vorige release](../upgradebewijs/vorige-release.json)
+De lokale Dockerproef gebruikt synthetische gegevens en bestandssysteemkopieën. De eigen NAS, diens formulier, catalogusindeling, ZFS-klonen en echte Emby-kijkgegevens vallen onder **NIET GEVALIDEERD (echte NAS)**. [Meetrapport en terugvalimage voor de update van 1.2.2 naar 1.3.0](../upgradebewijs/1.3.0.md)

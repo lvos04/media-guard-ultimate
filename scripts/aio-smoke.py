@@ -109,13 +109,7 @@ def pick_fixture(folder: Path, release: str) -> tuple[Path, dict[str, Any]]:
 
 
 def restore(sql: Path, db: Path) -> None:
-    db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db)
-    try:
-        conn.executescript(sql.read_text("utf-8"))
-        conn.commit()
-    finally:
-        conn.close()
+    upgradebewijs().herstel(sql, db)
 
 
 def verify_db(db: Path, fixture: dict[str, Any], expected: list[str]) -> list[str]:

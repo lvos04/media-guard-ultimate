@@ -21,12 +21,10 @@ STAPPEN_P6.md, onderdeel N-P6-05.
   voordat je overgaat. Houd cache en staging op dezelfde werkdataset.
 - Voor een draaiende installatie volg je eerst [Een bestaande MediaGuard bijwerken](BIJWERKEN.md).
   Dat draaiboek bevat de inventaris, nulmeting, beslissing per installatiewijze en terugweg.
-- De vorige gepubliceerde verwijzing is `ghcr.io/lvos04/mediaguard-core:1.2.2-aio`. Die image
-  start met `tini` als eerste proces en gebruikt de oude shell-healthcheck, die het
-  statusbestand van de bewaker controleert. De [manifestbron](../manifest/mediaguard.manifest.yaml) beschrijft de voorbereide `1.3.0-aio` met de nieuwe healthcheck. Gebruik die manifestbron pas voor
-  installatie als de release, bijbehorende tag, registerdigest en het upgradebewijs
-  beschikbaar zijn. Laat de bevestiging van RPO en RTO (D16) open tot de beheerder de
-  hersteldoelen heeft vastgesteld.
+- Gebruik de gepubliceerde AIO van MediaGuard 1.3.0. Vergelijk de digest uit het formulier
+  hieronder met `digests.json` en lees `upgradebewijs.md` voor de overgang van 1.2.2 naar
+  1.3.0. Laat RPO en RTO (D16) open tot de beheerder de hersteldoelen heeft vastgesteld.
+  [Release v1.3.0](https://github.com/lvos04/media-guard-ultimate/releases/tag/v1.3.0) · [Installatiemanifest](../manifest/mediaguard.manifest.yaml)
 
 ## Formulier
 
@@ -45,7 +43,7 @@ De oude app blijft als terugval gestopt zodra de vervangende app de datasets geb
 | Application Name | | `mediaguard` bij een eerste installatie. |
 | General | Notes | Optioneel. Leg hier geen aanmeldgegevens vast. |
 | Image Configuration | Repository | `ghcr.io/lvos04/mediaguard-core` |
-| | Tag | De exacte gepubliceerde AIO-tag met digest, als `<VERSIE>-aio@sha256:<DIGEST>`. Weigert het formulier het digestdeel, vul dan de exacte tag in. Controleer in beide gevallen de opgehaalde digest. |
+| | Tag | `1.3.0-aio@sha256:47e6f0373b6466563b5d2397ffa5a4d5c706446ad3249cb24fcfb96924a25f16`. Weigert het formulier het digestdeel, vul dan `1.3.0-aio` in. Controleer in beide gevallen de opgehaalde digest bij **Na het opslaan**. |
 | | Pull Policy | *Pull the image if it is not already present on host*. |
 | Container Configuration | Hostname / Entrypoint / Command | Leeg bij een eerste installatie. |
 | | Timezone | De bevestigde tijdzone. |
@@ -55,7 +53,7 @@ De oude app blijft als terugval gestopt zodra de vervangende app de datasets geb
 | | Devices | Leeg. Gebruik de GPU-keuze onder **Resources Configuration**. |
 | Security Context Configuration | Privileged | Uit. |
 | | Capabilities | Voeg niets toe. |
-| | Custom User | Uit. De diensten gebruiken 568:568. In de nieuwe bronstand geeft de bewaker na de opslagvoorbereiding ook zijn rootrechten op en draait web met een aparte UID met beperkte rechten. |
+| | Custom User | Uit. De appdiensten gebruiken 568:568. In 1.3.0 geeft de bewaker na de opslagvoorbereiding ook zijn rootrechten op en draait web met een aparte UID met beperkte rechten. |
 | Network Configuration | Host Network | Uit bij een eerste installatie. |
 | | Ports → Add | TCP, containerpoort → hostpoort: `30080 → 30080` (web en API), `38989 → 38989` (Sonarr Series), `38990 → 38990` (Sonarr Anime), `37878 → 37878` (Radarr Films), `37879 → 37879` (Radarr Animefilms). Bevestig dat de poorten vrij zijn vóór het opslaan. |
 | Portal Configuration | Add | Naam **MediaGuard**, HTTP, hostpoort van web en pad `/`. Gebruik de host van de app. |
@@ -99,13 +97,13 @@ dezelfde containerpoort voor web en de aangepaste portal.
    repository en tag `repo_digests` uit de alleen-lezen methode `app.image.query`
    met de [TrueNAS WebSocket Client](https://github.com/truenas/api_client), passend
    bij de TrueNAS-versie. Stop bij een afwijking of ontbrekende teruglezing.
-2. Controleer de ingebouwde healthcheck en het opstartlog. In de nieuwe bronstand
+2. Controleer de ingebouwde healthcheck en het opstartlog. In 1.3.0
    verlaagt de healthcheck eerst haar rechten naar 568:568, zet zij
    `no_new_privs` en controleert zij het verse bewakerstatusbestand én de interne
    readiness van de kern. Er is bij een rootstart een kort venster vóór de rechtenwissel.
-   Voor die vrijgegeven bronstand gebruikt de externe monitor op de webpoort
+   De externe monitor gebruikt op de webpoort
    `GET /readyz`, verwacht HTTP 200 en hanteert 10 seconden time-out en 30 seconden
-   interval. Voor de gepubliceerde `1.2.2-aio` controleer je de appstatus, de portal en
+   interval. Controleer na terugval naar `1.2.2-aio` de appstatus, de portal en
    **Instellingen › Systeem & back-ups → Componenten**.
 3. Maak bij een eerste installatie direct in MediaGuard de beheerder aan. Controleer
    dat het installatiescherm sluit en dat opnieuw inloggen werkt. Configureer de

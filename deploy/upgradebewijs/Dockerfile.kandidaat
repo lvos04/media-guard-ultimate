@@ -3,7 +3,7 @@
 # De kandidaat draait de kern en de volledige encoderbron (inclusief migraties) van
 # deze commit op de toolchain van de gepinde vorige release. De releasepoort
 # herhaalt de vergelijking met het te publiceren alles-in-één-image.
-ARG VORIGE=ghcr.io/lvos04/mediaguard-core:1.2.2-aio@sha256:14e540ba9cad0bb7fbda8295bca89496f58462a201361544916f3b16b3a52dc6
+ARG VORIGE=ghcr.io/lvos04/mediaguard-core:1.3.0-aio@sha256:47e6f0373b6466563b5d2397ffa5a4d5c706446ad3249cb24fcfb96924a25f16
 FROM scratch AS core
 FROM scratch AS encoder
 FROM scratch AS release

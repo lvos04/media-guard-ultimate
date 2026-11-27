@@ -1302,11 +1302,22 @@ def kies_fixture(map_: Path, versie: str) -> tuple[Path, dict[str, Any]]:
 
 
 def herstel(sql: Path, db: Path) -> None:
+    """Richt een nieuwe proefdataset in uit een SQL-fixture zonder sleutelbestanden."""
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db)
     try:
         conn.executescript(sql.read_text("utf-8"))
         conn.commit()
+        if conn.execute("SELECT 1 FROM schema_migrations "
+                        "WHERE version='156_outbox_cursor_history'").fetchone():
+            # Vanaf deze migratie hoort bij de SQL-dump een afzonderlijke cursorsleutel.
+            # Elke proef krijgt die vóór de nulmeting, ook voor de snapshot en de terugweg.
+            config = db.parent.parent if db.parent.name == "core" else db.parent
+            sleutelmap = config / "secrets" / "core"
+            sleutelmap.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(sleutelmap / "outbox.key", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as sleutel:
+                sleutel.write(os.urandom(32))
     finally:
         conn.close()
 

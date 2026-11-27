@@ -125,8 +125,8 @@ Details, ACL-plan en GPU: [`docs/INSTALL_TRUENAS.md`](docs/INSTALL_TRUENAS.md).
 ### 3.2 Installeren als standaard Custom App
 
 Gebruik het [Custom App-formulier](deploy/truenas/CUSTOM_APP.md#formulier) voor de
-alles-in-één-image `ghcr.io/lvos04/mediaguard-core`. Voor `1.3.0-aio` komen tag en
-registerdigest uit de releasebijlage `digests.json`. Voor een draaiende MediaGuard
+alles-in-één-image `ghcr.io/lvos04/mediaguard-core:1.3.0-aio@sha256:47e6f0373b6466563b5d2397ffa5a4d5c706446ad3249cb24fcfb96924a25f16`.
+Vergelijk de opgehaalde digest met de releasebijlage `digests.json`. Voor een draaiende MediaGuard
 volg je [Een bestaande installatie bijwerken](deploy/truenas/BIJWERKEN.md).
 Het formulier en de bestaande NAS-installatie zijn **NIET GEVALIDEERD (echte NAS)**.
 
