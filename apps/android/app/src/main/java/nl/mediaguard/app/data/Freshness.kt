@@ -9,19 +9,21 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import retrofit2.HttpException
 import java.net.InetAddress
 
-/** Hoe oud de getoonde status is: tijdstip van de laatste geslaagde ophaalactie en de laatste fout. */
+/** Meettijd van de bron (of van de eigen lezing) en een eventuele fout bij het verversen. */
 data class Freshness(val lastOkAt: Long? = null, val error: String? = null)
 
 object Staleness {
-    /** Status wordt elke 20 s ververst; ouder dan 90 s (of de laatste poging mislukte) = verouderd. */
-    const val MAX_AGE_MS = 90_000L
+    const val STATUS_INTERVAL_MS = 20_000L
+    const val SUMMARY_INTERVAL_MS = 5 * 60_000L
+    /** Na twee verwachte intervallen of een leesfout is de meting verouderd. */
+    const val MAX_AGE_MS = 2 * STATUS_INTERVAL_MS
     /** Na zoveel tijd zonder enig antwoord van MediaGuard volgt een melding op de telefoon. */
     const val NO_CONTACT_ALERT_MS = 3 * 60 * 60 * 1000L
 
     /** Sinds wanneer de getoonde gegevens verouderd zijn, of null als ze vers zijn (of er nog niets is). */
     fun staleSince(f: Freshness, now: Long, maxAgeMs: Long = MAX_AGE_MS): Long? {
         val ok = f.lastOkAt ?: return null
-        return if (f.error != null || now - ok > maxAgeMs) ok else null
+        return if (f.error != null || now - ok >= maxAgeMs) ok else null
     }
 
     /** Moet er nu een "geen contact"-melding komen? Eén keer per periode zonder contact. */

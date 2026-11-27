@@ -14,6 +14,8 @@ import com.android.resources.Density
 import com.android.resources.NightMode
 import nl.mediaguard.app.PhoneState
 import nl.mediaguard.app.data.AppTaal
+import nl.mediaguard.app.data.Attention
+import nl.mediaguard.app.data.Freshness
 import nl.mediaguard.app.data.Taal
 import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.data.UpdateInfo
@@ -40,6 +42,7 @@ import nl.mediaguard.app.ui.screens.SettingsContent
 import nl.mediaguard.app.ui.screens.SettingsModel
 import nl.mediaguard.app.ui.screens.SpaceActions
 import nl.mediaguard.app.ui.screens.SpaceContent
+import nl.mediaguard.app.ui.screens.WhereDidSpaceGo
 import nl.mediaguard.app.ui.theme.MediaGuardTheme
 import nl.mediaguard.app.ui.theme.Mg
 import org.junit.After
@@ -47,6 +50,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import java.time.Instant
 import java.time.LocalDate
 
 /**
@@ -77,7 +81,7 @@ abstract class ScreenShots(
 ) {
     @get:Rule
     val paparazzi = Paparazzi(
-        deviceConfig = device.copy(nightMode = if (dark) NightMode.NIGHT else NightMode.NOTNIGHT),
+        deviceConfig = device.copy(nightMode = if (dark) NightMode.NIGHT else NightMode.NOTNIGHT, locale = taal.locale.language),
         // gemeten (KLEIN-18): op HEAD lokaal groen met 0,0 %; 0,01 % geeft een kleine marge. Een andere
         // titel of knoptekst (0,06 tot 0,47 %) maakt verify zo rood; 0,5 % liet die door (R-TECH-3)
         maxPercentDifference = 0.01,
@@ -89,11 +93,13 @@ abstract class ScreenShots(
 
     private val day = LocalDate.of(2026, 11, 7)
     private val today = LocalDate.of(2026, 11, 8)
+    private val now = Instant.parse("2026-11-08T14:02:00Z").toEpochMilli()
+    private fun <T> measured(value: T) = UiState.Data(value, freshness = Freshness(now))
 
     private fun gate(groot: Boolean, smalGroot: Boolean = false) {
         if (docs) assumeTrue("alleen met PEIL_AFDRUKKEN=1", System.getenv("PEIL_AFDRUKKEN") == "1")
         if (subset) assumeTrue("grote letter alleen voor een deel van de schermen", groot)
-        if (alleenSmalGroot) assumeTrue("grote letter op 360 dp alleen voor Instellingen, Bibliotheek-detail en Aanvragen", smalGroot)
+        if (alleenSmalGroot) assumeTrue("grote letter op 360 dp alleen voor de geselecteerde schermen", smalGroot)
     }
 
     private fun shot(
@@ -101,13 +107,14 @@ abstract class ScreenShots(
         title: String? = null,
         groot: Boolean = false,
         smalGroot: Boolean = false,
+        attention: Attention = Sample.status.attention,
         content: @Composable () -> Unit,
     ) {
         gate(groot, smalGroot)
         paparazzi.snapshot {
             MediaGuardTheme(dark = dark) {
                 Column(Modifier.fillMaxSize().background(Mg.colors.bg)) {
-                    TopBar(title, Sample.status.attention.count, Sample.status.attention.errors, "JV",
+                    TopBar(title, attention.count, attention.errors, "JV",
                         onBack = if (title != null) ({}) else null, onSearch = {}, onAttention = {}, onProfile = {})
                     Box(Modifier.weight(1f).fillMaxWidth()) { content() }
                     BottomBar(route) {}
@@ -123,23 +130,24 @@ abstract class ScreenShots(
         }
     }
 
-    @Test fun overzicht() = shot("overview", groot = true) {
-        OverviewContent(UiState.Data(Sample.status), 23, UiState.Data(Sample.recent), OverviewActions(), date = today)
+    @Test fun overzicht() = shot("overview", groot = true, smalGroot = true) {
+        OverviewContent(measured(Sample.status), measured(23), measured(Sample.recent), OverviewActions(), date = today, now = now)
     }
 
-    @Test fun overzichtRustig() = shot("overview") {
-        OverviewContent(UiState.Data(Sample.calmStatus), 0, UiState.Data(Sample.recent), OverviewActions(), date = today)
+    @Test fun overzichtRustig() = shot("overview", attention = Sample.calmStatus.attention) {
+        OverviewContent(measured(Sample.calmStatus), measured(0), measured(Sample.recent), OverviewActions(), date = today, now = now)
     }
 
-    @Test fun overzichtNoodstop() = shot("overview") {
-        OverviewContent(UiState.Data(Sample.stopStatus), 0, UiState.Data(Sample.recent), OverviewActions(), date = today)
+    @Test fun overzichtNoodstop() = shot("overview", attention = Sample.stopStatus.attention) {
+        OverviewContent(measured(Sample.stopStatus), measured(0), measured(Sample.recent), OverviewActions(), date = today, now = now)
     }
 
-    @Test fun overzichtVerouderd() = shot("overview") {
-        OverviewContent(UiState.Data(Sample.calmStatus), 0, UiState.Data(Sample.recent), OverviewActions(),
-            OverviewExtras(staleSince = 1_762_600_000_000, staleError = "MediaGuard is niet bereikbaar. Controleer het adres en je verbinding.",
-                phoneWarning = "Meldingen staan uit voor MediaGuard op deze telefoon", update = "MediaGuard 1.2.3 is uit; je server draait 1.2.1"),
-            date = today)
+    @Test fun overzichtVerouderd() = shot("overview", attention = Attention()) {
+        val old = Freshness(now - 180_000, "MediaGuard is niet bereikbaar. Controleer het adres en je verbinding.")
+        val last = Sample.stopStatus.copy(downloads = Sample.status.downloads.copy(clientsOk = false))
+        OverviewContent(UiState.Data(last, freshness = old), measured(0), measured(Sample.recent), OverviewActions(),
+            OverviewExtras(phoneWarning = "Meldingen staan uit voor MediaGuard op deze telefoon"),
+            date = today, now = now)
     }
 
     @Test fun activiteitProblemen() = shot("activity", groot = true) {
@@ -171,7 +179,14 @@ abstract class ScreenShots(
     }
 
     @Test fun ruimte() = shot("space", groot = true) {
-        SpaceContent(UiState.Data(Sample.status), UiState.Data(Sample.recent), SpaceActions())
+        SpaceContent(measured(Sample.status), measured(Sample.recent), SpaceActions(), now)
+    }
+
+    @Test fun ruimteOpslagkaart() = bare(groot = true) {
+        val storage = Sample.recent.storage
+        val summary = if (dark) Sample.recent.copy(storage = storage.copy(addedBytes = -storage.addedBytes,
+            netBytes = -storage.addedBytes - storage.savedBytes, unexplainedBytes = null)) else Sample.recent
+        WhereDidSpaceGo(measured(summary), SpaceActions(), now)
     }
 
     @Test fun aanvragen() = shot("requests", smalGroot = true) {

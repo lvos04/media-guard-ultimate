@@ -7,6 +7,8 @@ import nl.mediaguard.app.data.AppStatus
 import nl.mediaguard.app.data.Attention
 import nl.mediaguard.app.data.AttentionAction
 import nl.mediaguard.app.data.DailySummary
+import nl.mediaguard.app.data.Downloads
+import nl.mediaguard.app.data.EncoderStatus
 import nl.mediaguard.app.data.EmergencyStop
 import nl.mediaguard.app.data.Freshness
 import nl.mediaguard.app.data.InMemoryPrefs
@@ -25,11 +27,11 @@ import nl.mediaguard.app.data.StateStore
 import nl.mediaguard.app.data.UpdateInfo
 import nl.mediaguard.app.data.Versions
 import nl.mediaguard.app.ui.Tone
-import nl.mediaguard.app.ui.screens.HeroModel
+import nl.mediaguard.app.ui.UiState
 import nl.mediaguard.app.ui.screens.PairingReason
 import nl.mediaguard.app.ui.screens.deliveryLabel
 import nl.mediaguard.app.ui.PeilStatus
-import nl.mediaguard.app.ui.screens.heroFor
+import nl.mediaguard.app.ui.screens.panelStatus
 import nl.mediaguard.app.ui.screens.httpsVariant
 import nl.mediaguard.app.ui.screens.laneSummary
 import nl.mediaguard.app.ui.screens.pairingReasonText
@@ -143,20 +145,38 @@ class AppLogicTest {
     }
 
     // -- 18: overzicht en knoppen ---------------------------------------------------------------
-    @Test fun heroNeverSaysAllGoodDuringStopOrWhenStale() {
-        val calm = AppStatus()
-        assertEquals(HeroModel.Kind.Ok, heroFor(calm, null).kind)
-        val stop = calm.copy(emergencyStop = EmergencyStop(true, "test", "2026-11-08T09:12:00Z"))
-        val h = heroFor(stop, null)
-        assertEquals("Noodstop actief", h.title)
-        // een bewuste stop is geen gemeten falen: Gepauzeerd-vorm (Peil, ADR-0016 punt 9)
-        assertEquals(PeilStatus.Gepauzeerd, h.status)
-        assertEquals(PeilStatus.Gezond, heroFor(calm, null).status)
-        val stale = heroFor(calm, 1_000L)
-        assertEquals(HeroModel.Kind.Stale, stale.kind)
-        assertTrue(stale.title.startsWith("Niet bijgewerkt sinds "))
-        assertEquals(PeilStatus.Verouderd, stale.status)
-        assertEquals(HeroModel.Kind.Waiting, heroFor(calm.copy(attention = Attention(count = 2)), null).kind)
+    @Test fun paneelToontAlleenGemetenGezondheid() {
+        val now = 1_000_000L
+        val calm = AppStatus(encoder = EncoderStatus(reachable = true), downloads = Downloads(clientsOk = true))
+        fun panel(value: AppStatus, time: Long? = now, error: String? = null) =
+            panelStatus(UiState.Data(value, freshness = Freshness(time, error)), now)
+        assertEquals(PeilStatus.Gezond, panel(calm).total)
+        val stop = calm.copy(emergencyStop = EmergencyStop(true, "proef"))
+        assertEquals(PeilStatus.Gepauzeerd, panel(stop).core)
+        assertEquals(PeilStatus.Gepauzeerd, panel(stop).total)
+        assertEquals(PeilStatus.Beperkt, panel(calm.copy(attention = Attention(count = 2, errors = 1))).total)
+
+        val fault = calm.copy(downloads = Downloads(clientsOk = false))
+        assertEquals(PeilStatus.Storing, panel(fault).downloads)
+        assertEquals(PeilStatus.Gezond, panel(fault).encoder)
+        assertEquals(PeilStatus.Beperkt, panel(fault).total)
+        assertEquals(PeilStatus.Onbekend, panel(calm.copy(downloads = Downloads())).total)
+        assertEquals(PeilStatus.Onbekend, panel(AppStatus()).encoder)
+        assertEquals(PeilStatus.Onbekend, panel(stop, time = null).core)
+        assertEquals(PeilStatus.Onbekend, panelStatus(UiState.Error("proef"), now).total)
+
+        // Een oud HTTP-succes en een leesfout verouderen ook een eerder gezonde of gepauzeerde rij.
+        val oldTime = now - 2 * Staleness.STATUS_INTERVAL_MS
+        for (value in listOf(calm, stop, fault)) {
+            for (old in listOf(panel(value, oldTime), panel(value, now, "proef"))) {
+                assertEquals(PeilStatus.Verouderd, old.total)
+                for (measurement in listOf(old.core, old.encoder, old.downloads)) {
+                    assertEquals(Tone.Stale, old.badge(measurement).tone)
+                    assertTrue(old.badge(measurement).tone.dashed)
+                }
+            }
+        }
+        assertEquals(PeilStatus.Storing, panel(fault, oldTime).downloads)
     }
 
     @Test fun attentionItemsParseWithActions() {

@@ -1,5 +1,6 @@
 package nl.mediaguard.app.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,12 +12,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -24,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import nl.mediaguard.app.data.AppStatus
 import nl.mediaguard.app.data.AttentionAction
 import nl.mediaguard.app.data.AttentionItem
+import nl.mediaguard.app.data.Staleness
 import nl.mediaguard.app.data.DailySummary
 import nl.mediaguard.app.data.formatBytes
 import nl.mediaguard.app.data.formatClockMillis
@@ -35,7 +40,6 @@ import nl.mediaguard.app.ui.Banner
 import nl.mediaguard.app.ui.ButtonKind
 import nl.mediaguard.app.ui.CardHeader
 import nl.mediaguard.app.ui.EmptyState
-import nl.mediaguard.app.ui.ErrorState
 import nl.mediaguard.app.ui.IconBubble
 import nl.mediaguard.app.ui.KpiTile
 import nl.mediaguard.app.ui.LoadingState
@@ -43,7 +47,11 @@ import nl.mediaguard.app.ui.MgButton
 import nl.mediaguard.app.ui.MgCard
 import nl.mediaguard.app.ui.PageHeader
 import nl.mediaguard.app.ui.ScreenList
+import nl.mediaguard.app.ui.SkeletonLine
+import nl.mediaguard.app.ui.StatusBadge
 import nl.mediaguard.app.ui.StatusPanel
+import nl.mediaguard.app.ui.PeilIcon
+import nl.mediaguard.app.ui.summaryStaleSince
 import nl.mediaguard.app.ui.PeilStatus
 import nl.mediaguard.app.ui.AttentionKind
 import nl.mediaguard.app.ui.totalStatus
@@ -51,6 +59,7 @@ import nl.mediaguard.app.R
 import nl.mediaguard.app.ui.TileRow
 import nl.mediaguard.app.ui.Tone
 import nl.mediaguard.app.ui.UiState
+import nl.mediaguard.app.ui.currentValue
 import nl.mediaguard.app.ui.refreshing
 import nl.mediaguard.app.ui.theme.Mg
 
@@ -59,6 +68,7 @@ class OverviewActions(
     val refresh: () -> Unit = {},
     val openAttention: () -> Unit = {},
     val openActivity: () -> Unit = {},
+    val openDownloads: () -> Unit = {},
     val openHappened: () -> Unit = {},
     val openLibrary: () -> Unit = {},
     /** Bibliotheek gefilterd op ontbrekend (tegel "Ontbrekend"). */
@@ -71,64 +81,64 @@ class OverviewActions(
     val action: (AttentionAction) -> Unit = {},
 )
 
-/** Extra toestand boven de status: verouderd, meldingen op de telefoon, updates. */
 data class OverviewExtras(
-    /** Tijdstip (epoch ms) van de laatst geslaagde status als die verouderd is, anders null. */
-    val staleSince: Long? = null,
-    val staleError: String? = null,
     val phoneWarning: String? = null,
     val update: String? = null,
 )
 
-/**
- * Het statuspaneel bovenaan (Peil SysteemStatusPaneel): een noodstop of verouderde gegevens gaan vóór de lijst.
- * [status] is de totaalstatus in Peil-vorm: noodstop = Gepauzeerd (bewuste stop, ADR-0016 punt 9), verouderd =
- * Verouderd, anders Beperkt bij een storing of waarschuwing in de lijst en Gezond als er niets misgaat.
- */
-data class HeroModel(val title: String, val sub: String?, val status: PeilStatus, val kind: Kind, val statusLabel: String? = null) {
-    enum class Kind { Stop, Stale, Waiting, Ok }
+/** De drie deelmetingen komen uit hetzelfde gedateerde mobiele statusrapport. */
+internal data class PanelStatus(
+    val core: PeilStatus,
+    val encoder: PeilStatus,
+    val downloads: PeilStatus,
+    val total: PeilStatus,
+    val staleSince: Long? = null,
+) {
+    fun badge(measured: PeilStatus): PeilStatus =
+        if (staleSince != null && measured != PeilStatus.Onbekend) PeilStatus.Verouderd else measured
 }
 
-fun heroFor(s: AppStatus, staleSince: Long?): HeroModel {
-    val n = s.attention.count
-    return when {
-        s.emergencyStop.active -> HeroModel(
-            tr("Noodstop actief", "Emergency stop active"),
-            listOfNotNull(tr("Nieuwe grabs, encodes en vervangingen staan stil.", "New grabs, encodes and replacements are on hold."),
-                s.emergencyStop.since?.let { tr("Sinds ${formatTime(it)}.", "Since ${formatTime(it)}.") }, s.emergencyStop.reason?.ifBlank { null })
-                .joinToString(" "),
-            PeilStatus.Gepauzeerd, HeroModel.Kind.Stop)
-        staleSince != null -> HeroModel(
-            tr("Niet bijgewerkt sinds ${formatClockMillis(staleSince)}", "Not updated since ${formatClockMillis(staleSince)}"),
-            tr("MediaGuard antwoordt niet. Je ziet de laatst bekende stand.", "MediaGuard is not responding. You see the last known state."),
-            PeilStatus.Verouderd, HeroModel.Kind.Stale)
-        n > 0 -> {
-            val total = totalStatus(s.attention.errors, s.attention.items)
-            HeroModel(
-                if (n == 1) tr("1 ding wacht op jou", "1 thing is waiting for you") else tr("$n dingen wachten op jou", "$n things are waiting for you"),
-                if (s.attention.errors == 0) tr("Er loopt nu niets vast; MediaGuard houdt alles in de gaten.", "Nothing is stuck right now; MediaGuard keeps watch.")
-                else tr("${s.attention.errors} met een fout. De rest gaat gewoon door.", "${s.attention.errors} with an error. The rest carries on."),
-                total, HeroModel.Kind.Waiting, statusLabel = if (total == PeilStatus.Gezond) tr("Alles gezond", "All healthy") else null)
-        }
-        else -> HeroModel(tr("Alles loopt — niets nodig van jou", "All running — nothing needed from you"),
-            tr("Niets wacht op jou. MediaGuard zoekt, downloadt en bespaart vanzelf verder.", "Nothing is waiting for you. MediaGuard keeps searching, downloading and saving space by itself."), PeilStatus.Gezond,
-            HeroModel.Kind.Ok, statusLabel = tr("Alles gezond", "All healthy"))
+internal fun panelStatus(status: UiState<AppStatus>, now: Long): PanelStatus {
+    if (status !is UiState.Data || status.freshness.lastOkAt == null) {
+        return PanelStatus(PeilStatus.Onbekend, PeilStatus.Onbekend, PeilStatus.Onbekend, PeilStatus.Onbekend)
     }
+    fun health(ok: Boolean?) = when (ok) {
+        true -> PeilStatus.Gezond
+        false -> PeilStatus.Storing
+        null -> PeilStatus.Onbekend
+    }
+    val s = status.value
+    val staleSince = Staleness.staleSince(status.freshness, now)
+    val core = if (s.emergencyStop.active) PeilStatus.Gepauzeerd else PeilStatus.Gezond
+    val encoder = health(s.encoder.reachable)
+    val downloads = health(s.downloads.clientsOk)
+    val attention = totalStatus(s.attention.errors, s.attention.items)
+    val total = when {
+        staleSince != null -> PeilStatus.Verouderd
+        s.emergencyStop.active -> PeilStatus.Gepauzeerd
+        encoder == PeilStatus.Storing || downloads == PeilStatus.Storing || attention == PeilStatus.Beperkt -> PeilStatus.Beperkt
+        encoder == PeilStatus.Onbekend || downloads == PeilStatus.Onbekend -> PeilStatus.Onbekend
+        else -> PeilStatus.Gezond
+    }
+    return PanelStatus(core, encoder, downloads, total, staleSince)
 }
 
 @Composable
 fun OverviewContent(
     status: UiState<AppStatus>,
-    missing: Int?,
+    missing: UiState<Int>,
     recent: UiState<DailySummary>,
     a: OverviewActions,
     extras: OverviewExtras = OverviewExtras(),
-    /** Datum in de paginakop (vast in de schermafdrukken). */
     date: java.time.LocalDate = today(),
+    now: Long = System.currentTimeMillis(),
 ) {
-    ScreenList(refreshing = status.refreshing, onRefresh = a.refresh) {
+    val panel = panelStatus(status, now)
+    val report = (status as? UiState.Data)?.takeIf { it.freshness.lastOkAt != null }
+    val fresh = status.currentValue(now)
+    ScreenList(refreshing = status.refreshing || missing.refreshing || recent.refreshing, onRefresh = a.refresh) {
         item {
-            val version = (status as? UiState.Data)?.value?.version?.ifBlank { null }
+            val version = fresh?.version?.ifBlank { null }
             PageHeader(tr("Overzicht", "Overview"), listOfNotNull(formatDate(date), version?.let { "MediaGuard v$it" }).joinToString(" · "))
         }
         extras.phoneWarning?.let { w ->
@@ -137,58 +147,93 @@ fun OverviewContent(
                     action = { MgButton(tr("Oplossen", "Fix"), a.openSettings, small = true) })
             }
         }
-        when (status) {
-            UiState.Loading -> item { LoadingState(3) }
-            is UiState.Error -> item { ErrorState(status.message, a.refresh) }
-            is UiState.Data -> {
-                val s = status.value
-                item { Hero(heroFor(s, extras.staleSince), extras.staleError, a) }
-                extras.update?.let { u ->
-                    item { Banner(u, Tone.Info, R.drawable.lucide_download, action = { MgButton(tr("Bekijken", "View"), a.openSettings, small = true) }) }
-                }
-                item { Kpis(s, missing, a, extras.staleSince?.let { formatClockMillis(it) }) }
-                item { Recent(recent, a) }
-                item { Waiting(s.attention.items, s.attention.count, a) }
-            }
+        if (status == UiState.Loading) item { LoadingState(3) }
+        else item { SystemPanel(status, panel, now, a) }
+        if (fresh != null) extras.update?.let { u ->
+            item { Banner(u, Tone.Info, R.drawable.lucide_download, action = { MgButton(tr("Bekijken", "View"), a.openSettings, small = true) }) }
+        }
+        item { Kpis(report?.value, missing, a, panel.staleSince?.let { formatClockMillis(it, now) }, now) }
+        item { Recent(recent, a, now) }
+        if (fresh != null) item { Waiting(fresh.attention.items, fresh.attention.count, a) }
+    }
+}
+
+@Composable
+private fun SystemPanel(status: UiState<AppStatus>, panel: PanelStatus, now: Long, a: OverviewActions) {
+    val data = status as? UiState.Data
+    val at = data?.freshness?.lastOkAt
+    val time = when {
+        at == null -> stringResource(R.string.overview_no_measurement)
+        panel.staleSince != null -> stringResource(R.string.overview_not_updated, formatClockMillis(at, now))
+        else -> stringResource(R.string.overview_report_time, formatClockMillis(at, now))
+    }
+    val error = (status as? UiState.Error)?.message ?: data?.freshness?.error
+    val attention = data?.value?.attention
+    val attentionReason = if (panel.total == PeilStatus.Beperkt && attention != null) {
+        when {
+            attention.errors > 0 -> stringResource(R.string.overview_attention_errors, attention.errors)
+            totalStatus(0, attention.items) == PeilStatus.Beperkt -> stringResource(R.string.overview_attention_warning)
+            else -> null
+        }
+    } else null
+    val retry = panel.total == PeilStatus.Verouderd || panel.total == PeilStatus.Onbekend
+    StatusPanel(stringResource(R.string.overview_system_status), listOfNotNull(time, error, attentionReason).joinToString("\n"),
+        panel.total, actionLabel = if (retry) tr("Opnieuw proberen", "Try again") else null, onAction = a.refresh) {
+        val stop = data?.value?.emergencyStop
+        val stopText = if (panel.core == PeilStatus.Gepauzeerd && stop != null) {
+            listOfNotNull(stringResource(R.string.overview_stop_recorded), stop.since?.let(::formatTime),
+                stop.reason?.ifBlank { null }).joinToString(" · ")
+        } else null
+        SystemRow(stringResource(R.string.overview_core), panel, panel.core, a.openSettings, stopText)
+        SystemRow(stringResource(R.string.overview_encoder), panel, panel.encoder, a.openSpace)
+        SystemRow(stringResource(R.string.overview_downloads), panel, panel.downloads, a.openDownloads)
+        val count = attention?.count ?: 0
+        if (at != null && count > 0 && panel.staleSince == null) {
+            val label = if (count == 1) tr("1 ding wacht op jou", "1 thing is waiting for you")
+                else tr("$count dingen wachten op jou", "$count things are waiting for you")
+            MgButton(label, a.openAttention, kind = ButtonKind.Ghost)
         }
     }
 }
 
 @Composable
-private fun Hero(h: HeroModel, staleError: String?, a: OverviewActions) {
-    val icon = when (h.kind) {
-        HeroModel.Kind.Waiting -> R.drawable.lucide_list_checks
-        else -> h.status.icoon
+private fun SystemRow(label: String, panel: PanelStatus, measured: PeilStatus, open: () -> Unit, detail: String? = null) {
+    val badge = panel.badge(measured)
+    Column(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = open).heightIn(min = 48.dp),
+        verticalArrangement = Arrangement.Center) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = Mg.type.bodyStrong, color = Mg.colors.text, modifier = Modifier.weight(1f))
+            StatusBadge(badge)
+            PeilIcon(R.drawable.lucide_arrow_right, Mg.colors.muted, size = 18.dp)
+        }
+        val note = when {
+            badge == PeilStatus.Verouderd && measured in listOf(PeilStatus.Storing, PeilStatus.Gepauzeerd) ->
+                stringResource(R.string.overview_last_status, detail ?: measured.woord)
+            else -> detail
+        }
+        if (note != null) Text(note, style = Mg.type.meta, color = Mg.colors.muted)
     }
-    val sub = if (h.kind == HeroModel.Kind.Stale && staleError != null) "${h.sub} $staleError" else h.sub
-    val (label, onAction) = when (h.kind) {
-        HeroModel.Kind.Stop -> tr("Naar Ruimte", "Go to Space") to a.openSpace
-        HeroModel.Kind.Stale -> tr("Opnieuw proberen", "Try again") to a.refresh
-        HeroModel.Kind.Waiting -> tr("Naar de lijst", "Go to the list") to a.openAttention
-        HeroModel.Kind.Ok -> null to null
-    }
-    StatusPanel(h.title, sub, h.status, statusLabel = h.statusLabel, icon = icon, actionLabel = label, onAction = onAction)
 }
 
-/** KPI-tegels; met [stale] (laatst bekende tijd) zijn ze gestippeld met "Laatst bekend", zoals het statuspaneel. */
 @Composable
-private fun Kpis(s: AppStatus, missing: Int?, a: OverviewActions, stale: String?) {
+private fun Kpis(s: AppStatus?, missing: UiState<Int>, a: OverviewActions, stale: String?, now: Long) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         TileRow {
-            KpiTile(tr("Bespaard met AV1", "Saved with AV1"), if (s.savingsBytes > 0) formatBytes(s.savingsBytes) else "—", Modifier.weight(1f).fillMaxHeight(),
-                sub = tr("kleiner, zelfde kwaliteit", "smaller, same quality"), icon = R.drawable.lucide_zap, staleSince = stale, onClick = a.openSpace)
-            val busy = s.encoder.running.size + s.downloads.active
-            KpiTile(tr("Nu bezig", "Busy now"), "$busy", Modifier.weight(1f).fillMaxHeight(),
-                sub = "${s.encoder.running.size} encodes · ${s.downloads.active} downloads",
+            KpiTile(tr("Bespaard met AV1", "Saved with AV1"), s?.savingsBytes?.let { formatBytes(it) }, Modifier.weight(1f).fillMaxHeight(),
+                sub = tr("totaal door AV1", "total through AV1"), icon = R.drawable.lucide_zap, staleSince = stale, onClick = a.openSpace)
+            val busy = s?.takeIf { it.encoder.reachable == true && it.downloads.clientsOk == true }
+            KpiTile(tr("Nu bezig", "Busy now"), busy?.let { (it.encoder.running.size + it.downloads.active).toString() }, Modifier.weight(1f).fillMaxHeight(),
+                sub = busy?.let { "${it.encoder.running.size} encodes · ${it.downloads.active} downloads" },
                 icon = R.drawable.lucide_activity, staleSince = stale, onClick = a.openActivity)
         }
         TileRow {
-            KpiTile(tr("Ontbrekend", "Missing"), missing?.toString(), Modifier.weight(1f).fillMaxHeight(),
-                sub = if (missing == null) tr("nog niet bekend", "not known yet") else tr("MediaGuard zoekt vanzelf", "MediaGuard searches by itself"),
-                icon = R.drawable.lucide_search_x, staleSince = stale.takeIf { missing != null },
-                onClick = if ((missing ?: 0) > 0) a.openMissing else a.openLibrary)
-            KpiTile(tr("Vrije ruimte", "Free space"), formatBytes(s.storage.freeBytes), Modifier.weight(1f).fillMaxHeight(),
-                sub = s.storage.daysLeft?.let { tr("vol over $it", "full in $it") } ?: tr("nog geen prognose", "no forecast yet"),
+            val count = missing as? UiState.Data
+            KpiTile(tr("Ontbrekend", "Missing"), count?.value?.toString(), Modifier.weight(1f).fillMaxHeight(),
+                sub = stringResource(R.string.overview_filtered_library), icon = R.drawable.lucide_search_x,
+                staleSince = count?.summaryStaleSince(now)?.let { formatClockMillis(it, now) },
+                onClick = if ((count?.value ?: 0) > 0) a.openMissing else a.openLibrary)
+            KpiTile(tr("Vrije ruimte", "Free space"), s?.storage?.freeBytes?.let { formatBytes(it) }, Modifier.weight(1f).fillMaxHeight(),
+                sub = s?.storage?.daysLeft?.let { tr("vol over $it", "full in $it") },
                 icon = R.drawable.lucide_hard_drive, staleSince = stale, onClick = a.openSpace)
         }
     }
@@ -208,22 +253,36 @@ fun recentTitle(d: DailySummary?): String = when {
 }
 
 @Composable
-private fun Recent(recent: UiState<DailySummary>, a: OverviewActions) {
+private fun Recent(recent: UiState<DailySummary>, a: OverviewActions, now: Long) {
     MgCard {
         CardHeader(recentTitle((recent as? UiState.Data)?.value), R.drawable.lucide_history, trailing = {
             MgButton("Details", a.openHappened, kind = ButtonKind.Ghost, small = true)
         })
-        when (recent) {
-            UiState.Loading -> nl.mediaguard.app.ui.SkeletonLine(0.8f)
-            is UiState.Error -> Text(recent.message, style = Mg.type.small, color = Mg.colors.muted)
-            is UiState.Data -> {
-                val d = recent.value
-                Text(d.headline.ifBlank { tr("Geen activiteit.", "No activity.") }, style = Mg.type.body, color = Mg.colors.text)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Stat(tr("Netto", "Net"), formatBytes(d.storage.netBytes, signed = true), Modifier.weight(1f))
-                    Stat(tr("AV1 bespaard", "AV1 saved"), formatBytes(d.storage.savedBytes.takeIf { it > 0 } ?: d.encoder.savedBytes), Modifier.weight(1f))
-                    Stat(tr("Erbij", "Added"), "${d.downloaded.size}", Modifier.weight(1f))
+        SummaryReading(recent, now) { d ->
+            Text(d.headline.ifBlank { tr("Geen activiteit.", "No activity.") }, style = Mg.type.body, color = Mg.colors.text)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Stat(tr("Netto", "Net"), formatBytes(d.storage.netBytes, signed = true), Modifier.weight(1f))
+                Stat(tr("AV1 bespaard", "AV1 saved"), formatBytes(d.storage.savedBytes.takeIf { it > 0 } ?: d.encoder.savedBytes), Modifier.weight(1f))
+                Stat(tr("Erbij", "Added"), "${d.downloaded.size}", Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/** Dezelfde lezing voedt de kaart op Overzicht en de opslaggrafiek op Ruimte. */
+@Composable
+internal fun SummaryReading(recent: UiState<DailySummary>, now: Long, content: @Composable (DailySummary) -> Unit) {
+    when (recent) {
+        UiState.Loading -> SkeletonLine(0.8f)
+        is UiState.Error -> Text(recent.message, style = Mg.type.small, color = Mg.colors.muted)
+        is UiState.Data -> {
+            if (recent.freshness.lastOkAt == null) {
+                StatusBadge(PeilStatus.Onbekend, reason = stringResource(R.string.overview_no_measurement))
+            } else {
+                recent.summaryStaleSince(now)?.let {
+                    StatusBadge(PeilStatus.Verouderd, reason = stringResource(R.string.overview_last_status, formatClockMillis(it, now)))
                 }
+                content(recent.value)
             }
         }
     }
@@ -263,7 +322,7 @@ fun AttentionRow(
     compact: Boolean = false,
 ) {
     val kind = AttentionKind.of(item)
-    val jobId = item.href?.let { Regex("job=(\\d+)").find(it)?.groupValues?.get(1)?.toLongOrNull() }
+    val jobId = item.jobId
     Column(Modifier.fillMaxWidth()) {
         if (divider) Box(Modifier.fillMaxWidth().height(1.dp).background(Mg.colors.lineSoft))
         Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.Top) {

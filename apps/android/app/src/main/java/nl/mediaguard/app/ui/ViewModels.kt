@@ -2,6 +2,8 @@ package nl.mediaguard.app.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -17,6 +19,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import nl.mediaguard.app.data.AppStatus
 import nl.mediaguard.app.data.AttentionAction
 import nl.mediaguard.app.data.Freshness
+import nl.mediaguard.app.data.Staleness
 import nl.mediaguard.app.data.UpdateInfo
 import nl.mediaguard.app.data.DailySummary
 import nl.mediaguard.app.data.LibraryFiles
@@ -31,6 +34,8 @@ import nl.mediaguard.app.data.UpgradeHistory
 import nl.mediaguard.app.data.friendlyMessage
 import nl.mediaguard.app.data.tr
 import nl.mediaguard.app.data.yesterday
+import retrofit2.HttpException
+import java.time.Instant
 import java.time.LocalDate
 
 /** Basis: laadt één waarde, houdt de vorige zichtbaar tijdens verversen. */
@@ -74,51 +79,88 @@ class HistoryViewModel(private val repo: Repository, private val days: Int = 7) 
     fun ensureLoaded() { if (state.value !is UiState.Data) refresh() }
 }
 
-/** Laatste 24 uur (rollend) voor Overzicht en Ruimte; oudere servers: gisteren. */
-class RecentViewModel(private val repo: Repository) : LoadViewModel<DailySummary>() {
-    init { refresh() }
-    fun refresh() = load { repo.recent() }
+/** Eén lopend verzoek per bron. De waarde en haar meettijd gaan samen naar het scherm. */
+private class OverviewSource<T>(
+    private val scope: CoroutineScope,
+    private val read: suspend () -> T,
+    private val measuredAt: (T) -> Long?,
+) {
+    private val current = MutableStateFlow<UiState<T>>(UiState.Loading)
+    val state = current.asStateFlow()
+    private var request: Job? = null
+
+    fun refresh() {
+        if (request?.isActive == true) return
+        val previous = current.value as? UiState.Data
+        current.value = previous?.copy(refreshing = true) ?: UiState.Loading
+        request = scope.launch {
+            try {
+                val value = read()
+                current.value = UiState.Data(value, freshness = Freshness(measuredAt(value)))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val message = e.friendlyMessage()
+                val denied = e is HttpException && (e.code() == 401 || e.code() == 403)
+                current.value = if (previous == null || denied) UiState.Error(message)
+                else previous.copy(refreshing = false, freshness = previous.freshness.copy(error = message))
+            }
+        }
+    }
 }
 
 class StatusViewModel(
     private val repo: Repository,
     private val appVersion: String = "",
     private val clock: () -> Long = System::currentTimeMillis,
-) : LoadViewModel<AppStatus>() {
+) : ViewModel() {
+    private fun measuredAt(stamp: String?): Long? =
+        stamp?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
+            ?.takeIf { it <= clock() + Staleness.STATUS_INTERVAL_MS }
+
+    private val statusSource = OverviewSource(viewModelScope, repo::status) { measuredAt(it.generatedAt) }
+    private val missingSource = OverviewSource(viewModelScope, repo::missingCount) { clock() }
+    private val recentSource = OverviewSource(viewModelScope, repo::recent) {
+        if (it.window == "24h") measuredAt(it.windowEnd) else clock()
+    }
+    val state = statusSource.state
+    val missing = missingSource.state
+    val recent = recentSource.state
+    private val _now = MutableStateFlow(clock())
+    val now = _now.asStateFlow()
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
     private val _me = MutableStateFlow<Me?>(null)
     /** Ingelogde gebruiker (voor de initialen rechtsboven). */
     val me: StateFlow<Me?> = _me.asStateFlow()
-    private val _missing = MutableStateFlow<Int?>(null)
-    /** Aantal ontbrekende items; null = (nog) onbekend of niet beschikbaar op deze core. */
-    val missing: StateFlow<Int?> = _missing.asStateFlow()
-    private val _freshness = MutableStateFlow(Freshness())
-    /** Wanneer de status voor het laatst lukte en of de laatste poging faalde ("Niet bijgewerkt sinds …"). */
-    val freshness: StateFlow<Freshness> = _freshness.asStateFlow()
     private val _update = MutableStateFlow<UpdateInfo?>(null)
     /** Nieuwere server- of app-versie (uit de status en de updatecontrole van de server). */
     val update: StateFlow<UpdateInfo?> = _update.asStateFlow()
     private var updateJson: JsonElement? = null
     private var updateAt = 0L
     private var poller: Job? = null
-    private var extrasAt = 0L
+    private var extrasAt: Long? = null
 
-    fun refresh() {
-        load(onDone = { e ->
-            _freshness.value = if (e == null) Freshness(clock(), null)
-            else _freshness.value.copy(error = e.friendlyMessage())
-            if (e == null) recomputeUpdate()
-        }) { repo.status() }
-        // Zwaardere gegevens niet elke 20 s: hooguit eens per 5 minuten (of bij handmatig verversen).
-        if (clock() - extrasAt > 5 * 60_000) refreshExtras()
+    init {
+        viewModelScope.launch { state.collect { recomputeUpdate() } }
     }
 
-    fun refreshExtras() {
-        extrasAt = clock()
+    fun refresh(forceExtras: Boolean = false) {
+        val time = clock()
+        _now.value = time
+        statusSource.refresh()
+        val previous = extrasAt
+        if (forceExtras || previous == null || time - previous >= Staleness.SUMMARY_INTERVAL_MS) {
+            extrasAt = time
+            refreshExtras()
+        }
+    }
+
+    private fun refreshExtras() {
+        missingSource.refresh()
+        recentSource.refresh()
         viewModelScope.launch {
             if (_me.value == null) runCatching { repo.me() }.onSuccess { _me.value = it }
-            runCatching { repo.missingCount() }.onSuccess { _missing.value = it }
             if (clock() - updateAt > 60 * 60_000) {
                 updateAt = clock()
                 runCatching { repo.systemUpdate() }.onSuccess { updateJson = it }
@@ -136,7 +178,7 @@ class StatusViewModel(
     /** Ververst elke 20 s zolang het scherm zichtbaar is. */
     fun startPolling() {
         if (poller?.isActive == true) return
-        poller = viewModelScope.launch { while (isActive) { refresh(); delay(20_000) } }
+        poller = viewModelScope.launch { while (isActive) { refresh(); delay(Staleness.STATUS_INTERVAL_MS) } }
     }
     fun stopPolling() { poller?.cancel() }
 
@@ -153,14 +195,21 @@ class StatusViewModel(
     fun autopilot() = control("run_autopilot")
     fun lane(lane: String, pause: Boolean) =
         control(if (pause) "pause_lane" else "resume_lane", mapOf("lane" to JsonPrimitive(lane)), confirm = true)
-    fun retryJob(id: Long) = control("retry_job", mapOf("job_id" to JsonPrimitive(id)))
+    fun retryJob(id: Long): Boolean {
+        if (state.value.currentValue(clock())?.attention?.items.orEmpty().none { it.jobId == id }) return false
+        control("retry_job", mapOf("job_id" to JsonPrimitive(id)))
+        return true
+    }
 
     /** Knop uit "Wacht op jou" (de bevestiging is al gevraagd als dat nodig is). */
-    fun runAction(action: AttentionAction) {
+    fun runAction(action: AttentionAction): Boolean {
+        val items = state.value.currentValue(clock())?.attention?.items.orEmpty()
+        if (items.none { action in it.actions || it.rows.any { row -> action in row.actions } }) return false
         viewModelScope.launch {
             _message.value = runCatching { repo.runAction(action) }.getOrElse { it.friendlyMessage() }
             refresh()
         }
+        return true
     }
     fun consumeMessage() { _message.value = null }
 }

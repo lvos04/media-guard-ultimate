@@ -15,12 +15,14 @@ Instellingen). Schermafdrukken: `docs/screenshots/peil/android/` (vóór Peil: `
 
 | Onderdeel | Inhoud |
 |---|---|
-| **Overzicht** | Statuspaneel met de totaalstatus: *Noodstop actief* (Gepauzeerd), *Niet bijgewerkt sinds 14:02* (Verouderd: MediaGuard antwoordt niet; je ziet de laatst bekende stand, ook de tegels staan dan gestippeld met “Laatst bekend”), “2 dingen wachten op jou” (Beperkt bij een storing of waarschuwing) of “Alles loopt — niets nodig van jou” (Alles gezond) — in die volgorde, dus nooit “Alles gezond” tijdens een noodstop of met oude gegevens. Tegels *Bespaard met AV1*, *Nu bezig*, *Ontbrekend* (opent de bibliotheek gefilterd op ontbrekend) en *Vrije ruimte*, *Laatste 24 uur* (rollend venster van de server) en *Wat actie nodig heeft* (icoon per soort: storing, waarschuwing, voorwaarde met slot, info) met de uitleg van MediaGuard en dezelfde knoppen als de web, inclusief problemen met de AV1-engine. Waarschuwing als meldingen of de batterij-uitzondering uit staan, en als er een nieuwere server- of app-versie is. |
+| **Overzicht** | *Systeemstatus* toont de tijd van het mobiele statusrapport, de totaalstatus en drie rijen. Tik op *MediaGuard* voor Instellingen, op *AV1-engine* voor Ruimte of op *Downloadclients* voor Downloads. Een recente noodstop heet *Gepauzeerd*. Bij een oude meting verschijnt *Verouderd* met de tijd en de laatst gemelde stop of storing. Zonder meettijd verschijnt *Onbekend*. Verder vind je hier *Bespaard met AV1*, *Nu bezig*, *Ontbrekend*, *Vrije ruimte*, *Laatste 24 uur* en *Wat actie nodig heeft*. De tegel *Ontbrekend* opent de gefilterde bibliotheek als er titels ontbreken. Het scherm waarschuwt ook bij uitgeschakelde telefoonmeldingen of batterij-uitzondering, en bij een nieuwere app- of serverversie. |
 | **Activiteit** | Tabs (lopen om) *Nu* (lopende encodes per baan en downloads met voortgang), *Problemen* (alle punten met uitleg, knoppen en de bestanden per punt), *Downloads*, *Wat is er gebeurd* (het dagoverzicht van `/api/v1/app/summary` met datumkiezer: AV1-vervangingen met VMAF, downloads, waarom er geüpgraded is, aanvragen, netto opslag) en *Geschiedenis* (de afgelopen 7 dagen). |
 | **Bibliotheek** | Series · Anime · Films, zoeken, neutrale labels (compleet, ontbreekt, kan beter, verwacht, niet gevolgd; beschikbaarheid is geen gezondheid); vanaf de tegel *Ontbrekend* alleen de titels die iets missen (alle soorten, *Alles tonen* heft het filter op). Detail: seizoenen aan/uit (aanzetten vraagt *Volgen en meteen zoeken* of *Alleen volgen*), het kwaliteitspaneel en de upgrade-tijdlijn. |
 | **Ruimte** | Noodstop aan/uit (met bevestiging en reden), tegels, *Encodes nu* met banen (“2 van 4 bezig”, eerstvolgende klaar over …; pauzeren met bevestiging / hervatten) en voortgang met ETA, wachtrij met *Autopilot nu*, en *Waar ging de ruimte heen* over de laatste 24 uur, met *Niet verklaard* uit de afstemming van het opslaglogboek (*Onbekend* zolang er nog niet gemeten is). |
 | **Aanvragen** | Seerr: zoeken of populair nu als posterraster, aanvraagvenster met seizoenschakelaars, en *Mijn aanvragen* met de leverstatus van MediaGuard. |
 | **Instellingen** | Meldingen op deze telefoon (waarschuwing + knop als meldingen of de batterij-uitzondering uit staan), dagoverzicht en tijdstip (met het volgende moment), ntfy met *Laatst opgehaald*, de laatste fout en *Testmelding*, koppeling (laatste contact; ontkoppelen met bevestiging), over (app- en serverversie, nieuwere versie). |
+
+Op de voorgrond leest de app het statusrapport elke 20 seconden. De bibliotheektelling en *Laatste 24 uur* verversen elke vijf minuten. Trekken aan het Overzicht ververst alle drie. Bij een leesfout of na twee gemiste intervallen staat bij een bewaarde waarde wanneer die is gemeten. Een geweigerde lezing wist de vorige waarde van die bron. De grafiek op Ruimte gebruikt dezelfde meting als *Laatste 24 uur*. Een plusteken betekent groei en een minteken besparing. *Niet verklaard* is gearceerd.
 
 Meldingen:
 - **Dagoverzicht** elke dag op het gekozen tijdstip (standaard 08:00), bv.
@@ -64,9 +66,9 @@ Taal*.
   als "vol over ± 300 dagen". De API voor de app kent daar (nog) geen Engelse tekst voor (`docs/APP_API.md`).
 - Meldingen (dagoverzicht, directe meldingen, "geen contact") staan in de taal die op dat moment geldt; een melding
   die al getoond is, verandert niet meer.
-- Voor ontwikkelaars: teksten staan naast elkaar in Kotlin als `tr("Nederlands", "English")` (`data/Taal.kt`); alleen
-  de namen van de meldingskanalen en `app_taal` staan in `res/values/` en `res/values-en/`. `TaalTest` en de zes
-  Engelse schermafdrukken (`EnLightScreenShots`) bewaken het.
+- Voor ontwikkelaars: teksten staan naast elkaar in Kotlin als `tr("Nederlands", "English")` (`data/Taal.kt`); de
+  namen van de meldingskanalen, `app_taal` en de nieuwe teksten op Overzicht staan in `res/values/` en `res/values-en/`.
+  `TaalTest` controleert de standaardtaal en de resources. De Engelse referentiebeelden tonen de schermen in gebruik.
 
 Getest met unit-tests en schermafdrukken op de JVM (Sim-getest). **NIET GEVALIDEERD:** een echte telefoon of emulator,
 de taalkeuze per app in Android en TalkBack in het Engels.

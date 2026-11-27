@@ -731,6 +731,7 @@ fun StatusPanel(
     @DrawableRes icon: Int = status.icoon,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
+    rows: @Composable () -> Unit,
 ) {
     val tone = status.tone
     MgCard(tone = if (tone == Tone.Ok) null else tone) {
@@ -747,6 +748,7 @@ fun StatusPanel(
             Spacer(Modifier.width(MgSpace.s2))
             StatusBadge(status, label = statusLabel, reason = statusReason, large = true)
         }
+        rows()
         if (actionLabel != null && onAction != null) {
             MgButton(actionLabel, onAction, kind = ButtonKind.Primary, modifier = Modifier.fillMaxWidth())
         }

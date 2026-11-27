@@ -210,7 +210,7 @@ private fun NowTab(s: AppStatus) {
         }
         MgCard {
             CardHeader(tr("AV1-encodes", "AV1 encodes"), R.drawable.lucide_zap, count = s.encoder.running.size)
-            if (!s.encoder.reachable) Melding(Tone.Bad, R.drawable.lucide_octagon_x, tr("De AV1-engine is niet bereikbaar.", "The AV1 engine cannot be reached."))
+            if (s.encoder.reachable == false) Melding(Tone.Bad, R.drawable.lucide_octagon_x, tr("De AV1-engine is niet bereikbaar.", "The AV1 engine cannot be reached."))
             if (s.encoder.running.isEmpty()) EmptyState(tr("Geen actieve encodes", "No active encodes"), tr("Live banen en wachtrij staan bij Ruimte.", "Live lanes and the queue are under Space."))
             s.encoder.running.forEachIndexed { i, r -> EncodeRow(r, i > 0) }
         }

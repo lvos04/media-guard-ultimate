@@ -69,7 +69,11 @@ data class AttentionItem(
     @SerialName("more_rows") val moreRows: Int = 0,
     /** Knoppen die alleen een beheerder mag (die staan alleen in de web). */
     @SerialName("admin_actions") val adminActions: Int = 0,
-)
+) {
+    val jobId: Long? get() = href?.let { JOB_ID.find(it)?.groupValues?.get(1)?.toLongOrNull() }
+
+    companion object { private val JOB_ID = Regex("job=(\\d+)") }
+}
 
 @Serializable
 data class Attention(val count: Int = 0, val errors: Int = 0, val items: List<AttentionItem> = emptyList())
@@ -96,7 +100,7 @@ data class RunningEncode(
 
 @Serializable
 data class EncoderStatus(
-    val reachable: Boolean = false,
+    val reachable: Boolean? = null,
     val lanes: List<Lane> = emptyList(),
     val running: List<RunningEncode> = emptyList(),
     val queued: Int = 0,
@@ -134,7 +138,7 @@ data class AppStatus(
     val encoder: EncoderStatus = EncoderStatus(),
     val downloads: Downloads = Downloads(),
     val storage: StorageStatus = StorageStatus(),
-    @SerialName("savings_bytes") val savingsBytes: Long = 0,
+    @SerialName("savings_bytes") val savingsBytes: Long? = null,
 )
 
 // -- /app/summary ---------------------------------------------------------------------------
@@ -214,6 +218,8 @@ data class DailySummary(
     @SerialName("label_nl") val label: String? = null,
     /** "24h" bij het rollende venster van /app/recent; null bij een dagoverzicht. */
     val window: String? = null,
+    /** Einde van het rollende venster in UTC, de meettijd van /app/recent. */
+    @SerialName("to") val windowEnd: String? = null,
 )
 
 // -- /app/control ---------------------------------------------------------------------------

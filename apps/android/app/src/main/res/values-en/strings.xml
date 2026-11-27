@@ -5,4 +5,17 @@
     <string name="channel_daily_desc">A daily summary from MediaGuard</string>
     <string name="channel_alerts">Notifications</string>
     <string name="channel_alerts_desc">Instant notifications from MediaGuard (via ntfy)</string>
+    <string name="overview_system_status">System status</string>
+    <string name="overview_report_time">Status report from %1$s</string>
+    <string name="overview_not_updated">Not updated since %1$s</string>
+    <string name="overview_no_measurement">No measurement time available.</string>
+    <string name="overview_stop_recorded">Emergency stop active</string>
+    <string name="overview_last_status">Last known · %1$s</string>
+    <string name="overview_core">MediaGuard</string>
+    <string name="overview_encoder">AV1 engine</string>
+    <string name="overview_downloads">Download clients</string>
+    <string name="overview_filtered_library">Filtered library</string>
+    <string name="overview_attention_errors">Reported errors · %1$d</string>
+    <string name="overview_attention_warning">A warning needs attention.</string>
+    <string name="overview_action_expired">This action is no longer in a current status report. Refreshing the overview.</string>
 </resources>

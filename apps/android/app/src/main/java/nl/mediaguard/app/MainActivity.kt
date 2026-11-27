@@ -48,9 +48,10 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import nl.mediaguard.app.data.AttentionAction
-import nl.mediaguard.app.data.Staleness
+import androidx.compose.ui.res.stringResource
+import nl.mediaguard.app.ui.currentValue
 import nl.mediaguard.app.data.tr
-import nl.mediaguard.app.ui.RecentViewModel
+import nl.mediaguard.app.ui.UiState
 import nl.mediaguard.app.ui.screens.OverviewExtras
 import nl.mediaguard.app.ui.screens.PairingReason
 import nl.mediaguard.app.data.initials
@@ -168,11 +169,10 @@ private fun MainUi(app: MediaGuardApp, repo: Repository, generation: Int, openTa
     // Gedeeld over Overzicht, Activiteit, Ruimte en de bovenbalk (één bron, één poll).
     val appVersion = remember { BuildConfigInfo.versionName(context) }
     val statusVm: StatusViewModel = viewModel(key = "status-$generation") { StatusViewModel(repo, appVersion) }
-    val recentVm: RecentViewModel = viewModel(key = "recent-$generation") { RecentViewModel(repo) }
     val status by statusVm.state.collectAsStateWithLifecycle()
     val me by statusVm.me.collectAsStateWithLifecycle()
     val missing by statusVm.missing.collectAsStateWithLifecycle()
-    val freshness by statusVm.freshness.collectAsStateWithLifecycle()
+    val now by statusVm.now.collectAsStateWithLifecycle()
     val update by statusVm.update.collectAsStateWithLifecycle()
     val statusMessage by statusVm.message.collectAsStateWithLifecycle()
     val notice by app.notice.collectAsStateWithLifecycle()
@@ -195,15 +195,22 @@ private fun MainUi(app: MediaGuardApp, repo: Repository, generation: Int, openTa
     var laneDialog by remember { mutableStateOf<String?>(null) }
     var actionDialog by remember { mutableStateOf<AttentionAction?>(null) }
     var sheet by remember { mutableStateOf<Pair<String, Long>?>(null) }
-    val runAction: (AttentionAction) -> Unit = { act -> if (act.needsConfirm) actionDialog = act else statusVm.runAction(act) }
+    val expired = stringResource(R.string.overview_action_expired)
+    fun refreshExpiredAction() {
+        showMessage(expired)
+        statusVm.refresh()
+    }
+    fun submitAction(act: AttentionAction) {
+        if (!statusVm.runAction(act)) refreshExpiredAction()
+    }
+    val runAction: (AttentionAction) -> Unit = { act -> if (act.needsConfirm) actionDialog = act else submitAction(act) }
+    val retryJob: (Long) -> Unit = { id -> if (!statusVm.retryJob(id)) refreshExpiredAction() }
 
     val tabRoute = MAIN_TABS.firstOrNull { route.substringBefore('?') == it.route.substringBefore('?') }
-    val current = (status as? nl.mediaguard.app.ui.UiState.Data)?.value
-    val attention = current?.attention
-    val now = System.currentTimeMillis()
+    val report = status as? UiState.Data
+    val current = report?.value
+    val attention = status.currentValue(now)?.attention
     val extras = OverviewExtras(
-        staleSince = Staleness.staleSince(freshness, now),
-        staleError = freshness.error,
         phoneWarning = phone.warning(app.settings.ntfyEnabled),
         // Staat de nieuwe versie al als punt in "Wacht op jou", dan hier alleen "app ouder dan de server".
         update = (if (attention?.items?.any { it.key == "system.update_available" } == true) update?.withoutLatest()
@@ -230,20 +237,21 @@ private fun MainUi(app: MediaGuardApp, repo: Repository, generation: Int, openTa
     ) { pad ->
         NavHost(nav, startDestination = "overview", modifier = Modifier.padding(pad).background(Mg.colors.bg)) {
             composable("overview") {
-                val recent by recentVm.state.collectAsStateWithLifecycle()
+                val recent by statusVm.recent.collectAsStateWithLifecycle()
                 OverviewContent(status, missing, recent, OverviewActions(
-                    refresh = { statusVm.refresh(); statusVm.refreshExtras(); recentVm.refresh() },
+                    refresh = { statusVm.refresh(forceExtras = true) },
                     openAttention = { nav.navigateTab("activity?tab=problemen") },
                     openActivity = { nav.navigateTab("activity?tab=nu") },
+                    openDownloads = { nav.navigateTab("activity?tab=downloads") },
                     openHappened = { nav.navigateTab("activity?tab=gebeurd") },
                     openLibrary = { nav.navigateTab("library") },
                     openMissing = { nav.navigateTab("library?filter=missing") },
                     openSpace = { nav.navigateTab("space") },
                     openSettings = { nav.navigate("settings") { launchSingleTop = true } },
                     openWeb = ::openWeb,
-                    retryJob = { statusVm.retryJob(it) },
+                    retryJob = retryJob,
                     action = runAction,
-                ), extras)
+                ), extras, now = now)
             }
             composable("activity?tab={tab}", listOf(navArgument("tab") { type = NavType.StringType; nullable = true; defaultValue = null })) { e ->
                 var tab by rememberSaveable { mutableStateOf(ActivityTab.of(e.arguments?.getString("tab")).key) }
@@ -270,7 +278,7 @@ private fun MainUi(app: MediaGuardApp, repo: Repository, generation: Int, openTa
                             date.year, date.monthValue - 1, date.dayOfMonth).show()
                     },
                     openWeb = ::openWeb,
-                    retryJob = { statusVm.retryJob(it) },
+                    retryJob = retryJob,
                     action = runAction,
                 ))
             }
@@ -311,14 +319,14 @@ private fun MainUi(app: MediaGuardApp, repo: Repository, generation: Int, openTa
                 }
             }
             composable("space") {
-                val recent by recentVm.state.collectAsStateWithLifecycle()
+                val recent by statusVm.recent.collectAsStateWithLifecycle()
                 SpaceContent(status, recent, SpaceActions(
-                    refresh = { statusVm.refresh(); recentVm.refresh() },
+                    refresh = { statusVm.refresh(forceExtras = true) },
                     emergency = { stopDialog = it },
                     lane = { lane, paused -> if (paused) statusVm.lane(lane, pause = false) else laneDialog = lane },
                     autopilot = { statusVm.autopilot() },
                     openHappened = { nav.navigateTab("activity?tab=gebeurd") },
-                ))
+                ), now)
             }
             composable("requests") {
                 val search: SeerrSearchViewModel = viewModel { SeerrSearchViewModel(repo) }
@@ -379,7 +387,7 @@ private fun MainUi(app: MediaGuardApp, repo: Repository, generation: Int, openTa
             title = "${act.label}?",
             text = act.confirm?.ifBlank { null } ?: tr("MediaGuard voert ‘${act.label}’ nu uit, net als de knop in de web. Twijfel je, bekijk het dan eerst in de web.", "MediaGuard runs ‘${act.label}’ now, just like the button in the web UI. If in doubt, check it in the web UI first."),
             confirmLabel = act.label,
-            onConfirm = { statusVm.runAction(act); actionDialog = null },
+            onConfirm = { submitAction(act); actionDialog = null },
             onDismiss = { actionDialog = null },
         )
     }

@@ -58,6 +58,20 @@ class TaalTest {
         assertEquals("Overzicht", tr("Overzicht", "Overview"))
     }
 
+    @Test fun resourcesVanHetOverzichtBestaanInBeideTalen() {
+        val res = listOf("src/main/res", "app/src/main/res").map(::File).first { it.isDirectory }
+        fun keys(folder: String): Set<String> {
+            val xml = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder()
+                .parse(File(res, "$folder/strings.xml"))
+            val strings = xml.getElementsByTagName("string")
+            return (0 until strings.length).map { strings.item(it).attributes.getNamedItem("name").nodeValue }
+                .filter { it.startsWith("overview_") }.toSet()
+        }
+        val baseline = keys("values")
+        assertTrue("Systeemstatus ontbreekt", "overview_system_status" in baseline)
+        assertEquals(baseline, keys("values-en"))
+    }
+
     /** `app_taal` komt uit de resources die Android kiest; alles wat geen Engels is, blijft Nederlands. */
     @Test fun taalUitDeResource() {
         for (code in listOf("en", "EN", " en ", "en-US", "en-GB")) assertEquals(code, AppTaal.En, AppTaal.of(code))

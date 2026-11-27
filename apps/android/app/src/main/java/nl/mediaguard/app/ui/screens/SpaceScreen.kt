@@ -51,7 +51,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.padding
 import nl.mediaguard.app.ui.ScreenList
-import nl.mediaguard.app.ui.SkeletonLine
 import nl.mediaguard.app.ui.TileRow
 import nl.mediaguard.app.ui.Tone
 import nl.mediaguard.app.ui.UiState
@@ -72,7 +71,7 @@ class SpaceActions(
 )
 
 @Composable
-fun SpaceContent(status: UiState<AppStatus>, recent: UiState<DailySummary>, a: SpaceActions) {
+fun SpaceContent(status: UiState<AppStatus>, recent: UiState<DailySummary>, a: SpaceActions, now: Long = System.currentTimeMillis()) {
     ScreenList(refreshing = status.refreshing, onRefresh = a.refresh) {
         item { PageHeader(tr("Ruimte", "Space"), tr("Ruimte besparen zonder kwaliteitsverlies: elke encode wordt gecontroleerd voordat hij het origineel vervangt.", "Save space without quality loss: every encode is checked before it replaces the original.")) }
         when (status) {
@@ -86,7 +85,7 @@ fun SpaceContent(status: UiState<AppStatus>, recent: UiState<DailySummary>, a: S
                 item { Queue(s, a) }
             }
         }
-        item { WhereDidSpaceGo(recent, a) }
+        item { WhereDidSpaceGo(recent, a, now) }
     }
 }
 
@@ -117,7 +116,7 @@ private fun EmergencyCard(s: AppStatus, a: SpaceActions) {
 private fun SpaceKpis(s: AppStatus) {
     Column(verticalArrangement = Arrangement.spacedBy(MgSpace.s3)) {
         TileRow {
-            KpiTile(tr("Bespaard", "Saved"), if (s.savingsBytes > 0) formatBytes(s.savingsBytes) else "—", Modifier.weight(1f).fillMaxHeight(),
+            KpiTile(tr("Bespaard", "Saved"), s.savingsBytes?.let { formatBytes(it) }, Modifier.weight(1f).fillMaxHeight(),
                 sub = tr("totaal door AV1", "total through AV1"), icon = R.drawable.lucide_zap)
             KpiTile(tr("Vrije ruimte", "Free space"), formatBytes(s.storage.freeBytes), Modifier.weight(1f).fillMaxHeight(),
                 sub = s.storage.daysLeft?.let { tr("vol over $it", "full in $it") }, icon = R.drawable.lucide_hard_drive)
@@ -136,7 +135,7 @@ private fun SpaceKpis(s: AppStatus) {
 private fun EncodesNow(s: AppStatus, a: SpaceActions) {
     MgCard {
         CardHeader(tr("Encodes nu", "Encodes now"), R.drawable.lucide_zap, count = s.encoder.running.size)
-        if (!s.encoder.reachable) Melding(Tone.Bad, R.drawable.lucide_octagon_x,
+        if (s.encoder.reachable == false) Melding(Tone.Bad, R.drawable.lucide_octagon_x,
             tr("De AV1-engine reageert niet.", "The AV1 engine is not responding."), tr("MediaGuard probeert het automatisch opnieuw.", "MediaGuard retries automatically."))
         s.encoder.lanes.forEach { l -> LaneRow(l, s.encoder.running.filter { it.lane == l.lane }, a) }
         if (s.encoder.running.isEmpty()) EmptyState(tr("Geen actieve encodes", "No active encodes"), tr("Zodra er werk is, start de volgende vanzelf.", "As soon as there is work, the next one starts by itself."))
@@ -193,39 +192,35 @@ private fun Queue(s: AppStatus, a: SpaceActions) {
 }
 
 /**
- * "Waar ging de ruimte heen": grafiekslots (nooit statuskleuren): Erbij `chart-1`, AV1-besparing `chart-2`,
+ * "Waar ging de ruimte heen": grafiekslots (nooit statuskleuren): Erbij `chart-1`, AV1-besparing `chart-3`,
  * Niet verklaard `chart-other` met arcering (PEIL_MIGRATIE §10.3). Nog niet gemeten = Onbekend, geen balk van 0.
  */
 @Composable
-private fun WhereDidSpaceGo(recent: UiState<DailySummary>, a: SpaceActions) {
+internal fun WhereDidSpaceGo(recent: UiState<DailySummary>, a: SpaceActions, now: Long) {
     MgCard {
         CardHeader(tr("Waar ging de ruimte heen", "Where the space went"), R.drawable.lucide_scale, trailing = {
             MgButton("Details", a.openHappened, kind = ButtonKind.Ghost, small = true)
         })
-        when (recent) {
-            UiState.Loading -> SkeletonLine(0.7f)
-            is UiState.Error -> Text(recent.message, style = Mg.type.small, color = Mg.colors.muted)
-            is UiState.Data -> {
-                val st = recent.value.storage
-                val date = runCatching { LocalDate.parse(recent.value.date) }.getOrNull()
-                val label = if (recent.value.window != null) recentTitle(recent.value)
-                else date?.let { formatDay(it).replaceFirstChar { c -> c.uppercase() } } ?: tr("Gisteren", "Yesterday")
-                Text(tr("$label: netto ${formatBytes(st.netBytes, signed = true)}", "$label: net ${formatBytes(st.netBytes, signed = true)}"), style = Mg.type.bodyStrong, color = Mg.colors.text)
-                val max = listOf(st.addedBytes, st.savedBytes, st.unexplainedBytes ?: 0).maxOf { abs(it) }.coerceAtLeast(1)
-                SpaceBar(tr("Erbij", "Added"), tr("nieuwe bestanden en upgrades", "new files and upgrades"), st.addedBytes, max, Mg.peil.chart1, plus = true)
-                SpaceBar(tr("AV1-besparing", "AV1 savings"), tr("bestanden kleiner gemaakt", "files made smaller"), st.savedBytes, max, Mg.peil.chart2, plus = false)
-                val unexplained = st.unexplainedBytes
-                if (unexplained == null) SpaceBar(tr("Niet verklaard", "Unexplained"), tr("nog niet gemeten (de vrije ruimte wordt elk uur gemeten)", "not measured yet (free space is measured every hour)"),
-                    null, max, Mg.peil.chartOther, plus = true, hatched = true)
-                else SpaceBar(tr("Niet verklaard", "Unexplained"), tr("verschil dat MediaGuard niet kan toewijzen (bv. andere apps op de pool)", "difference MediaGuard cannot attribute (e.g. other apps on the pool)"),
-                    unexplained, max, Mg.peil.chartOther, plus = unexplained >= 0, hatched = true)
-            }
+        SummaryReading(recent, now) { summary ->
+            val st = summary.storage
+            val date = runCatching { LocalDate.parse(summary.date) }.getOrNull()
+            val label = if (summary.window != null) recentTitle(summary)
+            else date?.let { formatDay(it).replaceFirstChar { c -> c.uppercase() } } ?: tr("Gisteren", "Yesterday")
+            Text(tr("$label: netto ${formatBytes(st.netBytes, signed = true)}", "$label: net ${formatBytes(st.netBytes, signed = true)}"), style = Mg.type.bodyStrong, color = Mg.colors.text)
+            val max = listOf(st.addedBytes, st.savedBytes, st.unexplainedBytes ?: 0).maxOf { abs(it) }.coerceAtLeast(1)
+            SpaceBar(tr("Erbij", "Added"), tr("nieuwe bestanden en upgrades", "new files and upgrades"), st.addedBytes, max, Mg.peil.chart1)
+            SpaceBar(tr("AV1-besparing", "AV1 savings"), tr("bestanden kleiner gemaakt", "files made smaller"), -st.savedBytes, max, Mg.peil.chart3)
+            val unexplained = st.unexplainedBytes
+            if (unexplained == null) SpaceBar(tr("Niet verklaard", "Unexplained"), tr("nog niet gemeten (de vrije ruimte wordt elk uur gemeten)", "not measured yet (free space is measured every hour)"),
+                null, max, Mg.peil.chartOther, hatched = true)
+            else SpaceBar(tr("Niet verklaard", "Unexplained"), tr("verschil dat MediaGuard niet kan toewijzen (bv. andere apps op de pool)", "difference MediaGuard cannot attribute (e.g. other apps on the pool)"),
+                unexplained, max, Mg.peil.chartOther, hatched = true)
         }
     }
 }
 
 @Composable
-private fun SpaceBar(label: String, sub: String, bytes: Long?, max: Long, color: Color, plus: Boolean, hatched: Boolean = false) {
+private fun SpaceBar(label: String, sub: String, bytes: Long?, max: Long, color: Color, hatched: Boolean = false) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(12.dp).clip(RoundedCornerShape(2.dp)).background(color)
@@ -233,7 +228,7 @@ private fun SpaceBar(label: String, sub: String, bytes: Long?, max: Long, color:
             Spacer(Modifier.width(8.dp))
             Text(label, style = Mg.type.small.copy(fontWeight = FontWeight.SemiBold), color = Mg.colors.text, modifier = Modifier.weight(1f))
             if (bytes == null) StatusBadge(PeilStatus.Onbekend)
-            else Text((if (bytes == 0L) "" else if (plus) "+" else "−") + formatBytes(abs(bytes)),
+            else Text(formatBytes(bytes, signed = true),
                 style = Mg.type.small.copy(fontWeight = FontWeight.SemiBold).cijfers, color = Mg.colors.text)
         }
         if (bytes != null) {

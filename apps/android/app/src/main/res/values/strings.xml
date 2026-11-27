@@ -7,4 +7,17 @@
     <string name="channel_daily_desc">Elke dag een samenvatting van MediaGuard</string>
     <string name="channel_alerts">Meldingen</string>
     <string name="channel_alerts_desc">Directe meldingen van MediaGuard (via ntfy)</string>
+    <string name="overview_system_status">Systeemstatus</string>
+    <string name="overview_report_time">Statusrapport van %1$s</string>
+    <string name="overview_not_updated">Niet bijgewerkt sinds %1$s</string>
+    <string name="overview_no_measurement">Geen meettijd beschikbaar.</string>
+    <string name="overview_stop_recorded">Noodstop actief</string>
+    <string name="overview_last_status">Laatst bekend · %1$s</string>
+    <string name="overview_core">MediaGuard</string>
+    <string name="overview_encoder">AV1-engine</string>
+    <string name="overview_downloads">Downloadclients</string>
+    <string name="overview_filtered_library">Gefilterde bibliotheek</string>
+    <string name="overview_attention_errors">Gemelde fouten · %1$d</string>
+    <string name="overview_attention_warning">Een waarschuwing vraagt aandacht.</string>
+    <string name="overview_action_expired">Deze actie staat niet meer in een actueel statusrapport. Het Overzicht wordt ververst.</string>
 </resources>

@@ -828,7 +828,7 @@ Bibliotheek `library`, Ruimte `hard-drive-download`, Aanvragen `inbox` (dezelfde
 | Overzicht | statuspaneel (§10.2) bovenaan; "Wacht op jou" met iconen per soort; KPI-tegels = StatKaart-stijl (waarde inkt, bron/bijgewerkt als meta 14 sp); "Laatste 24 uur" neutraal; verouderd = alle kaarten gestippeld + "Laatst bekend · 12:06", bediening uit met reden |
 | Activiteit | tabs omlopend; problemen per soort (§10.2); "Origineel houden" = secundaire knop 48 dp |
 | Bibliotheek | lijst met neutrale beschikbaarheidslabels (§6.2); detail met episodekaart-cellen volgens §7 (vorm + kleur) en de lijst eronder als tabel-tweeling |
-| Ruimte | noodstopkaart (§10.2); banen in `domain-lane-*` met inkt-tekst; "Waar ging de ruimte heen": `chart-1`/`chart-2`, "Niet verklaard" = `chart-other` + arcering (geen amber) |
+| Ruimte | noodstopkaart (§10.2); banen in `domain-lane-*` met inkt-tekst; *Waar ging de ruimte heen* gebruikt `chart-1` voor Erbij, `chart-3` voor AV1-besparing en `chart-other` met arcering voor Niet verklaard (S-P3-685, PEIL_REVIEW §15) |
 | Aanvragen | zoekveld rand `input`; posters met tekstplaatshouder; aanvraagvenster als `ModalBottomSheet` 12 dp, knoppen 48 dp |
 | Instellingen | waarschuwingen (meldingen/batterij uit, ntfy-fout) als `info`- resp. `down`-melding met reden; "Ontkoppelen" = `destructive` met de bestaande bevestiging |
 | Koppelen | Foutpaneel-stijl voor "Dit is niet jouw server" (gemeten afwijking: `octagon-x`); camera niet beschikbaar = `circle-slash` Niet beschikbaar |
