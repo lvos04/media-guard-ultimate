@@ -1378,6 +1378,26 @@ def test_onbevestigde_volledige_scan_houdt_de_taak_open(ctx, net, monkeypatch, s
         nieuw.db.close()
 
 
+def test_verversomleiding_toont_het_directe_adres_als_herstelstap(ctx, client):
+    from mediaguard.mediaserver.clients import MediaServerError, _call
+
+    verzoeken = []
+
+    def bron(verzoek):
+        verzoeken.append(verzoek.method)
+        return httpx.Response(307, headers={"Location": "https://media.invalid/nieuw-pad"})
+
+    ctx.services["mediaserver_transport"] = httpx.MockTransport(bron)
+    with pytest.raises(MediaServerError) as fout:
+        asyncio.run(_call(ctx.services, "POST", "http://media.invalid/Library/Refresh",
+                          headers={}, confirm_post=True))
+    S._refresh_failed(ctx, M.LEGACY_ID, _txn(ctx), "Mediaserver", fout.value)
+    status = client.get("/api/v1/mediaserver/status").raise_for_status().json()
+    actie = next(r for r in status["actions"] if r["kind"] == "refresh")
+    assert "directe serveradres" in actie["detail_nl"]
+    assert "nieuw-pad" not in actie["detail_nl"] and verzoeken == ["POST"]
+
+
 @pytest.mark.parametrize("pad", ["normaal", "journaalherstel"])
 def test_elke_afgeronde_overdracht_krijgt_een_taak_per_server(ctx, net, tmp_path, pad):
     """Ook als de cursor van een eerdere versie al voorbij de transactie staat en ze vóór de

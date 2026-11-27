@@ -449,8 +449,10 @@ def _refresh_failed(ctx: AppContext, sid: int, txn: int, label: str, error: Medi
         if not previous:
             ctx.events.publish("mediaserver.refresh.failed", {"correlation_id": txn,
                                                              "server_id": sid})
-            log_action(ctx, "refresh", f"{label}: verversen mislukt. {error}. Controleer de "
-                       "verbinding. MediaGuard probeert het later opnieuw.", ok=False,
+            advies = ("Vul in de mediaserverinstellingen het directe serveradres in."
+                      if error.status in (301, 302, 303, 307, 308) else "Controleer de verbinding.")
+            log_action(ctx, "refresh", f"{label}: verversen mislukt. {error}. {advies} "
+                       "MediaGuard probeert het later opnieuw.", ok=False,
                        server_id=sid, txn=txn)
 
 
