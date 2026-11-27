@@ -778,3 +778,17 @@ Bij meerdere ontbrekende actiebronnen toont de kopbalk de bevestigde ondergrens,
 Op de uitgangsversie faalden zes van de zeven browserproeven van de reviewer. De breedteproef slaagde daar al. De herstelbuild doorstond alle 48 bron- en veiligheidsproeven, waaronder 35 tabelgevallen. De kopbalkproef vond op de vorige build 87 pixels horizontale overloop bij gelijktijdig verouderde metingen. Op de herstelbuild pasten kop en bel op de zes getoetste breedtes. De vergelijking gebruikt dezelfde zeven praktijksituaties op beide productiebuilds.
 
 De verwijderdialoog beschrijft welke koppeling, sleutel en maptoewijzingen de gebruiker verwijdert. De proef met één gevolgde server verifieert ook het aantal na de verwijdering.
+
+## 15. S-P3-685 — Android, Overzicht en Ruimte
+
+### Ontwerp vooraf, 27 november 2026
+
+Het mobiele antwoord van `/app/status` bevat drie controles die op het Overzicht passen. Het paneel krijgt de kop *Systeemstatus*, een totaalbadge en een aanraakbare rij per onderdeel. *MediaGuard* opent Instellingen, *AV1-engine* opent Ruimte en *Downloadclients* opent Activiteit bij Downloads. De rijen gebruiken de bestaande Peil-badges met icoon, woord en rand. De tijd bij de rijen dateert het mobiele statusrapport. De API geeft één `generated_at` voor dat rapport en levert geen afzonderlijke meettijd of naam per downloadclient.
+
+De actuele noodstop krijgt de bestaande gepauzeerde vorm. Bij een oude meting toont het paneel *Verouderd*, de tijd en de laatst gemelde stop of storing. Een ontbrekende meting krijgt *Onbekend*. Een bereikbaarheidsfout of een ontbrekende clientcontrole kan nooit een groen totaal opleveren. De actietelling houdt haar eigen doorklik. Schrijfknoppen uit een oud statusrapport vervallen op Overzicht.
+
+De app leest de status elke 20 seconden op de voorgrond. Na twee intervallen, of eerder bij een leesfout, telt een waarde als verouderd. *Ontbrekend* gebruikt de telling uit de gefilterde bibliotheek. *Laatste 24 uur* gebruikt het rollende dagoverzicht, met de bestaande terugval voor oudere servers. Deze twee lezingen krijgen een eigen tijd, verversen elke vijf minuten en verversen ook bij trekken aan het scherm. Een nieuwe statuslezing kan hun tijd niet opschuiven. Bij een weigering vervalt de oude waarde van de betreffende bron. Het paneel en de tegels moeten ook bij grotere letters op 360 dp leesbaar blijven.
+
+Op Ruimte toont het mobiele opslagoverzicht drie posten. *Erbij* gebruikt `chart-1`, *AV1-besparing* gebruikt net als op het web `chart-3` en *Niet verklaard* gebruikt `chart-other` met arcering. Legenda en balk delen per rij één kleur. Het teken geeft de richting aan. Bij een ontbrekende meting blijft de badge *Onbekend* staan. Activiteit toont dezelfde bedragen als tekst. De mobiele API levert geen uitsplitsing van upgrades, quarantaine en downloads voor deze grafiek.
+
+Voor de beeldproef gebruiken we de bestaande fictieve gegevens op Overzicht en een afdruk van de opslagkaart op Ruimte. Nieuwe schermteksten komen tegelijk in de Nederlandse standaardresources en in `values-en`. De telefoonproef met TalkBack hoort bij P6.
