@@ -319,6 +319,9 @@ def _to_digest(ctx: AppContext, notification_id: int | None, category: str, seve
 def enqueue(ctx: AppContext, channel_id: int, category: str, title: str, body: str = "",
             link: str | None = None, *, priority: str = "default",
             notification_id: int | None = None, attachment: Path | None = None) -> int:
+    from mediaguard.mediaserver.service import mask
+
+    title, body, link = mask(ctx, [title, body, link])
     now = utcnow()
     return ctx.db.execute_insert(
         "INSERT INTO notify_outbox(channel_id,notification_id,category,title,body,link,priority,"
@@ -352,13 +355,13 @@ async def dispatch(ctx: AppContext, *, limit: int = 30) -> dict[str, int]:
         if channel is None:
             continue
         # laatste uitgang: ook wat vóór de maskering (vorige versie) in de wachtrij kwam
-        title, body = mask(ctx, [row["title"], row["body"] or ""])
-        msg = ch.Message(title=title, body=body, link=row["link"],
+        title, body, link = mask(ctx, [row["title"], row["body"] or "", row["link"]])
+        msg = ch.Message(title=title, body=body, link=link,
                          priority=row["priority"],
                          attachment=Path(row["attachment_path"]) if row["attachment_path"]
                          else None)
         try:
-            await ch.send(ctx, channel, msg, link_url(ctx, row["link"]))
+            await ch.send(ctx, channel, msg, link_url(ctx, link))
         except ch.ChannelError as exc:
             attempts = int(row["attempts"]) + 1
             give_up = not exc.retry or attempts >= len(BACKOFF_MINUTES)
@@ -604,11 +607,15 @@ async def loop(ctx: AppContext) -> None:
 
 
 def outbox(ctx: AppContext, limit: int = 30) -> list[dict[str, Any]]:
+    from mediaguard.mediaserver.service import mask
+
     rows = ctx.db.fetch_dicts(
         "SELECT o.id, o.channel_id, c.name AS channel_name, o.category, o.title, o.status, "
         "o.attempts, o.last_error, o.created_at, o.sent_at FROM notify_outbox o LEFT JOIN "
         "notify_channels c ON c.id=o.channel_id ORDER BY o.id DESC LIMIT ?", (limit,))
-    for r in rows:
+    teksten = mask(ctx, [[r["title"], r["last_error"]] for r in rows])
+    for r, (title, last_error) in zip(rows, teksten, strict=True):
+        r["title"], r["last_error"] = title, last_error
         r["category_nl"] = CATEGORY_LABELS_NL.get(r["category"], "Overzicht")
     return rows
 

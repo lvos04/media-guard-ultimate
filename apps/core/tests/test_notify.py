@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import secrets
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -45,6 +46,43 @@ def _ntfy(ctx, enabled=True):  # type: ignore[no-untyped-def]
 
 def _run(coro):  # type: ignore[no-untyped-def]
     return asyncio.run(coro)
+
+
+def test_wachtrij_bewaart_nieuwe_melding_gemaskeerd(ctx):
+    sleutel = secrets.token_hex(18)
+    ctx.secrets.set("mediaserver.api_key", sleutel, "proef")
+    kanaal = _ntfy(ctx)
+    rij = service.enqueue(ctx, kanaal["id"], "waiting", f"Film {sleutel}",
+                          f"Bestand {sleutel}", f"/bibliotheek/{sleutel}")
+    velden = ctx.db.fetch_one("SELECT title,body,link FROM notify_outbox WHERE id=?", (rij,))
+    assert tuple(velden) == ("Film ***", "Bestand ***", "/bibliotheek/***")
+
+
+def test_historische_wachtrij_maskeert_bij_lezen_en_verzenden(client, ctx, monkeypatch):
+    sleutel = secrets.token_hex(18)
+    ctx.secrets.set("mediaserver.api_key", sleutel, "proef")
+    kanaal = _ntfy(ctx)
+    rij = ctx.db.execute_insert(
+        "INSERT INTO notify_outbox(channel_id,category,title,body,link,last_error,"
+        "next_attempt_at,created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (kanaal["id"], "waiting", f"Film {sleutel}", f"Bestand {sleutel}",
+         f"/bibliotheek/{sleutel}", f"Oude fout {sleutel}", "2000-01-01", "2000-01-01"),
+    )
+    voor = tuple(ctx.db.fetch_one("SELECT * FROM notify_outbox WHERE id=?", (rij,)))
+    antwoord = client.get("/api/v1/notify/outbox").raise_for_status().json()["items"]
+    assert [(r["id"], r["title"], r["last_error"]) for r in antwoord] == [
+        (rij, "Film ***", "Oude fout ***")]
+    assert tuple(ctx.db.fetch_one("SELECT * FROM notify_outbox WHERE id=?", (rij,))) == voor
+    ontvangen = []
+
+    async def verstuur(context, channel, bericht, link):
+        ontvangen.append((bericht.title, bericht.body, bericht.link, link))
+
+    ctx.config.set("global", "", "notify.base_url", "https://voorbeeld.invalid", "proef")
+    monkeypatch.setattr(ch, "send", verstuur)
+    assert _run(service.dispatch(ctx))["sent"] == 1
+    assert ontvangen == [("Film ***", "Bestand ***", "/bibliotheek/***",
+                          "https://voorbeeld.invalid/bibliotheek/***")]
 
 
 def test_default_ntfy_topic_is_private_and_off(ctx):  # type: ignore[no-untyped-def]
