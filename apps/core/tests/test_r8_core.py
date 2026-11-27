@@ -93,6 +93,31 @@ def _enc_job(ctx, path: str, eid: str, status: str = "failed") -> int:
     return jid
 
 
+async def test_late_herkansing_laat_annulering_staan(ctx, monkeypatch, tmp_path):
+    from mediaguard.encoding import service
+
+    src = tmp_path / "proef.mkv"
+    src.write_bytes(b"film")
+    job = _enc_job(ctx, str(src), "108")
+    meettijd = "2026-01-01T09:04:00Z"
+    ctx.db.execute("UPDATE encoding_jobs SET progress=0.82,updated_at=? WHERE id=?",
+                   (meettijd, job))
+    engine = _FakeEngine({108: {"status": "awaiting_commit", "source_snapshot": {"size": 4}}})
+    opvragen = engine.get_job
+
+    async def laat(nummer):
+        monkeypatch.setattr(engine, "get_job", opvragen)
+        assert (await service.cancel(ctx, job, "proef"))["status"] == "cancelled"
+        return await opvragen(nummer)
+
+    monkeypatch.setattr(engine, "get_job", laat)
+    monkeypatch.setattr(service, "get_encoder_client", lambda _: engine)
+    assert (await service.reconcile_engine_commits(ctx))["adopted"] == 0
+    stand = service.get_job(ctx, job)
+    assert (stand["status"], stand["progress"], stand["updated_at"]) == (
+        "cancelled", 0.82, meettijd)
+
+
 def test_a6_successful_engine_retry_is_adopted(ctx, monkeypatch, tmp_path):
     from mediaguard.encoding import service
 

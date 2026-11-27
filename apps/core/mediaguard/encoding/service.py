@@ -210,7 +210,7 @@ async def _adopt_engine_results(ctx: AppContext, waiting: list[int]) -> int:
     bronbestand ongewijzigd is; door de gebruiker afgebroken jobs nooit."""
     client = get_encoder_client(ctx)
     known = {str(r["encoder_job_id"]): r for r in ctx.db.fetch_dicts(
-        "SELECT id, encoder_job_id, status FROM encoding_jobs WHERE encoder_job_id IN ("
+        "SELECT id, encoder_job_id, status, revision FROM encoding_jobs WHERE encoder_job_id IN ("
         + ",".join("?" for _ in waiting) + ")", tuple(str(x) for x in waiting))}
     adopted = 0
     for eid in waiting:
@@ -226,22 +226,25 @@ async def _adopt_engine_results(ctx: AppContext, waiting: list[int]) -> int:
             path = str(enc.get("source_path") or enc.get("path") or "")
             if corr.startswith("mg-enc-"):
                 row = ctx.db.fetch_one(
-                    "SELECT id, encoder_job_id, status FROM encoding_jobs WHERE "
+                    "SELECT id, encoder_job_id, status, revision FROM encoding_jobs WHERE "
                     "correlation_id=? OR id=?", (corr, corr.removeprefix("mg-enc-")))
             elif path:  # geen correlatie: alleen de nieuwste mislukte job voor dit pad
                 row = ctx.db.fetch_one(
-                    "SELECT id, encoder_job_id, status FROM encoding_jobs WHERE source_path=? "
-                    "ORDER BY id DESC LIMIT 1", (path,))
+                    "SELECT id, encoder_job_id, status, revision FROM encoding_jobs "
+                    "WHERE source_path=? ORDER BY id DESC LIMIT 1", (path,))
             if row is None or row["status"] != "failed":
                 continue
-        job = get_job(ctx, int(row["id"])) or {}
+        job, revision = _job_with_revision(ctx, int(row["id"]))
+        if job is None or job["status"] != "failed" or revision != row["revision"]:
+            continue
         if not _source_unchanged(str(job.get("source_path") or ""),
                                  enc.get("source_snapshot")):
             with contextlib.suppress(EncoderError):
                 await client.rejected(eid, "Bron is intussen gewijzigd; niet geplaatst")
             continue
-        _update(ctx, int(row["id"]), status="verifying", error=None,
-                encoder_job_id=str(eid))
+        if not _update(ctx, int(row["id"]), expected_revision=revision, status="verifying",
+                       error=None, encoder_job_id=str(eid)):
+            continue
         audit(ctx.db, actor="svc:encoding", action="encoding.retry_adopted",
               target_type="encoding_job", target_id=str(row["id"]),
               reason=f"Herkansing in de engine (job {eid}) gelukt; wordt alsnog gecontroleerd "
@@ -511,22 +514,34 @@ def _probe_summary(probe: dict[str, Any] | None) -> dict[str, Any] | None:
 
 # ── jobs ──────────────────────────────────────────────────────────────────────
 def get_job(ctx: AppContext, job_id: int) -> dict[str, Any] | None:
+    job, _ = _job_with_revision(ctx, job_id)
+    return job
+
+
+def _job_with_revision(ctx: AppContext, job_id: int) -> tuple[dict[str, Any] | None, int]:
     row = ctx.db.fetch_one("SELECT * FROM encoding_jobs WHERE id=?", (job_id,))
     if row is None:
-        return None
+        return None, 0
     d = dict(row)
+    revision = d.pop("revision", 0)
     for col in ("policy_json", "dv_decision_json", "source_snapshot_json", "staged_output_json",
                 "verification_json", "core_verification_json", "decision_json"):
         d[col[:-5]] = loads(d.pop(col), None)
     d["trial_only"] = bool(d["trial_only"])
-    return d
+    return d, revision
 
 
-def _update(ctx: AppContext, job_id: int, *, touch: bool = True, **fields: Any) -> None:
+def _update(ctx: AppContext, job_id: int, *, touch: bool = True,
+            expected_revision: int | None = None, **fields: Any) -> bool:
     if touch:
         fields["updated_at"] = utcnow()
     cols = ", ".join(f"{k}=?" for k in fields)
-    ctx.db.execute(f"UPDATE encoding_jobs SET {cols} WHERE id=?", (*fields.values(), job_id))
+    sql = f"UPDATE encoding_jobs SET {cols} WHERE id=?"
+    params = [*fields.values(), job_id]
+    if expected_revision is not None:
+        sql += " AND revision=?"
+        params.append(expected_revision)
+    return ctx.db.execute(sql, params) == 1
 
 
 def _measured_progress(enc: dict[str, Any]) -> dict[str, float]:
@@ -652,10 +667,10 @@ async def submit(ctx: AppContext, *, path: str, instance_id: str | None = None,
 
 
 async def cancel(ctx: AppContext, job_id: int, actor: str) -> dict[str, Any]:
-    job = get_job(ctx, job_id)
+    job, revision = _job_with_revision(ctx, job_id)
     if job is None:
         raise LookupError("Encodeerjob niet gevonden")
-    if job["status"] in ("handed_off",):
+    if job["status"] in ("handing_off", "handed_off"):
         raise GateError("HANDED_OFF", "Vervanging loopt al; annuleren via herstel")
     progress = {}
     if job["encoder_job_id"] and job["status"] not in TERMINAL_ENCODER:
@@ -670,18 +685,28 @@ async def cancel(ctx: AppContext, job_id: int, actor: str) -> dict[str, Any]:
         progress = _measured_progress(enc)
         if str(enc.get("status") or "") not in ("cancelled", "failed", "rejected",
                                                 "skipped"):
-            _update(ctx, job_id, touch=bool(progress), **progress,
-                    error="Annuleren gevraagd; de encoder stopt de lopende stap")
-            audit(ctx.db, actor=actor, action="encoding.cancel_requested",
-                  target_type="encoding_job", target_id=job_id,
-                  instance_id=job["instance_id"])
+            if _update(ctx, job_id, expected_revision=revision, touch=bool(progress), **progress,
+                       error="Annuleren gevraagd; de encoder stopt de lopende stap"):
+                audit(ctx.db, actor=actor, action="encoding.cancel_requested",
+                      target_type="encoding_job", target_id=job_id,
+                      instance_id=job["instance_id"])
             return get_job(ctx, job_id) or {}
     from mediaguard.encoding.autopilot import USER_CANCEL
 
     reason = USER_CANCEL if not actor.startswith("svc:") else "geannuleerd door MediaGuard"
-    _update(ctx, job_id, touch=bool(progress), **progress, status="cancelled", error=reason)
-    audit(ctx.db, actor=actor, action="encoding.cancel", target_type="encoding_job",
-          target_id=job_id, instance_id=job["instance_id"])
+    with ctx.db.transaction():
+        current, current_revision = _job_with_revision(ctx, job_id)
+        if current is None:
+            return {}
+        if current_revision != revision and (
+            current["encoder_job_id"] != job["encoder_job_id"]
+            or current["status"] in (*TERMINAL_ENCODER, "handing_off", "handed_off")
+        ):
+            return current
+        # Een tussentijdse lopende meting laat de definitieve annulering wel toe.
+        _update(ctx, job_id, touch=bool(progress), **progress, status="cancelled", error=reason)
+        audit(ctx.db, actor=actor, action="encoding.cancel", target_type="encoding_job",
+              target_id=job_id, instance_id=job["instance_id"])
     return get_job(ctx, job_id) or {}
 
 
@@ -692,7 +717,7 @@ def canary_passed(ctx: AppContext) -> bool:
 
 
 async def _verify(ctx: AppContext, job: dict[str, Any], enc: dict[str, Any]
-                  ) -> dict[str, Any]:
+                  ) -> tuple[dict[str, Any], tuple[Any, ...] | None]:
     snap = enc.get("source_snapshot") or {}
     source_probe = snap.get("probe") or {}
     staged = enc.get("staged_output") or {}
@@ -702,7 +727,7 @@ async def _verify(ctx: AppContext, job: dict[str, Any], enc: dict[str, Any]
             output_probe = await get_encoder_client(ctx).probe(staged["path"])
         except EncoderError as exc:
             return {"passed": False, "checks": [{"name": "output_probe", "passed": False,
-                                                 "detail_nl": str(exc)}]}
+                                                 "detail_nl": str(exc)}]}, None
     policy = job["policy"] or {}
     action = str((enc.get("decision") or {}).get("actie") or "")
     if action and action != "hercoderen":
@@ -710,7 +735,7 @@ async def _verify(ctx: AppContext, job: dict[str, Any], enc: dict[str, Any]
         # core besliste en wordt nooit geactiveerd
         return {"passed": False, "checks": [{
             "name": "encoder_action", "passed": False,
-            "detail_nl": f"Encoder voerde '{action}' uit in plaats van een AV1-encode"}]}
+            "detail_nl": f"Encoder voerde '{action}' uit in plaats van een AV1-encode"}]}, None
     result = verify_output(
         source_probe, output_probe,
         keep_all_audio=bool((policy.get("audio_policy") or {}).get("keep_all", True)),
@@ -721,21 +746,18 @@ async def _verify(ctx: AppContext, job: dict[str, Any], enc: dict[str, Any]
     data = result.to_dict()
     data["output_mediainfo"] = mediainfo_summary(output_probe)
     decision = job["dv_decision"] or {}
+    evidence = None
     if decision.get("is_dv"):
-        ctx.db.execute(
-            "INSERT INTO dv_conversion_evidence(dv_test_id,encoding_job_id,source_profile,"
-            "el_type,route,method,rpu_preserved,all_picture_info_preserved,passed,"
-            "metadata_before_json,metadata_after_json,checks_json,created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (job["dv_test_id"], job["id"], decision.get("input_profile"),
-             source_probe.get("dv_el_type"), decision.get("route"),
-             (enc.get("verification") or {}).get("method") or decision.get("route"),
-             None if result.rpu_preserved is None else int(result.rpu_preserved),
-             None if result.all_picture_info_preserved is None
-             else int(result.all_picture_info_preserved), int(result.passed),
-             dumps(_probe_summary(source_probe) or {}), dumps(_probe_summary(output_probe) or {}),
-             dumps(data["checks"]), utcnow()))
-    return data
+        evidence = (
+            job["dv_test_id"], job["id"], decision.get("input_profile"),
+            source_probe.get("dv_el_type"), decision.get("route"),
+            (enc.get("verification") or {}).get("method") or decision.get("route"),
+            None if result.rpu_preserved is None else int(result.rpu_preserved),
+            None if result.all_picture_info_preserved is None
+            else int(result.all_picture_info_preserved),
+            int(result.passed), dumps(_probe_summary(source_probe) or {}),
+            dumps(_probe_summary(output_probe) or {}), dumps(data["checks"]), utcnow())
+    return data, evidence
 
 
 async def _precheck(ctx: AppContext, job: dict[str, Any], enc: dict[str, Any],
@@ -772,23 +794,23 @@ def failed_checks_text(verification: dict[str, Any]) -> str:
 
 
 async def sync_job(ctx: AppContext, job_id: int) -> dict[str, Any]:
-    job = get_job(ctx, job_id)
+    job, revision = _job_with_revision(ctx, job_id)
     if job is None:
         raise LookupError("Encodeerjob niet gevonden")
     client = get_encoder_client(ctx)
     if job["status"] == "handed_off":
-        return await _sync_handoff(ctx, job)
+        return await _sync_handoff(ctx, job, revision)
     if job["status"] not in ACTIVE or not job["encoder_job_id"]:
         return job
     try:
         enc = await client.get_job(job["encoder_job_id"])
     except EncoderError as exc:
         if exc.status == 404:
-            _update(ctx, job_id, touch=False, status="failed",
+            _update(ctx, job_id, expected_revision=revision, touch=False, status="failed",
                     error="De encoder kent deze job niet meer (database opnieuw opgebouwd?)")
-            return get_job(ctx, job_id) or {}
-        LOGGER.info("encoderstatus niet op te halen: %s", exc)
-        return job
+        else:
+            LOGGER.info("encoderstatus niet op te halen: %s", exc)
+        return get_job(ctx, job_id) or {}
     est = str(enc.get("status") or "")
     progress = _measured_progress(enc)
     fields: dict[str, Any] = {"encoder_status": est, **progress}
@@ -802,50 +824,73 @@ async def sync_job(ctx: AppContext, job_id: int) -> dict[str, Any]:
         # baan uit de encoder; verandert bij een GPU→CPU-herkansing (verbeterpunt 6)
         fields["lane"] = enc["lane"]
     if est in ("queued", "running", "verifying", "failed", "skipped", "cancelled", "rejected"):
-        _update(ctx, job_id, touch=bool(progress), status=est, **fields)
+        _update(ctx, job_id, expected_revision=revision, touch=bool(progress), status=est, **fields)
         return get_job(ctx, job_id) or {}
     if est != "awaiting_commit":
-        _update(ctx, job_id, **fields)
+        _update(ctx, job_id, expected_revision=revision, **fields)
         return get_job(ctx, job_id) or {}
-    _update(ctx, job_id, status="awaiting_commit", **fields)
-    job = get_job(ctx, job_id) or {}
-    verification = await _verify(ctx, job, enc)
+    # De eerste ontvangst maakt het wachtende resultaat zichtbaar. Herhaalde opvragen
+    # mogen een reeds lopende eindcontrole niet telkens van haar revisie beroven.
+    if job["status"] != "awaiting_commit":
+        if not _update(ctx, job_id, expected_revision=revision, status=est, **fields):
+            return get_job(ctx, job_id) or {}
+        revision += 1
+    verification, evidence = await _verify(ctx, job, enc)
     if verification["passed"]:
         verification = await _precheck(ctx, job, enc, verification)
-    _update(ctx, job_id, core_verification_json=dumps(verification))
-    if not verification["passed"]:
-        why = failed_checks_text(verification)
-        _update(ctx, job_id, status="rejected",
-                error=f"Verificatie mislukt, bron behouden. {why}"[:2000])
+    rejection = None if verification["passed"] else failed_checks_text(verification)
+    auto = rejection is None and _auto_activate(ctx, job)
+    fields["core_verification_json"] = dumps(verification)
+    if rejection is None:
+        fields["status"] = "awaiting_commit" if auto else "awaiting_activation"
+    else:
+        fields.update(status="rejected",
+                      error=f"Verificatie mislukt, bron behouden. {rejection}"[:2000])
+    # De controle bevat netwerk- en bestands-I/O. Pas na de tweede revisietoets mogen
+    # het bewijs, de eindstatus en eventuele vervolgacties bij deze taak terechtkomen.
+    with ctx.db.transaction():
+        if not _update(ctx, job_id, expected_revision=revision, **fields):
+            return get_job(ctx, job_id) or {}
+        if evidence is not None:
+            ctx.db.execute(
+                "INSERT INTO dv_conversion_evidence(dv_test_id,encoding_job_id,source_profile,"
+                "el_type,route,method,rpu_preserved,all_picture_info_preserved,passed,"
+                "metadata_before_json,metadata_after_json,checks_json,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", evidence)
+    if rejection is not None:
         try:
-            await client.rejected(job["encoder_job_id"], f"Controle in MediaGuard mislukt: {why}")
+            await client.rejected(job["encoder_job_id"],
+                                  f"Controle in MediaGuard mislukt: {rejection}")
         except EncoderError as exc:
             LOGGER.warning("encoder rejected-melding mislukt: %s", exc)
         audit(ctx.db, actor="svc:core", action="encoding.verification_failed",
               target_type="encoding_job", target_id=job_id, instance_id=job["instance_id"],
               new_value=[c for c in verification["checks"] if not c["passed"]])
-        return get_job(ctx, job_id) or {}
+    elif auto:
+        return await handoff(ctx, job_id, actor="svc:full-auto", expected_revision=revision + 1)
+    return get_job(ctx, job_id) or {}
+
+
+def _auto_activate(ctx: AppContext, job: dict[str, Any]) -> bool:
     decision = job["dv_decision"] or {}
     meta = job["decision"] or {}
     pchain, _ = chains(ctx, instance_id=job["instance_id"], file_id=job["provider_id"],
                        series_id=meta.get("series_id"), movie_id=meta.get("movie_id"))
-    auto = (not job["trial_only"] and not decision.get("requires_manual_activation")
+    return (not job["trial_only"] and not decision.get("requires_manual_activation")
             and not meta.get("manual_activation")
             and bool(ctx.config.value("encoding.auto_commit_after_verify", pchain))
-            and recovery_service.readiness(ctx)["ready"]
-            and not ctx.emergency_stopped())
-    if auto:
-        return await handoff(ctx, job_id, actor="svc:full-auto")
-    _update(ctx, job_id, status="awaiting_activation")
-    return get_job(ctx, job_id) or {}
+            and recovery_service.readiness(ctx)["ready"] and not ctx.emergency_stopped())
 
 
 async def handoff(ctx: AppContext, job_id: int, *, actor: str,
-                  hardlink_break_confirmed: bool = False) -> dict[str, Any]:
+                  hardlink_break_confirmed: bool = False,
+                  expected_revision: int | None = None) -> dict[str, Any]:
     """Na verificatie: recovery-transactie aanmaken (enige schrijver)."""
-    job = get_job(ctx, job_id)
+    job, revision = _job_with_revision(ctx, job_id)
     if job is None:
         raise LookupError("Encodeerjob niet gevonden")
+    if expected_revision is not None and expected_revision != revision:
+        return job
     if job["status"] not in ("awaiting_activation", "awaiting_commit"):
         raise GateError("STATE", f"Job staat op '{job['status']}', niet klaar voor activatie")
     verification = job["core_verification"] or {}
@@ -871,10 +916,9 @@ async def handoff(ctx: AppContext, job_id: int, *, actor: str,
         raise GateError("RECOVERY_NOT_READY", "; ".join(ready["reasons"]))
     # atomisch claimen: poll-loop, /sync en een dubbelklik mogen nooit twee transacties maken
     prev = job["status"]
-    claimed = ctx.db.execute(
-        "UPDATE encoding_jobs SET status='handing_off', updated_at=? WHERE id=? AND status=?",
-        (utcnow(), job_id, prev))
-    if not claimed:
+    if not _update(ctx, job_id, expected_revision=revision, status="handing_off"):
+        if expected_revision is not None:
+            return get_job(ctx, job_id) or {}
         raise GateError("STATE", "Activatie loopt al voor deze job")
     snap = job["source_snapshot"] or {}
     staged = job["staged_output"] or {}
@@ -923,7 +967,7 @@ async def _encoder_already(client: Any, encoder_job_id: str, wanted: set[str]) -
     return str(enc.get("status") or "") in wanted
 
 
-async def _sync_handoff(ctx: AppContext, job: dict[str, Any]) -> dict[str, Any]:
+async def _sync_handoff(ctx: AppContext, job: dict[str, Any], revision: int) -> dict[str, Any]:
     txn = ctx.db.fetch_one("SELECT state, error FROM replacement_transactions WHERE id=?",
                            (job["transaction_id"],))
     if txn is None or txn["state"] not in ("committed", "rolled_back", "aborted", "conflict"):
@@ -942,9 +986,9 @@ async def _sync_handoff(ctx: AppContext, job: dict[str, Any]) -> dict[str, Any]:
         except EncoderError as exc:
             if not await _encoder_already(client, job["encoder_job_id"], {"committed"}):
                 LOGGER.warning("encoder committed-melding mislukt: %s", exc)
-                return job  # volgende sync probeert opnieuw
+                return get_job(ctx, job["id"]) or {}  # volgende sync probeert opnieuw
         # rapport 6 / N4: een eerdere 'Activatie uitgesteld'-melding hoort niet te blijven staan
-        _update(ctx, job["id"], status="committed", error=None)
+        _update(ctx, job["id"], expected_revision=revision, status="committed", error=None)
     elif txn["state"] in ("aborted", "rolled_back") and \
             (code := _abort_code(ctx, job["transaction_id"])) in TEMPORARY_ABORTS:
         fields: dict[str, Any] = {}
@@ -958,7 +1002,8 @@ async def _sync_handoff(ctx: AppContext, job: dict[str, Any]) -> dict[str, Any]:
         slow = code in SLOW_RETRY_ABORTS
         retry = (datetime.now(UTC) + (timedelta(hours=ENV_RETRY_HOURS) if slow
                                       else timedelta(minutes=AUTO_RETRY_MINUTES)))
-        _update(ctx, job["id"], status="awaiting_activation", transaction_id=None,
+        _update(ctx, job["id"], expected_revision=revision, status="awaiting_activation",
+                transaction_id=None,
                 error=f"Activatie uitgesteld: {txn['error']} — {_retry_nl(retry)}", **fields)
     elif txn["state"] in ("rolled_back", "aborted"):
         reason = str(txn["error"] or txn["state"])[:1000]
@@ -968,10 +1013,11 @@ async def _sync_handoff(ctx: AppContext, job: dict[str, Any]) -> dict[str, Any]:
             if not await _encoder_already(client, job["encoder_job_id"],
                                           {"rejected", "cancelled", "failed"}):
                 LOGGER.warning("encoder rejected-melding mislukt: %s", exc)
-                return job
-        _update(ctx, job["id"], status="rejected", error=txn["error"])
+                return get_job(ctx, job["id"]) or {}
+        _update(ctx, job["id"], expected_revision=revision, status="rejected", error=txn["error"])
     else:
-        _update(ctx, job["id"], status="conflict_review", error=txn["error"])
+        _update(ctx, job["id"], expected_revision=revision, status="conflict_review",
+                error=txn["error"])
     return get_job(ctx, job["id"]) or {}
 
 

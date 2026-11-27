@@ -8,7 +8,7 @@ from test_encoding_support import install
 
 from mediaguard import locks
 from mediaguard.encoding import service as enc
-from mediaguard.encoding.client import EncoderClient, EncoderUnavailable
+from mediaguard.encoding.client import EncoderClient, EncoderError, EncoderUnavailable
 from mediaguard.identity.engine import EpisodeRef, IdentityResult
 from mediaguard.identity.service import save
 from mediaguard.recovery import executor
@@ -326,6 +326,133 @@ async def test_encoder_forgot_job_marks_failed(client, ctx, fx):
     job = client.post("/api/v1/encoding/jobs", json=job_body(src)).json()
     fake.jobs.clear()
     assert (await enc.sync_job(ctx, job["id"]))["status"] == "failed"
+
+
+@pytest.mark.parametrize("antwoord", ["running", "awaiting_commit", "onbekend", "404", "uitval"])
+async def test_late_status_na_annulering(client, ctx, fx, monkeypatch, antwoord):
+    fake, src = fx
+    fake.polls_until_done = 99
+    route = "/api/v1/encoding/jobs"
+    job = client.post(route, json=job_body(src)).raise_for_status().json()["id"]
+    await enc.sync_job(ctx, job)
+    meettijd = "2026-01-01T09:04:00Z"
+    monkeypatch.setattr(enc, "utcnow", lambda: meettijd)
+
+    async def annuleren(self, nummer):
+        return {"status": "cancelled", "progress": 0.82}
+
+    async def late_status(self, nummer):
+        bevestigd = client.post(f"{route}/{job}/cancel").raise_for_status().json()
+        assert (bevestigd["status"], bevestigd["progress"]) == ("cancelled", 0.82)
+        monkeypatch.setattr(enc, "utcnow", lambda: "2026-01-01T09:05:00Z")
+        if antwoord == "404":
+            raise EncoderError("Proeftaak ontbreekt", 404)
+        if antwoord == "uitval":
+            raise EncoderUnavailable("Encoder tijdelijk onbereikbaar")
+        return {"status": antwoord, "progress": 0.5}
+
+    monkeypatch.setattr(EncoderClient, "cancel_job", annuleren)
+    with monkeypatch.context() as m:
+        m.setattr(EncoderClient, "get_job", late_status)
+        na_antwoord = await enc.sync_job(ctx, job)
+    fake.unavailable = True
+    na_uitval = await enc.sync_job(ctx, job)
+    for stand in (na_antwoord, na_uitval):
+        assert (stand["status"], stand["progress"], stand["updated_at"]) == (
+            "cancelled", 0.82, meettijd)
+        assert stand["core_verification"] is None and stand["transaction_id"] is None
+
+
+async def test_late_meting_in_dezelfde_seconde(client, ctx, fx, monkeypatch):
+    _, src = fx
+    tijd = "2026-01-01T09:04:00Z"
+    monkeypatch.setattr(enc, "utcnow", lambda: tijd)
+    job = client.post("/api/v1/encoding/jobs", json=job_body(src)).json()["id"]
+    enc._update(ctx, job, status="running", progress=0.5)
+
+    async def nieuw(self, nummer):
+        return {"status": "running", "progress": 0.82}
+
+    async def oud(self, nummer):
+        monkeypatch.setattr(EncoderClient, "get_job", nieuw)
+        stand = await enc.sync_job(ctx, job)
+        assert (stand["status"], stand["progress"], stand["updated_at"]) == ("running", 0.82, tijd)
+        return {"status": "running", "progress": 0.5}
+
+    monkeypatch.setattr(EncoderClient, "get_job", oud)
+    assert (await enc.sync_job(ctx, job))["progress"] == 0.82
+    assert enc.get_job(ctx, job)["progress"] == 0.82
+
+
+def test_taakrevisie_bewaart_bestaande_meting_bij_upgrade(settings, tmp_path, monkeypatch):
+    from contextlib import closing
+
+    from mediaguard import db
+
+    oud = tmp_path / "schema-159"
+    oud.mkdir()
+    for script in db.MIGRATIONS_DIR.glob("*.sql"):
+        if script.name < "160":
+            (oud / script.name).symlink_to(script)
+    with monkeypatch.context() as m, closing(db.Database(settings.db_path)) as database:
+        m.setattr(db, "MIGRATIONS_DIR", oud)
+        database.initialize()
+        database.execute(
+            "INSERT INTO encoding_jobs(source_path,status,policy_json,progress,created_at,"
+            "updated_at) VALUES ('film.mkv','running','{}',0.82,?,?)",
+            ("2026-01-01T09:00:00Z", "2026-01-01T09:04:00Z"))
+        voor = dict(database.fetch_one("SELECT * FROM encoding_jobs"))
+    with closing(db.Database(settings.db_path)) as database:
+        database.initialize()
+        na = dict(database.fetch_one("SELECT * FROM encoding_jobs"))
+        assert na.pop("revision") == 0 and na == voor
+        database.execute("UPDATE encoding_jobs SET status='cancelled' WHERE id=?", (na["id"],))
+    with closing(db.Database(settings.db_path)) as database:
+        database.initialize()
+        assert tuple(database.fetch_one("SELECT revision,status,progress,updated_at "
+                                        "FROM encoding_jobs")) == (1, "cancelled", 0.82,
+                                                                  voor["updated_at"])
+
+
+@pytest.mark.parametrize("laat", ["running", "cancelled"])
+async def test_late_annuleerbevestiging_bewaart_definitieve_meting(client, ctx, fx,
+                                                                  monkeypatch, laat):
+    _, src = fx
+    job = client.post("/api/v1/encoding/jobs", json=job_body(src)).json()["id"]
+    meettijd = "2026-01-01T09:04:00Z"
+    monkeypatch.setattr(enc, "utcnow", lambda: meettijd)
+
+    async def definitief(self, nummer):
+        return {"status": "cancelled", "progress": 0.82}
+
+    async def vertraagd(self, nummer):
+        monkeypatch.setattr(EncoderClient, "cancel_job", definitief)
+        bevestigd = await enc.cancel(ctx, job, "proef")
+        assert (bevestigd["status"], bevestigd["progress"]) == ("cancelled", 0.82)
+        monkeypatch.setattr(enc, "utcnow", lambda: "2026-01-01T09:05:00Z")
+        return {"status": laat, "progress": 0.5}
+
+    monkeypatch.setattr(EncoderClient, "cancel_job", vertraagd)
+    stand = await enc.cancel(ctx, job, "proef")
+    assert (stand["status"], stand["progress"], stand["updated_at"]) == (
+        "cancelled", 0.82, meettijd)
+
+
+@pytest.mark.parametrize("goedgekeurd", [False, True])
+async def test_annulering_tijdens_eindcontrole(client, ctx, fx, monkeypatch, goedgekeurd):
+    _, src = fx
+    route = "/api/v1/encoding/jobs"
+    job = client.post(route, json=job_body(src)).json()["id"]
+
+    async def controle(ctx, taak, antwoord, verificatie):
+        bevestigd = client.post(f"{route}/{job}/cancel").raise_for_status().json()
+        assert bevestigd["status"] == "cancelled"
+        return {"passed": goedgekeurd, "checks": []}
+
+    monkeypatch.setattr(enc, "_precheck", controle)
+    stand = await enc.sync_job(ctx, job)
+    assert stand["status"] == "cancelled" and stand["core_verification"] is None
+    assert stand["transaction_id"] is None
 
 
 def test_gateway_blocks_bridge_routes(client):

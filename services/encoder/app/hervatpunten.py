@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 from collections.abc import Callable, Coroutine
 from dataclasses import asdict, dataclass
@@ -58,9 +59,14 @@ def _bestand(path: Path) -> None:
 def eerder_geverifieerd(database: Database, cache: Path, job: int) -> bool:
     """Ook vóór fragmentregistratie kon een job al bij de eindcontrole zijn."""
     result = cache / "resultaat.mkv"
-    if not result.exists():
+    try:
+        mode = result.lstat().st_mode
+    except FileNotFoundError:
         return False
-    _bestand(result)
+    except OSError as exc:
+        raise Hervatfout("De bestandsgegevens van het eerdere resultaat zijn onleesbaar") from exc
+    if not stat.S_ISREG(mode):
+        raise Hervatfout("Het eerdere resultaat is geen gewoon bestand")
     metingen = database.fetch_all(
         "SELECT v.geslaagd,p.poging,p.hervat_sha256 FROM verificatie v JOIN job j ON j.id=v.job_id "
         "LEFT JOIN verificatie_poging p ON p.job_id=j.id "
@@ -69,7 +75,10 @@ def eerder_geverifieerd(database: Database, cache: Path, job: int) -> bool:
     )
     hashes = {m["hervat_sha256"] for m in metingen if m["hervat_sha256"]}
     if hashes:
-        return file_sha256(result) in hashes
+        try:
+            return file_sha256(result) in hashes
+        except OSError as exc:
+            raise Hervatfout("Het eerdere resultaat is onleesbaar bij de hashcontrole") from exc
     # Schema 028 kende alleen de laatste controle. Elke hervatting toetst de bytes opnieuw.
     return bool(metingen and metingen[0]["geslaagd"] and all(m["poging"] is None for m in metingen))
 

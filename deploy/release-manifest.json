@@ -197,7 +197,8 @@
       "156_outbox_cursor_history",
       "157_connector_evidence",
       "158_hub_poolbron",
-      "159_hub_poolrevisie"
+      "159_hub_poolrevisie",
+      "160_encoding_job_revision"
     ],
     "encoder": [
       1,

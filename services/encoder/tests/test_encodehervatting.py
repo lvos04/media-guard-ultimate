@@ -6,6 +6,7 @@ import asyncio
 import json
 import multiprocessing
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -15,12 +16,13 @@ from unittest.mock import patch
 import psutil
 import pytest
 from conftest import TESTDATA
+from test_planner import _planner_case
 from test_uitvoerder import _case
 
-from app import geplandestop, uitvoerder
+from app import geplandestop, hervatpunten, uitvoerder
 from app.config import Settings
 from app.db import Database
-from app.planner import recover_orphaned_jobs
+from app.planner import Planner, recover_orphaned_jobs
 from app.vervanging import file_sha256
 
 
@@ -252,6 +254,64 @@ def test_tijdafwijking_midden_in_deel_bewaart_alle_beelden(tmp_path):
     with pytest.raises(hervatpunten.Hervatfout, match="beeldtijd"):
         stand.borg_prefix(bron, deel, 0)
     assert not stand.delen and (file_sha256(deel), file_sha256(bron)) == voor
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("ruim_werkgeheugen", "ruime_cache")
+@pytest.mark.parametrize("beginstatus", ["verifieren", "wacht"])
+async def test_planner_verwerkt_volgende_taak_bij_onleesbaar_resultaat(tmp_path, monkeypatch,
+                                                                     beginstatus):
+    db, settings, (job, ander) = _planner_case(tmp_path)
+    cache = settings.cache_root / str(job)
+    cache.mkdir()
+    resultaat = cache / "resultaat.mkv"
+    shutil.copyfile(TESTDATA / "al-av1.mkv", resultaat)
+    digest = file_sha256(resultaat)
+    bron = Path(db.fetch_one("SELECT f.pad FROM bestand f JOIN job j ON f.id=j.bestand_id "
+                             "WHERE j.id=?", (job,))[0])
+    bron_hash = file_sha256(bron)
+    db.execute("UPDATE job SET status=?,percent=99.9,bron_inode=? WHERE id=?",
+               (beginstatus, bron.stat().st_ino, job))
+    db.execute("INSERT INTO verificatie(job_id,geslaagd) VALUES (?,1)", (job,))
+    db.execute("INSERT INTO verificatie_poging SELECT v.*,1,? FROM verificatie v WHERE job_id=?",
+               (digest, job))
+    db.execute("UPDATE job SET baan='cpu' WHERE id=?", (ander,))
+
+    def verificaties():
+        meting = db.fetch_one("SELECT * FROM verificatie WHERE job_id=?", (job,))
+        historie = db.fetch_all("SELECT * FROM verificatie_poging WHERE job_id=? ORDER BY rowid",
+                                (job,))
+        return tuple(meting), [tuple(rij) for rij in historie]
+
+    voor = verificaties()
+    planner = Planner(db, settings, storage_validator=lambda: None,
+                      machine_guard=lambda _: (True, None))
+    verwerkt = []
+
+    async def proefwerker(database, instellingen, nummer, **kwargs):
+        verwerkt.append(nummer)
+        database.execute("UPDATE job SET status='klaar',percent=100 WHERE id=?", (nummer,))
+        planner.stopping = True
+        return True
+
+    openen = Path.open
+
+    def leesrecht(path, *args, **kwargs):
+        if path == resultaat:
+            raise PermissionError("Leesrecht ontbreekt in de proef")
+        return openen(path, *args, **kwargs)
+
+    monkeypatch.setattr("app.planner.run_job", proefwerker)
+    with patch.object(Path, "open", leesrecht):
+        await asyncio.wait_for(planner.run_forever(interval=0.01), timeout=10)
+
+    assert verwerkt == [ander]
+    assert db.fetch_one("SELECT status FROM job WHERE id=?", (ander,))[0] == "klaar"
+    assert tuple(db.fetch_one("SELECT status,foutsoort,percent FROM job WHERE id=?",
+                              (job,))) == ("mislukt", "Hervatfout", 99.9)
+    assert verificaties() == voor
+    assert (file_sha256(bron), file_sha256(resultaat)) == (bron_hash, digest)
+    assert hervatpunten.eerder_geverifieerd(db, cache, job)
 
 
 @pytest.mark.parametrize(("gepland", "afkeuring", "fragmenten"), [
