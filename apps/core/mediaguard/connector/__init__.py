@@ -16,7 +16,7 @@ from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import MIGRATIONS_DIR
 
 from . import events, evidence, items
-from .errors import failure
+from .errors import ConnectorError, failure
 
 router = APIRouter(tags=["connector"])
 router.include_router(events.router)
@@ -84,7 +84,10 @@ class DownloadCount(BaseModel):
     reason_code: str | None
 
 
-@router.get("/connector/v1/downloads/count")
+@router.get("/connector/v1/downloads/count", responses={
+    401: {"model": ConnectorError, "description": "Aanmelding ontbreekt of is ongeldig."},
+    403: {"model": ConnectorError, "description": "Onvoldoende rechten."},
+})
 def download_count(_: Principal = Depends(require_viewer),
                    ctx: AppContext = Depends(get_app_context)) -> DownloadCount:
     """Aantal wachtrijitems uit de laatste activiteitsmeting, met de oorspronkelijke meettijd."""

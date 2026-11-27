@@ -27249,6 +27249,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Aanmelding ontbreekt of is ongeldig."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorError"
+                }
+              }
+            },
+            "description": "Onvoldoende rechten."
           }
         },
         "summary": "Download Count",

@@ -252,12 +252,21 @@ def test_connector_openapi_documents_only_current_routes(app):
     assert {p for p in paths if p.startswith("/connector/v1/")} == {
         "/connector/v1/discover", "/connector/v1/health", "/connector/v1/propose",
         "/connector/v1/apply", "/connector/v1/rollback", "/connector/v1/events",
-        "/connector/v1/items", "/connector/v1/evidence/{id}",
+        "/connector/v1/items", "/connector/v1/evidence/{id}", "/connector/v1/downloads/count",
     }
     for action in ("propose", "apply", "rollback"):
         assert "501" in paths[f"/connector/v1/{action}"]["post"]["responses"]
     for path in ("/healthz", "/readyz"):
         assert paths[path]["get"]["security"] == []
+    count = paths["/connector/v1/downloads/count"]
+    assert set(count) == {"get"}
+    assert count["get"].get("security", app.openapi()["security"]) == [
+        {"session": []}, {"apiKey": []}, {"internalToken": []},
+    ]
+    for status, model in (("200", "DownloadCount"), ("401", "ConnectorError"),
+                          ("403", "ConnectorError")):
+        schema = count["get"]["responses"][status]["content"]["application/json"]["schema"]
+        assert schema["$ref"] == f"#/components/schemas/{model}"
     events = paths["/connector/v1/events"]["get"]
     params = {p["name"]: p["schema"] for p in events["parameters"]}
     assert params["limit"]["type"] == "integer" and params["limit"]["maximum"] == 200
