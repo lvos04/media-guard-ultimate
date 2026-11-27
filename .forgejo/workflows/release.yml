@@ -283,7 +283,7 @@ jobs:
           RADARR=$(onderdeel radarr-fork)
           docker buildx build --push --metadata-file "$RUNNER_TEMP/bouw.json" --platform linux/amd64 \
             -f deploy/aio/Dockerfile \
-            --build-context core=apps/core --build-context release=deploy \
+            --build-context core=apps/core --build-context release=deploy --build-context webcontrole=apps/web/scripts \
             --build-arg "ENCODE_IMAGE=$ENCODE" \
             --build-arg "WEB_IMAGE=$WEB" \
             --build-arg "SONARR_IMAGE=${SONARR}" \

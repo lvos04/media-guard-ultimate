@@ -6,7 +6,7 @@ import {
 import path from "node:path";
 
 export const sjabloon = "mediaguard-prerender.json";
-export const runtimeMap = "/tmp/mediaguard-next";
+export const runtimeMap = "/run/mediaguard-web/mediaguard-next";
 export const prerender = "prerender-manifest.json";
 export const previewProps = "server/preview-props.json";
 export const actieJson = "server/server-reference-manifest.json";

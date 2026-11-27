@@ -3,6 +3,7 @@
 # De webgebruiker schrijft alleen in de eigen sleutelopslag en de tijdelijke manifestmap.
 ARG NODE_IMAGE=mirror.gcr.io/library/node:22.23.5-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 
+FROM ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f AS geheimenscan
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /src
 COPY package.json package-lock.json ./
@@ -16,7 +17,8 @@ WORKDIR /src
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /src/node_modules ./node_modules
 COPY . .
-RUN npm run build
+RUN --mount=type=bind,from=geheimenscan,source=/usr/bin/gitleaks,target=/usr/local/bin/gitleaks \
+    npm run build && node scripts/controleer-webpakket.mjs .next/standalone
 
 FROM ${NODE_IMAGE}
 ARG UID=568
@@ -25,6 +27,7 @@ ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 MG_WEB_HOST=0.0.0.0 
     MG_CORE_URL=http://mediaguard-core:8100 MG_ENCODER_URL=http://mediaguard-encoder:8000
 RUN groupadd -g ${GID} mediaguard && useradd -u ${UID} -g ${GID} -M -s /usr/sbin/nologin mediaguard \
     && install -d -m 0700 -o ${UID} -g ${GID} /var/lib/mediaguard-web \
+    && ln -s /tmp /run/mediaguard-web \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
        /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /opt/yarn-* /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app

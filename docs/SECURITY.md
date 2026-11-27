@@ -258,12 +258,17 @@ noodstopcache in `MediaGuardHookClient`).
   eigen gebruiker `nobody` (65534, `MG_WEB_UID`/`MG_WEB_GID`) zonder de groepen van de app. Hij
   kan daardoor niet bij `/config/core` (database, `secret.key`), `/config/secrets` (beide 0750)
   en niet bij de omgeving van de andere processen (`/proc/<pid>/environ`, waar de hook- en
-  API-sleutels van de forks staan); hij krijgt zelf geen sleutels of het encoder-adres mee. Bij
-  de media kan hij alleen als de dataset voor iedereen leesbaar is. Bij elke start haalt
+  API-sleutels van de forks staan). De bewaker geeft web alleen de eigen Next.js-installatiesleutel.
+  De kernsleutels, de hooksleutels en de API-sleutels van de forks blijven afgeschermd.
+  Het encoder-adres ontbreekt in de webomgeving. Bij de media kan web alleen als de dataset
+  voor iedereen leesbaar is. Bij elke start haalt
   `mediaguard.aio` de rechten voor 'overige gebruikers' weg van `core`, `secrets`, `encode`,
   `logs` en de fork-mappen in `/config` (alleen als die van de app-gebruiker zijn; zo ook bij een
   oudere installatie waar zo'n map nog open stond). Draait de container al als vaste gebruiker
   (niet als root), dan kan het wisselen van gebruiker niet en draait web als die gebruiker.
+  Bij beide startwijzen sluit Landlock de map `/run/mediaguard-web` af voor de encoder,
+  hookguard en de vier forks. Web schrijft de vier manifesten met modus 0600 in een
+  eigen submap met modus 0700.
   Voor de uitleg bij 'core onbereikbaar' (migratie, herstartlus) leest web alleen
   `/run/mediaguard/core-status.json`: een beperkte kopie van `supervisor.json` (staat, migratie,
   uitleg) zonder pids, exitcodes of logregels, in een map van de app-gebruiker die web niet kan

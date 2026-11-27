@@ -135,6 +135,7 @@ jobs:
           build-contexts: |
             core=apps/core
             release=deploy
+            webcontrole=apps/web/scripts
           build-args: |
             ENCODE_IMAGE=mediaguard/encode:bouw
             WEB_IMAGE=mediaguard/web:bouw

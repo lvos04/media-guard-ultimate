@@ -1,20 +1,12 @@
 import {
-  copyFileSync, cpSync, existsSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
+  copyFileSync, cpSync, existsSync, readFileSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import ts from "typescript";
 import { actieJs, actieJson, jsPrefix, prerender, previewProps, runtimeMap, sjabloon } from "../webmanifesten.mjs";
-
-function* bestanden(map, overslaan = new Set()) {
-  for (const item of readdirSync(map, { withFileTypes: true })) {
-    if (overslaan.has(item.name)) continue;
-    const bestand = path.join(map, item.name);
-    if (item.isDirectory()) yield* bestanden(bestand);
-    else if (item.isFile()) yield bestand;
-  }
-}
+import { bestanden, controleerWebpakket } from "./controleer-webpakket.mjs";
 
 // Ook een import onder een andere naam of een actie in een geneste functie telt mee.
 export function controleerWebbron(web) {
@@ -62,10 +54,7 @@ export function verwijderBuildsleutels(pakket, runtime = runtimeMap) {
     rmSync(bestand, { force: true });
     symlinkSync(path.join(runtime, path.basename(naam)), bestand);
   }
-  for (const bestand of bestanden(pakket)) {
-    const inhoud = readFileSync(bestand);
-    if (waarden.some((waarde) => inhoud.includes(waarde))) throw new Error("Het webpakket bevat nog een vaste buildsleutel");
-  }
+  controleerWebpakket(pakket, waarden);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

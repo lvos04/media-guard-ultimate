@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { controleerWebpakket } from "../../scripts/controleer-webpakket.mjs";
 import { controleerWebbron, verwijderBuildsleutels } from "../../scripts/verpak-web.mjs";
 import { actieJs, actieJson, installatiesleutel, jsPrefix, prerender, previewProps, schrijfManifesten } from "../../webmanifesten.mjs";
 
@@ -10,17 +11,21 @@ let werk, nextMap, runtime, opslag, preview, acties;
 const schrijf = (naam, data) => writeFileSync(path.join(nextMap, naam), data);
 const lees = (naam) => readFileSync(path.join(nextMap, naam), "utf8");
 
+function previewWaarden() {
+  return {
+    previewModeId: randomBytes(16).toString("hex"),
+    previewModeSigningKey: randomBytes(32).toString("hex"),
+    previewModeEncryptionKey: randomBytes(32).toString("hex"),
+  };
+}
+
 beforeEach(() => {
   werk = mkdtempSync(path.join(tmpdir(), "mg-webtest-"));
   nextMap = path.join(werk, ".next");
   runtime = path.join(werk, "runtime");
   opslag = path.join(werk, "appdata");
   mkdirSync(path.join(nextMap, "server"), { recursive: true });
-  preview = {
-    previewModeId: randomBytes(16).toString("hex"),
-    previewModeSigningKey: randomBytes(32).toString("hex"),
-    previewModeEncryptionKey: randomBytes(32).toString("hex"),
-  };
+  preview = previewWaarden();
   acties = { node: {}, edge: {}, encryptionKey: randomBytes(32).toString("base64") };
   schrijf(prerender, JSON.stringify({ version: 4, routes: { "/login": {} }, preview }));
   schrijf(previewProps, JSON.stringify(preview));
@@ -58,6 +63,28 @@ test("de eerste start, herstart en tweede installatie houden routes en sleutels 
 test("een restkopie buiten de bekende manifesten blokkeert de build", () => {
   schrijf("ander-bestand.js", acties.encryptionKey);
   expect(() => verwijderBuildsleutels(werk, runtime)).toThrow(/vaste buildsleutel/);
+});
+
+test.each(["preview", "acties", "acties-js"])("een hernoemd %s-manifest uit een andere build blokkeert de verpakking", (soort) => {
+  const oud = { node: {}, edge: {}, encryptionKey: randomBytes(32).toString("base64") };
+  const inhoud = {
+    preview: JSON.stringify(previewWaarden()),
+    acties: JSON.stringify(oud, null, 2),
+    "acties-js": jsPrefix + JSON.stringify(JSON.stringify(oud)),
+  };
+  mkdirSync(path.join(werk, "public", "archief"), { recursive: true });
+  writeFileSync(path.join(werk, "public", "archief", "vorige-build.txt"), inhoud[soort]);
+  expect(() => verwijderBuildsleutels(werk, runtime)).toThrow(/vaste buildsleutel/);
+});
+
+test("de poort voor een aangeleverd pakket herkent een latere toevoeging buiten .next", () => {
+  verwijderBuildsleutels(werk, runtime);
+  expect(() => controleerWebpakket(werk)).not.toThrow();
+  const pad = path.join(werk, "oude-kopie.txt");
+  writeFileSync(pad, jsPrefix + JSON.stringify(JSON.stringify({
+    node: {}, edge: {}, encryptionKey: randomBytes(32).toString("base64"),
+  })));
+  expect(() => controleerWebpakket(werk)).toThrow(/vaste buildsleutel/);
 });
 
 test.each(["node", "edge"])("een geregistreerde Server Action voor %s blokkeert de build", (type) => {

@@ -12,11 +12,11 @@ opruimen() {
 }
 trap opruimen EXIT
 container=$(docker create --network none "$image")
-docker cp "$container:/app/.next" "$pakket"
+docker cp "$container:/app/." "$pakket"
 docker rm -v "$container" >/dev/null
 container=
 test -s "$pakket/.next/mediaguard-prerender.json"
-gitleaks dir --redact=100 --ignore-gitleaks-allow --no-banner --no-color "$pakket/.next"
+gitleaks dir --redact=100 --ignore-gitleaks-allow --no-banner --no-color "$pakket"
 volumes+=("$(docker volume create)")
 volumes+=("$(docker volume create)")
 

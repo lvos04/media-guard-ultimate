@@ -349,6 +349,9 @@ jobs:
         working-directory: apps/web
       - run: npm run build
         working-directory: apps/web
+      - name: Verpakt webprogramma starten en herstarten via beide AIO-startpaden
+        working-directory: apps/web
+        run: /tmp/corevenv/bin/python tests/start-webpakket.py
       - name: playwright browsers
         working-directory: apps/web
         run: npx playwright install --with-deps chromium

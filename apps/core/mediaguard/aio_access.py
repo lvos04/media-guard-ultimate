@@ -52,8 +52,15 @@ def restrict(config: Path, work: Path, data: Path, service: str = "") -> None:
         # Andere top-level koppelingen blijven bruikbaar voor de media- en GPU-diensten.
         # Geef nooit een voorouder van de privémap vrij. Binnen appdata zijn alleen de
         # dienstmappen en de gedeelde interne token nodig. Forksleutels staan al in hun env.
-        paths = [*Path("/").iterdir(), work, data, Path(sys.prefix), Path.cwd(),
-                 config / "secrets" / "internal"]
+        paths = [work, data, Path(sys.prefix), Path.cwd(), config / "secrets" / "internal"]
+        for root in Path("/").iterdir():
+            if root.name == "run" and service != "web":
+                # Een Landlock-regel op /run zou ook voor de webmanifesten gelden.
+                # Geef de overige runtime-mappen elk hun eigen regel.
+                private += ((root / "mediaguard-web").resolve(),)
+                paths.extend(root.iterdir())
+            else:
+                paths.append(root)
         # De webgebruiker kan al niet in een afgeschermde appdatamap.
         with suppress(PermissionError):
             paths.extend(p for p in config.iterdir() if p.name not in {"secrets", "core"})

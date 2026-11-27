@@ -4,7 +4,7 @@
 # Sonarr- en Radarr-fork); ze worden hier alleen samengevoegd en door mediaguard.aio gestart.
 #
 #   docker build -f deploy/aio/Dockerfile \
-#     --build-context core=apps/core --build-context release=deploy \
+#     --build-context core=apps/core --build-context release=deploy --build-context webcontrole=apps/web/scripts \
 #     --build-arg ENCODE_IMAGE=... --build-arg WEB_IMAGE=... \
 #     --build-arg SONARR_IMAGE=... --build-arg RADARR_IMAGE=... \
 #     -t ghcr.io/lvos04/mediaguard-core:dev-aio deploy/aio
@@ -13,13 +13,18 @@ ARG WEB_IMAGE=ghcr.io/lvos04/mediaguard-web:dev
 ARG SONARR_IMAGE=ghcr.io/lvos04/mediaguard-sonarr-fork:dev
 ARG RADARR_IMAGE=ghcr.io/lvos04/mediaguard-radarr-fork:dev
 
+FROM ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f AS geheimenscan
+FROM scratch AS webcontrole
 FROM ${WEB_IMAGE} AS web
-# Weiger ook een oud web-image dat nog ingevulde manifesten onder /app meebrengt.
-RUN set -eu; cd /app/.next; test -s mediaguard-prerender.json; \
+USER root
+# Controleer het daadwerkelijke /app met de poort uit deze checkout.
+RUN --mount=type=bind,from=webcontrole,source=/controleer-webpakket.mjs,target=/controleer-webpakket.mjs \
+    --mount=type=bind,from=geheimenscan,source=/usr/bin/gitleaks,target=/usr/local/bin/gitleaks \
+    set -eu; cd /app/.next; test -s mediaguard-prerender.json; \
     for manifest in prerender-manifest.json server/preview-props.json \
         server/server-reference-manifest.json server/server-reference-manifest.js; do \
-        test -L "$manifest"; test ! -e "$manifest"; \
-    done
+        test "$(readlink "$manifest")" = "/run/mediaguard-web/mediaguard-next/${manifest##*/}"; test ! -e "$manifest"; \
+    done; node /controleer-webpakket.mjs /app
 FROM ${SONARR_IMAGE} AS sonarr
 FROM ${RADARR_IMAGE} AS radarr
 FROM scratch AS core
@@ -45,7 +50,8 @@ RUN --mount=type=secret,id=ca_bundle,required=false \
     node --version; \
     test -x /app/sonarr/bin/Sonarr && test -x /app/radarr/bin/Radarr; \
     mkdir -p /config /work /data /media; \
-    install -d -m 0755 -o 568 -g 568 /run/mediaguard
+    install -d -m 0755 -o 568 -g 568 /run/mediaguard; \
+    install -d -m 1733 /run/mediaguard-web
 COPY --from=release /release-manifest.json /usr/share/mediaguard/release-manifest.json
 COPY --from=core --chmod=0755 /mediaguard/aio_healthcheck.py /usr/local/bin/mg-aio-healthcheck
 
