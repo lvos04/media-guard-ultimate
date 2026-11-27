@@ -1,5 +1,72 @@
 # Contracttest mediaservers: uitkomst
 
+## S-P40-20 op 27 november 2026
+
+De contractproef draaide eerst met stock Jellyfin 12.4 en daarna met de lokale Jelly Leon-image uit S-G1-16. Beide keren doorliep dezelfde MediaGuard-kandidaat alle 25 tests. De stockrun had 125 afzonderlijke controles in 861,053 s en de Jelly Leon-run 125 in 787,577 s. Beide runs eindigden met pytest-exitcode 0.
+
+| Rol | Werkelijk gebruikte image |
+|---|---|
+| Vorige MediaGuard-release | `ghcr.io/lvos04/mediaguard-core:1.3.0-aio@sha256:47e6f0373b6466563b5d2397ffa5a4d5c706446ad3249cb24fcfb96924a25f16` |
+| MediaGuard-kandidaat | `sha256:d2f6eb2db4e52c4349ddee10231eb2105211651f06174365b00f05650d2082d1`, gebouwd uit kern, encoder en manifest op `88f734f8fb90204f95321386bb0667255317a2c4` met `deploy/upgradebewijs/Dockerfile.kandidaat` |
+| Emby in beide proeven | `emby/embyserver:4.10.2.0@sha256:7082c63b10a2fcb3805a7eaebba407d5723bc57c085c9f0b29b7d0a702765cc1` |
+| Stock Jellyfin | `jellyfin/jellyfin:12.4@sha256:fea863d0cd9ec445985d9c75fc6ed64e38a1d2766cf0c250a33d553f4fc1b771` |
+| Lokale Jelly Leon | `jelly-leon:lokaal-48293b48a`, image-ID `sha256:09c2bb379cf09e0895a794dcf4979b3171d015d942dda67a67ad42231f43741b`, bronrevisie `48293b48ac48644e0d4433cf3193a96fbf35eac4` |
+
+### Gegevensbehoud
+
+De upgradeproef begon met de gevulde fixture van de gepubliceerde versie 1.3.0-aio. Bij de upgrade en bij het terugzetten van de vorige image met de snapshot zijn alle 177 vooraf gevulde tabellen per rij en per beschermde waarde vergeleken. Er waren in beide richtingen nul verloren en nul gewijzigde beschermde rijen. De open overdracht bleef 1 → 1. De twee geregistreerde originelen, het werkbestand en de mediatitel hadden na de update en op alle drie de terugvalkopieën dezelfde SHA-256. De proef gebruikt de uitzonderingen uit het versiebeheer voor velden die tijdens een start mogen veranderen.
+
+In contracttest b1 opende de gepubliceerde 1.3.0-aio de enkelvoudige fixture uit 1.2.2 en koppelde de lokale Emby. Zo kreeg b2 een uitgangssituatie met precies één gekoppelde mediaserver. B2 controleerde bij de versieovergang alle migratienamen (49 → 50), inclusief migratie 150. De enige nieuwe kernmigratie was `158_hub_poolbron`. Na het terugzetten mat de upgradeproef weer de 49 migraties van 1.3.0. In b2 en b9 was de volledige `UserData` van de tweede testfilm bij Emby gelijk aan de nulmeting. De synthetische gebruiker had twee afspeelbeurten, een laatste kijkdatum, een hervatpunt van 50.000.007 ticks en een favoriet. Na de upgrade bleef Emby zonder beheerhandeling server 1 met dezelfde instellingen en sleutel.
+
+### Vergelijking per testgeval
+
+Het getal tussen haakjes is het aantal uitgevoerde contractcontroles. Alle controle-uitkomsten kwamen per testgeval overeen. De tests met suffix `[jellyfin]` liepen in de tweede kolom met stock en in de derde kolom met Jelly Leon.
+
+| Testgeval | Stock | Jelly Leon |
+|---|---:|---:|
+| `a1_openbare_info_en_soort[emby]` | goed (4) | goed (4) |
+| `a1_openbare_info_en_soort[jellyfin]` | goed (4) | goed (4) |
+| `a2_sleutel_alleen_in_de_kop_van_die_server[emby]` | goed (3) | goed (3) |
+| `a2_sleutel_alleen_in_de_kop_van_die_server[jellyfin]` | goed (3) | goed (3) |
+| `a3_verkeerde_sleutel_geeft_een_duidelijke_fout[emby]` | goed (1) | goed (1) |
+| `a3_verkeerde_sleutel_geeft_een_duidelijke_fout[jellyfin]` | goed (1) | goed (1) |
+| `a4_jellyfin_weigert_de_oude_vormen_en_emby_houdt_de_zijne` | goed (6) | goed (6) |
+| `a5_sessies_lezen[emby]` | goed (4) | goed (4) |
+| `a5_sessies_lezen[jellyfin]` | goed (4) | goed (4) |
+| `a6_bibliotheek_verversen[emby]` | goed (1) | goed (1) |
+| `a6_bibliotheek_verversen[jellyfin]` | goed (1) | goed (1) |
+| `a7_afspeeltest_en_nederlandse_ondertitels[emby]` | goed (4) | goed (4) |
+| `a7_afspeeltest_en_nederlandse_ondertitels[jellyfin]` | goed (4) | goed (4) |
+| `a8_encoder_kiest_dezelfde_kop[emby]` | goed (4) | goed (4) |
+| `a8_encoder_kiest_dezelfde_kop[jellyfin]` | goed (4) | goed (4) |
+| `b1_vorige_release_volgt_emby` | goed (8) | goed (8) |
+| `b2_upgrade_emby_blijft_gevolgd_zonder_handeling` | goed (17) | goed (17) |
+| `b3_zoeken_vindt_beide_en_jellyfin_komt_erbij` | goed (10) | goed (10) |
+| `b4_kijken_op_emby_pauzeert` | goed (4) | goed (4) |
+| `b5_kijken_op_jellyfin_pauzeert` | goed (4) | goed (4) |
+| `b6_jellyfin_valt_weg_emby_blijft_gevolgd` | goed (6) | goed (6) |
+| `b7_emby_losmaken_volgt_alleen_jellyfin` | goed (7) | goed (7) |
+| `b8_emby_weer_koppelen_zonder_sleutel_opnieuw` | goed (5) | goed (5) |
+| `b8b_jellyfin_weigert_sleutel_emby_blijft_gevolgd` | goed (5) | goed (5) |
+| `b9_niets_gelekt_en_nette_stop` | goed (11) | goed (11) |
+
+### Uitval, geweigerde sleutel en Emby-verkeer
+
+- B6 stopte de tweede server terwijl iemand op Emby keek. De encoder bleef gepauzeerd, Emby bleef verbonden en bleef geldige polls beantwoorden. De tweede server kwam na de herstart terug.
+- B8b kreeg met een opzettelijk verkeerde sleutel HTTP 401 op de tweede server. De API gaf `connected=false` en `contact.ok=false`. Emby beantwoordde intussen een sessiepoll met HTTP 200 en behield zijn sleutel. De eigen geldige sleutel herstelde de tweede verbinding. De proxy telde in elke run twee verwachte afwijzingen. De HTTP 404-antwoorden in beide proxylogs kwamen van de openbare detectie met het Emby-voorvoegsel op de Jellyfin-server.
+- B1 mat ook de zoekactie die b3 op de kandidaat uitvoert. B2 vergeleek de eerste Emby-polls vóór die zoekactie. B9 vergeleek de volledige kandidaatfase op HTTP-methode, pad, aanmeldkop en namen van queryparameters. De kandidaat gebruikte `GET /emby/Library/VirtualFolders`, `GET /emby/Sessions`, `GET /emby/System/Info`, `GET /emby/System/Info/Public`. Alle vormen kwamen in de vorige release voor. Alle Emby-antwoorden waren HTTP 200. Voor beveiligde verzoeken gebruikte MediaGuard op Emby `X-Emby-Token` en op Jelly Leon `Authorization: MediaBrowser`. A4 bevestigde met HTTP 401 dat de oude aanmeldvormen op Jelly Leon uit stonden.
+- De aantallen Emby-sessiepolls tot het geplande losmaken waren 19 / 17 (stock / Jelly Leon). De langste tijd tussen zulke polls was 30,2 / 30,2 s, binnen de grens van 75 s. De tijd tussen het laatste verzoek van de vorige release en de eerste sessiepoll van de kandidaat was 66 / 67 s. De proeven meten verstreken tijd met de werkelijke opstart- en pollcycli.
+
+De stockrun deed vóór het losmaken 31 Emby-verzoeken, de Jelly Leon-run 29. Het verschil van twee komt overeen met de twee extra periodieke sessiepolls. B9 telde in de hele run 36 tegenover 34 Emby-verzoeken en 22 tegenover 20 geldige Jellyfin-verzoeken met sleutel. De aanmeldvormen, paden en uitkomsten waren gelijk. De verse serverinstanties gebruikten hun eigen containernaam als `ServerName`. De hoeveelheid MediaGuard-loguitvoer varieerde tussen de runs (vorige release 13.580 / 13.581, kandidaat 532 / 524). De proef controleerde beide logs op blootstelling van de sleutels.
+
+### Bereik en herhaling
+
+Kijksessies zijn nagebootst via de sessie-API van de servers. De echte NAS, de Emby van de gebruiker, de uitgebrachte Jelly Leon-image en echte spelers vallen onder de P6-proef. De overnametool met zijn eigen voor/na-meting hoort bij Jelly Leon. De vergelijking van de Emby-verzoeken betreft de MediaGuard-kern. De losse encoderclient is afzonderlijk gemeten in a8.
+
+Kies `MGMS_BASIS=laatste`, `MGMS_INTERN=true`, een eigen `COMPOSE_PROJECT_NAME`, `MGMS_KANDIDAAT=<image-ID>` en per run een eigen `MGMS_BEWIJS` buiten de repo. Draai `flock <WERKMAP>/.lokaal/stack.lock nice -n 10 tests/contract/mediaserver/run.sh` eerst met de standaardserver en daarna met `JELLYFIN_IMAGE=jelly-leon:lokaal-48293b48a`. Beide opstellingen gebruiken eigen interne netwerken en volumes. Het cachevolume wordt leeg aangemaakt met `nocopy`, zodat het eigen entrypoint van Jelly Leon de map met de vereiste rechten kan openen. De standaardmodus `enkelvoudig` toetst apart het oorspronkelijke upgradepad vanaf 1.2.2, waarin de kandidaat migratie 150 moet toevoegen.
+
+## Historische stockmeting van 11 november 2026
+
 Δ-MG-AUTH en Δ-MG-DUAL (ADR-0022; contract 1.3 §2.3 regel 2, C1.3-MGU-04). Gedraaid op 2026-11-11 op de
 ontwikkelmachine (Linux, Docker 29.1.3, Compose 2.40.3). Alle onderdelen zijn wegwerpcontainers op deze machine;
 `run.sh` ruimt na afloop containers, volumes, netwerk en de werkmap `.run` op.
@@ -11,7 +78,7 @@ Opdracht: `flock <pad>/stack.lock tests/contract/mediaserver/run.sh`
 **Status: Sim-getest tegen echte servercontainers. NIET GEVALIDEERD op de echte NAS** (zie "Wat hier niet bewezen
 is").
 
-## Wat er getest is
+### Wat er getest is
 
 | onderdeel | image | versie |
 |---|---|---|
@@ -24,7 +91,7 @@ is").
 De serverimages zijn dezelfde digests als in het B03-plan. De kandidaat is **niet** het alles-in-één-image van een
 release: het is de runtime van de vorige release met de nieuwe core erin, net als in de CI-job `upgradebewijs`.
 
-## Opstelling (`docker-compose.yml`, project `mgms`)
+### Opstelling (`docker-compose.yml`, project `mgms`)
 
 - `srv-emby` en `srv-jellyfin`: de echte servers. De test richt ze in via hun eigen API (startwizard, beheerder,
   API-sleutel, bibliotheek `Films`) en wacht tot beide de twee testfilms kennen.
@@ -38,7 +105,7 @@ release: het is de runtime van de vorige release met de nieuwe core erin, net al
 - "Iemand kijkt" is nagebootst met de sessie-API van de servers (`POST /Sessions/Playing`, `…/Progress`,
   `…/Stopped`), niet met een echte speler.
 
-## Uitkomst
+### Uitkomst
 
 **24 tests geslaagd, 0 mislukt; 113 van 113 controles goed. Duur 722,5 s (12 min 2 s); pytest-exitcode 0.**
 Geen handmatige stap tijdens de run.
@@ -47,7 +114,7 @@ Dezelfde test draaide op 2026-11-11 ook op een GitHub-runner (CI-job `mediaserve
 `c5e3016`, gestart met `workflow_dispatch heavy=true`): 24 passed in 725,4 s. De tabellen hieronder zijn die van de
 lokale run.
 
-### Deel A: de clients van core en de encoder, rechtstreeks tegen beide servers
+#### Deel A: de clients van core en de encoder, rechtstreeks tegen beide servers
 
 | test | bewijst | Emby | Jellyfin |
 |---|---|---|---|
@@ -60,7 +127,7 @@ lokale run.
 | `a7_afspeeltest_en_nederlandse_ondertitels` | afspeeltest "ok" (speelt direct af); `.nl.srt` zichtbaar; film zonder → niet zichtbaar; onbekend bestand → `not_found`, geen verzonnen uitkomst | goed | goed |
 | `a8_encoder_kiest_dezelfde_kop` | de losse encoder-instelling "pauzeer bij kijken" kiest dezelfde kop en leest kijken/pauze goed | goed | goed |
 
-### Deel B: de echte images, vorige release → kandidaat op dezelfde datamap
+#### Deel B: de echte images, vorige release → kandidaat op dezelfde datamap
 
 | test | bewijst | uitkomst |
 |---|---|---|
@@ -74,7 +141,7 @@ lokale run.
 | `b8_emby_weer_koppelen_zonder_sleutel_opnieuw` | Emby in één handeling weer gekoppeld met de bewaarde sleutel; beide weer gevolgd en verbonden | goed |
 | `b9_niets_gelekt_en_nette_stop` | geen API-sleutel in de logs van MediaGuard of in het doorgeefluik; over de hele run alleen de juiste kop per server; geen 401/403; Emby zonder onderbreking gevolgd; nette stop (exitcode 0) | goed |
 
-## Gemeten over de lijn (doorgeefluik, alleen verzoeken van MediaGuard)
+### Gemeten over de lijn (doorgeefluik, alleen verzoeken van MediaGuard)
 
 | server | verzoeken | paden | aanmelding | status |
 |---|---|---|---|---|
@@ -92,7 +159,7 @@ lokale run.
 - Verkeerde soort: "Op dit adres draait Jellyfin, niet Emby: kies de juiste soort."
 - Jellyfin weg: "niet bereikbaar (ConnectError)".
 
-## Waarnemingen aan de servers
+### Waarnemingen aan de servers
 
 - Emby 4.10.2.0 geeft op `/System/Info/Public` geen `ProductName`. Daarom is de regel: alleen een `ProductName` met
   "jellyfin" erin is Jellyfin, al het andere blijft Emby.
@@ -102,7 +169,7 @@ lokale run.
   (`refreshLibrary=true` heeft dan geen effect). De test vraagt de scan daarom opnieuw aan (`POST /Library/Refresh`)
   tot de films er staan. Dit raakt alleen de opstelling van de test, niet MediaGuard.
 
-## Wat hier niet bewezen is
+### Wat hier niet bewezen is
 
 - **Echte NAS: NIET GEVALIDEERD.** De echte Emby van de gebruiker met zijn bibliotheek en kijkgeschiedenis, een echt
   Jelly Leon-image en echte spelers zijn niet getest. Jelly Leon is hier de ongewijzigde Jellyfin 12.4 waarop het is
@@ -128,7 +195,7 @@ lokale run.
   alleen Sim-getest (`apps/core/tests/test_mediaserver_dual.py`).
 - De kandidaat is de nieuwe core op de runtime van 1.2.2, niet het release-image.
 
-## Opnieuw draaien
+### Opnieuw draaien
 
 `run.sh` bewaart het bewijs buiten `.run` als `MGMS_BEWIJS=<map>` gezet is: `pytest.log`, `junit.xml`,
 `metingen.json` (alle controles en gemeten feiten), de logs van beide doorgeefluiken (`emby.jsonl`,
