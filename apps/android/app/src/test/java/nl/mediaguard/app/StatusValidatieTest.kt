@@ -156,6 +156,24 @@ class StatusValidatieTest {
         assertEquals(listOf(verwachteOpdracht), repo.controls)
     }
 
+    @Test fun oudeMetingBlijftVerlopenAlsDeTelefoonklokDeMeettijdWeerBereikt() {
+        var nu = begin
+        val repo = FakeRepo().apply { statusResult = { rapport(begin, "/?job=7") } }
+        val vm = StatusViewModel(repo, clock = { nu }, elapsed = elapsed)
+        vm.refresh()
+        elapsed += Staleness.MAX_AGE_MS.milliseconds
+        nu = begin - 120_000
+        vm.refresh()
+        assertFalse(vm.runAction(actie))
+        elapsed += 120_000.milliseconds
+        nu = begin
+        vm.refresh()
+        assertFalse(vm.runAction(actie))
+        assertFalse(vm.retryJob(7))
+        assertTrue(repo.actions.isEmpty())
+        assertTrue(repo.controls.isEmpty())
+    }
+
     @Test fun ontbrekendeNoodstopmetingIsOnbekend() {
         val repo = FakeRepo()
         val vm = StatusViewModel(repo, clock = { begin }, elapsed = elapsed)

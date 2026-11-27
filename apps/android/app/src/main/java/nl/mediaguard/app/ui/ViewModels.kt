@@ -88,7 +88,7 @@ class HistoryViewModel(private val repo: Repository, private val days: Int = 7) 
 private class OverviewSource<T>(
     private val scope: CoroutineScope,
     private val read: suspend () -> T,
-    private val freshness: (T, Freshness?) -> Freshness,
+    private val freshness: (T) -> Freshness,
 ) {
     private val current = MutableStateFlow<UiState<T>>(UiState.Loading)
     val state = current.asStateFlow()
@@ -101,7 +101,7 @@ private class OverviewSource<T>(
         request = scope.launch {
             try {
                 val value = read()
-                current.value = UiState.Data(value, freshness = freshness(value, previous?.freshness))
+                current.value = UiState.Data(value, freshness = freshness(value))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -129,20 +129,25 @@ class StatusViewModel(
         stamp?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
             ?.takeIf { it <= now + Staleness.STATUS_INTERVAL_MS }
 
-    private fun statusFreshness(status: AppStatus, previous: Freshness?): Freshness {
+    // Ook als het scherm tijdelijk geen meettijd heeft, behoudt de laatste meting haar vervaltijd.
+    private var lastStatusMeasurement = Freshness()
+
+    private fun statusFreshness(status: AppStatus): Freshness {
+        val generatedAt = status.generatedAt ?: return Freshness()
+        val received = elapsed.markNow()
         val now = clock()
-        val stamp = measuredAt(status.generatedAt, now) ?: return Freshness()
-        // Ook een herhaalde lezing van dezelfde meting houdt haar oorspronkelijke vervaltijd.
-        if (previous?.lastOkAt == stamp) return previous.copy(error = null)
+        val stamp = measuredAt(generatedAt, now) ?: return Freshness()
+        if (lastStatusMeasurement.lastOkAt == stamp) return lastStatusMeasurement
         val oldest = now - Staleness.MAX_AGE_MS
         // Een oud rapport vervalt direct. Een serverklok die iets voorloopt geeft geen extra tijd.
         val remainingMs = stamp.coerceIn(oldest, now) - oldest
-        return Freshness(stamp, expiresAt = elapsed.markNow() + remainingMs.milliseconds)
+        lastStatusMeasurement = Freshness(stamp, expiresAt = received + remainingMs.milliseconds)
+        return lastStatusMeasurement
     }
 
     private val statusSource = OverviewSource(viewModelScope, repo::status, ::statusFreshness)
-    private val missingSource = OverviewSource(viewModelScope, repo::missingCount) { _, _ -> Freshness(clock()) }
-    private val recentSource = OverviewSource(viewModelScope, repo::recent) { summary, _ ->
+    private val missingSource = OverviewSource(viewModelScope, repo::missingCount) { Freshness(clock()) }
+    private val recentSource = OverviewSource(viewModelScope, repo::recent) { summary ->
         val now = clock()
         Freshness(when {
             summary.window == "24h" -> measuredAt(summary.windowEnd, now)
