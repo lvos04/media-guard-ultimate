@@ -395,6 +395,29 @@ def test_release_bewijs_dekt_alle_images_en_gebruikt_hun_digest(tmp_path, monkey
     assert not (mislukt / "digests.json").exists()
 
 
+def spdx(pin):
+    basis = {"downloadLocation": "NOASSERTION", "filesAnalyzed": False,
+             "licenseConcluded": "NOASSERTION", "licenseDeclared": "NOASSERTION",
+             "copyrightText": "NOASSERTION"}
+    return {
+        "spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT",
+        "name": "proefimage", "documentNamespace": "https://voorbeeld.invalid/eerste",
+        "creationInfo": {"created": "2026-01-01T00:00:00Z", "creators": ["Tool: syft"]},
+        "packages": [
+            {**basis, "SPDXID": "SPDXRef-Image", "name": "proefimage",
+             "primaryPackagePurpose": "CONTAINER",
+             "checksums": [{"algorithm": "SHA256", "checksumValue": pin.split(":")[1]}]},
+            {**basis, "SPDXID": "SPDXRef-Pakket", "name": "proefpakket", "versionInfo": "1.0"},
+        ],
+        "relationships": [
+            {"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES",
+             "relatedSpdxElement": "SPDXRef-Image"},
+            {"spdxElementId": "SPDXRef-Pakket", "relationshipType": "CONTAINED_BY",
+             "relatedSpdxElement": "SPDXRef-Image"},
+        ],
+    }
+
+
 def test_custom_app_bijlage_verbindt_alleen_de_geteste_aio_met_het_manifest(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("bewijs", ROOT / "scripts/release-bewijs.py")
     assert spec and spec.loader
@@ -408,7 +431,7 @@ def test_custom_app_bijlage_verbindt_alleen_de_geteste_aio_met_het_manifest(tmp_
     assert installatie["image"]["repository"] == aio["image"]
     assert installatie["image"]["tag"] == aio["tag"] == f"{versie}-aio"
     pin = "sha256:" + "7" * 64
-    (tmp_path / "aio.spdx.json").write_text('{"spdxVersion":"SPDX-2.3"}')
+    (tmp_path / "aio.spdx.json").write_text(json.dumps(spdx(pin)))
     juiste_ref = aio["image"] + "@" + pin
     monkeypatch.setattr(bewijs, "digest", lambda ref: pin if ref == juiste_ref else "")
     with pytest.raises(ValueError, match="digest"):
@@ -509,6 +532,31 @@ def programmamap(tmp_path):
     # Op een noexec-datavolume kan de shell de Docker-simulator niet via PATH starten.
     with tempfile.TemporaryDirectory(dir=os.environ.get("MG_CI_PROGRAMMAMAP", tmp_path)) as mapnaam:
         yield Path(mapnaam)
+
+
+def test_ffmpeg_weigert_gewijzigde_configuratie_tegen_vorige_release(tmp_path, programmamap):
+    for workflows in (WF, ROOT / ".forgejo/workflows"):
+        stappen = _scripts(_wf("ci.yml", workflows)["jobs"]["encoder-image"])
+        assert "scripts/vergelijk-ffmpeg.sh" in stappen
+        assert "--build-arg BASE_IMAGE=ubuntu:" not in stappen
+    docker = programmamap / "docker"
+    docker.write_text("""#!/bin/bash
+case "$1" in
+  pull) exit 0 ;;
+  image) echo "image-id" ;;
+  run) if [[ "${@: -1}" == -buildconf && "${@: -2:1}" == kandidaat && -n "$AFWIJKING" ]]; then
+           echo andere-configuratie
+       else echo zelfde; fi ;;
+  *) exit 2 ;;
+esac
+""")
+    docker.chmod(0o755)
+    for afwijking, verwacht in (("", 0), ("ja", 1)):
+        env = dict(os.environ, PATH=f"{programmamap}:{os.environ['PATH']}", AFWIJKING=afwijking)
+        r = subprocess.run(["bash", "scripts/vergelijk-ffmpeg.sh", "kandidaat", str(tmp_path)],
+                           cwd=ROOT, env=env, text=True, capture_output=True)
+        assert r.returncode == verwacht, r.stdout + r.stderr
+    assert "andere-configuratie" in r.stdout
 
 
 def _fake_docker(tmp_path: Path, stderr: str, code: int) -> dict[str, str]:

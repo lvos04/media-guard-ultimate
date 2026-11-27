@@ -9,8 +9,8 @@
 | .NET SDK / runtime | 8.0.421 (from `global.json`), runtime `mcr.microsoft.com/dotnet/runtime-deps:8.0-bookworm-slim` |
 | Frontend | node 20.11.1 / yarn 1.22.19 (from `package.json` "volta") |
 | API | `/api/v3`. Radarr v4/v5/v6 all keep API v3, which Seerr uses. |
-| Patch series | `patches/0001..0003` (see `PATCHES.md`), revision `mg1` |
-| Image | `mediaguard/radarr-fork:a96bf7c-mg1` (alias `mediaguard/radarr-fork:6.4.4.10685-mg1`) |
+| Patchreeks | `patches/0001..0003` (zie `PATCHES.md`), verpakt met de gepinde Dockerfile-frontend in imagerevisie `mg2` |
+| Image | `mediaguard/radarr-fork:a96bf7c-mg2` (alias `mediaguard/radarr-fork:6.4.4.10685-mg2`) |
 
 Note: Radarr's major version (6) is not an API version. Radarr has served `/api/v3` since v3, and the
 integration harness proves that the Seerr-relevant endpoints work (`tests/integration/forks`).
@@ -45,7 +45,7 @@ git remote add upstream https://github.com/Radarr/Radarr.git
 git fetch upstream master
 git checkout -b mediaguard/master a96bf7c3ecb23cb76993770727285dc17a613fbc
 git am /path/to/media-guard-ultimate/forks/radarr/patches/*.patch
-git tag mediaguard-v6.4.4.10685-mg1
+git tag mediaguard-v6.4.4.10685-mg2
 git push origin mediaguard/master --tags
 ```
 

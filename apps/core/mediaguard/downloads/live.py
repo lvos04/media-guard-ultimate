@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from mediaguard.provisioning.templates import owned_name
+from mediaguard.read_observation import observation_read
 
 if TYPE_CHECKING:
     from mediaguard.context import AppContext
@@ -32,6 +33,10 @@ QBIT_DOWNLOADING = {"downloading", "forcedDL", "metaDL", "forcedMetaDL"}
 SAB_DOWNLOADING = {"Downloading", "Fetching", "Grabbing"}
 STATUS_NL = {"downloading": "Downloaden", "queued": "In wachtrij", "paused": "Gepauzeerd",
              "stalled": "Geen bronnen", "processing": "Uitpakken/controleren"}
+
+
+class DownloadLoginRequired(RuntimeError):
+    """De client vereist een aanmelding die de leesconnector niet mag uitvoeren."""
 
 
 def _base(dc: Any) -> str:
@@ -103,6 +108,8 @@ async def _qbit(ctx: AppContext, dc: Any) -> list[dict[str, Any]]:
     from mediaguard.provisioning.store import dc_secret
 
     password = ctx.secrets.get(dc_secret(dc.name, "password")) or ""
+    if observation_read.get() and (dc.username or password):
+        raise DownloadLoginRequired
     async with httpx.AsyncClient(base_url=_base(dc), timeout=TIMEOUT,
                                  transport=_transport(ctx)) as client:
         if dc.username or password:

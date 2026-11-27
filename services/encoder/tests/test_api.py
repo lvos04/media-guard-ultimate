@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -81,6 +83,41 @@ def _planned_job(database: Database, library_id: int) -> int:
         "UPDATE besluit SET status='goedgekeurd' WHERE id=?", (decision_id,)
     )
     return create_job_from_decision(database, decision_id)
+
+
+def test_tweede_bibliotheek_krijgt_bezet_en_kan_daarna_scannen(api_case, monkeypatch):
+    from app import scanner
+
+    client, database, _settings, media = api_case
+    eerste = _add_library(client, database, media)
+    map_b = media.parent / "Series"
+    map_b.mkdir()
+    antwoord = client.post("/api/libraries", json={
+        "naam": "Series", "pad": str(map_b), "profiel_id": 1})
+    assert antwoord.status_code == 201
+    tweede = antwoord.json()["id"]
+    bezig, vrij = threading.Event(), threading.Event()
+    verwerk = scanner._process_file
+
+    def wacht(*args, **kwargs):
+        bezig.set()
+        assert vrij.wait(10)
+        return verwerk(*args, **kwargs)
+
+    monkeypatch.setattr(scanner, "_process_file", wacht)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        taak = pool.submit(scan_library, database, eerste)
+        try:
+            assert bezig.wait(10)
+            for route in ("scan", "droogloop"):
+                geweigerd = client.post(f"/api/libraries/{tweede}/{route}")
+                assert geweigerd.status_code == 409
+                assert "scan" in geweigerd.json()["detail"]
+        finally:
+            vrij.set()
+        assert taak.result(timeout=10).nieuw == 1
+    assert database.fetch_one("SELECT COUNT(*) FROM scan_bijdrage")[0] == 1
+    assert client.post(f"/api/libraries/{tweede}/scan").status_code == 202
 
 
 def test_openapi_bevat_alle_fase_vijf_routes(

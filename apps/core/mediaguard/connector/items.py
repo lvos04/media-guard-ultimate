@@ -23,6 +23,7 @@ from mediaguard.api.system import status_counts
 from mediaguard.auth import Principal, require_viewer
 from mediaguard.context import AppContext, get_app_context
 from mediaguard.db import utcnow
+from mediaguard.downloads.live import DownloadLoginRequired
 from mediaguard.encoding import resources
 from mediaguard.encoding.client import EncoderError
 from mediaguard.instances.registry import INSTANCE_ID_RE
@@ -359,6 +360,8 @@ async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
                 measured = min(measured, pool_at)
                 if not reachable:
                     reason = "bron_onbereikbaar"
+    except DownloadLoginRequired:
+        measured, reason = None, "capability_unavailable"
     except (EncoderError, TimeoutError, OSError, ValueError, TypeError):
         reason = "bron_onbereikbaar"
         measured = previous.observed_at if previous else None

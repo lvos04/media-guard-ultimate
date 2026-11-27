@@ -10,7 +10,7 @@
 # Env:
 #   SEERR_IMAGE      default ghcr.io/seerr-team/seerr:v3.5.1
 #   JELLYFIN_IMAGE   default ghcr.io/jellyfin/jellyfin:12.4
-#   SONARR_IMAGE / RADARR_IMAGE  fork images (default ...:bc54afb-mg1 / ...:a96bf7c-mg1)
+#   SONARR_IMAGE / RADARR_IMAGE  fork images (default ...:bc54afb-mg3 / ...:a96bf7c-mg2)
 #   MG_TEST_CA_BUNDLE  optional PEM bundle mounted as CA store in the forks and Seerr
 #                      (only needed behind a TLS-inspecting egress proxy; Seerr needs TMDB,
 #                      the forks need skyhook.sonarr.tv / api.radarr.video)
@@ -61,7 +61,7 @@ fi
 printf '%s\n' "${COMPOSE[@]}" > "$RUN/compose-cmd"
 
 echo ">> images: ${SEERR_IMAGE:-ghcr.io/seerr-team/seerr:v3.5.1} ${JELLYFIN_IMAGE:-ghcr.io/jellyfin/jellyfin:12.4}" \
-     "${SONARR_IMAGE:-mediaguard/sonarr-fork:bc54afb-mg1} ${RADARR_IMAGE:-mediaguard/radarr-fork:a96bf7c-mg1}"
+     "${SONARR_IMAGE:-mediaguard/sonarr-fork:bc54afb-mg3} ${RADARR_IMAGE:-mediaguard/radarr-fork:a96bf7c-mg2}"
 "${COMPOSE[@]}" up -d
 start=$(date +%s)
 set +e

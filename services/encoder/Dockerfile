@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # mediaguard-encode: de bestaande lvos04/av1-backend als niet-geprivilegieerde
 # OCI-container voor TrueNAS SCALE. Zie docs/AV1_TRUENAS_PORT.md.

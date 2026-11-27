@@ -57,6 +57,33 @@ def test_downloadmeting_wijzigt_geen_inrichting(client, anon_client, ctx):
     assert_database_preserved(ctx, before, allow_auth_timestamps=True)
 
 
+@pytest.mark.parametrize("veld", ["username", "password"])
+def test_downloadconnector_meldt_onbeschikbaar_zonder_aanmelding(client, anon_client, ctx, veld):
+    headers = key(client)
+    ctx.db.execute("UPDATE instances SET suspended=1")
+    store.save(ctx, {"download_clients": [{
+        "name": "Proefbron", "implementation": "QBittorrent", "host": "bron.invalid",
+        "port": 8080, veld: secrets.token_hex(12),
+    }]}, "proef")
+    calls = []
+
+    def source(request):
+        calls.append(request.method)
+        return httpx.Response(200, text="Ok.") if request.method == "POST" else httpx.Response(
+            200, json=[])
+
+    ctx.services["live_download_transport"] = httpx.MockTransport(source)
+    before = database_snapshot(ctx, allow_auth_timestamps=True)
+    page = anon_client.get(ITEMS, params={"type": "downloads"}, headers=headers).raise_for_status()
+    assert calls == []
+    assert (page.json()["status"], page.json()["reason_code"], page.json()["total"]) == (
+        "unknown", "capability_unavailable", None)
+    assert_database_preserved(ctx, before, allow_auth_timestamps=True)
+    # De normale activiteit mag daarna zelfstandig haar eigen meting uitvoeren.
+    assert anon_client.get("/api/v1/activity", headers=headers).is_success
+    assert calls == ["POST", "GET"]
+
+
 @pytest.mark.parametrize("fault", ["fouttekst", "http_status"])
 def test_downloadfout_verbergt_brongegevens(client, anon_client, ctx, caplog, fault):
     headers = key(client)

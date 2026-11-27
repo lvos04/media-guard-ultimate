@@ -287,6 +287,28 @@ async def test_cancel_not_marked_when_encoder_unreachable(client, ctx, fx):
     assert enc.get_job(ctx, job["id"])["status"] == "running"
 
 
+@pytest.mark.parametrize("meting", [0.82, None])
+async def test_annulering_koppelt_percentage_aan_meettijd(client, ctx, fx, monkeypatch, meting):
+    fake, src = fx
+    fake.polls_until_done = 99
+    job_id = client.post("/api/v1/encoding/jobs", json=job_body(src)).json()["id"]
+    await enc.sync_job(ctx, job_id)
+    eerder, later = "2026-01-01T09:00:00Z", "2026-01-01T09:04:00Z"
+    ctx.db.execute("UPDATE encoding_jobs SET progress=?, updated_at=? WHERE id=?",
+                   (0.5, eerder, job_id))
+    monkeypatch.setattr(enc, "utcnow", lambda: later)
+
+    async def annuleren(self, nummer):
+        return {"status": "running", "progress": meting}
+
+    monkeypatch.setattr(EncoderClient, "cancel_job", annuleren)
+    assert client.post(f"/api/v1/encoding/jobs/{job_id}/cancel").is_success
+    fake.unavailable = True
+    stand = await enc.sync_job(ctx, job_id)
+    assert (stand["progress"], stand["updated_at"]) == (
+        (0.5, eerder) if meting is None else (meting, later))
+
+
 async def test_encoder_forgot_job_marks_failed(client, ctx, fx):
     fake, src = fx
     fake.polls_until_done = 99

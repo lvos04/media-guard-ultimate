@@ -860,15 +860,32 @@ def _task_id(request: Request, task: asyncio.Task[Any], identifier: str | None =
     return identifier
 
 
-async def _scan_background(database: Database, library_id: int, dry_run: bool) -> None:
+async def _scan_background(database: Database, library_id: int, dry_run: bool,
+                           startmelding: asyncio.Future[None] | None = None) -> None:
+    loop = asyncio.get_running_loop()
+
+    def meld_start() -> None:
+        if startmelding is not None and not startmelding.done():
+            startmelding.set_result(None)
+
+    def gestart() -> None:
+        loop.call_soon_threadsafe(meld_start)
+
     try:
-        await asyncio.to_thread(scan_als_dienst, database, library_id, dry_run=dry_run)
-    except (ScanBusy, ScanInterrupted):
+        await asyncio.to_thread(scan_als_dienst, database, library_id, dry_run=dry_run,
+                                gestart=gestart)
+    except ScanBusy as exc:
+        if startmelding is not None and not startmelding.done():
+            startmelding.set_exception(exc)
+    except ScanInterrupted:
         return  # De eigenaar van de scan beheert zijn status en cursor.
     except ScanError as exc:
         LOGGER.warning("Handmatige scan van library %s mislukt: %s", library_id, exc)
     except Exception:
         LOGGER.exception("Handmatige scan van library %s stopte onverwacht", library_id)
+    finally:
+        if startmelding is not None and not startmelding.done():
+            startmelding.set_exception(ScanError("De bibliotheekscan kon niet starten"))
 
 
 def _worker_rows(database: Database) -> list[dict[str, Any]]:
@@ -1461,13 +1478,18 @@ def create_api_router() -> APIRouter:
         library = _get_row(_database(request), "library", library_id)
         if not int(library["actief"]):
             raise HTTPException(409, "Deze bibliotheek is niet actief")
-        task = asyncio.create_task(_scan_background(_database(request), library_id, dry_run))
+        startmelding = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(_scan_background(_database(request), library_id, dry_run,
+                                                    startmelding))
+        identifier = _task_id(request, task, f"library-{library_id}-scan-{uuid.uuid4()}")
+        try:
+            await startmelding
+        except ScanBusy as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ScanError as exc:
+            raise HTTPException(503, str(exc)) from exc
         return {
-            "taak_id": _task_id(
-                request,
-                task,
-                f"library-{library_id}-scan-{uuid.uuid4()}",
-            ),
+            "taak_id": identifier,
             "library_id": library_id,
             "droogloop": dry_run,
         }

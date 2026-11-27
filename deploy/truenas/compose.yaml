@@ -208,7 +208,7 @@ services:
   # zijn eigen config-map en zijn eigen sleutels.
   mediaguard-sonarr-series:
     <<: *common
-    image: ${MG_SONARR_IMAGE:-ghcr.io/lvos04/mediaguard-sonarr-fork:4.0.20.3014-mg2}
+    image: ${MG_SONARR_IMAGE:-ghcr.io/lvos04/mediaguard-sonarr-fork:4.0.20.3014-mg3}
     depends_on: *after-core
     entrypoint: &sonarr-entry ["/bin/sh", "-c", "export SONARR__AUTH__APIKEY=\"$$(cat /run/mediaguard/apikey)\" MEDIAGUARD_HOOK_KEY=\"$$(cat /run/mediaguard/hookkey)\"; exec /app/sonarr/bin/Sonarr -nobrowser -data=/config"]
     environment:
@@ -228,7 +228,7 @@ services:
 
   mediaguard-sonarr-anime:
     <<: *common
-    image: ${MG_SONARR_IMAGE:-ghcr.io/lvos04/mediaguard-sonarr-fork:4.0.20.3014-mg2}
+    image: ${MG_SONARR_IMAGE:-ghcr.io/lvos04/mediaguard-sonarr-fork:4.0.20.3014-mg3}
     depends_on: *after-core
     entrypoint: *sonarr-entry
     environment:
@@ -247,7 +247,7 @@ services:
 
   mediaguard-radarr-films:
     <<: *common
-    image: ${MG_RADARR_IMAGE:-ghcr.io/lvos04/mediaguard-radarr-fork:6.4.4.10685-mg1}
+    image: ${MG_RADARR_IMAGE:-ghcr.io/lvos04/mediaguard-radarr-fork:6.4.4.10685-mg2}
     depends_on: *after-core
     entrypoint: &radarr-entry ["/bin/sh", "-c", "export RADARR__AUTH__APIKEY=\"$$(cat /run/mediaguard/apikey)\" MEDIAGUARD_HOOK_KEY=\"$$(cat /run/mediaguard/hookkey)\"; exec /app/radarr/bin/Radarr -nobrowser -data=/config"]
     environment:
@@ -266,7 +266,7 @@ services:
 
   mediaguard-radarr-animefilms:
     <<: *common
-    image: ${MG_RADARR_IMAGE:-ghcr.io/lvos04/mediaguard-radarr-fork:6.4.4.10685-mg1}
+    image: ${MG_RADARR_IMAGE:-ghcr.io/lvos04/mediaguard-radarr-fork:6.4.4.10685-mg2}
     depends_on: *after-core
     entrypoint: *radarr-entry
     environment:

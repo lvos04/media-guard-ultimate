@@ -17,7 +17,7 @@ on:
         type: boolean
         default: true
       encoderbewijs:
-        description: "Vergelijk het encoder-image met een build op de ongewijzigde basis-tag"
+        description: "Vergelijk het encoder-image met de vorige release op digest"
         type: boolean
         default: false
   workflow_call:
@@ -298,32 +298,13 @@ jobs:
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --max-time 90 -o "$BRON" \
             "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz"
           echo "${FFMPEG_HDR10PLUS_SHA256}  $BRON" | sha256sum -c -
-      - name: bouw en vergelijk FFmpeg met en zonder basisdigest
+      - name: Vergelijk FFmpeg met de vorige release op digest
         if: steps.proef.outputs.bewijs == 'true'
         timeout-minutes: 120
         run: |
-          bouw=(docker buildx build --load --platform linux/amd64 --target runtime
-                --build-context "ffmpeg-src=$RUNNER_TEMP/ffmpeg-src")
-          "${bouw[@]}" --build-arg BASE_IMAGE=ubuntu:26.04 -t "$ENCODE_IMAGE:referentie" services/encoder
-          if ! "${bouw[@]}" -t "$ENCODE_IMAGE:gepind" services/encoder; then
-            echo "::error::Het encoder-image bouwt niet met de vaste basisdigest."
-            exit 1
-          fi
-          bewijs="$RUNNER_TEMP/encoderbewijs"
-          mkdir -p "$bewijs"
-          verschil=0
-          for optie in version buildconf encoders; do
-            for image in referentie gepind; do
-              docker run --rm --network none --entrypoint /opt/ffmpeg/bin/ffmpeg \
-                "$ENCODE_IMAGE:$image" "-$optie" > "$bewijs/$image-$optie.txt" 2>&1
-            done
-            diff -u "$bewijs/referentie-$optie.txt" "$bewijs/gepind-$optie.txt" || verschil=1
-          done
-          if [[ "$verschil" == 1 ]]; then
-            echo "::error::encoder-build anders: FFmpeg-versie, bouwconfiguratie of encoders wijken af."
-            exit 1
-          fi
-          echo "FFmpeg-versie, bouwconfiguratie en encoders zijn gelijk."
+          docker buildx build --load --platform linux/amd64 --target runtime \
+            --build-context "ffmpeg-src=$RUNNER_TEMP/ffmpeg-src" -t "$ENCODE_IMAGE:gepind" services/encoder
+          bash scripts/vergelijk-ffmpeg.sh "$ENCODE_IMAGE:gepind" "$RUNNER_TEMP/encoderbewijs"
       - uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
         if: always() && steps.proef.outputs.bewijs == 'true'
         with:
@@ -347,7 +328,7 @@ jobs:
       - name: Eigen encoderimages opruimen
         if: always() && (steps.proef.outputs.bewijs == 'true' || steps.proef.outputs.suite == 'true')
         run: |
-          for tag in referentie gepind test; do
+          for tag in gepind test; do
             if docker image inspect "$ENCODE_IMAGE:$tag" >/dev/null 2>&1; then docker image rm "$ENCODE_IMAGE:$tag"; fi
           done
 

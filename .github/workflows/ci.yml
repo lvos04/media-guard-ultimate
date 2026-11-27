@@ -4,7 +4,7 @@
 # kopieën van contract en Peil tegen hun gepinde bron (C1.3-MGU-01), het Custom App-manifest (C1.3-MGU-09)
 # en het upgradebewijs van de HARDE EIS
 # (vorige release → kern en encoder van deze commit op een gevulde database, C1.3-MGU-03).
-# Push die het encoder-Dockerfile wijzigt: vergelijk de gepinde FFmpeg-build met de ongewijzigde basis-tag.
+# Push die het encoder-Dockerfile wijzigt: vergelijk de gepinde FFmpeg-build met de vorige release op digest.
 # Nightly (03:17 UTC) + handmatig: encoder-suite in het toolchain-image (--target test),
 # beide fork-images bouwen, de upstream-sync van de forks in rapportmodus en de contracttest mediaservers
 # (echte Emby + Jellyfin 12.x op digest, vorige release → kern en encoder van deze commit; Δ-MG-AUTH, Δ-MG-DUAL).
@@ -25,7 +25,7 @@ on:
         type: boolean
         default: true
       encoderbewijs:
-        description: "Vergelijk het encoder-image met een build op de ongewijzigde basis-tag"
+        description: "Vergelijk het encoder-image met de vorige release op digest"
         type: boolean
         default: false
   # vanuit release.yml: alleen core, encoder-unit en web (de zware jobs vragen
@@ -290,32 +290,13 @@ jobs:
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --max-time 90 -o "$BRON" \
             "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_HDR10PLUS_VERSION}.tar.xz"
           echo "${FFMPEG_HDR10PLUS_SHA256}  $BRON" | sha256sum -c -
-      - name: bouw en vergelijk FFmpeg met en zonder basisdigest
+      - name: Vergelijk FFmpeg met de vorige release op digest
         if: steps.proef.outputs.bewijs == 'true'
         timeout-minutes: 120
         run: |
-          bouw=(docker buildx build --load --platform linux/amd64 --target runtime
-                --build-context "ffmpeg-src=$RUNNER_TEMP/ffmpeg-src")
-          "${bouw[@]}" --build-arg BASE_IMAGE=ubuntu:26.04 -t mediaguard/encode:referentie services/encoder
-          if ! "${bouw[@]}" -t mediaguard/encode:gepind services/encoder; then
-            echo "::error::Het encoder-image bouwt niet met de vaste basisdigest."
-            exit 1
-          fi
-          bewijs="$RUNNER_TEMP/encoderbewijs"
-          mkdir -p "$bewijs"
-          verschil=0
-          for optie in version buildconf encoders; do
-            for image in referentie gepind; do
-              docker run --rm --network none --entrypoint /opt/ffmpeg/bin/ffmpeg \
-                "mediaguard/encode:$image" "-$optie" > "$bewijs/$image-$optie.txt" 2>&1
-            done
-            diff -u "$bewijs/referentie-$optie.txt" "$bewijs/gepind-$optie.txt" || verschil=1
-          done
-          if [[ "$verschil" == 1 ]]; then
-            echo "::error::encoder-build anders: FFmpeg-versie, bouwconfiguratie of encoders wijken af."
-            exit 1
-          fi
-          echo "FFmpeg-versie, bouwconfiguratie en encoders zijn gelijk."
+          docker buildx build --load --platform linux/amd64 --target runtime \
+            --build-context "ffmpeg-src=$RUNNER_TEMP/ffmpeg-src" -t mediaguard/encode:gepind services/encoder
+          bash scripts/vergelijk-ffmpeg.sh mediaguard/encode:gepind "$RUNNER_TEMP/encoderbewijs"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && steps.proef.outputs.bewijs == 'true'
         with:

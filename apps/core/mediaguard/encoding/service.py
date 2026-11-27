@@ -522,10 +522,22 @@ def get_job(ctx: AppContext, job_id: int) -> dict[str, Any] | None:
     return d
 
 
-def _update(ctx: AppContext, job_id: int, **fields: Any) -> None:
-    fields["updated_at"] = utcnow()
+def _update(ctx: AppContext, job_id: int, *, touch: bool = True, **fields: Any) -> None:
+    if touch:
+        fields["updated_at"] = utcnow()
     cols = ", ".join(f"{k}=?" for k in fields)
     ctx.db.execute(f"UPDATE encoding_jobs SET {cols} WHERE id=?", (*fields.values(), job_id))
+
+
+def _measured_progress(enc: dict[str, Any]) -> dict[str, float]:
+    value = enc.get("progress")
+    if isinstance(value, bool):
+        return {}
+    try:
+        progress = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return {}
+    return {"progress": progress} if 0 <= progress <= 1 else {}
 
 
 # Een resultaat dat er al is (of komt) voor hetzelfde bestand: nooit een tweede encode.
@@ -656,7 +668,9 @@ async def cancel(ctx: AppContext, job_id: int, actor: str) -> dict[str, Any]:
             enc = {"status": "cancelled"}
         if str(enc.get("status") or "") not in ("cancelled", "failed", "rejected",
                                                 "skipped"):
-            _update(ctx, job_id, error="Annuleren gevraagd; de encoder stopt de lopende stap")
+            progress = _measured_progress(enc)
+            _update(ctx, job_id, touch=bool(progress), **progress,
+                    error="Annuleren gevraagd; de encoder stopt de lopende stap")
             audit(ctx.db, actor=actor, action="encoding.cancel_requested",
                   target_type="encoding_job", target_id=job_id,
                   instance_id=job["instance_id"])
@@ -775,8 +789,9 @@ async def sync_job(ctx: AppContext, job_id: int) -> dict[str, Any]:
         LOGGER.info("encoderstatus niet op te halen: %s", exc)
         return job
     est = str(enc.get("status") or "")
+    progress = _measured_progress(enc)
     fields: dict[str, Any] = {
-        "encoder_status": est, "progress": float(enc.get("progress") or 0),
+        "encoder_status": est, **progress,
         "source_snapshot_json": dumps(enc.get("source_snapshot")),
         "staged_output_json": dumps(enc.get("staged_output")),
         "verification_json": dumps(enc.get("verification")),
@@ -785,7 +800,7 @@ async def sync_job(ctx: AppContext, job_id: int) -> dict[str, Any]:
         # baan uit de encoder; verandert bij een GPU→CPU-herkansing (verbeterpunt 6)
         fields["lane"] = enc["lane"]
     if est in ("queued", "running", "verifying"):
-        _update(ctx, job_id, status=est, **fields)
+        _update(ctx, job_id, touch=bool(progress), status=est, **fields)
         return get_job(ctx, job_id) or {}
     if est in ("failed", "skipped", "cancelled", "rejected"):
         _update(ctx, job_id, status=est, **fields)

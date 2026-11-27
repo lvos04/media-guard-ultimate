@@ -1769,8 +1769,8 @@ def _verify_successor(core: Path, work: Path, old: dict, new: dict) -> None:
         # hebben vastgelegd. Vergelijk dan elke taak op identiteit en eigen voortgang.
         main_only = (not old["wal_frames"] and not wal.frames
                      and old.get("hoofdbestand_id") == new["hoofdbestand_id"])
-        if "opvolging" in old and contains_commit(current, old["opvolging"], positions,
-                                                  advanced_tasks=main_only):
+        if not old["wal_frames"] and "opvolging" in old and contains_commit(
+                current, old["opvolging"], positions, advanced_tasks=main_only):
             return
         if wal.frames:
             end = old["wal_positie"]
@@ -1784,8 +1784,9 @@ def _verify_successor(core: Path, work: Path, old: dict, new: dict) -> None:
                 # Toets ook de inhoud ná het afspelen: elke bestaande taak behoudt haar identiteit.
                 base = {tail: path for tail, path in family.items() if tail != "-wal"}
                 with checked_database(work, base) as (db, _):
-                    if _contains_previous(db, old):
-                        proof = old.get("opvolging") or content_proof(db, positions)
+                    if (_logical_state(db) == old["stand"]
+                            or (not old["wal_frames"] and _contains_previous(db, old))):
+                        proof = content_proof(db, positions, encoder_metrics=True)
                         if contains_commit(current, proof, positions, replayed=True):
                             return
     raise SetError("de eerder bewezen gecommitteerde inhoud ontbreekt")

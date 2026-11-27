@@ -25,6 +25,9 @@ def instructions(path):
     start = 0
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
+        syntax = re.fullmatch(r"#\s*syntax\s*=\s*(\S+)", line, flags=re.IGNORECASE)
+        if syntax:
+            yield number, "SYNTAX", syntax[1]
         if not line or line.startswith("#"):
             continue
         if not pending:
@@ -49,6 +52,8 @@ def check(path):
         )
 
     for number, instruction, options in instructions(path):
+        if instruction == "SYNTAX" and not PIN.fullmatch(options):
+            yield number, f"# syntax={options}"
         if instruction == "ARG":
             name, equal, value = options.partition("=")
             name = name.strip()
@@ -84,10 +89,20 @@ def main():
             ["git", "ls-files", "-z", "--", "Dockerfile*", ":(glob)**/Dockerfile*"], cwd=ROOT,
         )
         paths = [ROOT / filename for filename in tracked.decode().split("\0") if filename]
+        paths.extend(ROOT / host / "workflows/release.yml" for host in (".forgejo", ".github"))
     if not paths:
         parser.error("Geen Dockerfiles gevonden.")
     failed = False
     for path in paths:
+        if path.suffix in {".yaml", ".yml"}:
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                uses = re.match(r"""\s*(?:-\s*)?uses:\s*["']?([^\s"']+)""", line)
+                if uses and not (uses[1].startswith("./") or re.fullmatch(
+                        r"[^@]+@[0-9a-f]{40}", uses[1])):
+                    print(f"{path}:{number}: de releaseactie vereist een volledige commit-SHA.",
+                          file=sys.stderr)
+                    failed = True
+            continue
         for line, instruction in check(path):
             print(
                 f"{path}:{line}: {instruction}"
@@ -97,7 +112,7 @@ def main():
             failed = True
     if failed:
         return 1
-    print(f"Basisimages gecontroleerd in {len(paths)} Dockerfiles.")
+    print(f"Vaste verwijzingen gecontroleerd in {len(paths)} bestanden.")
     return 0
 
 

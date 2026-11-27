@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import psutil
 import pytest
+from conftest import TESTDATA
 from test_uitvoerder import _case
 
 from app import geplandestop, uitvoerder
@@ -233,10 +234,33 @@ def test_verschoven_begintijd_blokkeert_overname_van_oud_beeldwerk(tmp_path, mon
     assert stand.delen == [] and oud.read_bytes() == b"bewaard voor beoordeling"
 
 
-def test_eerder_geverifieerd_eindbestand_doorloopt_opnieuw_de_eindcontrole(tmp_path: Path) -> None:
+def test_tijdafwijking_midden_in_deel_bewaart_alle_beelden(tmp_path):
+    from app import hervatpunten
+
+    bron, deel = tmp_path / "bron.mkv", tmp_path / "resultaat.mkv.deel"
+    kopie = ["ffmpeg", "-nostdin", "-v", "error", "-copyts", "-i"]
+    video = ["-map", "0:v:0", "-c", "copy", "-avoid_negative_ts", "disabled"]
+    subprocess.run([*kopie, str(TESTDATA / "al-av1.mkv"), *video, str(bron)], check=True)
+    subprocess.run([*kopie, str(bron), *video, "-frames:v", "60", "-bsf:v",
+                    r"setts=pts=PTS+0.010/TB*eq(N\,24):dts=DTS", "-f", "matroska", str(deel)],
+                   check=True)
+    tijden, afwijkend = beeldtijden(bron), beeldtijden(deel)
+    assert len(afwijkend) == 60
+    assert [i for i, tijd in enumerate(afwijkend) if abs(tijd - tijden[i]) > 0.002] == [24]
+    voor = file_sha256(deel), file_sha256(bron)
+    stand = hervatpunten.Hervatpunt(tmp_path, "proef", 6, [])
+    with pytest.raises(hervatpunten.Hervatfout, match="beeldtijd"):
+        stand.borg_prefix(bron, deel, 0)
+    assert not stand.delen and (file_sha256(deel), file_sha256(bron)) == voor
+
+
+@pytest.mark.parametrize("gepland", [True, False], ids=["gepland", "onverwacht"])
+def test_eerder_geverifieerd_eindbestand_doorloopt_opnieuw_de_eindcontrole(tmp_path, gepland):
     from dataclasses import replace
 
     from app import hervatpunten
+    from app.onderhoud import sweep_finished_job_cache
+    from app.wachtrijherstel import recover_queue
 
     db, settings, source, job = _case(tmp_path)
     origineel = file_sha256(source)
@@ -254,6 +278,10 @@ def test_eerder_geverifieerd_eindbestand_doorloopt_opnieuw_de_eindcontrole(tmp_p
     ):
         asyncio.run(uitvoerder.run_job(db, settings, job, storage_validator=lambda: None))
     assert db.fetch_one("SELECT geslaagd FROM verificatie WHERE job_id=?", (job,))[0] == 1
+    resultaat = settings.cache_root / str(job) / "resultaat.mkv"
+    resultaat_hash = file_sha256(resultaat)
+    if gepland:
+        geplandestop.announce(settings)
     recover_orphaned_jobs(db, settings)
     assert db.fetch_one("SELECT percent FROM job WHERE id=?", (job,))[0] > 0
     with patch.object(hervatpunten, "encode", side_effect=AssertionError) as encoder:
@@ -265,6 +293,11 @@ def test_eerder_geverifieerd_eindbestand_doorloopt_opnieuw_de_eindcontrole(tmp_p
     assert db.fetch_one("SELECT geslaagd FROM verificatie WHERE job_id=?", (job,))[0] == 0
     assert db.fetch_one("SELECT 1 FROM vervang_transactie WHERE job_id=?", (job,)) is None
     assert file_sha256(source) == origineel
+    sweep_finished_job_cache(db, settings)
+    recover_queue(db, settings)
+    assert file_sha256(resultaat) == resultaat_hash
+    fout = db.fetch_one("SELECT foutsoort,fout FROM job WHERE id=?", (job,))
+    assert fout["foutsoort"] == "Hervatfout" and "proefafkeuring" in fout["fout"]
 
 
 def test_ingetrokken_toestemming_bewaart_hervatwerk_tot_herbevestiging(tmp_path: Path) -> None:

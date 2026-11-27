@@ -73,7 +73,10 @@ def record_scan_failure(database: Database, library_id: int, message: str) -> No
 
 
 @contextmanager
-def _registreer_scanfout(database: Database, library_id: int) -> Iterator[None]:
+def _registreer_scanfout(database: Database, library_id: int, *, dry_run: bool = False,
+                         gestart: Callable[[], None] | None = None) -> Iterator[None]:
+    if gestart:
+        gestart()  # scan_library heeft de voor deze scan vereiste sloten verkregen.
     try:
         yield
     except (ScanBusy, ScanInterrupted):
@@ -81,19 +84,19 @@ def _registreer_scanfout(database: Database, library_id: int) -> Iterator[None]:
     except Exception as exc:
         message = (str(exc) if isinstance(exc, (ScanError, OSError, ValueError))
                    else f"onverwachte scanfout: {type(exc).__name__}")
-        record_scan_failure(database, library_id, message)
+        if not dry_run:
+            record_scan_failure(database, library_id, message)
         raise
 
 
 def scan_als_dienst(
     database: Database, library_id: int, *, dry_run: bool = False,
     scan_function: ScanFunction = scan_library,
+    gestart: Callable[[], None] | None = None,
 ) -> ScanSummary:
-    if dry_run:
-        return scan_library(database, library_id, dry_run=True)
-    fouten = _registreer_scanfout(database, library_id)
-    if scan_function is scan_library:
-        return scan_library(database, library_id, foutafhandeling=fouten)
+    fouten = _registreer_scanfout(database, library_id, dry_run=dry_run, gestart=gestart)
+    if dry_run or scan_function is scan_library:
+        return scan_library(database, library_id, dry_run=dry_run, foutafhandeling=fouten)
     with fouten:
         return scan_function(database, library_id)
 

@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.mark.parametrize("regel", [
+    "# syntax=docker/dockerfile:1.7\nFROM scratch",
     "FROM python:3.12.16-slim-bookworm",
     "FROM debian:bookworm@sha256:1234",
     "ARG BASE_IMAGE=ubuntu:26.04\nFROM ${BASE_IMAGE}",
@@ -40,3 +41,13 @@ def test_accepteert_gepinde_basis_en_interne_stages(tmp_path):
         [sys.executable, "scripts/check-dockerfile-digests.py", str(dockerfile)],
         cwd=ROOT, check=True,
     )
+
+
+def test_weigert_releaseactie_op_versietag(tmp_path):
+    workflow = tmp_path / "release.yml"
+    workflow.write_text("jobs:\n  bewijs:\n    steps:\n      - uses: actions/upload-artifact@v4\n")
+    controle = subprocess.run(
+        [sys.executable, "scripts/check-dockerfile-digests.py", str(workflow)],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    assert controle.returncode == 1 and "commit-SHA" in controle.stderr

@@ -30,17 +30,21 @@ def _table_rows(db: sqlite3.Connection, name: str, without_rowid: int,
     return [rowid, *columns], rows
 
 
-def _table_proof(db: sqlite3.Connection, name: str, without_rowid: int, position: dict) -> dict:
+def _table_proof(db: sqlite3.Connection, name: str, without_rowid: int, position: dict,
+                 encoder_metrics: bool) -> dict:
     columns, rows = _table_rows(db, name, without_rowid, position)
     progress = {"job": "percent", "jobs": "progress"}.get(name)
     if progress in columns and not without_rowid:
         index = columns.index(progress)
+        measured = {"fps", "speed", "bitrate_kbps", "eta_seconden"} if (
+            name == "job" and encoder_metrics) else set()
+        fixed = [i for i, column in enumerate(columns) if i != index and column not in measured]
         tasks = {}
         for row in rows:
             value = row[index]
             if type(value) not in (int, float):
                 value = _digest((value,))
-            tasks[str(row[0])] = [_digest(row[:index] + row[index + 1:]), value]
+            tasks[str(row[0])] = [_digest(row[i] for i in fixed), value]
         return {"taken": tasks}
     if name in ("outbox_events", "outbox_source", "outbox_cursor_history", "outbox_deletions"):
         return {"rijen": {str(r[0]): _digest(r) for r in rows}}
@@ -56,7 +60,7 @@ def _table_proof(db: sqlite3.Connection, name: str, without_rowid: int, position
     return {"hash": digest.hexdigest()}
 
 
-def content_proof(db: sqlite3.Connection, tables: dict) -> dict:
+def content_proof(db: sqlite3.Connection, tables: dict, *, encoder_metrics: bool = False) -> dict:
     """Bewaar alleen hashes, rijposities en tellers. Nieuwe tabellen en rijen mogen volgen."""
     schema = {f"{row[0]}:{row[1]}": _digest(row) for row in db.execute(
         "SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name")}
@@ -65,14 +69,15 @@ def content_proof(db: sqlite3.Connection, tables: dict) -> dict:
         "instellingen": [db.execute(f"PRAGMA {p}").fetchone()[0]
                          for p in ("user_version", "application_id", "encoding")],
         "schema": schema,
-        "tabellen": {name: _table_proof(db, name, types[name], pos)
+        "tabellen": {name: _table_proof(db, name, types[name], pos, encoder_metrics)
                      for name, pos in tables.items() if name in types},
     }
 
 
 def contains_commit(db: sqlite3.Connection, old: dict, positions: dict, *,
                     replayed: bool = False, advanced_tasks: bool = False) -> bool:
-    new = content_proof(db, positions)
+    # Na het bewijzen van de WAL-basis mogen nieuwe snelheidsmetingen bij dezelfde taak horen.
+    new = content_proof(db, positions, encoder_metrics=replayed)
     if (new["instellingen"] != old["instellingen"]
             or not old["schema"].items() <= new["schema"].items()
             or new["tabellen"].keys() != old["tabellen"].keys()):

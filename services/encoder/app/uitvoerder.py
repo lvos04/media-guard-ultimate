@@ -1970,6 +1970,9 @@ async def run_job(
                 verification.reason,
             ),
         )
+        if prior_result and not verification.passed:
+            raise hervatpunten.Hervatfout(
+                f"Hercontrole van het bewaarde resultaat: {verification.reason}")
         if (
             not verification.passed
             and decision.actie == "opschonen"
@@ -2325,7 +2328,7 @@ async def run_job(
         cap_restart_loop(database, job_id)
         return False
     except FileNotFoundError as exc:
-        if oud_deel or checkpoint:
+        if prior_result or oud_deel or checkpoint:
             record_failure(database, job_id, f"Hervatten wacht op een bestand: {exc}", "Hervatfout")
             return False
         shutil.rmtree(cache_dir, ignore_errors=True)
@@ -2364,7 +2367,7 @@ async def run_job(
         record_failure(database, job_id, str(exc), type(exc).__name__)
         return False
     except (ExecutionError, MetadataError, OSError, ValueError) as exc:
-        if oud_deel or checkpoint:
+        if prior_result or oud_deel or checkpoint:
             record_failure(database, job_id, f"Hervatten onderbroken: {exc}", "Hervatfout")
             return False
         # Een volledig .deel-resultaat van tientallen GB mag niet blijven staan.
@@ -2378,7 +2381,7 @@ async def run_job(
         LOGGER.exception("Onverwachte fout in job %s", job_id)
         replacing = settings.replacement_mode != "handoff" and (
             JOB_PHASES.get(job_id) or ("",))[0] == "vervangen"
-        if oud_deel or checkpoint:
+        if prior_result or oud_deel or checkpoint:
             record_failure(database, job_id, f"Hervatten onderbroken: {exc}", "Hervatfout")
             return False
         if not replacing:

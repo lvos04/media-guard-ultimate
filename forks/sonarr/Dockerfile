@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # MediaGuard Sonarr fork image.
 #
@@ -17,7 +17,7 @@ ARG UPSTREAM_SHA=bc54afbdd0e38bdb0fca4785fcf7d7a6af77bf9a
 ARG UPSTREAM_VERSION=4.0.20.3014
 # Patch 0005 zet Sonarr v4 op .NET 8 (LTS); .NET 6 heeft sinds nov. 2024 geen updates meer.
 # Zelfde SDK als de Radarr-fork.
-ARG MG_PATCH_REV=mg2
+ARG MG_PATCH_REV=mg3
 ARG SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:8.0.421@sha256:fc69dc5e0c9789adaac5c8efce71ead4d016a51318667c4f26ce93574b1b9403
 ARG NODE_IMAGE=mirror.gcr.io/library/node:20.11.1-bookworm@sha256:e06aae17c40c7a6b5296ca6f942a02e6737ae61bbbf3e2158624bb0f887991b5
 ARG RUNTIME_IMAGE=mcr.microsoft.com/dotnet/runtime-deps:8.0.34-bookworm-slim@sha256:54c5e25d41d6df433e520750bacfa4eed1f664140cd36b37c189dd6c6df33d79

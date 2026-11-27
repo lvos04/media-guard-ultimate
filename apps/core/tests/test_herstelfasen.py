@@ -456,6 +456,59 @@ def test_opvolging_beschermt_elke_bestaande_taakrij(tmp_path):
         preupdate._verify_progress(core, [old], [preupdate._source_state(core, rel)])
 
 
+@pytest.mark.parametrize("situatie", ["walverlies", "intact", "nieuwe_wal"])
+def test_wal_opvolging_van_encoderwerk(tmp_path, installatie, situatie):
+    core, enc = tmp_path / "core", tmp_path / "encode/app.db"
+    verzoek, _, _ = punten.herstelvraag(tmp_path, installatie)
+    assert preupdate.cancel(core)
+    archief = core / "backups" / preupdate.FOLDER / verzoek["set"]
+    wal = enc.with_name("app.db-wal")
+    with closing(sqlite3.connect(enc)) as db, closing(sqlite3.connect(enc)) as lezer:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA wal_autocheckpoint=0")
+        db.execute("CREATE TABLE getuige(n INTEGER)")
+        db.execute("INSERT INTO getuige VALUES (0)")
+        db.execute("INSERT INTO job(besluit_id,bestand_id,baan,status,percent) "
+                   "VALUES (1,1,'cpu','wacht',0)")
+        db.execute("UPDATE job SET percent=92 WHERE id=1")
+        db.commit()
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        db.execute("UPDATE getuige SET n=1")
+        db.commit()
+        lezer.execute("BEGIN")
+        assert lezer.execute("SELECT n FROM getuige").fetchone() == (1,)
+        db.execute("DELETE FROM job WHERE id=2")
+        db.commit()
+        preupdate.stage(core, archief, actor="proef")
+        _, totaal, verwerkt = db.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        assert 0 < verwerkt < totaal
+        if situatie == "nieuwe_wal":
+            lezer.rollback()
+            db.execute("PRAGMA wal_checkpoint(RESTART)")
+            db.execute("UPDATE job SET percent=93,fps=24,speed=1,bitrate_kbps=800,eta_seconden=7")
+            db.commit()
+        hoofd, journaal = enc.read_bytes(), wal.read_bytes()
+    # Herstel de gemeten bestanden zoals ze vlak vóór het afsluitcheckpoint lagen.
+    enc.write_bytes(hoofd)
+    if situatie == "walverlies":
+        with preupdate.checked_database(core, {"": enc}) as (oud, _):
+            assert oud.execute("SELECT id FROM job ORDER BY id").fetchall() == [(1,), (2,)]
+        voor = punten.bestandsinhoud(tmp_path)
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="onbewezen"):
+                punten.herstart(tmp_path)
+            assert punten.bestandsinhoud(tmp_path) == voor and preupdate.take_result(core) is None
+    else:
+        wal.write_bytes(journaal)
+        for _ in range(2):
+            punten.herstart(tmp_path)
+        vorige = Path(preupdate.take_result(core)["previous"]) / "encode__app.db"
+        with closing(sqlite3.connect(vorige)) as db:
+            stand = db.execute("SELECT id,percent,fps,speed,bitrate_kbps,eta_seconden FROM job")
+            assert stand.fetchall() == ([(1, 93, 24, 1, 800, 7)] if situatie == "nieuwe_wal"
+                                        else [(1, 92, None, None, None, None)])
+
+
 @pytest.mark.parametrize("volledig_checkpoint", [False, True])
 def test_oude_wal_mag_een_vastgelegde_taak_niet_terugdraaien(tmp_path, installatie,
                                                              volledig_checkpoint):

@@ -4,7 +4,7 @@
 #   tests/integration/forks/run.sh [pytest args...]
 #
 # Env:
-#   SONARR_IMAGE / RADARR_IMAGE  fork images (default mediaguard/sonarr-fork:bc54afb-mg1 / mediaguard/radarr-fork:a96bf7c-mg1)
+#   SONARR_IMAGE / RADARR_IMAGE  fork images (default mediaguard/sonarr-fork:bc54afb-mg3 / mediaguard/radarr-fork:a96bf7c-mg2)
 #   MG_TEST_CA_BUNDLE            optional PEM bundle mounted as the system CA store of the four
 #                                instances (needed only behind a TLS-inspecting proxy, so the
 #                                instances can reach skyhook.sonarr.tv / api.radarr.video)
@@ -44,7 +44,7 @@ if [[ -n "${MG_TEST_CA_BUNDLE:-}" && -s "${MG_TEST_CA_BUNDLE}" ]]; then
 fi
 printf '%s\n' "${COMPOSE[@]}" > "$RUN/compose-cmd"
 
-echo ">> images: ${SONARR_IMAGE:-mediaguard/sonarr-fork:bc54afb-mg1} ${RADARR_IMAGE:-mediaguard/radarr-fork:a96bf7c-mg1}"
+echo ">> images: ${SONARR_IMAGE:-mediaguard/sonarr-fork:bc54afb-mg3} ${RADARR_IMAGE:-mediaguard/radarr-fork:a96bf7c-mg2}"
 "${COMPOSE[@]}" up -d
 start=$(date +%s)
 set +e

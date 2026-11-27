@@ -290,10 +290,14 @@ class Hervatpunt:
             if abs(tijden[0] - verwacht) > 0.002:
                 raise Hervatfout("Het fragment begint niet op het eerstvolgende bronbeeld")
         aantal = 0
+        afwijkend = False
         for tijd, origineel in zip(tijden, bron[start:], strict=False):
             if abs((tijd - tijden[0]) - (origineel - bron[start])) > 0.002:
-                break
-            aantal += 1
+                afwijkend = True
+            elif afwijkend:
+                raise Hervatfout("Afwijkende beeldtijd midden in het bewaarde deel")
+            else:
+                aantal += 1
         if i < len(self.delen) and aantal == len(tijden) == self.delen[i].beelden:
             return  # De laatste registratie uit een ouder register klopt al.
 

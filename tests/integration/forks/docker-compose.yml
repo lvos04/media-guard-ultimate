@@ -13,13 +13,13 @@ x-fake: &fake
   restart: unless-stopped
 
 x-sonarr: &sonarr
-  image: ${SONARR_IMAGE:-mediaguard/sonarr-fork:bc54afb-mg1}
+  image: ${SONARR_IMAGE:-mediaguard/sonarr-fork:bc54afb-mg3}
   networks: [mgnet]
   restart: unless-stopped
   depends_on: [stub-mediaguard, fakeindexer, fakesab]
 
 x-radarr: &radarr
-  image: ${RADARR_IMAGE:-mediaguard/radarr-fork:a96bf7c-mg1}
+  image: ${RADARR_IMAGE:-mediaguard/radarr-fork:a96bf7c-mg2}
   networks: [mgnet]
   restart: unless-stopped
   depends_on: [stub-mediaguard, fakeindexer, fakesab]

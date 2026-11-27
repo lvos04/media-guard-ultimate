@@ -9,8 +9,8 @@
 | .NET SDK / runtime | 6.0.405 (from `global.json`), runtime `mcr.microsoft.com/dotnet/runtime-deps:6.0-bookworm-slim` |
 | Frontend | node 20.11.1 / yarn 1.22.19 (from `package.json` "volta") |
 | API | `/api/v3` (Seerr supports Sonarr v3/v4) |
-| Patch series | `patches/0001..0005` (see `PATCHES.md`), revision `mg2` |
-| Image | `mediaguard/sonarr-fork:bc54afb-mg2` (alias `mediaguard/sonarr-fork:4.0.20.3014-mg2`) |
+| Patchreeks | `patches/0001..0005` (zie `PATCHES.md`), verpakt met de gepinde Dockerfile-frontend in imagerevisie `mg3` |
+| Image | `mediaguard/sonarr-fork:bc54afb-mg3` (alias `mediaguard/sonarr-fork:4.0.20.3014-mg3`) |
 | Runtime | .NET 8 (LTS) via patch 0005; upstream v4 `main` targets .NET 6 (end of support Nov 2024) |
 
 ## Why `main` and not `develop`
@@ -46,7 +46,7 @@ git remote add upstream https://github.com/Sonarr/Sonarr.git
 git fetch upstream main
 git checkout -b mediaguard/v4 bc54afbdd0e38bdb0fca4785fcf7d7a6af77bf9a
 git am /path/to/media-guard-ultimate/forks/sonarr/patches/*.patch
-git tag mediaguard-v4.0.20.3014-mg2
+git tag mediaguard-v4.0.20.3014-mg3
 git push origin mediaguard/v4 --tags
 ```
 

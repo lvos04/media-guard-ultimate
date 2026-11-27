@@ -34,9 +34,11 @@ jobs:
           [[ "$V" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           test "$GITHUB_REF" = "refs/tags/v$V"
           test "$V" = "$(jq -er .version deploy/release-manifest.json)"
+          tijd=$(git show -s --format=%ct HEAD)
+          aangemaakt=$(date -u -d "@$tijd" +%Y-%m-%dT%H:%M:%SZ)
           {
             echo "version=$V"
-            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "created=$aangemaakt"
             # tussentag van deze run; pas na de rooktest komen de echte tags (job publish)
             echo "candidate=kandidaat-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}"
           } >> "$GITHUB_OUTPUT"
@@ -132,7 +134,7 @@ jobs:
             core)   EXTRA=(--build-context release=deploy) ;;
             encode) EXTRA=(--build-context "ffmpeg-src=$RUNNER_TEMP/ffmpeg-src" --target runtime) ;;
           esac
-          docker buildx build --push --platform linux/amd64 "${EXTRA[@]}" \
+          docker buildx build --push --metadata-file "$RUNNER_TEMP/bouw.json" --platform linux/amd64 "${EXTRA[@]}" \
             -t "${IMAGE}:${VERSION}-${CANDIDATE}" \
             --label "org.opencontainers.image.title=${{ matrix.title }}" \
             --label "org.opencontainers.image.version=${VERSION}" \
@@ -142,6 +144,14 @@ jobs:
             --label "org.opencontainers.image.licenses=${{ matrix.license }}" \
             --label "org.opencontainers.image.description=MediaGuard Ultimate ${VERSION} (${{ matrix.name }})" \
             ${{ matrix.context }}
+          mkdir -p "$RUNNER_TEMP/bouwdigest"
+          jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/bouw.json" > "$RUNNER_TEMP/bouwdigest/${{ matrix.name }}"
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+        with:
+          name: bouwdigest-${{ matrix.name }}
+          path: ${{ runner.temp }}/bouwdigest/${{ matrix.name }}
+          if-no-files-found: error
+          overwrite: true
 
   fork-images:
     name: ${{ matrix.app }}-fork
@@ -170,15 +180,18 @@ jobs:
           VER="$(sed -n 's/^ARG UPSTREAM_VERSION=//p' "$D/Dockerfile")"
           REV="$(sed -n 's/^ARG MG_PATCH_REV=//p' "$D/Dockerfile")"; REV="${REV:-mg1}"
           FINAL="${REGISTRY}/${OWNER}/mediaguard-${{ matrix.app }}-fork:${VER}-${REV}"
+          mkdir -p "$RUNNER_TEMP/bouwdigest"
           PATCHES="$(cat "$D"/patches/*.patch | sha256sum | cut -c1-16)"
           DOCKERFILE="$(sha256sum "$D/Dockerfile" | cut -c1-16)"
           rc=0; bash scripts/image-tag-exists.sh "$FINAL" || rc=$?
           case "$rc" in
             0)
-              docker pull -q "$FINAL" >/dev/null
-              HAVE_P="$(docker inspect -f '{{ with index .Config.Labels "io.mediaguard.patches.sha256" }}{{ . }}{{ end }}' "$FINAL")"
-              HAVE_D="$(docker inspect -f '{{ with index .Config.Labels "io.mediaguard.dockerfile.sha256" }}{{ . }}{{ end }}' "$FINAL")"
-              if [ "$HAVE_P" != "$PATCHES" ] || { [ -n "$HAVE_D" ] && [ "$HAVE_D" != "$DOCKERFILE" ]; }; then
+              pin=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$FINAL" | jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))')
+              echo "$pin" > "$RUNNER_TEMP/bouwdigest/${{ matrix.app }}-fork"
+              docker pull -q "$FINAL@$pin" >/dev/null
+              HAVE_P="$(docker inspect -f '{{ with index .Config.Labels "io.mediaguard.patches.sha256" }}{{ . }}{{ end }}' "$FINAL@$pin")"
+              HAVE_D="$(docker inspect -f '{{ with index .Config.Labels "io.mediaguard.dockerfile.sha256" }}{{ . }}{{ end }}' "$FINAL@$pin")"
+              if [ "$HAVE_P" != "$PATCHES" ] || [ "$HAVE_D" != "$DOCKERFILE" ]; then
                 echo "::error::$FINAL bestaat al met andere patches of een ander Dockerfile. Verhoog MG_PATCH_REV in $D/Dockerfile (een bestaande tag wordt nooit overschreven)."
                 exit 1
               fi
@@ -217,7 +230,16 @@ jobs:
         run: |
           IMAGE="${REGISTRY}/${OWNER}/mediaguard-${{ matrix.app }}-fork"
           docker tag "${IMAGE}:${VER}-${REV}" "${IMAGE}:${VER}-${REV}-${CANDIDATE}"
-          docker push "${IMAGE}:${VER}-${REV}-${CANDIDATE}"
+          set -o pipefail
+          docker push "${IMAGE}:${VER}-${REV}-${CANDIDATE}" | tee "$RUNNER_TEMP/fork-push.log"
+          sed -nE 's/^.*: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p' "$RUNNER_TEMP/fork-push.log" > "$RUNNER_TEMP/bouwdigest/${{ matrix.app }}-fork"
+          [[ $(cat "$RUNNER_TEMP/bouwdigest/${{ matrix.app }}-fork") =~ ^sha256:[0-9a-f]{64}$ ]]
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+        with:
+          name: bouwdigest-${{ matrix.app }}-fork
+          path: ${{ runner.temp }}/bouwdigest/${{ matrix.app }}-fork
+          if-no-files-found: error
+          overwrite: true
 
   # Alles-in-één-image voor TrueNAS' gewone "Custom App"-formulier (deploy/aio). Wordt als
   # tag <versie>-aio in het Forgejo-pakket mediaguard-core gepubliceerd.
@@ -226,6 +248,8 @@ jobs:
     needs: [meta, app-images, fork-images]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    outputs:
+      digest: ${{ steps.bouw.outputs.digest }}
     steps:
       - uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - run: docker buildx inspect --bootstrap
@@ -234,32 +258,34 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ vars.REGISTRY_USER }}
           password: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: https://code.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e
+        with:
+          pattern: bouwdigest-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/bouwdigest
       - name: build + push (kandidaat)
+        id: bouw
         env:
           VERSION: ${{ needs.meta.outputs.version }}
           CREATED: ${{ needs.meta.outputs.created }}
           CANDIDATE: ${{ needs.meta.outputs.candidate }}
         run: |
           R="${REGISTRY}/${OWNER}"
-          fork() {  # bestaande (hergebruikte) fork-tag, anders de kandidaat van deze run
-            local app="$1" ver rev final rc=0
-            ver="$(sed -n 's/^ARG UPSTREAM_VERSION=//p' "forks/$app/Dockerfile")"
-            rev="$(sed -n 's/^ARG MG_PATCH_REV=//p' "forks/$app/Dockerfile")"; rev="${rev:-mg1}"
-            final="${R}/mediaguard-${app}-fork:${ver}-${rev}"
-            bash scripts/image-tag-exists.sh "$final" || rc=$?
-            case "$rc" in
-              0) echo "$final" ;;
-              1) echo "${final}-${CANDIDATE}" ;;
-              *) return 1 ;;
-            esac
+          onderdeel() {
+            local pin
+            pin=$(cat "$RUNNER_TEMP/bouwdigest/$1")
+            [[ "$pin" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+            echo "${R}/mediaguard-$1@$pin"
           }
-          SONARR="$(fork sonarr)"; RADARR="$(fork radarr)"
-          echo "Sonarr: $SONARR"; echo "Radarr: $RADARR"
-          docker buildx build --push --platform linux/amd64 \
+          ENCODE=$(onderdeel encode)
+          WEB=$(onderdeel web)
+          SONARR=$(onderdeel sonarr-fork)
+          RADARR=$(onderdeel radarr-fork)
+          docker buildx build --push --metadata-file "$RUNNER_TEMP/bouw.json" --platform linux/amd64 \
             -f deploy/aio/Dockerfile \
             --build-context core=apps/core --build-context release=deploy \
-            --build-arg "ENCODE_IMAGE=${R}/mediaguard-encode:${VERSION}-${CANDIDATE}" \
-            --build-arg "WEB_IMAGE=${R}/mediaguard-web:${VERSION}-${CANDIDATE}" \
+            --build-arg "ENCODE_IMAGE=$ENCODE" \
+            --build-arg "WEB_IMAGE=$WEB" \
             --build-arg "SONARR_IMAGE=${SONARR}" \
             --build-arg "RADARR_IMAGE=${RADARR}" \
             -t "${R}/mediaguard-core:${VERSION}-aio-${CANDIDATE}" \
@@ -270,6 +296,8 @@ jobs:
             --label "org.opencontainers.image.created=${CREATED}" \
             --label "org.opencontainers.image.description=MediaGuard Ultimate ${VERSION}: core, web, AV1-engine en Sonarr/Radarr-forks (GPL-3.0, broncode in forks/) in één image" \
             deploy/aio
+          pin=$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/bouw.json")
+          echo "digest=$pin" >> "$GITHUB_OUTPUT"
 
   # Het image dat TrueNAS draait één keer echt starten vóór publicatie: op een gevulde
   # database van een eerdere versie (tests/fixtures/aio), als root gestart en met de drie
@@ -289,9 +317,9 @@ jobs:
       - name: start, health, versie, inloggen, migratie en nette stop
         env:
           VERSION: ${{ needs.meta.outputs.version }}
-          CANDIDATE: ${{ needs.meta.outputs.candidate }}
+          DIGEST: ${{ needs.aio-image.outputs.digest }}
         run: |
-          IMG="${REGISTRY}/${OWNER}/mediaguard-core:${VERSION}-aio-${CANDIDATE}"
+          IMG="${REGISTRY}/${OWNER}/mediaguard-core@$DIGEST"
           docker pull -q "$IMG"
           bash .forgejo/scripts/dockerproef aio-smoke \
             --image "$IMG" --version "$VERSION"
@@ -319,12 +347,12 @@ jobs:
       - name: vorige release → kandidaat
         env:
           VERSION: ${{ needs.meta.outputs.version }}
-          CANDIDATE: ${{ needs.meta.outputs.candidate }}
+          DIGEST: ${{ needs.aio-image.outputs.digest }}
         run: |
           B=deploy/upgradebewijs/vorige-release.json
           VORIGE="$(python3 -c "import json;d=json.load(open('$B'));print(d['image']+'@'+d['digest'])")"
           VV="$(python3 -c "import json;print(json.load(open('$B'))['versie'])")"
-          IMG="${REGISTRY}/${OWNER}/mediaguard-core:${VERSION}-aio-${CANDIDATE}"
+          IMG="${REGISTRY}/${OWNER}/mediaguard-core@$DIGEST"
           # de direct vorige gepubliceerde release vóór deze versie (tag en digest in GHCR)
           python3 scripts/upgradebewijs.py volgorde --vorige-release "$B" --versie "$VERSION"
           docker pull -q "$VORIGE"
@@ -366,10 +394,15 @@ jobs:
           curl -fsSL --retry 5 "https://github.com/anchore/syft/releases/download/v1.42.2/$bestand" -o "$bestand"
           echo "1d3cc98b13ce3dfb6083ef42f64f1033e40d7dea292e8ea85ed1cf88efb2f542  $bestand" | sha256sum -c -
           tar -xzf "$bestand" syft
+      - uses: https://code.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e
+        with:
+          pattern: bouwdigest-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/bouwdigest
       - name: digests en SPDX-SBOM's van de kandidaat-images
         env:
-          CANDIDATE: ${{ needs.meta.outputs.candidate }}
-        run: python3 scripts/release-bewijs.py --registry-prefix "$REGISTRY/$OWNER" --candidate "$CANDIDATE" --syft "$RUNNER_TEMP/syft"
+          DIGEST: ${{ needs.aio-image.outputs.digest }}
+        run: python3 scripts/release-bewijs.py --registry-prefix "$REGISTRY/$OWNER" --bouwmap "$RUNNER_TEMP/bouwdigest" --geteste-aio "$DIGEST" --syft "$RUNNER_TEMP/syft"
       - uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
         with:
           name: release-bewijs-${{ needs.meta.outputs.version }}
@@ -399,11 +432,18 @@ jobs:
         with:
           name: release-bewijs-${{ needs.meta.outputs.version }}
           path: release
+      - uses: https://code.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e
+        with:
+          pattern: bouwdigest-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/bouwdigest
       - name: kandidaten onder de versietags zetten
         env:
           VERSION: ${{ needs.meta.outputs.version }}
+          DIGEST: ${{ needs.aio-image.outputs.digest }}
           CANDIDATE: ${{ needs.meta.outputs.candidate }}
         run: |
+          python3 scripts/release-bewijs.py --controleer-bouw "$RUNNER_TEMP/bouwdigest" --geteste-aio "$DIGEST" --registry-prefix "$REGISTRY/$OWNER"
           R="${REGISTRY}/${OWNER}"
           bewezen() {
             jq -er --arg naam "$1" '.images[$naam] | .image + "@" + .digest' release/digests.json

@@ -23,8 +23,8 @@ PROJECT=mgstack
 UIDGID=568
 
 : "${MG_CORE_IMAGE:=mediaguard/core:dev}"
-: "${MG_SONARR_IMAGE:=mediaguard/sonarr-fork:bc54afb-mg1}"
-: "${MG_RADARR_IMAGE:=mediaguard/radarr-fork:a96bf7c-mg1}"
+: "${MG_SONARR_IMAGE:=mediaguard/sonarr-fork:bc54afb-mg3}"
+: "${MG_RADARR_IMAGE:=mediaguard/radarr-fork:a96bf7c-mg2}"
 : "${MG_ENCODE_IMAGE:=mediaguard/encode:dev}"
 : "${MG_WEB_IMAGE:=mediaguard/web:dev}"
 
