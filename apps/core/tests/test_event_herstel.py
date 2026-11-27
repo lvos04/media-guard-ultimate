@@ -126,13 +126,22 @@ async def test_generatie_vanaf_151_en_bij_bestaande_installatie(
             if zonder_generatie:
                 # Schema van een installatie die 151 en 153 al vóór dit herstel toepaste.
                 db.execute("DROP TABLE outbox_generation")
+        db.execute("INSERT INTO encoding_jobs(source_path,status,policy_json,progress,created_at,"
+                   "updated_at) VALUES(?, 'running', '{}', 0.42, ?, ?)",
+                   (str(settings.staging_dir / "proef.mkv"), STAMP, STAMP))
         ctx = SimpleNamespace(db=db)
         voor = database_snapshot(ctx)
         db.initialize()
         na = database_snapshot(ctx)
-        for tabel, rijen in voor.items():
-            if tabel[0] != "schema_migrations":
-                assert na[tabel] == rijen, tabel
+        for (naam, sql), rijen in voor.items():
+            if naam == "schema_migrations":
+                continue
+            if naam == "encoding_jobs":
+                # Alleen de nieuwe revisiekolom van migratie 160 mag erbij komen.
+                assert sql.endswith(")")
+                sql = sql[:-1] + ", revision INTEGER NOT NULL DEFAULT 0)"
+                rijen = {(*rij, ("revision", 0)): aantal for rij, aantal in rijen.items()}
+            assert na[naam, sql] == rijen, naam
         generatie = db.fetch_one("SELECT generation FROM outbox_generation")[0]
         assert len(generatie) == 16
         assert (generatie != eerste) == zonder_generatie
