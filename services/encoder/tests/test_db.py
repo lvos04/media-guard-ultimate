@@ -35,7 +35,8 @@ def test_migraties_zijn_herhaalbaar(tmp_path: Path) -> None:
     # 022 = afstelling (instelbaar in de app) + kwaliteitsmeting per job.
     # 023 = noodstop in de engine + vastloperstatistiek (rapport 6).
     # 027 = additieve termijn en reden voor de platformpauze.
-    assert database.applied_versions() == set(range(1, 28))
+    # 028 = opeenvolgende veiligheidsmetingen met behoud van de oorspronkelijke staatrij.
+    assert database.applied_versions() == set(range(1, 29))
     assert database.fetch_one("PRAGMA journal_mode")[0] == "wal"
     assert database.fetch_one("SELECT COUNT(*) FROM functie")[0] == 13
     assert database.fetch_one(

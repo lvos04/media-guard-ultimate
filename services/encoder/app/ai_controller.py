@@ -33,6 +33,7 @@ OPENAI_INPUT_USD_PER_MILLION = 0.10
 OPENAI_OUTPUT_USD_PER_MILLION = 0.50
 MAX_INPUT_TOKENS = 8_000
 MAX_OUTPUT_TOKENS = 800
+_LAATSTE_VEILIGHEIDSMETING = "SELECT waarde FROM ai_veiligheidsmeting ORDER BY id DESC LIMIT 1"
 DEFAULT_MONTHLY_BUDGET_USD = 10.0
 AI_SECRET_KEY = "openai_api_sleutel"
 AI_ACTIVE_CONFIRMATION = "AI-BEPERKTE AUTONOMIE INSCHAKELEN"
@@ -459,8 +460,7 @@ class AiController:
         if row is None:
             raise AiProviderError("AI-controllerconfiguratie ontbreekt")
         configuration = _json_object(row["configuratie"])
-        measured = self.database.fetch_one(
-            "SELECT waarde FROM staat WHERE sleutel='ai_veiligheidsfingerprint'")
+        measured = self.database.fetch_one(_LAATSTE_VEILIGHEIDSMETING)
         if measured is not None:
             configuration["veiligheidsfingerprint"] = measured["waarde"]
         return bool(row["ingeschakeld"]), configuration
@@ -1080,8 +1080,7 @@ def reconcile_safety_fingerprint(database: Database) -> str:
             raise AiProviderError("AI-controllerconfiguratie ontbreekt")
         configuration = _json_object(row["configuratie"])
         current = safety_fingerprint(configuration)
-        measured = conn.execute(
-            "SELECT waarde FROM staat WHERE sleutel='ai_veiligheidsfingerprint'").fetchone()
+        measured = conn.execute(_LAATSTE_VEILIGHEIDSMETING).fetchone()
         previous = measured[0] if measured else configuration.get("veiligheidsfingerprint")
         if previous and previous != current:
             _revoke_ai_consent(
@@ -1095,8 +1094,7 @@ def reconcile_safety_fingerprint(database: Database) -> str:
             conn.execute("INSERT INTO auditlog(soort,onderwerp,oud,nieuw,tijd) "
                          "VALUES ('ai','veiligheidsfingerprint',?,?,?)", (previous, current, now))
         if measured is None or previous != current:
-            conn.execute("INSERT INTO staat(sleutel,waarde) VALUES ('ai_veiligheidsfingerprint',?) "
-                         "ON CONFLICT(sleutel) DO UPDATE SET waarde=excluded.waarde", (current,))
+            conn.execute("INSERT INTO ai_veiligheidsmeting(waarde) VALUES (?)", (current,))
     return current
 
 

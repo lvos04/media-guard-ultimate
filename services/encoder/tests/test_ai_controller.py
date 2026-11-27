@@ -769,3 +769,38 @@ async def test_nieuwe_veiligheidsmeting_trekt_alleen_open_toestemming_in(
     assert controller.configuration()[1]["veiligheidsfingerprint"] == "nieuwe-meting"
     audits = db.fetch_one("SELECT COUNT(*) FROM auditlog WHERE onderwerp='veiligheidsfingerprint'")
     assert audits[0] == 1
+
+
+def test_upgrade_bewaart_elke_veiligheidsmeting_en_herkent_terugkeer(tmp_path, monkeypatch):
+    from mg_helpers import container_settings
+
+    from app import ai_controller
+
+    instellingen = container_settings(tmp_path)
+    nieuw = Database(instellingen)
+    map_oud = tmp_path / "migraties-27"
+    map_oud.mkdir()
+    for versie, bron in nieuw.migration_files():
+        if versie <= 27:
+            (map_oud / bron.name).symlink_to(bron)
+    oud = Database(instellingen, migrations_dir=map_oud)
+    oud.initialize()
+    oud.execute("INSERT INTO staat(sleutel,waarde,tijd) VALUES "
+                "('ai_veiligheidsfingerprint','eerste','2026-01-01')")
+    sql = "SELECT * FROM staat WHERE sleutel='ai_veiligheidsfingerprint'"
+    oorspronkelijk = tuple(oud.fetch_one(sql))
+    nieuw.initialize()
+    for meting in ("tweede", "tweede", "eerste", "derde"):
+        monkeypatch.setattr(ai_controller, "safety_fingerprint", lambda _, waarde=meting: waarde)
+        assert ai_controller.reconcile_safety_fingerprint(nieuw) == meting
+        assert tuple(nieuw.fetch_one(sql)) == oorspronkelijk
+        _, configuratie = AiController(nieuw, instellingen).configuration()
+        assert configuratie["veiligheidsfingerprint"] == meting
+    nieuw.initialize()
+    metingen = nieuw.fetch_all("SELECT waarde,tijd FROM ai_veiligheidsmeting ORDER BY id")
+    assert [r["waarde"] for r in metingen] == ["eerste", "tweede", "eerste", "derde"]
+    assert metingen[0]["tijd"] == oorspronkelijk[2]
+    assert [tuple(r) for r in nieuw.fetch_all(
+        "SELECT oud,nieuw FROM auditlog WHERE onderwerp='veiligheidsfingerprint' ORDER BY id"
+    )] == [("eerste", "tweede"), ("tweede", "eerste"), ("eerste", "derde")]
+    assert oud.check_schema()  # De oude encoder opent deze nieuwere database alleen-lezen.
