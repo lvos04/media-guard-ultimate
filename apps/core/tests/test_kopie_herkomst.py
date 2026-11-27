@@ -1,6 +1,6 @@
 """Byte-gelijke kopieën van het platformcontract en van Peil.
 
-Contract 1.3 (kop en §10, C1.3-ALG-01/C1.3-MGU-01) en ONTWERPTAAL §14 (pin- en driftregel E08 van
+Contract 1.4 (kop en §10, C1.4-ALG-01) en ONTWERPTAAL §14 (pin- en driftregel E08 van
 Peil 1.1.1). ``scripts/kopie-herkomst.py`` doet het werk; deze tests pinnen bovendien de
 bron-commit en de sha256 van het contract (een nieuwe kopie overnemen = stap van de orkestratie:
 HERKOMST.json, de kopie én deze constanten), draaien de controle op de echte repo en bewijzen met
@@ -30,16 +30,19 @@ sys.modules["kopie_herkomst"] = kh  # dataclasses zoeken hun module op
 _spec.loader.exec_module(kh)
 
 #: bron-commits in lvos04/ai-server-manager (branch ccr-c133d7a0-kuz1cv); de twee sets hebben
-#: elk een eigen pin. Contract 1.3 met de aanvullingen C-12 en M1/M3 (blijft 1.3):
-CONTRACT_BRON_COMMIT = "d392f5277490ba391c346b4b72e7f7a6d9546bc0"
+#: elk een eigen pin. Contract 1.4 met het poolleesrecht voor MediaGuard:
+CONTRACT_BRON_COMMIT = "02f65746d30a29e192bc27343a33b32b9152aabd"
 #: Peil 1.1.1 (ongewijzigd sinds de review van contract 1.3):
 PEIL_BRON_COMMIT = "0a7143bc0a94ed5317a9655fa785e73a1fb07ba1"
 CONTRACT_SHA256 = {
     "docs/platform-v2/PLATFORM_CONTRACTEN.md": (
-        "5dbb601184f58d9f3af0cd76b1b23f516454768ec17ca70b26cfc00ee6631102"
+        "1976152f65827308789aeb921b0d496927d5afba4858d35de5e25e9c6da7211b"
     ),
     "docs/platform-v2/CONTRACT_1.3_CONFORMITEIT.md": (
         "b5ebba073a8fe8beb715d58e6760feae38e33ad445956d107e64840133dd7924"
+    ),
+    "docs/platform-v2/CONTRACT_1.4_CONFORMITEIT.md": (
+        "d5fcd7cb477e96bb892f1f429ece9d3e8872cc0dc4dd926d02cf3879ae929112"
     ),
 }
 PEIL_VERSIE = "1.1.1"
@@ -57,10 +60,10 @@ def test_kopieen_in_deze_repo_kloppen_met_hun_herkomst() -> None:
     assert u.fouten == []
 
 
-def test_contract_13_is_byte_gelijk_aan_de_gepinde_bron() -> None:
+def test_contract_14_is_byte_gelijk_aan_de_gepinde_bron() -> None:
     h = _herkomst("contract")
     assert (
-        h["versie"] == "1.3"
+        h["versie"] == "1.4"
         and h["bron_commit"] == CONTRACT_BRON_COMMIT
         and h["bron_repo"] == "lvos04/ai-server-manager"
     )
@@ -68,11 +71,11 @@ def test_contract_13_is_byte_gelijk_aan_de_gepinde_bron() -> None:
     for pad, digest in CONTRACT_SHA256.items():
         data = (ROOT / pad).read_bytes()
         assert kh.sha256(data) == digest, (
-            f"{pad} wijkt af van contract 1.3 (bron-commit {CONTRACT_BRON_COMMIT[:7]})"
+            f"{pad} wijkt af van contract 1.4 (bron-commit {CONTRACT_BRON_COMMIT[:7]})"
         )
         assert h["bestanden"][pad]["sha256"] == digest and h["bestanden"][pad]["kop"] == 0
     assert (
-        b"Versie: `contracts 1.3`"
+        b"Versie: `contracts 1.4`"
         in (ROOT / "docs/platform-v2/PLATFORM_CONTRACTEN.md").read_bytes()
     )
 

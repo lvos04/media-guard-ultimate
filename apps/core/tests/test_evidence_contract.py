@@ -1,4 +1,4 @@
-"""Contract 1.3 §11 (C1.3-ALG-02, C1.3-MGU-01): EVIDENCE.json volgt de vaste regels.
+"""Contract 1.4 §11 (C1.3-ALG-02, C1.3-MGU-01): EVIDENCE.json volgt de vaste regels.
 
 - ``status`` uit de lijst van het blad (Werkpakketten, Testmatrix, Besluiten); ``Gereed`` en
   ``Geslaagd`` worden in deze bouwomgeving nooit gezet.
@@ -6,8 +6,8 @@
   ``Niet getest`` alleen bij ``Niet gestart``; ``Sim-geslaagd``/``Sim-mislukt`` alleen in de
   Testmatrix (``EX..``, ``JLT-..``), ``Sim-getest``/``Unit-getest`` niet in de Testmatrix.
 - Elke ``NIET GEVALIDEERD (…)`` uit ``blokkade`` staat ook in ``validatie``.
-- ID's: Excel-ID's uit ``EXCEL_TAKEN.json``, contractpunten ``C1.3-MGU-<nn>`` of
-  ``C1.3-ALG-<nn>`` die in ``CONTRACT_1.3_CONFORMITEIT.md`` staan, reviews
+- ID's: Excel-ID's uit ``EXCEL_TAKEN.json``, contractpunten voor MGU en ALG uit de
+  conformiteitslijst van de bijbehorende contractversie, reviews
   ``REVIEW-media-guard-ultimate-<onderwerp>``.
 - Elk genoemd testbestand bestaat, en ``pad::functie`` staat in dat bestand (eerlijkheid: geen
   bewijs dat naar een verdwenen test wijst).
@@ -42,7 +42,7 @@ ALGEMEEN = {
 WERK = {"Sim-getest", "Unit-getest"}
 TEST = {"Sim-geslaagd", "Sim-mislukt"}
 VELDEN = {"id", "status", "validatie", "bewijs", "blokkade", "opmerking", "repo", "bijgewerkt"}
-CONTRACTPUNT = re.compile(r"C1\.3-(?:MGU|ALG)-\d\d")
+CONTRACTPUNT = re.compile(r"C(1\.[34])-(?:MGU|ALG)-\d\d")
 REVIEW = re.compile(rf"REVIEW-{REPO}-[a-z0-9][a-z0-9.-]*")
 NIET_GEVALIDEERD = re.compile(r"NIET GEVALIDEERD \([^)]*\)")
 TESTPAD = re.compile(
@@ -140,12 +140,14 @@ def test_vaste_lijst_is_de_tabel_van_paragraaf_11() -> None:
 
 def test_ids_bestaan_en_zijn_uniek() -> None:
     excel = {t["ID"] for t in json.loads((PV2 / "EXCEL_TAKEN.json").read_text(encoding="utf-8"))}
-    lijst = (PV2 / "CONTRACT_1.3_CONFORMITEIT.md").read_text(encoding="utf-8")
+    lijsten = {v: (PV2 / f"CONTRACT_{v}_CONFORMITEIT.md").read_text(encoding="utf-8")
+               for v in ("1.3", "1.4")}
     ids = [e["id"] for e in _items()]
     assert len(ids) == len(set(ids))
     for rid in ids:
         if rid.startswith("C1."):
-            assert CONTRACTPUNT.fullmatch(rid) and f"| {rid} |" in lijst, rid
+            punt = CONTRACTPUNT.fullmatch(rid)
+            assert punt and f"| {rid} |" in lijsten[punt[1]], rid
         elif rid.startswith("REVIEW-"):
             assert REVIEW.fullmatch(rid), rid
         else:

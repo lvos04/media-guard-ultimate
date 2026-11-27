@@ -1,13 +1,14 @@
 # Platformcontracten — TrueNAS Home Platform V2 (bouwcontract voor alle repos)
 
-Versie: `contracts 1.3` · Peildatum 2026-11-10 · Eigenaar: `lvos04/ai-server-manager` (bron van waarheid).
+Versie: `contracts 1.4` · Peildatum 2026-11-27 · Eigenaar: `lvos04/ai-server-manager` (bron van waarheid).
 
 - **Kopieën:** elke repo heeft in `docs/platform-v2/` een **byte-gelijke** kopie van dit bestand en van
-  `CONTRACT_1.3_CONFORMITEIT.md`, met een drifttest die de sha256 van beide tegen de bron (vaste bron-commit) controleert.
+  `CONTRACT_1.4_CONFORMITEIT.md`, met een drifttest die de sha256 van beide tegen de bron (vaste bron-commit) controleert.
   Een repo past een kopie nooit aan, ook niet om een link te repareren; een nieuwe kopie overnemen is een stap van de
   orkestratie. Bij verschil wint deze repo.
 - **Verwijzingen** naar bestanden in deze repo staan als tekst `ai-server-manager:<pad>` (of als absolute GitHub-URL),
-  nooit als relatieve link: in een kopie zou zo'n link kapot zijn. `CONTRACT_1.3_CONFORMITEIT.md` staat in dezelfde map.
+  nooit als relatieve link: in een kopie zou zo'n link kapot zijn. De conformiteitslijsten staan in dezelfde map.
+- De toevoeging in 1.4 staat in `CONTRACT_1.4_CONFORMITEIT.md`. De bestaande afspraken van 1.3 blijven van kracht.
 - **Wat elke repo moet veranderen** om aan 1.3 te voldoen, met bestanden en moment (NU of een latere fase):
   `CONTRACT_1.3_CONFORMITEIT.md`. Keuzes en motivering: `ai-server-manager:docs/adr/ADR-0027-contract-1-3.md` (1.3),
   `ai-server-manager:docs/adr/ADR-0028-review-contract-1-3.md` (correcties uit de review van 1.3),
@@ -22,6 +23,11 @@ Versie: `contracts 1.3` · Peildatum 2026-11-10 · Eigenaar: `lvos04/ai-server-m
   Het zegt **niets** over de echte NAS: alle NAS-gegevens (D01–D18) zijn onbekend tot de gebruiker ze in de
   onboarding-wizard invult of de wizard ze via de TrueNAS-API meet. Voorbeeldwaarden (IP-adressen, poolnamen zoals in
   oude installatiedocs, versies, GPU-modellen) zijn nooit echte waarden.
+
+## Wijzigingslog 1.3 → 1.4 (2026-11-27)
+
+De beheerder kan één bevestigde MediaGuard-installatie leesrecht op de poolstatus geven (§4.4, keuze A).
+Deze achterwaarts verenigbare toevoeging gebruikt de bestaande adapterkoppeling van §2.3.
 
 ## Wijzigingslog 1.2 → 1.3 (2026-11-10)
 
@@ -482,6 +488,7 @@ Regels:
    (vault, §3.10). Per app:
    - MediaGuard: bestaande `X-Api-Key`, sleutel `hub` met rol **viewer** voor het read-model; operator-rechten (alleen
      noodstop aan, één herzoek) pas nadat sleutels scopes hebben (P3-02).
+     Voor de omgekeerde leesrichting kan de beheerder het afzonderlijke poolleesrecht van §4.4 toekennen.
    - **MediaGuard volgt meerdere mediaservers tegelijk** (Δ-MG-DUAL en Δ-MG-AUTH; exitcriterium van P4-0): elke ingestelde
      mediaserver (Emby én Jelly Leon) wordt gevolgd; kijkpauze zodra iemand op één ervan kijkt; afspeeltest en
      NL-ondertitels per server. Authenticatie **per server**: Emby `X-Emby-Token`; Jelly Leon 12.x
@@ -1030,9 +1037,39 @@ het token zonder herinstallatie roteren of intrekken (§3.8).
   | `inventaris.lezen` | `GET /api/v1/apps`, `GET /api/v1/apps/{id}` (gepagineerd over een momentopname, §5) | appstore-en-fork, jelly-leon-platform |
   | `catalogus.lezen` | `GET /api/v1/catalog/availability` (M3) | home-control-hub, jelly-leon-platform |
   | `besluiten.lezen` | `GET /connector/v1/items?type=decision` van de Hub | standaard **geen**; alleen een dienst die een besluit aantoonbaar nodig heeft (lijst per besluittype, met ADR) |
+  | `poolstatus.lezen` | `GET /api/v1/inventory/pools` | uitsluitend de expliciet gemachtigde MediaGuard-adapterkoppeling |
 
   Andere connector-itemtypes van de Hub (zoals `backup.self`) zijn alleen voor gebruikers (`viewer`+), niet voor diensten,
   tot een scope is vastgelegd.
+
+#### Poolstatus voor MediaGuard (1.4)
+
+Een beheerder kiest de bevestigde installatie onder **Instellingen → Diensten → Bestaande apps → MediaGuard**.
+**Poolleesrecht toekennen** maakt een afzonderlijk, willekeurig token voor deze koppeling. Bestaande koppelingen
+beginnen zonder dit recht. De algemene dienstregistratie, de teruglink en de sleutel waarmee de Hub MediaGuard leest,
+verlenen dit recht niet.
+
+- **Beheer.** `PUT /api/v1/adapterkoppelingen/{link_id}/poolleesrecht` met beheerderssessie, `X-CSRF-Token`,
+  `Idempotency-Key` (UUID), `Content-Type: application/json` en `{"ingeschakeld":true}` geeft het token uit of vervangt
+  het. `If-Match` met de ETag van de koppeling beschermt tegen een gelijktijdige wijziging. Bij HTTP 200 bevat de
+  eerste afgifte `pool_token`. Ook bij herhaling met dezelfde idempotentiesleutel is alleen de bevestiging opvraagbaar.
+  De beheerder draagt het token eenmalig over aan dezelfde MediaGuard-installatie. De Hub bewaart de SHA-256.
+  `{"ingeschakeld":false}`, wijzigen of verwijderen van de adapterkoppeling maakt het token direct ongeldig.
+- **Aanvraag.** MediaGuard doet één `GET /api/v1/inventory/pools` via de bevestigde HTTPS-Hub met
+  `Authorization: Bearer <pool_token>`. `Accept: application/json` is optioneel. Het verzoek heeft geen body,
+  queryparameters, cookie of CSRF-header. Er is geen inschrijving via `services/enroll`. De Hub controleert de
+  adapterbinding bij elke lezing en legt gebruik met scope en koppelings-ID in de audit vast.
+- **Antwoord.** Bij HTTP 200 bevat één antwoord de volledige poolmeting. `kind` is `pools`. Bij `status: ok` bevat
+  `items` per pool uitsluitend `status` en de booleaanse waarde `gezond`. `observed_at` is de UTC-bronmeettijd
+  van de gezamenlijke meting en `geldig_tot` de vervaltijd. Opnieuw ophalen verplaatst deze tijden niet.
+  Bij een ontbrekende, lege, onvolledige, mislukte, toekomstige of verlopen meting is `status: unknown`,
+  `reason_code` geeft de reden, `items` is leeg en `geldig_tot` is null. De laatst bekende brontijd mag meekomen.
+- **Gebruik.** MediaGuard bevestigt de toegang met een geauthenticeerde lezing. Bij gebruik als poolbron vereist het
+  opruimen een volledige, niet-lege meting met elke pool expliciet `ONLINE` én `gezond: true`, een brontijd tot en
+  met nu, maximaal 900 seconden oud en vóór `geldig_tot` (§6.2, §8). Bij twijfel pauzeert het opruimen in platformmodus.
+  HTTP 401 betekent ontbrekende of ongeldige aanmelding. HTTP 403 betekent ontbrekend recht of onbevestigde binding.
+  Het pooltoken geeft geen toegang tot overige beveiligde Hub-routes, inclusief algemene dienstroutes en schrijfoperaties.
+  Een gebruikerssessie met minimaal de rol `viewer` behoudt op dit pad de bestaande inventaris met paginering.
 
 #### Catalogusbeschikbaarheid (M3)
 
@@ -1723,7 +1760,7 @@ deploy/manifest/     <app_id>.manifest.yaml (manifeststandaard §9, install.meth
                      verplichte variabelen; HUB_URL/HUB_ENROLLMENT_TOKEN/HUB_KEY_FINGERPRINT zijn optioneel)
 docs/openapi/        geëxporteerde OpenAPI
 docs/adr/            ADR-0001… (keuzes en waarom)
-docs/platform-v2/    pakketdocs + byte-gelijke kopie van PLATFORM_CONTRACTEN.md en CONTRACT_1.3_CONFORMITEIT.md
+docs/platform-v2/    pakketdocs + byte-gelijke kopie van PLATFORM_CONTRACTEN.md en CONTRACT_1.4_CONFORMITEIT.md
                      (drifttest, kop van dit document) + DELTA_MATRIX.md (bestaande repos) + EVIDENCE.json (§11)
 tests/e2e/           dienst-E2E met simulators (de Hub-simulator volgt §3.3 exact)
 tests/ui/            browsertest (Chromium) van de statuspagina en zijn formulieren, met de negatieve gevallen van §3.7
@@ -1748,7 +1785,8 @@ Elke repo houdt `docs/platform-v2/EVIDENCE.json` bij — een lijst met objecten:
  "blokkade":"","opmerking":"","repo":"ai-server-manager","bijgewerkt":"2026-11-09"}
 ```
 - `id` = exacte ID uit de Excel (`B01-003`, `I23-23-05`, `APP-07`, `EX17`, `JLT-12`, `D04`). Daarnaast mogen
-  **contractpunten** en **reviews** een eigen regel hebben: `C1.3-<code>` met de code uit `CONTRACT_1.3_CONFORMITEIT.md`
+  **contractpunten** en **reviews** een eigen regel hebben: `C1.4-<code>` uit `CONTRACT_1.4_CONFORMITEIT.md`,
+  `C1.3-<code>` met de code uit `CONTRACT_1.3_CONFORMITEIT.md`
   (bv. `C1.3-HCH-01`), `C1.2-<code>` uit de 1.2-lijst (bv. `C1.2-H5`) en `REVIEW-<repo>-<onderwerp>` (bv.
   `REVIEW-zoeken-en-persoonlijke-ai-statuspagina`), met de statussen van het blad Werkpakketten.
   `ai-server-manager/tools/excel/update_excel.py` zet die niet in de bestaande bladen, maar meldt ze in een eigen

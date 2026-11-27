@@ -5,8 +5,8 @@ Twee sets, elk met een eigen ``HERKOMST.json`` die versie, bronrepo, **bron-comm
 per kopie de sha256 van het bronbestand pint:
 
 ``contract``  ``docs/platform-v2/HERKOMST.json``
-    ``PLATFORM_CONTRACTEN.md`` en ``CONTRACT_1.3_CONFORMITEIT.md``, helemaal byte-gelijk
-    (contract 1.3, kop en §10, C1.3-ALG-01/C1.3-MGU-01). Fout bij elke afwijking van de bron op
+    Het platformcontract en de conformiteitslijsten 1.3 en 1.4, helemaal byte-gelijk
+    (contract 1.4, kop en §10, C1.4-ALG-01). Fout bij elke afwijking van de bron op
     de gepinde commit. Is de bron daarna gewijzigd, dan is dat een **waarschuwing**: een nieuwe
     kopie overnemen is een stap van de orkestratie (contract, kop).
 ``peil``      ``design/ontwerptaal/HERKOMST.json``
