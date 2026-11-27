@@ -368,6 +368,9 @@ jobs:
         working-directory: ${{ steps.bron.outputs.pad }}/apps/web
       - run: npm run build
         working-directory: ${{ steps.bron.outputs.pad }}/apps/web
+      - name: Volledig productie-webpakket scannen
+        working-directory: ${{ steps.bron.outputs.pad }}/apps/web
+        run: bash tests/scan-webpakket.sh
       - name: Verpakt webprogramma starten en herstarten via beide AIO-startpaden
         working-directory: ${{ steps.bron.outputs.pad }}/apps/web
         run: '"$RUNNER_TEMP/corevenv/bin/python" tests/start-webpakket.py'
