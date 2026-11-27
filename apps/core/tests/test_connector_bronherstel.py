@@ -24,6 +24,17 @@ ITEMS = "/connector/v1/items"
 DOWNLOAD_COUNT = "/connector/v1/downloads/count"
 
 
+@pytest.mark.parametrize("meting", [
+    (), ({"errors": []},),
+    ({"errors": [], "summary": {"download_clients_ok": True}}, utcnow()),
+    ({"errors": [], "summary": {"download_clients_ok": True}, "downloads": {}}, utcnow()),
+])
+def test_downloadtelling_zonder_volledige_wachtrij_blijft_onbekend(client, ctx, meting):
+    ctx.services["activity_observation"] = meting
+    antwoord = client.get(DOWNLOAD_COUNT).raise_for_status().json()
+    assert antwoord["status"] == "unknown" and antwoord["total"] is None
+
+
 @pytest.mark.parametrize("aantal", [0, 2])
 def test_downloadtelling_leest_alleen_de_laatste_activiteitsmeting(
         client, anon_client, ctx, aantal):

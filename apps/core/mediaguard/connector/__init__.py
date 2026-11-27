@@ -89,7 +89,10 @@ def download_count(_: Principal = Depends(require_viewer),
                    ctx: AppContext = Depends(get_app_context)) -> DownloadCount:
     """Aantal wachtrijitems uit de laatste activiteitsmeting, met de oorspronkelijke meettijd."""
     observation = ctx.services.get("activity_observation")
-    measured = parse(observation[1]) if observation else None
+    activity, timestamp = (
+        observation if isinstance(observation, tuple) and len(observation) == 2 else ({}, None)
+    )
+    measured = parse(timestamp)
     now = datetime.now(UTC)
     if measured is None:
         reason = "meting_ontbreekt"
@@ -98,10 +101,12 @@ def download_count(_: Principal = Depends(require_viewer),
     elif (now - measured).total_seconds() > MAX_AGE:
         reason = "meting_verouderd"
     else:
-        activity = observation[0]
-        if activity["errors"] == [] and activity["summary"]["download_clients_ok"] is True:
+        activity = activity if isinstance(activity, dict) else {}
+        summary, downloads = activity.get("summary"), activity.get("downloads")
+        if (isinstance(summary, dict) and summary.get("download_clients_ok") is True
+                and isinstance(downloads, list) and activity.get("errors") == []):
             return DownloadCount(status="ok", observed_at=measured,
-                                 total=len(activity["downloads"]), reason_code=None)
+                                 total=len(downloads), reason_code=None)
         reason = "bron_onbereikbaar"
     return DownloadCount(status="unknown", observed_at=measured, total=None, reason_code=reason)
 
