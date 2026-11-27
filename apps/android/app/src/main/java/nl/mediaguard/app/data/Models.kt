@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import java.time.LocalDate
 
 // Modellen volgen docs/APP_API.md. Alle velden hebben een standaardwaarde zodat een oudere of
 // nieuwere MediaGuard-versie de app niet laat crashen (onbekende velden worden genegeerd).
@@ -18,7 +19,7 @@ data class Me(
 
 // -- /app/status ----------------------------------------------------------------------------
 @Serializable
-data class EmergencyStop(val active: Boolean = false, val reason: String? = null, val since: String? = null)
+data class EmergencyStop(val active: Boolean? = null, val reason: String? = null, val since: String? = null)
 
 /** Knop uit "Wacht op jou": hetzelfde endpoint als de web (POST /api/v1 + path). */
 @Serializable
@@ -70,9 +71,10 @@ data class AttentionItem(
     /** Knoppen die alleen een beheerder mag (die staan alleen in de web). */
     @SerialName("admin_actions") val adminActions: Int = 0,
 ) {
-    val jobId: Long? get() = href?.let { JOB_ID.find(it)?.groupValues?.get(1)?.toLongOrNull() }
+    val jobId: Long?
+        get() = href?.let { JOB_LINK.matchEntire(it) }?.groupValues?.get(1)?.toLongOrNull()?.takeIf { it > 0 }
 
-    companion object { private val JOB_ID = Regex("job=(\\d+)") }
+    companion object { private val JOB_LINK = Regex("""/\?job=([0-9]+)""") }
 }
 
 @Serializable
@@ -220,7 +222,10 @@ data class DailySummary(
     val window: String? = null,
     /** Einde van het rollende venster in UTC, de meettijd van /app/recent. */
     @SerialName("to") val windowEnd: String? = null,
-)
+) {
+    val isDaySummary: Boolean
+        get() = window == null && runCatching { LocalDate.parse(date) }.isSuccess
+}
 
 // -- /app/control ---------------------------------------------------------------------------
 @Serializable

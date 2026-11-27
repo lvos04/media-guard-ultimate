@@ -1,5 +1,6 @@
 package nl.mediaguard.app.ui
 
+import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -37,6 +38,10 @@ import nl.mediaguard.app.data.yesterday
 import retrofit2.HttpException
 import java.time.Instant
 import java.time.LocalDate
+import kotlin.time.AbstractLongTimeSource
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.DurationUnit
+import kotlin.time.TimeSource
 
 /** Basis: laadt één waarde, houdt de vorige zichtbaar tijdens verversen. */
 abstract class LoadViewModel<T> : ViewModel() {
@@ -83,7 +88,7 @@ class HistoryViewModel(private val repo: Repository, private val days: Int = 7) 
 private class OverviewSource<T>(
     private val scope: CoroutineScope,
     private val read: suspend () -> T,
-    private val measuredAt: (T) -> Long?,
+    private val freshness: (T, Freshness?) -> Freshness,
 ) {
     private val current = MutableStateFlow<UiState<T>>(UiState.Loading)
     val state = current.asStateFlow()
@@ -96,7 +101,7 @@ private class OverviewSource<T>(
         request = scope.launch {
             try {
                 val value = read()
-                current.value = UiState.Data(value, freshness = Freshness(measuredAt(value)))
+                current.value = UiState.Data(value, freshness = freshness(value, previous?.freshness))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -109,19 +114,41 @@ private class OverviewSource<T>(
     }
 }
 
+/** Loopt ook door als de telefoon slaapt. */
+private object TimeSinceBoot : AbstractLongTimeSource(DurationUnit.MILLISECONDS) {
+    override fun read(): Long = SystemClock.elapsedRealtime()
+}
+
 class StatusViewModel(
     private val repo: Repository,
     private val appVersion: String = "",
     private val clock: () -> Long = System::currentTimeMillis,
+    private val elapsed: TimeSource = TimeSinceBoot,
 ) : ViewModel() {
-    private fun measuredAt(stamp: String?): Long? =
+    private fun measuredAt(stamp: String?, now: Long): Long? =
         stamp?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
-            ?.takeIf { it <= clock() + Staleness.STATUS_INTERVAL_MS }
+            ?.takeIf { it <= now + Staleness.STATUS_INTERVAL_MS }
 
-    private val statusSource = OverviewSource(viewModelScope, repo::status) { measuredAt(it.generatedAt) }
-    private val missingSource = OverviewSource(viewModelScope, repo::missingCount) { clock() }
-    private val recentSource = OverviewSource(viewModelScope, repo::recent) {
-        if (it.window == "24h") measuredAt(it.windowEnd) else clock()
+    private fun statusFreshness(status: AppStatus, previous: Freshness?): Freshness {
+        val now = clock()
+        val stamp = measuredAt(status.generatedAt, now) ?: return Freshness()
+        // Ook een herhaalde lezing van dezelfde meting houdt haar oorspronkelijke vervaltijd.
+        if (previous?.lastOkAt == stamp) return previous.copy(error = null)
+        val oldest = now - Staleness.MAX_AGE_MS
+        // Een oud rapport vervalt direct. Een serverklok die iets voorloopt geeft geen extra tijd.
+        val remainingMs = stamp.coerceIn(oldest, now) - oldest
+        return Freshness(stamp, expiresAt = elapsed.markNow() + remainingMs.milliseconds)
+    }
+
+    private val statusSource = OverviewSource(viewModelScope, repo::status, ::statusFreshness)
+    private val missingSource = OverviewSource(viewModelScope, repo::missingCount) { _, _ -> Freshness(clock()) }
+    private val recentSource = OverviewSource(viewModelScope, repo::recent) { summary, _ ->
+        val now = clock()
+        Freshness(when {
+            summary.window == "24h" -> measuredAt(summary.windowEnd, now)
+            summary.isDaySummary -> now
+            else -> null
+        })
     }
     val state = statusSource.state
     val missing = missingSource.state

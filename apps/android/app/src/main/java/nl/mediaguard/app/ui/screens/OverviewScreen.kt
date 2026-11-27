@@ -109,15 +109,19 @@ internal fun panelStatus(status: UiState<AppStatus>, now: Long): PanelStatus {
     }
     val s = status.value
     val staleSince = Staleness.staleSince(status.freshness, now)
-    val core = if (s.emergencyStop.active) PeilStatus.Gepauzeerd else PeilStatus.Gezond
+    val core = when (s.emergencyStop.active) {
+        true -> PeilStatus.Gepauzeerd
+        false -> PeilStatus.Gezond
+        null -> PeilStatus.Onbekend
+    }
     val encoder = health(s.encoder.reachable)
     val downloads = health(s.downloads.clientsOk)
     val attention = totalStatus(s.attention.errors, s.attention.items)
     val total = when {
         staleSince != null -> PeilStatus.Verouderd
-        s.emergencyStop.active -> PeilStatus.Gepauzeerd
+        core == PeilStatus.Gepauzeerd -> PeilStatus.Gepauzeerd
         encoder == PeilStatus.Storing || downloads == PeilStatus.Storing || attention == PeilStatus.Beperkt -> PeilStatus.Beperkt
-        encoder == PeilStatus.Onbekend || downloads == PeilStatus.Onbekend -> PeilStatus.Onbekend
+        core == PeilStatus.Onbekend || encoder == PeilStatus.Onbekend || downloads == PeilStatus.Onbekend -> PeilStatus.Onbekend
         else -> PeilStatus.Gezond
     }
     return PanelStatus(core, encoder, downloads, total, staleSince)
@@ -249,7 +253,8 @@ private fun Kpis(s: AppStatus?, missing: UiState<Int>, a: OverviewActions, stale
 fun recentTitle(d: DailySummary?): String = when {
     d == null -> tr("Laatste 24 uur", "Last 24 hours")
     d.window == "24h" -> tr(d.label ?: "Laatste 24 uur", "Last 24 hours")
-    else -> tr("Gisteren", "Yesterday")
+    d.isDaySummary -> tr("Gisteren", "Yesterday")
+    else -> tr("Activiteit", "Activity")
 }
 
 @Composable

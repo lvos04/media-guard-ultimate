@@ -95,11 +95,14 @@ fun SpaceContent(status: UiState<AppStatus>, recent: UiState<DailySummary>, a: S
  */
 @Composable
 private fun EmergencyCard(s: AppStatus, a: SpaceActions) {
-    val on = s.emergencyStop.active
+    val on = s.emergencyStop.active == true
     MgCard(tone = if (on) Tone.Paused else null) {
         CardHeader(tr("Noodstop", "Emergency stop"), if (on) R.drawable.lucide_circle_pause else R.drawable.lucide_octagon_alert)
-        if (on) StatusBadge(PeilStatus.Gepauzeerd, label = tr("Noodstop actief", "Emergency stop active"))
-        else PeilLabel(Kenmerk(tr("Uit", "Off"), R.drawable.lucide_power_off))
+        when (s.emergencyStop.active) {
+            true -> StatusBadge(PeilStatus.Gepauzeerd, label = tr("Noodstop actief", "Emergency stop active"))
+            false -> PeilLabel(Kenmerk(tr("Uit", "Off"), R.drawable.lucide_power_off))
+            null -> StatusBadge(PeilStatus.Onbekend)
+        }
         Text(
             if (on) listOfNotNull(tr("Nieuwe grabs, encodes en vervangingen staan stil.", "New grabs, encodes and replacements are on hold."), s.emergencyStop.reason?.ifBlank { null },
                 s.emergencyStop.since?.let { tr("Sinds ${formatTime(it)}.", "Since ${formatTime(it)}.") }).joinToString(" ")

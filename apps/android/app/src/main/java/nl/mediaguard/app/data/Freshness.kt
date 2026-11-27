@@ -8,9 +8,10 @@ import kotlinx.serialization.json.contentOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import retrofit2.HttpException
 import java.net.InetAddress
+import kotlin.time.TimeMark
 
-/** Meettijd van de bron (of van de eigen lezing) en een eventuele fout bij het verversen. */
-data class Freshness(val lastOkAt: Long? = null, val error: String? = null)
+/** [lastOkAt] is de getoonde meettijd. Een statusrapport heeft daarnaast een monotone vervaltijd. */
+data class Freshness(val lastOkAt: Long? = null, val error: String? = null, val expiresAt: TimeMark? = null)
 
 object Staleness {
     const val STATUS_INTERVAL_MS = 20_000L
@@ -23,7 +24,8 @@ object Staleness {
     /** Sinds wanneer de getoonde gegevens verouderd zijn, of null als ze vers zijn (of er nog niets is). */
     fun staleSince(f: Freshness, now: Long, maxAgeMs: Long = MAX_AGE_MS): Long? {
         val ok = f.lastOkAt ?: return null
-        return if (f.error != null || now - ok >= maxAgeMs) ok else null
+        val expired = f.expiresAt?.hasPassedNow() ?: (now - ok >= maxAgeMs)
+        return if (f.error != null || expired) ok else null
     }
 
     /** Moet er nu een "geen contact"-melding komen? Eén keer per periode zonder contact. */

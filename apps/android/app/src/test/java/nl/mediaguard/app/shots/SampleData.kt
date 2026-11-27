@@ -51,6 +51,7 @@ object Sample {
 
     val status = AppStatus(
         version = "1.2.1",
+        emergencyStop = EmergencyStop(active = false),
         attention = Attention(count = 3, errors = 1, items = listOf(
             AttentionItem("encoding.conflict", "1 vervanging met een conflict", "error", "/quarantaine",
                 detail = "MediaGuard kon niet met zekerheid vaststellen of het origineel of het AV1-bestand actief is. " +

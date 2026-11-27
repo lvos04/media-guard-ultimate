@@ -147,7 +147,8 @@ class AppLogicTest {
     // -- 18: overzicht en knoppen ---------------------------------------------------------------
     @Test fun paneelToontAlleenGemetenGezondheid() {
         val now = 1_000_000L
-        val calm = AppStatus(encoder = EncoderStatus(reachable = true), downloads = Downloads(clientsOk = true))
+        val calm = AppStatus(emergencyStop = EmergencyStop(false), encoder = EncoderStatus(reachable = true),
+            downloads = Downloads(clientsOk = true))
         fun panel(value: AppStatus, time: Long? = now, error: String? = null) =
             panelStatus(UiState.Data(value, freshness = Freshness(time, error)), now)
         assertEquals(PeilStatus.Gezond, panel(calm).total)

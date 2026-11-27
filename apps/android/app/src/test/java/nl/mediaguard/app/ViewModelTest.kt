@@ -48,14 +48,17 @@ import retrofit2.HttpException
 import retrofit2.Response
 import java.io.IOException
 import java.time.Instant
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TestTimeSource
 
 /** Nep-MediaGuard voor de ViewModels: alleen wat de test nodig heeft. */
-private open class FakeRepo : Repository {
+internal open class FakeRepo : Repository {
     var statusResult: () -> AppStatus = { AppStatus(version = "1.2.1") }
     var missingResult: suspend () -> Int = { 3 }
     var recentResult: () -> DailySummary = { DailySummary(date = "2026-11-07") }
     val libraryCalls = mutableListOf<String?>()
     val actions = mutableListOf<String>()
+    val controls = mutableListOf<Pair<String, Map<String, JsonElement>>>()
     override suspend fun me() = Me("jan", "operator")
     override suspend fun status() = statusResult()
     override suspend fun summary(date: String?) = DailySummary(date = date ?: "")
@@ -63,7 +66,10 @@ private open class FakeRepo : Repository {
     override suspend fun paired(ntfyTopic: String?, appVersion: String?) = PairedResult(true)
     override suspend fun runAction(action: AttentionAction): String { actions += action.path; return "Gedaan" }
     override suspend fun systemUpdate(): JsonElement? = null
-    override suspend fun control(action: String, params: Map<String, JsonElement>, confirm: Boolean) = ControlResult(true, "ok")
+    override suspend fun control(action: String, params: Map<String, JsonElement>, confirm: Boolean): ControlResult {
+        controls += action to params
+        return ControlResult(true, "ok")
+    }
     override suspend fun seerrSearch(q: String) = SeerrPage()
     override suspend fun seerrTrending() = SeerrPage()
     override suspend fun seerrDetail(type: String, id: Long) = SeerrDetail()
@@ -83,6 +89,8 @@ private open class FakeRepo : Repository {
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ViewModelTest {
+    private val elapsed = TestTimeSource()
+
     @Before fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
     @After fun tearDown() = Dispatchers.resetMain()
 
@@ -90,7 +98,7 @@ class ViewModelTest {
         var now = 1_000_000L
         fun response() = AppStatus(version = "1.2.1", generatedAt = Instant.ofEpochMilli(now).toString())
         val repo = FakeRepo().apply { statusResult = ::response }
-        val vm = StatusViewModel(repo, appVersion = "1.2.1", clock = { now })
+        val vm = StatusViewModel(repo, appVersion = "1.2.1", clock = { now }, elapsed = elapsed)
         fun freshness() = (vm.state.value as UiState.Data).freshness
         vm.refresh()
         assertEquals(1_000_000L, freshness().lastOkAt)
@@ -112,7 +120,7 @@ class ViewModelTest {
         val now = 1_000_000L
         val old = now - Staleness.MAX_AGE_MS
         val repo = FakeRepo()
-        val vm = StatusViewModel(repo, clock = { now })
+        val vm = StatusViewModel(repo, clock = { now }, elapsed = elapsed)
         repo.statusResult = { AppStatus(generatedAt = Instant.ofEpochMilli(old).toString()) }
         vm.refresh()
         assertEquals(old, panelStatus(vm.state.value, now).staleSince)
@@ -127,7 +135,7 @@ class ViewModelTest {
         val now = 1_000_000L
         val end = now - 2 * Staleness.SUMMARY_INTERVAL_MS
         val repo = FakeRepo()
-        val vm = StatusViewModel(repo, clock = { now })
+        val vm = StatusViewModel(repo, clock = { now }, elapsed = elapsed)
         repo.recentResult = { DailySummary(window = "24h", windowEnd = Instant.ofEpochMilli(end).toString()) }
         vm.refresh()
         assertEquals(end, (vm.recent.value as UiState.Data).summaryStaleSince(now))
@@ -168,7 +176,7 @@ class ViewModelTest {
     @Test fun bronfoutBewaartEigenMeettijdEnWeigeringVerwijdertVorigeWaarde() {
         var now = 1_000_000L
         val repo = FakeRepo()
-        val vm = StatusViewModel(repo, clock = { now })
+        val vm = StatusViewModel(repo, clock = { now }, elapsed = elapsed)
         vm.refresh()
         now += 20_000
         repo.missingResult = { throw IOException("proef") }
@@ -219,7 +227,7 @@ class ViewModelTest {
         val report = AppStatus(generatedAt = Instant.ofEpochMilli(now).toString(),
             attention = Attention(count = 1, items = listOf(AttentionItem(actions = listOf(action), href = "/?job=3"))))
         val repo = FakeRepo().apply { statusResult = { report } }
-        val vm = StatusViewModel(repo, clock = { now })
+        val vm = StatusViewModel(repo, clock = { now }, elapsed = elapsed)
         assertFalse(vm.runAction(action))
         vm.refresh()
         assertTrue(vm.runAction(action))
@@ -227,6 +235,7 @@ class ViewModelTest {
         assertEquals("Gedaan", vm.message.value)
         // De bevestiging stond open toen de meting verliep of toen de actie uit de lijst verdween.
         now += Staleness.MAX_AGE_MS
+        elapsed += Staleness.MAX_AGE_MS.milliseconds
         assertFalse(vm.runAction(action))
         assertFalse(vm.retryJob(3))
         repo.statusResult = { AppStatus(generatedAt = Instant.ofEpochMilli(now).toString()) }

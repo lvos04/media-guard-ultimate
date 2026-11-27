@@ -267,6 +267,10 @@ class TaalTest {
         assertEquals("Last 24 hours", engels { recentTitle(DailySummary(window = "24h")) })
         assertEquals("Last 24 hours", engels { recentTitle(null) })
         assertEquals("Yesterday", engels { recentTitle(DailySummary(date = "2026-11-07")) })
+        for (onbekend in listOf(DailySummary(), DailySummary(date = "2026-11-07", window = "?"))) {
+            assertEquals("Activiteit", recentTitle(onbekend))
+            assertEquals("Activity", engels { recentTitle(onbekend) })
+        }
     }
 
     @Test fun waarschuwingEnInitialen() {
