@@ -34,7 +34,7 @@ def test_gebrekkige_spdx_blokkeert_bewijs(tmp_path, monkeypatch, bewijs, gebrek)
         del sbom["creationInfo"]
     (tmp_path / "aio.spdx.json").write_text(json.dumps(sbom))
     monkeypatch.setattr(bewijs, "digest", lambda ref: pin)
-    monkeypatch.setattr(bewijs.subprocess, "check_output", lambda *a, **kw: "{}")
+    monkeypatch.setattr(bewijs, "platform_digest", lambda ref: None)
     with pytest.raises(ValueError, match="SPDX"):
         bewijs.bewijs_custom_app(_manifest(), pin, tmp_path)
     assert not (tmp_path / "digests.json").exists()

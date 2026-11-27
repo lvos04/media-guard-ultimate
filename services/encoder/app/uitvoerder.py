@@ -1957,7 +1957,7 @@ async def run_job(
         # Na een afgekeurde hercontrole blijft ditzelfde bestand herkenbaar voor de volgende start.
         hervat_sha256 = (await asyncio.to_thread(file_sha256, result_path)
                         if verification.passed or prior_result else None)
-        with database.connection() as conn:
+        with database.connection() as conn, conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO verificatie(
