@@ -240,6 +240,15 @@ def vul(db: Path, profiel: str, rijen: int = 2) -> dict[str, Any]:
                 if al != 1 or geldig != 1:
                     mislukt[tabel] = "de door de migratie vastgelegde offsite-doelgeneratie is ongeldig"
                 continue
+            if (profiel, tabel) == ("core", "hub_pool_revision"):
+                geldig = conn.execute(
+                    "SELECT COUNT(*) FROM hub_pool_revision WHERE id=1 "
+                    "AND typeof(revision)='text' AND length(revision)=32 "
+                    "AND revision NOT GLOB '*[^0-9a-f]*'"
+                ).fetchone()[0]
+                if al != 1 or geldig != 1:
+                    mislukt[tabel] = "de door de migratie vastgelegde pooladresrevisie is ongeldig"
+                continue
             if (profiel, tabel) == ("core", "outbox_cursor_history"):
                 geldig = conn.execute(
                     "SELECT COUNT(*) FROM outbox_cursor_history h JOIN outbox_retention r "

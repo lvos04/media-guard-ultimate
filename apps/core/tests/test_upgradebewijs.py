@@ -154,11 +154,13 @@ def test_vul_vult_een_lege_database_inert(tmp_path: Path) -> None:
                              internal_token="t")
     with closing(create_app(settings).state.ctx.db) as db:
         generatie = db.fetch_one("SELECT generation FROM outbox_generation")[0]
+        poolrevisie = db.fetch_one("SELECT revision FROM hub_pool_revision WHERE id=1")[0]
     uit = ub.vul(tmp_path / "core" / "mediaguard.db", "core")
     assert uit["niet_gevuld"] == {}
     conn = sqlite3.connect(tmp_path / "core" / "mediaguard.db")
     try:
         assert conn.execute("SELECT generation FROM outbox_generation").fetchall() == [(generatie,)]
+        assert conn.execute("SELECT revision FROM hub_pool_revision").fetchall() == [(poolrevisie,)]
         # inerte toestanden: niets gaat na de start draaien, zoeken of verbinden
         assert {r[0] for r in conn.execute("SELECT status FROM jobs")} <= {"succeeded", "cancelled"}
         assert {r[0] for r in conn.execute("SELECT archived FROM instances")} == {1}
@@ -182,6 +184,18 @@ def test_vul_vult_een_lege_database_inert(tmp_path: Path) -> None:
                             "NULL").fetchone()[0] >= 1
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("revisie", [None, "z" * 32])
+def test_vul_weigert_onbruikbare_pooladresrevisie(ctx, revisie):
+    if revisie is None:
+        ctx.db.execute("DELETE FROM hub_pool_revision")
+    else:
+        ctx.db.execute("UPDATE hub_pool_revision SET revision=?", (revisie,))
+    rij = "SELECT id,revision FROM hub_pool_revision"
+    voor = ctx.db.fetch_dicts(rij)
+    assert "hub_pool_revision" in ub.vul(ctx.db.path, "core")["niet_gevuld"]
+    assert ctx.db.fetch_dicts(rij) == voor
 
 
 def test_vul_weigert_een_ontbrekende_generatie(tmp_path: Path) -> None:
