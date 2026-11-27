@@ -124,8 +124,8 @@ def principal_from_request(request: Request) -> Principal | None:
     route = getattr(request.scope.get("route"), "path_format", None)
     backup_report = (request.scope.get("method") == "GET" and route == "/connector/v1/items"
                      and request.query_params.get("type") == "backups")
-    read_only = backup_report or (request.scope.get("method") == "GET" and
-                                  route == "/api/v1/backups")
+    read_only = backup_report or (request.scope.get("method") == "GET" and route in (
+        "/api/v1/backups", "/connector/v1/downloads/count"))
     internal = request.headers.get("X-MediaGuard-Token")
     if internal and internal_token_ok(request, internal, app.settings.internal_token):
         return Principal(username="internal", role="admin", machine=True)

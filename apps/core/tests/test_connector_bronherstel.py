@@ -21,6 +21,67 @@ from mediaguard.provisioning.templates import owned_name
 from mediaguard.storage_forecast import POOL_STATE, record_pool
 
 ITEMS = "/connector/v1/items"
+DOWNLOAD_COUNT = "/connector/v1/downloads/count"
+
+
+@pytest.mark.parametrize("aantal", [0, 2])
+def test_downloadtelling_leest_alleen_de_laatste_activiteitsmeting(
+        client, anon_client, ctx, aantal):
+    headers = key(client, scopes=[])
+    ctx.db.execute("UPDATE instances SET suspended=1")
+    store.save(ctx, {"download_clients": [{
+        "name": "Proefbron", "implementation": "QBittorrent", "host": "bron.invalid",
+        "port": 8080, "username": "proef",
+    }]}, "proef")
+    calls = []
+
+    def bron(request):
+        calls.append(request.method)
+        if request.method == "POST":
+            return httpx.Response(200, text="Ok.")
+        return httpx.Response(200, json=[
+            {"hash": f"{i + 1:040x}", "name": "Proefbestand", "state": "downloading"}
+            for i in range(aantal)
+        ])
+
+    ctx.services["live_download_transport"] = httpx.MockTransport(bron)
+    index = ctx.settings.download_index_path
+    assert anon_client.get(DOWNLOAD_COUNT).status_code == 401
+    voor = database_snapshot(ctx)
+    koud = anon_client.get(DOWNLOAD_COUNT, headers=headers).raise_for_status().json()
+    assert koud["total"] is None and koud["reason_code"] == "meting_ontbreekt"
+    assert calls == [] and not index.exists()
+    assert_database_preserved(ctx, voor)
+
+    activiteit = client.get("/api/v1/activity").raise_for_status().json()
+    assert activiteit["summary"]["queued_downloads"] == aantal
+    assert calls == ["POST", "GET"]
+    meettijd = datetime.fromisoformat(ctx.services["activity_observation"][1])
+    index.write_bytes(b"bestaande proefindex")
+    ctx.db.execute("UPDATE sessions SET last_seen_at=NULL")
+    voor = database_snapshot(ctx)
+    for lezer, koppen in ((anon_client, headers), (client, {})):
+        stand = lezer.get(DOWNLOAD_COUNT, headers=koppen).raise_for_status().json()
+        assert set(stand) == {"total", "status", "observed_at", "reason_code"}
+        assert (stand["total"], stand["status"], stand["reason_code"]) == (aantal, "ok", None)
+        assert datetime.fromisoformat(stand["observed_at"]) == meettijd
+    assert calls == ["POST", "GET"] and index.read_bytes() == b"bestaande proefindex"
+    assert_database_preserved(ctx, voor)
+
+
+@pytest.mark.parametrize(("leeftijd", "fouten", "clients_ok", "reden"), [
+    (901, [], True, "meting_verouderd"), (-60, [], True, "meettijd_ongeldig"),
+    (0, ["bronfout"], True, "bron_onbereikbaar"), (0, [], False, "bron_onbereikbaar"),
+])
+def test_onvolledige_of_onbruikbare_downloadtelling_geeft_geen_nul(
+        client, ctx, leeftijd, fouten, clients_ok, reden):
+    meettijd = datetime.now(UTC) - timedelta(seconds=leeftijd)
+    ctx.services["activity_observation"] = (
+        {"downloads": [], "errors": fouten, "summary": {"download_clients_ok": clients_ok}},
+        meettijd.isoformat(),
+    )
+    stand = client.get(DOWNLOAD_COUNT).raise_for_status().json()
+    assert (stand["status"], stand["total"], stand["reason_code"]) == ("unknown", None, reden)
 
 
 def download_source(ctx, implementation):

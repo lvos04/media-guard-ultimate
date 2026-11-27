@@ -1416,6 +1416,60 @@
         "title": "DismissEntry",
         "type": "object"
       },
+      "DownloadCount": {
+        "properties": {
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "status",
+          "observed_at",
+          "total",
+          "reason_code"
+        ],
+        "title": "DownloadCount",
+        "type": "object"
+      },
       "DownloadItem": {
         "additionalProperties": false,
         "properties": {
@@ -27176,6 +27230,28 @@
           }
         },
         "summary": "Discover",
+        "tags": [
+          "connector"
+        ]
+      }
+    },
+    "/connector/v1/downloads/count": {
+      "get": {
+        "description": "Aantal wachtrijitems uit de laatste activiteitsmeting, met de oorspronkelijke meettijd.",
+        "operationId": "download_count_connector_v1_downloads_count_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadCount"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Download Count",
         "tags": [
           "connector"
         ]

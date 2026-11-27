@@ -18,6 +18,7 @@ routes `/healthz` en `/readyz` laten de hele database gelijk.
 | `GET /connector/v1/discover` | Dienst, bronversie, schemaversie, `read`, rol `viewer`, `item_types`, lege `actions`, maximale meetleeftijd 900 seconden en paginagrootte 200 |
 | `GET /connector/v1/health` | Checks `database`, `worker`, `jobs`, `encoder` en `instances`; totaal is de slechtste check |
 | `GET /connector/v1/items?type=&cursor=&limit=` | Zes datasets met vaste projecties, UTC-meettijd, deeplink en ETag |
+| `GET /connector/v1/downloads/count` | Aantal items in de laatst gemeten downloadwachtrij voor een aangemelde kijker |
 | `GET /connector/v1/evidence/{id}` | Geredigeerd pakket op basis van een auditregel of job |
 | `GET /connector/v1/events` | Geredigeerde outbox in de event-envelop van hoofdstuk 7, met cursor en maximaal 200 gebeurtenissen per pagina |
 | `POST /connector/v1/propose`, `/apply`, `/rollback` | Vaste weigering `501 capability_unavailable` na de bestaande toegangscontrole; geen uitvoering |
@@ -29,6 +30,13 @@ geven `Cache-Control: no-store`. Wanneer de kern niet bereikbaar is, geeft de
 webdoorgifte op deze routes 503 met `Retry-After`; publieke gezondheidsroutes geven
 ook dan geen versie, pad of instelling prijs. Bestaande API-routes en de bestaande
 container-healthcheck behouden hun afhandeling en foutformaat.
+
+De downloadteller leest de bestaande activiteitsmeting uit het geheugen. Een
+aanroep laat de downloadclients, de ID-index en de gebruikstijd van de geldige
+sleutel of sessie ongemoeid. `total` telt de wachtrijitems over alle bronnen.
+Een volledig gemeten lege wachtrij geeft nul. Een ontbrekende, onvolledige,
+toekomstige of meer dan 900 seconden oude meting geeft `status=unknown`,
+`total=null` en een `reason_code`. `observed_at` komt van de bronmeting.
 
 ## Verzoeken correleren
 

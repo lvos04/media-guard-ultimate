@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
+from pydantic import AwareDatetime, BaseModel
 
 from mediaguard import __version__, health_summary
 from mediaguard.auth import Principal, require_viewer
@@ -74,6 +75,35 @@ def discover(_: Principal = Depends(require_viewer)) -> dict[str, Any]:
         "item_types": list(items.ITEM_TYPES),
         "actions": [],
     }
+
+
+class DownloadCount(BaseModel):
+    status: Literal["ok", "unknown"]
+    observed_at: AwareDatetime | None
+    total: int | None
+    reason_code: str | None
+
+
+@router.get("/connector/v1/downloads/count")
+def download_count(_: Principal = Depends(require_viewer),
+                   ctx: AppContext = Depends(get_app_context)) -> DownloadCount:
+    """Aantal wachtrijitems uit de laatste activiteitsmeting, met de oorspronkelijke meettijd."""
+    observation = ctx.services.get("activity_observation")
+    measured = parse(observation[1]) if observation else None
+    now = datetime.now(UTC)
+    if measured is None:
+        reason = "meting_ontbreekt"
+    elif measured > now:
+        reason = "meettijd_ongeldig"
+    elif (now - measured).total_seconds() > MAX_AGE:
+        reason = "meting_verouderd"
+    else:
+        activity = observation[0]
+        if activity["errors"] == [] and activity["summary"]["download_clients_ok"] is True:
+            return DownloadCount(status="ok", observed_at=measured,
+                                 total=len(activity["downloads"]), reason_code=None)
+        reason = "bron_onbereikbaar"
+    return DownloadCount(status="unknown", observed_at=measured, total=None, reason_code=reason)
 
 
 @router.get("/connector/v1/health")
