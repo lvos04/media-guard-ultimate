@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from mediaguard import attention
+from mediaguard import attention, hub_pool, monitor
 from mediaguard.activity.api import CACHE_SECONDS, activity_cached
 from mediaguard.api.system import status_counts
 from mediaguard.auth import Principal, require_viewer
@@ -30,7 +30,7 @@ from mediaguard.instances.registry import INSTANCE_ID_RE
 from mediaguard.notify import offsite
 from mediaguard.read_observation import instant, observation_read
 from mediaguard.secrets_store import redact
-from mediaguard.storage_forecast import POOL_STATE, pool_observed_at
+from mediaguard.storage_forecast import POOL_REQUEST, POOL_STATE, pool_observed_at
 from mediaguard.wanted.engine import open_wanted_page
 
 from . import backups
@@ -302,7 +302,7 @@ class Snapshot(BaseModel):
     collected_at: float
     rows: list[SnapshotItem]
     reason: str | None
-    target_generation: str | None = None
+    source_generation: str | None = None
     rollback_request: tuple[bool, bool] | None = None
 
 
@@ -388,6 +388,21 @@ async def _observe(ctx: AppContext, principal: Principal, kind: ItemType,
                     rows=rows, reason=reason)
 
 
+def _incident_generation(ctx: AppContext) -> str | None:
+    token = observation_read.set(True)
+    try:
+        binding = hub_pool.binding(ctx)
+        return content_hash([
+            ctx.state_get(POOL_STATE), ctx.state_get(POOL_REQUEST),
+            binding.revision if binding else None, ctx.secrets.exists("truenas:apikey"),
+            monitor.pool_item(ctx),
+        ])
+    except (OSError, TypeError, ValueError):
+        return None
+    finally:
+        observation_read.reset(token)
+
+
 async def _snapshot(ctx: AppContext, principal: Principal, kind: ItemType) -> Snapshot:
     # Elke geautoriseerde rol ziet hetzelfde herstelrapport. Deel de waarneming.
     role = "viewer" if kind == "backups" else principal.role
@@ -397,13 +412,15 @@ async def _snapshot(ctx: AppContext, principal: Principal, kind: ItemType) -> Sn
     def cache_state() -> tuple[str | None, tuple[bool, bool] | None]:
         if kind == "backups":
             return offsite.generation(ctx), backups.rollback_request(ctx.settings.data_dir)
+        if kind == "incidents":
+            return _incident_generation(ctx), None
         return None, None
 
     def fresh(previous: Snapshot | None,
               state: tuple[str | None, tuple[bool, bool] | None]) -> bool:
         return (previous is not None
-                and (kind != "backups" or state[0] is not None)
-                and (previous.target_generation, previous.rollback_request) == state
+                and (kind not in {"backups", "incidents"} or state[0] is not None)
+                and (previous.source_generation, previous.rollback_request) == state
                 and time.monotonic() - previous.collected_at < cache_seconds)
 
     current = cache_state()
@@ -417,7 +434,7 @@ async def _snapshot(ctx: AppContext, principal: Principal, kind: ItemType) -> Sn
         if fresh(previous, current):
             return previous
         result = await _observe(ctx, principal, kind, previous)
-        result.target_generation, result.rollback_request = current
+        result.source_generation, result.rollback_request = current
         ctx.services[slot] = result
         return result
 
@@ -492,6 +509,8 @@ async def get_items(
                 or time.monotonic() - snapshot.collected_at > MAX_AGE
                 or snapshot.observed_at is None
                 or _stale(snapshot.observed_at)
+                or (type_ == "incidents" and (not snapshot.source_generation
+                    or snapshot.source_generation != _incident_generation(ctx)))
             ):
                 return failure(409, "snapshot_changed", "Begin opnieuw zonder cursor.",
                                {"restart": True})
