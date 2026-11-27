@@ -170,7 +170,7 @@ def _reject(ctx: AppContext, request: HTTPConnection, key: str, why: str, *,
 
 
 def authenticate(ctx: AppContext, request: HTTPConnection, key: str, *,
-                 backup_report: bool = False) -> Principal:
+                 backup_report: bool = False, record_usage: bool = True) -> Principal:
     """Geldige sleutel → machine-principal; anders 401 (of 429 bij te veel fouten)."""
     from mediaguard.auth import Principal
 
@@ -202,7 +202,7 @@ def authenticate(ctx: AppContext, request: HTTPConnection, key: str, *,
         # kan alleen via een handmatig aangepaste database: nooit stil als operator gebruiken
         raise _reject(ctx, request, key, f"rechten (scopes) op sleutel '{row['name']}' met rol "
                                          f"{row['role']}", count=False)
-    if not backup_report:
+    if record_usage and not backup_report:
         _touch(ctx, int(row["id"]), row["last_used_at"])
     return Principal(username=f"apikey:{row['name']}", role=str(row["role"]), machine=True,
                      scopes=scopes)

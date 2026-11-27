@@ -124,6 +124,8 @@ def principal_from_request(request: Request) -> Principal | None:
     route = getattr(request.scope.get("route"), "path_format", None)
     backup_report = (request.scope.get("method") == "GET" and route == "/connector/v1/items"
                      and request.query_params.get("type") == "backups")
+    read_only = backup_report or (request.scope.get("method") == "GET" and
+                                  route == "/api/v1/backups")
     internal = request.headers.get("X-MediaGuard-Token")
     if internal and internal_token_ok(request, internal, app.settings.internal_token):
         return Principal(username="internal", role="admin", machine=True)
@@ -134,7 +136,8 @@ def principal_from_request(request: Request) -> Principal | None:
         from mediaguard.apikeys import authenticate
 
         # geldig -> principal; anders HTTPException 401/429 (geen terugval op de cookie)
-        principal = authenticate(app, request, api_key, backup_report=backup_report)
+        principal = authenticate(app, request, api_key, backup_report=backup_report,
+                                 record_usage=not read_only)
         scope_guard(request, principal)
         return principal
     if app.settings.dev_auth_bypass:
@@ -151,7 +154,7 @@ def principal_from_request(request: Request) -> Principal | None:
     if row is None or row["disabled"] or row["expires_at"] < utcnow():
         return None
     now = utcnow()
-    if not backup_report and (not row["last_seen_at"] or row["last_seen_at"][:16] != now[:16]):
+    if not read_only and (not row["last_seen_at"] or row["last_seen_at"][:16] != now[:16]):
         # hooguit één schrijfactie per minuut per sessie (overzicht 'ingelogde apparaten')
         def touch() -> None:
             app.db.execute("UPDATE sessions SET last_seen_at=? WHERE token_hash=?", (now, th))

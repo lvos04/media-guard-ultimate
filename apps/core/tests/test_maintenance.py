@@ -28,6 +28,17 @@ def test_backup_create_list_restore(client, ctx):
     assert ctx.config.value("ui.theme") == "light"
 
 
+def test_backuplijst_bewaart_de_aanmeldtijden(client, anon_client, ctx):
+    from test_connector_lezen import assert_database_preserved, database_snapshot, key
+
+    headers = key(client, scopes=[])
+    ctx.db.execute("UPDATE sessions SET last_seen_at=NULL")
+    voor = database_snapshot(ctx)
+    for lezer, koppen in ((anon_client, headers), (client, {})):
+        assert lezer.get("/api/v1/backups", headers=koppen).status_code == 200
+    assert_database_preserved(ctx, voor)
+
+
 def test_backup_path_traversal_rejected(client):
     assert client.get("/api/v1/backups/..%2Fsecret.key/download").status_code in (404, 422)
 
