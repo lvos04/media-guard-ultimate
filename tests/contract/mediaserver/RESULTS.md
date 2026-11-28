@@ -68,7 +68,7 @@ Een eerdere stockpoging stopte bij een te strikte vergelijking in B2 (16 → 16 
 
 ### Herhaling in ronde 2
 
-De lokale stockrun en de contractrun met `jelly-leon:p6` hebben bij de eerste wachtrijpoging in ronde 2 geen testslot gekregen. Na ruim een uur wachten was de kandidaatbouw nog niet gestart. **NIET GEDRAAID (geen testslot)** geldt voor deze twee runs. De groene kernproeven en de upgradejob in run 127 leveren afzonderlijk bewijs.
+De eerste stockpoging in ronde 2 bereikte B2. De vorige release stopte normaal. De hulpcontainer voor de nulmeting kon onder de testgebruiker de bovenliggende privémap niet doorlopen. De kandidaat was nog niet gestart. Na 16 groene tests stopte pytest met exitcode 1. De hulpcontainer koppelt nu dezelfde `config`-map op hetzelfde pad als de draaiende applicatie. De database wordt in beide gevallen alleen-lezen geopend.
 
 ### Opnieuw meten
 

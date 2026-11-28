@@ -747,9 +747,10 @@ class MediaGuard:
                          "/opt/venv/bin/python", "-c", _DB_LEZEN,
                          "/config/core/mediaguard.db", velden)
         else:
+            # De testgebruiker bezit config. De bovenliggende privémap behoort aan de runner.
             uit = docker("run", "--rm", "--user", f"{APP_UID}:{APP_UID}", "--network", "none",
-                         "--entrypoint", "/opt/venv/bin/python", "-v", f"{MGDIR}:/mnt", VORIGE,
-                         "-c", _DB_LEZEN, "/mnt/config/core/mediaguard.db", velden)
+                         "--entrypoint", "/opt/venv/bin/python", "-v", f"{MGDIR / 'config'}:/config",
+                         VORIGE, "-c", _DB_LEZEN, "/config/core/mediaguard.db", velden)
         return json.loads(uit.splitlines()[-1])
 
     def stop(self, fase: str) -> str:
