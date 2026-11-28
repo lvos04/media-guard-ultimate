@@ -16,13 +16,12 @@ from unittest.mock import patch
 import psutil
 import pytest
 from conftest import TESTDATA, beeldtijden
-from test_planner import _planner_case
 from test_uitvoerder import _case
 
-from app import geplandestop, hervatpunten, uitvoerder
+from app import geplandestop, uitvoerder
 from app.config import Settings
 from app.db import Database
-from app.planner import Planner, recover_orphaned_jobs
+from app.planner import recover_orphaned_jobs
 from app.vervanging import file_sha256
 
 
@@ -235,6 +234,11 @@ def test_tijdafwijking_midden_in_deel_bewaart_alle_beelden(tmp_path):
 @pytest.mark.parametrize("beginstatus", ["verifieren", "wacht"])
 async def test_planner_verwerkt_volgende_taak_bij_onleesbaar_resultaat(tmp_path, monkeypatch,
                                                                      beginstatus):
+    from test_planner import _planner_case
+
+    from app import hervatpunten
+    from app.planner import Planner
+
     db, settings, (job, ander) = _planner_case(tmp_path)
     cache = settings.cache_root / str(job)
     cache.mkdir()
