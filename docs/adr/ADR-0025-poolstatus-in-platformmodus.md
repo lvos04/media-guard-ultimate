@@ -22,9 +22,13 @@ die bij dat adres werd getoond. De kluis controleert die revisie binnen de
 schrijftransactie. Na een adreswissel opent de beheerder het formulier opnieuw,
 ook als het oorspronkelijke adres opnieuw gekozen is.
 
-Een globaal pooladres heeft een leeg scope-ID. Staat een adres uit een oudere
-versie uitsluitend onder een afwijkend scope-ID, dan pauzeert MediaGuard het
-opruimen tot de beheerder het globale adres kiest of de instelling herstelt.
+Een globaal pooladres heeft een leeg scope-ID. Ook met een lege globale waarde
+kan een oudere installatie nog een adres onder een ander scope-ID bevatten.
+Zonder directe poolbron pauzeren beide opruimers dan. Na de keuze van een
+geldig globaal adres is een verse, gezonde meting nodig om het opruimen te
+hervatten. De beheerder kan ook expliciet ontkoppelen door het adres leeg op te
+slaan of de standaardwaarde te herstellen. Beide handelingen verwijderen de
+oude pooladressen.
 
 ## Voorrang en geldigheid
 

@@ -61,12 +61,9 @@ def binding(ctx: AppContext) -> PoolBinding | None:
 def configured(ctx: AppContext) -> bool:
     # Een oudere versie accepteerde globale pooladressen met een scope-ID. Pauzeer
     # ook dan, maar gebruik uitsluitend het echte globale adres voor netwerkverkeer.
-    row = ctx.db.fetch_one(
-        "SELECT COALESCE((SELECT value_json <> '\"\"' FROM settings_values "
-        "WHERE scope_type='global' AND scope_id='' AND key=?), "
-        "EXISTS (SELECT 1 FROM settings_values WHERE scope_type='global' AND scope_id>'' "
-        "AND key=? AND value_json <> '\"\"'))", (URL_KEY, URL_KEY))
-    return bool(row[0])
+    return ctx.db.fetch_one(
+        "SELECT 1 FROM settings_values WHERE scope_type='global' AND key=? "
+        "AND value_json <> '\"\"' LIMIT 1", (URL_KEY,)) is not None
 
 
 def fresh(observed_at: Any, valid_until: Any) -> bool:

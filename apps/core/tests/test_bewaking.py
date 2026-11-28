@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -805,20 +806,27 @@ def test_poolhub_adreswisseling_trekt_open_formulier_in(client, ctx):
     assert ctx.secrets.has(hub_pool.SECRET)
 
 
-def test_poolhub_upgrade_bewaart_bestaande_binding(settings, tmp_path, monkeypatch):
-    from mediaguard import db, hub_pool
-    from mediaguard.api.settings import register_settings
-    from mediaguard.app import build_context
+@pytest.fixture
+def poolschema_158(tmp_path):
+    from mediaguard import db
 
     oud_schema = tmp_path / "schema-tot-158"
     oud_schema.mkdir()
     for script in db.MIGRATIONS_DIR.glob("*.sql"):
         if script.name < "159":
             (oud_schema / script.name).symlink_to(script)
+    return oud_schema
+
+
+def test_poolhub_upgrade_bewaart_bestaande_binding(settings, poolschema_158, monkeypatch):
+    from mediaguard import db, hub_pool
+    from mediaguard.api.settings import register_settings
+    from mediaguard.app import build_context
+
     adres = "https://hub.example.test"
     geheimrij = "SELECT * FROM secrets WHERE name=?"
     with monkeypatch.context() as oud:
-        oud.setattr(db, "MIGRATIONS_DIR", oud_schema)
+        oud.setattr(db, "MIGRATIONS_DIR", poolschema_158)
         ctx = build_context(settings)
         try:
             register_settings()
@@ -834,6 +842,84 @@ def test_poolhub_upgrade_bewaart_bestaande_binding(settings, tmp_path, monkeypat
         assert nieuw.secrets.get(hub_pool.SECRET) == "proefwaarde"
     finally:
         nieuw.db.close()
+
+
+@pytest.fixture
+def poolclient_na_migratie_159(settings, poolschema_158, monkeypatch, request):
+    from mediaguard import db, hub_pool
+
+    migratie = db.MIGRATIONS_DIR / "159_hub_poolrevisie.sql"
+    monkeypatch.setattr(db, "MIGRATIONS_DIR", poolschema_158)
+    versie = "SELECT max(version) FROM schema_migrations"
+    oud_adres = "https://oude-hub.example.test"
+    with closing(db.Database(settings.db_path)) as oud:
+        oud.initialize()
+        assert oud.fetch_one(versie)[0] == "158_hub_poolbron"
+        # Deze twee rijen konden naast elkaar ontstaan via de oude instellingen-API.
+        with oud.transaction() as conn:
+            conn.executemany(
+                "INSERT INTO settings_values(scope_type,scope_id,key,value_json,updated_at,"
+                "updated_by) VALUES ('global',?,?,?,?,'test')",
+                [(scope, hub_pool.URL_KEY, db.dumps(adres), utcnow())
+                 for scope, adres in [("", ""), ("ander", oud_adres)]])
+
+    (poolschema_158 / migratie.name).symlink_to(migratie)
+    client = request.getfixturevalue("client")
+    ctx = client.app.state.ctx
+    assert ctx.db.fetch_one(versie)[0] == migratie.stem
+    assert ctx.config.raw("global", "", hub_pool.URL_KEY) == ""
+    assert ctx.config.raw("global", "ander", hub_pool.URL_KEY) == oud_adres
+    assert hub_pool.origin(ctx) == ""
+    assert client.get("/api/v1/settings/pool-hub-binding").json() is None
+    return client
+
+
+def test_poolhub_gemengde_adressen_na_migratie_159(poolclient_na_migratie_159, request):
+    from mediaguard import hub_pool
+    from mediaguard import storage_forecast as storage
+
+    client = poolclient_na_migratie_159
+    ctx = client.app.state.ctx
+
+    def pauzeredenen():
+        return [
+            storage.pool_cleanup_pause_reason(ctx),
+            storage.pool_cleanup_pause_reason(ctx, quarantine=True),
+        ]
+
+    assert pauzeredenen() == [hub_pool.UNKNOWN, hub_pool.UNKNOWN]
+    meting = asyncio.run(storage.refresh_pool(ctx))
+    assert meting["source"] == "hub" and meting["reachable"] is False
+    assert pauzeredenen() == [hub_pool.UNKNOWN, hub_pool.UNKNOWN]
+    gekozen = {"key": hub_pool.URL_KEY, "value": "https://hub.example.test"}
+    client.patch("/api/v1/settings/scoped", json={"changes": [gekozen]}).raise_for_status()
+    assert hub_pool.binding(ctx).origin == gekozen["value"]
+    assert pauzeredenen() == [hub_pool.UNKNOWN, hub_pool.UNKNOWN]
+    simulator = request.getfixturevalue("poolhub")
+    assert pauzeredenen() == [hub_pool.UNKNOWN, hub_pool.UNKNOWN]
+    assert asyncio.run(storage.refresh_pool(ctx))["reachable"]
+    assert simulator["calls"] == 1 and pauzeredenen() == [None, None]
+
+
+@pytest.mark.parametrize("ontkoppelen", [{"value": ""}, {"reset": True}],
+                         ids=["leegmaken", "herstel-standaard"])
+def test_poolhub_ontkoppelt_gemengde_adressen_na_migratie_159(
+        poolclient_na_migratie_159, ontkoppelen):
+    from mediaguard import hub_pool
+    from mediaguard import storage_forecast as storage
+
+    client = poolclient_na_migratie_159
+    ctx = client.app.state.ctx
+    teruglink = "https://teruglink.example.test"
+    ctx.config.set("global", "", "system.hub_url", teruglink, "test")
+    client.patch("/api/v1/settings/scoped", json={"changes": [
+        {"key": hub_pool.URL_KEY, **ontkoppelen}]}).raise_for_status()
+    assert ctx.config.raw("global", "ander", hub_pool.URL_KEY) is None
+    assert ctx.config.raw("global", "", hub_pool.URL_KEY) == ontkoppelen.get("value")
+    assert ctx.config.value("system.hub_url") == teruglink
+    assert asyncio.run(hub_pool.read(ctx)) is None
+    assert storage.pool_cleanup_pause_reason(ctx) is None
+    assert storage.pool_cleanup_pause_reason(ctx, quarantine=True) is None
 
 
 def test_poolhub_beheer_via_bestaande_instellingen(client, viewer_client, anon_client, ctx):

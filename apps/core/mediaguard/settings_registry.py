@@ -178,17 +178,24 @@ class SettingsService:
         return cache
 
     def set(self, scope_type: str, scope_id: str, key: str, value: Any, actor: str) -> Any:
+        from mediaguard import hub_pool
+
         d = self.registry.get_def(key)
         if scope_type not in d.scopes:
             raise ValueError(f"{key} kan niet op scope '{scope_type}' worden ingesteld")
         value = d.validate(value)
-        self.db.execute(
-            "INSERT INTO settings_values(scope_type,scope_id,key,value_json,updated_at,updated_by)"
-            " VALUES (?,?,?,?,?,?) ON CONFLICT(scope_type,scope_id,key) DO UPDATE SET "
-            "value_json=excluded.value_json, updated_at=excluded.updated_at, "
-            "updated_by=excluded.updated_by",
-            (scope_type, scope_id or "", key, dumps(value), utcnow(), actor),
-        )
+        with self.db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO settings_values(scope_type,scope_id,key,value_json,updated_at,"
+                "updated_by) VALUES (?,?,?,?,?,?) ON CONFLICT(scope_type,scope_id,key) "
+                "DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at, "
+                "updated_by=excluded.updated_by",
+                (scope_type, scope_id or "", key, dumps(value), utcnow(), actor),
+            )
+            if key == hub_pool.URL_KEY and scope_type == "global" and not scope_id and value == "":
+                # Het formulier kan ook ontkoppelen door een leeg globaal adres op te slaan.
+                conn.execute("DELETE FROM settings_values WHERE scope_type='global' "
+                             "AND scope_id<>'' AND key=?", (key,))
         self.invalidate()
         return value
 
