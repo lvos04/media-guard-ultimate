@@ -68,7 +68,7 @@ Een eerdere stockpoging stopte bij een te strikte vergelijking in B2 (16 → 16 
 
 ### Herhaling in ronde 2
 
-De eerste stockpoging in ronde 2 bereikte B2. De vorige release stopte normaal. De hulpcontainer voor de nulmeting kon onder de testgebruiker de bovenliggende privémap niet doorlopen. De kandidaat was nog niet gestart. Na 16 groene tests stopte pytest met exitcode 1. De hulpcontainer koppelt nu dezelfde `config`-map op hetzelfde pad als de draaiende applicatie. De database wordt in beide gevallen alleen-lezen geopend.
+De eerste stockpoging in ronde 2 bereikte B2. De vorige release stopte normaal. De hulpcontainer voor de nulmeting kon onder de testgebruiker de bovenliggende privémap niet doorlopen. De kandidaat was nog niet gestart. Na 16 groene tests stopte pytest met exitcode 1. De hulpcontainer koppelt nu dezelfde `config`-map op hetzelfde pad als de draaiende applicatie. De database wordt in beide gevallen alleen-lezen geopend. Bij de volgende poging kon de hulpcontainer de nulmeting lezen. De kandidaat op `a35172e` kreeg bij het importeren van `mediaguard.settings_registry` een `PermissionError` onder de applicatiegebruiker. De kandidaatbouw had de bestandsrechten van de privécheckout overgenomen. De bouwstap maakt nu de meegeleverde kern, encoder en het manifest leesbaar en controleert de import onder die gebruiker.
 
 ### Opnieuw meten
 
