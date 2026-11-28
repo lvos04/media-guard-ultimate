@@ -14,11 +14,15 @@ De registrycontrole bevestigde de gepinde vorige MediaGuard-release `1.3.0-aio` 
 
 De vergelijking omvatte 177 vooraf gevulde tabellen. In beide richtingen waren er nul verloren rijen en nul gewijzigde beschermde rijen volgens het uitzonderingenbestand in versiebeheer. De twee geregistreerde originelen, het werkbestand en de mediatitel behielden alle vier hun SHA-256 na de upgrade en op elk van de drie terugvalkopieën.
 
+Op revisie `e92ebfc` meldde de upgradejob opnieuw ‘Upgrade: niets verloren’ en ‘terugzetten: niets verloren’. In de hervatproef voor encoder 1.2.2 bleven na een geplande en een onverwachte stop 60 van 144 beelden behouden. Beide proeven hervatten op 42 procent, codeerden de resterende 84 beelden en controleerden alle 144 beeldtijden. [Forgejo-run 127](https://git.medialeon.nl/leon/media-guard-ultimate/actions/runs/127)
+
 ### Eerste meting met stock Jellyfin en lokale Emby
 
 De eerste referentierun stopte bij B7. Tijdens het losmaken van Emby ging het aantal jobs van **71 naar 82** en het aantal regels jobgeschiedenis van **69 naar 78**. Elk vooraf gemeten jobkenmerk en elke volledige eerdere historieregel was terug te vinden.
 
 Het kandidaatlog verklaart de elf nieuwe jobs na de beheerhandeling. De importplanner gaf acht jobs van het type `imports.stuck_check` uit (72–75 en 79–82). De bibliotheekplanner gaf drie jobs van het type `library.sync` uit (76–78). De vier Arr-testinstanties waren onbereikbaar. De acht importcontroles hadden één poging. De al bestaande synchronisatiejob 71 bereikte zijn tweede, laatste poging. Bij elk van die negen eindfouten schrijft de werker één historieregel. Deze toerekening volgt uit de pogingen in het log en de foutafhandeling in `mediaguard.jobs`. De telling in de database bevestigt de toename met negen.
+
+Voor de herhaling archiveert het harnas de vier Arr-testinstanties via de beheer-API na de eerste gezondheidscontroles. Het wacht tot er nul plandoelen en nul open jobs zijn. De echte mediaserverbewaking loopt door. B7 en B8 vergelijken vervolgens elke kolom van elke job, elke historieregel en beide totaaltellingen. In een afzonderlijke API-proef blijven de Arr-instanties actief en staan de achtergrondwerkers stil. Zowel na losmaken als na herkoppelen bleef een lopende synchronisatiejob op 42 procent met dezelfde historie. De tegenproef keurde een afzonderlijke wijziging van het percentage en van de status af bij gelijke tellingen.
 
 | Controle met de stockserver | Vóór | Na |
 |---|---:|---:|
@@ -61,6 +65,10 @@ Deze run gebruikte de kandidaat `sha256:2f8501498cf4062cb6a2586470a468b4b661c4f7
 B8 en B9 kwamen door de stopregel niet aan bod. De afzonderlijke unittest `test_b9_keurt_log_met_proefsleutel_af` bevestigde dat een synthetische sleutel in een log wordt gevonden. Voor S-P6-31 (JLT-63) is A7 met het tv-profiel op stock gemeten. Voor alle testgevallen met de P6-image ontbreekt een meting, dus er is geen vergelijking tussen stock en P6.
 
 Een eerdere stockpoging stopte bij een te strikte vergelijking in B2 (16 → 16 jobs, 10 → 11 historieregels). De start van een werker mag een regel toevoegen. In de herhaling controleerde B2 voor elke bestaande job de vaste kenmerken en voor elke eerdere historieregel alle velden. B7 en B8 eisen daarnaast gelijke totaaltellingen. De tegenproef wijst zowel vervanging van een eerdere regel tijdens de upgrade als een extra regel tijdens het losmaken af.
+
+### Herhaling in ronde 2
+
+De lokale stockrun en de contractrun met `jelly-leon:p6` hebben bij de eerste wachtrijpoging in ronde 2 geen testslot gekregen. Na ruim een uur wachten was de kandidaatbouw nog niet gestart. **NIET GEDRAAID (geen testslot)** geldt voor deze twee runs. De groene kernproeven en de upgradejob in run 127 leveren afzonderlijk bewijs.
 
 ### Opnieuw meten
 
