@@ -46,6 +46,32 @@ def maak_ffmpeg(programmamap: Path, body: str) -> Path:
     return path
 
 
+def beeldtijden(path: Path) -> list[float]:
+    output = subprocess.check_output(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-threads",
+            "1",
+            "-select_streams",
+            "v:0",
+            "-show_frames",
+            "-show_entries",
+            "frame=best_effort_timestamp_time",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        text=True,
+    )
+    return [
+        float(line.split(",")[0])
+        for line in output.splitlines()
+        if line and line.split(",")[0].replace(".", "", 1).isdigit()
+    ]
+
+
 @pytest.fixture(scope="session", autouse=True)
 def testbestanden() -> str:
     """Genereer uitsluitend de korte representatieve testbestanden."""

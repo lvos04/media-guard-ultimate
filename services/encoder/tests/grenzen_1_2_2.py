@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from test_encodehervatting import beeldtijden
+from conftest import beeldtijden
 
 
 def pakketcontroles(pad):

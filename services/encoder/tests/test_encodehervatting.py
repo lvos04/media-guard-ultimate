@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import psutil
 import pytest
-from conftest import TESTDATA
+from conftest import TESTDATA, beeldtijden
 from test_planner import _planner_case
 from test_uitvoerder import _case
 
@@ -65,32 +65,6 @@ def onderbreek(settings: Settings, job: int, gepland: bool) -> None:
             )
         finally:
             uitvoerder.reset_shutdown()
-
-
-def beeldtijden(path: Path) -> list[float]:
-    output = subprocess.check_output(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-threads",
-            "1",
-            "-select_streams",
-            "v:0",
-            "-show_frames",
-            "-show_entries",
-            "frame=best_effort_timestamp_time",
-            "-of",
-            "csv=p=0",
-            str(path),
-        ],
-        text=True,
-    )
-    return [
-        float(line.split(",")[0])
-        for line in output.splitlines()
-        if line and line.split(",")[0].replace(".", "", 1).isdigit()
-    ]
 
 
 @pytest.mark.parametrize("gepland", [True, False], ids=["gepland", "onverwacht"])
