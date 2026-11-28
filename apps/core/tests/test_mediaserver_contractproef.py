@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -136,6 +138,34 @@ def test_upgrade_laat_alleen_toegevoegde_rijen_toe(monkeypatch: pytest.MonkeyPat
         contract.controleer_voortgang("upgrade", voor, vervangen, nieuwe_rijen_toegestaan=True)
     with pytest.raises(AssertionError, match="jobgeschiedenis"):
         contract.controleer_voortgang("losmaken", voor, aangevuld)
+
+
+def test_koppeling_keurt_gewijzigde_jobvoortgang_bij_gelijke_aantallen_af(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.syspath_prepend(str(CONTRACT))
+    monkeypatch.delenv("MGMS_VORIGE", raising=False)
+    import test_mediaserver_contract as contract
+
+    monkeypatch.setattr(contract, "METINGEN", {"controles": [], "feiten": {}})
+    db = tmp_path / "proef.db"
+    fixture = contract.ROOT / "tests/fixtures/aio/core-1.2.2.sql"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(fixture.read_text())
+
+    def meet():
+        return json.loads(subprocess.check_output(
+            [sys.executable, "-c", contract._DB_LEZEN, str(db), "volledig"], text=True))
+
+    voor = meet()
+    assert voor["planner"]["actieve_instanties"] == 4 and voor["planner"]["open_jobs"] == 0
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE jobs SET status='queued',progress=progress+1 WHERE id=1")
+    na = meet()
+    assert na["planner"]["open_jobs"] == 1
+    for fase in ("losmaken", "herkoppelen"):
+        with pytest.raises(AssertionError, match="jobgeschiedenis"):
+            contract.controleer_voortgang(fase, voor["voortgang"], na["voortgang"])
 
 
 @pytest.mark.parametrize("situatie", ["volledig", "doel_is_map", "bron_ontbreekt"])

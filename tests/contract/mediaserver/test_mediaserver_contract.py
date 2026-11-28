@@ -24,12 +24,13 @@ import hashlib
 import json
 import os
 import secrets
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -611,9 +612,18 @@ def rijkenmerken(sql):
 tabellen = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 print(json.dumps({
     "voortgang": {
-        "jobs": rijkenmerken("SELECT id,job_type,instance_id,target_type,target_id,created_at "
+        "jobs": rijkenmerken("SELECT * FROM jobs" if sys.argv[2] == "volledig" else
+                            "SELECT id,job_type,instance_id,target_type,target_id,created_at "
                             "FROM jobs"),
         "job_logs": rijkenmerken("SELECT id,job_id,ts,level,message FROM job_logs"),
+    },
+    "planner": {
+        "actieve_instanties": c.execute(
+            "SELECT COUNT(*) FROM instances WHERE archived=0").fetchone()[0],
+        "open_jobs": c.execute("SELECT COUNT(*) FROM jobs WHERE status NOT IN "
+                              "('succeeded','failed','cancelled')").fetchone()[0],
+        "geplande_jobs": dict(c.execute("SELECT job_type,COUNT(*) FROM jobs "
+                                       "WHERE created_by='system:scheduler' GROUP BY job_type")),
     },
     "geheim_server_1": h("SELECT name,ciphertext,updated_at,updated_by FROM secrets "
                          "WHERE name='mediaserver.api_key'"),
@@ -632,7 +642,8 @@ print(json.dumps({
     "extra_servers": [list(r) for r in c.execute(
         "SELECT id,kind,label,enabled FROM mediaserver_servers ORDER BY id")]
         if "mediaserver_servers" in tabellen else None,
-    "migraties": [r[0] for r in c.execute("SELECT version FROM schema_migrations ORDER BY version")],
+    "migraties": [r[0] for r in c.execute(
+        "SELECT version FROM schema_migrations ORDER BY version")],
 }))
 """
 _BANEN = ("import json,sqlite3;c=sqlite3.connect('file:/config/encode/app.db?mode=ro',uri=True);"
@@ -658,7 +669,14 @@ class MediaGuard:
         sql, fixture = upgradebewijs.kies_fixture(ROOT / "tests/fixtures/aio", "1.2.2")
         for d in ("config/core", "work", "data/media", "data/downloads"):
             (MGDIR / d).mkdir(parents=True, exist_ok=True)
-        upgradebewijs.herstel(sql, MGDIR / "config" / "core" / "mediaguard.db")
+        db = MGDIR / "config" / "core" / "mediaguard.db"
+        upgradebewijs.herstel(sql, db)
+        # De gedateerde proefgeschiedenis moet ook rond het dagelijkse onderhoud
+        # beschikbaar blijven. Leg in de privéfixture vast dat het al heeft gedraaid.
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            nu = datetime.now(UTC).isoformat()
+            conn.execute("INSERT INTO system_state(key,value_json,updated_at) "
+                         "VALUES ('maintenance.last_nightly',?,?)", (json.dumps({"at": nu}), nu))
         docker("run", "--rm", "--user", "0", "--network", "none", "--entrypoint", "sh",
                "-v", f"{MGDIR}:/mnt", VORIGE, "-c",
                f"chown -R {APP_UID}:{APP_UID} /mnt/config /mnt/work /mnt/data")
@@ -720,16 +738,18 @@ class MediaGuard:
         return json.loads(docker("exec", "--user", f"{APP_UID}:{APP_UID}", MG_NAAM,
                                  "/opt/venv/bin/python", "-c", _BANEN))
 
-    def db(self) -> dict[str, Any]:
+    def db(self, *, volledige_jobs: bool = False) -> dict[str, Any]:
         """Geheim, instellingen en meldingen uit de core-database (alleen lezen)."""
+        velden = "volledig" if volledige_jobs else "identiteit"
         draait = docker("inspect", "-f", "{{.State.Running}}", MG_NAAM, check_=False) == "true"
         if draait:
             uit = docker("exec", "--user", f"{APP_UID}:{APP_UID}", MG_NAAM,
-                         "/opt/venv/bin/python", "-c", _DB_LEZEN, "/config/core/mediaguard.db")
+                         "/opt/venv/bin/python", "-c", _DB_LEZEN,
+                         "/config/core/mediaguard.db", velden)
         else:
             uit = docker("run", "--rm", "--user", f"{APP_UID}:{APP_UID}", "--network", "none",
                          "--entrypoint", "/opt/venv/bin/python", "-v", f"{MGDIR}:/mnt", VORIGE,
-                         "-c", _DB_LEZEN, "/mnt/config/core/mediaguard.db")
+                         "-c", _DB_LEZEN, "/mnt/config/core/mediaguard.db", velden)
         return json.loads(uit.splitlines()[-1])
 
     def stop(self, fase: str) -> str:
@@ -799,10 +819,12 @@ def emby_verzoeksoorten(
     soorten = set()
     for r in regels:
         parameters = set(r["query"])
-        if (r["method"], r["path"]) == ("GET", "/emby/Sessions") and "ActiveWithinSeconds" in parameters:
+        if ((r["method"], r["path"]) == ("GET", "/emby/Sessions")
+                and "ActiveWithinSeconds" in parameters):
             parameters.remove("ActiveWithinSeconds")
             # Het bewijs noemt alleen het bekende venster. Een onverwachte waarde blijft privé.
-            venster = "120" if r["query"]["ActiveWithinSeconds"] == vingerafdruk("120") else "afwijkend"
+            normaal = r["query"]["ActiveWithinSeconds"] == vingerafdruk("120")
+            venster = "120" if normaal else "afwijkend"
             parameters.add(f"ActiveWithinSeconds={venster}")
         soorten.add((r["method"], r["path"], tuple(r["auth"]), tuple(sorted(parameters))))
     return soorten
@@ -850,8 +872,8 @@ def test_b1_vorige_release_volgt_emby(servers: dict[str, Any]) -> None:
           historie["Played"] is True and historie["PlayCount"] == 2 and historie["LastPlayedDate"]
           and historie["PlaybackPositionTicks"] == 50_000_007 and historie["IsFavorite"] is True)
     STATE["emby_historie"] = historie
-    feit("emby_kijkgeschiedenis_voor", {k: historie[k] for k in
-                                        ("Played", "PlayCount", "PlaybackPositionTicks", "IsFavorite")})
+    velden = ("Played", "PlayCount", "PlaybackPositionTicks", "IsFavorite")
+    feit("emby_kijkgeschiedenis_voor", {k: historie[k] for k in velden})
     speler = Speler(emby)
     speler.speel()
     STATE["emby_speler"] = speler
@@ -904,7 +926,8 @@ def test_b2_upgrade_emby_blijft_gevolgd_zonder_handeling(servers: dict[str, Any]
           st["hold"]["active"] and "Testfilm" in str(st["hold"]["reason"]), st["hold"])
     na = mg.db()
     # Bij een start kunnen de actieve werkers extra geschiedenis schrijven.
-    controleer_voortgang("upgrade", voor["voortgang"], na["voortgang"], nieuwe_rijen_toegestaan=True)
+    controleer_voortgang("upgrade", voor["voortgang"], na["voortgang"],
+                         nieuwe_rijen_toegestaan=True)
     controleer_emby_kijkgeschiedenis(emby, "na de upgrade")
     check("geheim en instellingen van de koppeling zijn byte-gelijk gebleven",
           na["geheim_server_1"] == voor["geheim_server_1"]
@@ -917,7 +940,8 @@ def test_b2_upgrade_emby_blijft_gevolgd_zonder_handeling(servers: dict[str, Any]
     check("de nulmeting heeft exact de migraties van de gekozen release",
           voor["migraties"] == sorted(releaseschema), voor["migraties"])
     if VORIGE_VERSIE == "1.2.2":
-        check("migratie 150 is nieuw ten opzichte van 1.2.2", servermigratie not in voor["migraties"])
+        check("migratie 150 is nieuw ten opzichte van 1.2.2",
+              servermigratie not in voor["migraties"])
     check("alle kernmigraties inclusief 150 zijn toegepast en er is nog geen extra server",
           servermigratie in na["migraties"] and set(voor["migraties"]) <= set(na["migraties"])
           and na["migraties"] == verwacht
@@ -1097,7 +1121,26 @@ def test_b7_emby_losmaken_volgt_alleen_jellyfin(servers: dict[str, Any]) -> None
     # De synthetische Arr-instanties kunnen offline zijn. Hun melding verschijnt
     # pas na tien minuten. Meet vóór het losmaken nadat de bewaking is bijgelopen.
     # De vergelijking hieronder omvat nog steeds alle meldingen van de kern.
-    voor = wacht_op(nulmeting, 13 * 60, 10, wat="nulmeting na de eerste Arr-gezondheidscontroles")
+    wacht_op(nulmeting, 13 * 60, 10, wat="eerste Arr-gezondheidscontroles afgerond")
+
+    # Onbereikbare Arr-testinstanties leiden elke minuut tot nieuwe synchronisaties
+    # en importcontroles. Archiveer alleen deze vier via de beheer-API. Laat hun
+    # lopende werk en herpogingen aflopen terwijl de mediaserverbewaking doordraait.
+    instanties = {i["id"] for i in mg.get("/api/v1/instances")}
+    check("de vier Arr-testinstanties zijn actief vóór de meetopstelling",
+          instanties == {"sonarr-series", "sonarr-anime", "radarr-films", "radarr-animefilms"})
+    for instantie in sorted(instanties):
+        antwoord = mg.http.patch(f"/api/v1/instances/{instantie}", headers=mg.kop,
+                                 json={"archived": True})
+        assert antwoord.status_code == 200 and antwoord.json()["archived"], instantie
+
+    def uitgelopen() -> dict[str, Any] | None:
+        db = mg.db(volledige_jobs=True)
+        planner = db["planner"]
+        return db if planner["actieve_instanties"] == planner["open_jobs"] == 0 else None
+
+    voor = wacht_op(uitgelopen, 240, 3, wat="geen plandoelen of open jobs meer")
+    feit("planner_voor_losmaken", voor["planner"])
     meldingen_voor = voor["meldingen"]
     n_emby = len(luik("emby"))
     feit("emby_verzoeken_tot_losmaken", n_emby)
@@ -1126,12 +1169,16 @@ def test_b7_emby_losmaken_volgt_alleen_jellyfin(servers: dict[str, Any]) -> None
     kijkpauze(False, 4 * RONDE)
     time.sleep(max(0.0, 2 * RONDE + 10 - (time.monotonic() - losgemaakt_op)))
     na_losmaken = luik("emby")
+    feit("ontkoppeld_meetvenster_s", round(time.monotonic() - losgemaakt_op, 1))
     feit("emby_verzoeken_na_losmaken", len(na_losmaken))
     check("na het losmaken gaat er geen enkel verzoek meer naar Emby",
           len(na_losmaken) == n_emby, na_losmaken[n_emby:][:3])
-    db = mg.db()
+    db = mg.db(volledige_jobs=True)
+    feit("planner_na_losmaken", db["planner"])
+    check("de Arr-planners blijven stil tijdens het losmaken", db["planner"] == voor["planner"])
     controleer_voortgang("losmaken", voor["voortgang"], db["voortgang"])
     STATE["voortgang_losgemaakt"] = db["voortgang"]
+    STATE["planner_losgemaakt"] = db["planner"]
     check("losmaken geeft geen melding of incident", db["meldingen"] == meldingen_voor,
           db["meldingen"][len(meldingen_voor):])
     check("het geheim van Emby is bewaard en ongewijzigd",
@@ -1161,7 +1208,10 @@ def test_b8_emby_weer_koppelen_zonder_sleutel_opnieuw(servers: dict[str, Any]) -
     wacht_op(lambda: [r for r in sessiepolls(luik("emby")[n:], "/emby/Sessions")
                       if r["status"] == 200], 3 * RONDE, 3, wat="Emby wordt weer gevolgd")
     controleer_luik_emby(luik("emby")[n:], emby["sleutel"], "na weer koppelen")
-    db = mg.db()
+    db = mg.db(volledige_jobs=True)
+    feit("planner_na_herkoppelen", db["planner"])
+    check("de Arr-planners blijven stil tijdens het herkoppelen",
+          db["planner"] == STATE["planner_losgemaakt"])
     check("het geheim van Emby is nog steeds hetzelfde",
           db["geheim_server_1"] == STATE["db_voor"]["geheim_server_1"])
     controleer_voortgang("herkoppelen", STATE["voortgang_losgemaakt"], db["voortgang"])
