@@ -14,6 +14,56 @@ De registrycontrole bevestigde de gepinde vorige MediaGuard-release `1.3.0-aio` 
 
 De vergelijking omvatte 177 vooraf gevulde tabellen. In beide richtingen waren er nul verloren rijen en nul gewijzigde beschermde rijen volgens het uitzonderingenbestand in versiebeheer. De twee geregistreerde originelen, het werkbestand en de mediatitel behielden alle vier hun SHA-256 na de upgrade en op elk van de drie terugvalkopieën.
 
+### Contractproef met stock Jellyfin en lokale Emby
+
+De referentierun stopte bij B7. Tijdens het losmaken van Emby ging het aantal jobs van **71 naar 82** en het aantal regels jobgeschiedenis van **69 naar 78**. Elk vooraf gemeten jobkenmerk (ID, type, instantie, doel en aanmaaktijd) en elke volledige eerdere historieregel was terug te vinden. De herkomst van de extra rijen is met deze meting niet vastgesteld. De stopregel bij B7 onderbrak de reeks vóór de run met `jelly-leon:p6`.
+
+| Controle met de stockserver | Vóór | Na |
+|---|---:|---:|
+| B2 · jobs / regels jobgeschiedenis | 16 / 10 | 16 / 10 |
+| B7 · jobs / regels jobgeschiedenis | 71 / 69 | 82 / 78 |
+| B7 · regels in het Emby-proxylog | 29 | 29 |
+
+De 29 verzoeken in het Emby-proxylog waren allemaal GET met HTTP 200. In B7 behield de ontkoppelde server zijn adres en opgeslagen sleutel. De kijkpauze op de overblijvende server werkte. Gedurende het meetvenster van minstens 70 seconden kwam er geen Emby-verzoek bij. B6 had aangetoond dat Emby gevolgd bleef toen stock Jellyfin uitviel. Bij de upgrade in B2 bleef ook de gevulde `UserData` van de tweede testfilm gelijk.
+
+Deze run gebruikte de kandidaat `sha256:2f8501498cf4062cb6a2586470a468b4b661c4f7aa6405ab89e20b7b8bb1ac30`, de gepinde Emby 4.10.2.0 en stock Jellyfin 12.4 uit het proefbestand. De fixture uit 1.2.2 is door de gepubliceerde 1.3.0-aio geopend met één Emby-koppeling. Het aantal kernmigraties ging van 49 naar 52. De test stopte met exitcode 1 na 21 groene testgevallen en één afkeuring. Van de 103 uitgevoerde controles voldeden er 102.
+
+| Testgeval | Stock, voldane/uitgevoerde controles |
+|---|---|
+| `a1_openbare_info_en_soort[emby]` | goed (4/4) |
+| `a1_openbare_info_en_soort[jellyfin]` | goed (4/4) |
+| `a2_sleutel_alleen_in_de_kop_van_die_server[emby]` | goed (3/3) |
+| `a2_sleutel_alleen_in_de_kop_van_die_server[jellyfin]` | goed (3/3) |
+| `a3_verkeerde_sleutel_geeft_een_duidelijke_fout[emby]` | goed (1/1) |
+| `a3_verkeerde_sleutel_geeft_een_duidelijke_fout[jellyfin]` | goed (1/1) |
+| `a4_jellyfin_weigert_de_oude_vormen_en_emby_houdt_de_zijne` | goed (6/6) |
+| `a5_sessies_lezen[emby]` | goed (4/4) |
+| `a5_sessies_lezen[jellyfin]` | goed (4/4) |
+| `a6_bibliotheek_verversen[emby]` | goed (1/1) |
+| `a6_bibliotheek_verversen[jellyfin]` | goed (1/1) |
+| `a7_afspeeltest_en_nederlandse_ondertitels[emby]` | goed (4/4) |
+| `a7_afspeeltest_en_nederlandse_ondertitels[jellyfin]` | goed (4/4) |
+| `a8_encoder_kiest_dezelfde_kop[emby]` | goed (4/4) |
+| `a8_encoder_kiest_dezelfde_kop[jellyfin]` | goed (4/4) |
+| `b1_vorige_release_volgt_emby` | goed (8/8) |
+| `b2_upgrade_emby_blijft_gevolgd_zonder_handeling` | goed (18/18) |
+| `b3_zoeken_vindt_beide_en_jellyfin_komt_erbij` | goed (10/10) |
+| `b4_kijken_op_emby_pauzeert` | goed (4/4) |
+| `b5_kijken_op_jellyfin_pauzeert` | goed (4/4) |
+| `b6_jellyfin_valt_weg_emby_blijft_gevolgd` | goed (6/6) |
+| `b7_emby_losmaken_volgt_alleen_jellyfin` | afgekeurd (4/5) |
+| `b8_emby_weer_koppelen_zonder_sleutel_opnieuw` | niet uitgevoerd |
+| `b8b_jellyfin_weigert_sleutel_emby_blijft_gevolgd` | niet uitgevoerd |
+| `b9_niets_gelekt_en_nette_stop` | niet uitgevoerd |
+
+B8 en B9 kwamen door de stopregel niet aan bod. De afzonderlijke unittest `test_b9_keurt_log_met_proefsleutel_af` bevestigde dat een synthetische sleutel in een log wordt gevonden. Voor S-P6-31 (JLT-63) is A7 met het tv-profiel op stock gemeten. Voor alle testgevallen met de P6-image ontbreekt een meting, dus er is geen vergelijking tussen stock en P6.
+
+Een eerdere stockpoging stopte bij een te strikte vergelijking in B2 (16 → 16 jobs, 10 → 11 historieregels). De start van een werker mag een regel toevoegen. In de herhaling controleerde B2 voor elke bestaande job de vaste kenmerken en voor elke eerdere historieregel alle velden. B7 en B8 eisen daarnaast gelijke totaaltellingen. De tegenproef wijst zowel vervanging van een eerdere regel tijdens de upgrade als een extra regel tijdens het losmaken af.
+
+### Opnieuw meten
+
+Gebruik een eigen compose-project met `MGMS_BASIS=laatste`, `MGMS_INTERN=true`, `MGMS_KANDIDAAT=<image-ID>` en `MGMS_BEWIJS=<eigen bewijsmap>`. Voer `tests/contract/mediaserver/run.sh` via het gedeelde testslot uit. De stockrun gebruikt de standaardimage. Na een groene referentierun krijgt de run met `JELLYFIN_IMAGE=jelly-leon:p6` een eigen bewijsmap. Voor dit P6-artefact is image-ID `sha256:87a5e00d59597f60ab37a1822bf9f84d8394048845e85a7152d0c8a7f5594417` vastgesteld.
+
 ### Webinterface voor S-P6-50 en S-P6-51
 
 Open als beheerder **Inrichten → Mediaservers & ondertitels** (`/inrichten?tab=mediaserver`). Kies **Mediaserver toevoegen** en **Toevoegen en testen** om Jelly Leon naast de bestaande Emby te koppelen. Voor de eerste server heet de bevestiging **Opslaan en testen**. Kies op de kaart van Emby **Ontkoppelen…** en bevestig met **Server ontkoppelen**. **Weer koppelen** gebruikt het bewaarde adres en de bewaarde sleutel. Deze teksten komen uit `apps/web/components/mediaserver/mediaserver-tab.tsx` en de Nederlandse vertaling in `apps/web/lib/i18n/messages/mediaserver.ts`.
@@ -189,9 +239,9 @@ lokale run.
 
 ### Wat hier niet bewezen is
 
-- **Echte NAS: NIET GEVALIDEERD.** De echte Emby van de gebruiker met zijn bibliotheek en kijkgeschiedenis, een echt
-  Jelly Leon-image en echte spelers zijn niet getest. Jelly Leon is hier de ongewijzigde Jellyfin 12.4 waarop het is
-  gebaseerd.
+- **NIET GEVALIDEERD (echte NAS).** De bestaande installatie, de bibliotheek en echte spelers vragen de NAS-proef.
+  De meting van 11 november gebruikte stock Jellyfin 12.4. Op 27 november is ook de lokale Jelly Leon-image uit
+  S-P40-20 gemeten. Voor de P6-image stopte de referentierun op 28 november bij B7.
 - **Sessies zijn nagebootst** met de sessie-API van de servers; er speelde geen echte client een film af.
 - **Afspeeltest en Nederlandse ondertitels** zijn in deel A bewezen op clientniveau (de client vraagt de echte server
   om de afspeelinformatie). De hele keten in de achtergrondlus — een overdracht van een echte import, per server een
@@ -211,7 +261,7 @@ lokale run.
   terug. Dat core een omleiding alleen op dezelfde server volgt (zelfde host en poort, of http naar https op de
   standaardpoorten; besluit van de gebruiker 2026-11-12) en geen sleutel uit een foutpagina in een melding zet, is
   alleen Sim-getest (`apps/core/tests/test_mediaserver_dual.py`).
-- De kandidaat is de nieuwe core op de runtime van 1.2.2, niet het release-image.
+- De kandidaat van 11 november gebruikte de runtime van 1.2.2. De P6-kandidaat bevat de nieuwe kern en encoder op de runtime van 1.3.0. De proef op het uiteindelijke release-image staat open.
 
 ### Opnieuw draaien
 
