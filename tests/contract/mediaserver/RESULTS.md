@@ -14,9 +14,11 @@ De registrycontrole bevestigde de gepinde vorige MediaGuard-release `1.3.0-aio` 
 
 De vergelijking omvatte 177 vooraf gevulde tabellen. In beide richtingen waren er nul verloren rijen en nul gewijzigde beschermde rijen volgens het uitzonderingenbestand in versiebeheer. De twee geregistreerde originelen, het werkbestand en de mediatitel behielden alle vier hun SHA-256 na de upgrade en op elk van de drie terugvalkopieën.
 
-### Contractproef met stock Jellyfin en lokale Emby
+### Eerste meting met stock Jellyfin en lokale Emby
 
-De referentierun stopte bij B7. Tijdens het losmaken van Emby ging het aantal jobs van **71 naar 82** en het aantal regels jobgeschiedenis van **69 naar 78**. Elk vooraf gemeten jobkenmerk (ID, type, instantie, doel en aanmaaktijd) en elke volledige eerdere historieregel was terug te vinden. De herkomst van de extra rijen is met deze meting niet vastgesteld. De stopregel bij B7 onderbrak de reeks vóór de run met `jelly-leon:p6`.
+De eerste referentierun stopte bij B7. Tijdens het losmaken van Emby ging het aantal jobs van **71 naar 82** en het aantal regels jobgeschiedenis van **69 naar 78**. Elk vooraf gemeten jobkenmerk en elke volledige eerdere historieregel was terug te vinden.
+
+Het kandidaatlog verklaart de elf nieuwe jobs na de beheerhandeling. De importplanner gaf acht jobs van het type `imports.stuck_check` uit (72–75 en 79–82). De bibliotheekplanner gaf drie jobs van het type `library.sync` uit (76–78). De vier Arr-testinstanties waren onbereikbaar. De acht importcontroles hadden één poging. De al bestaande synchronisatiejob 71 bereikte zijn tweede, laatste poging. Bij elk van die negen eindfouten schrijft de werker één historieregel. Deze toerekening volgt uit de pogingen in het log en de foutafhandeling in `mediaguard.jobs`. De telling in de database bevestigt de toename met negen.
 
 | Controle met de stockserver | Vóór | Na |
 |---|---:|---:|

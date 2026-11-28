@@ -140,8 +140,11 @@ def test_upgrade_laat_alleen_toegevoegde_rijen_toe(monkeypatch: pytest.MonkeyPat
         contract.controleer_voortgang("losmaken", voor, aangevuld)
 
 
+@pytest.mark.parametrize(("status", "extra_voortgang", "open_jobs"), [
+    ("succeeded", 1, 0), ("queued", 0, 1),
+], ids=["alleen-voortgang", "alleen-status"])
 def test_koppeling_keurt_gewijzigde_jobvoortgang_bij_gelijke_aantallen_af(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status, extra_voortgang, open_jobs,
 ):
     monkeypatch.syspath_prepend(str(CONTRACT))
     monkeypatch.delenv("MGMS_VORIGE", raising=False)
@@ -160,9 +163,10 @@ def test_koppeling_keurt_gewijzigde_jobvoortgang_bij_gelijke_aantallen_af(
     voor = meet()
     assert voor["planner"]["actieve_instanties"] == 4 and voor["planner"]["open_jobs"] == 0
     with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE jobs SET status='queued',progress=progress+1 WHERE id=1")
+        conn.execute("UPDATE jobs SET status=?,progress=progress+? WHERE id=1",
+                     (status, extra_voortgang))
     na = meet()
-    assert na["planner"]["open_jobs"] == 1
+    assert na["planner"]["open_jobs"] == open_jobs
     for fase in ("losmaken", "herkoppelen"):
         with pytest.raises(AssertionError, match="jobgeschiedenis"):
             contract.controleer_voortgang(fase, voor["voortgang"], na["voortgang"])

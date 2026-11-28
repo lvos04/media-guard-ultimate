@@ -35,6 +35,7 @@ import pytest
 from test_encoding_support import FakeInstance, FakeRegistry
 from test_recovery import ORIGINAL, Env
 
+from mediaguard import jobs
 from mediaguard.db import utcnow
 from mediaguard.mediaserver import servers as M
 from mediaguard.mediaserver import service as S
@@ -907,6 +908,29 @@ def test_emby_losmaken_stopt_pollen_en_geeft_geen_incident(client, ctx, net) -> 
     assert [(x["kind"], x["enabled"]) for x in r.json()["status"]["servers"]] == [
         ("emby", True), ("jellyfin", True)]
     assert r.json()["test"]["ok"]
+
+
+def test_lopende_arr_job_blijft_gelijk_bij_losmaken_en_herkoppelen(client, ctx, net):
+    _add_jelly_leon(ctx)
+    assert not ctx.settings.start_background
+    instantie = ctx.db.fetch_one("SELECT id FROM instances WHERE archived=0 ORDER BY id LIMIT 1")
+    assert instantie is not None
+    job = jobs.enqueue(ctx.db, "library.sync", instance_id=instantie["id"])
+    ctx.db.execute("UPDATE jobs SET status='running',progress=42 WHERE id=?", (job,))
+    ctx.db.execute("INSERT INTO job_logs(job_id,ts,level,message) VALUES (?,?,?,?)",
+                   (job, utcnow(), "info", "Bibliotheek voor 42 procent ingelezen"))
+
+    def voortgang():
+        return (ctx.db.fetch_dicts("SELECT * FROM jobs ORDER BY id"),
+                ctx.db.fetch_dicts("SELECT * FROM job_logs ORDER BY id"))
+
+    voor = voortgang()
+    for gekoppeld in (False, True):
+        r = client.post("/api/v1/mediaserver/config", json={"server_id": 1, "enabled": gekoppeld})
+        assert r.status_code == 200
+        assert r.json()["status"]["servers"][0]["followed"] is gekoppeld
+        tick(ctx)
+        assert voortgang() == voor
 
 
 def test_losgemaakte_server_1_zonder_adres_en_sleutel_staat_niet_in_de_lijst(client, ctx) -> None:  # type: ignore[no-untyped-def]
